@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield, Activity, Globe, AlertTriangle, FileSearch, History,
   Radar, TrendingUp, Lock, Cpu, Wifi, Zap, ArrowUpRight,
-  Clock, Target, ShieldCheck, Eye, Radio,
+  Clock, Target, ShieldCheck, Eye, Radio, Map, Server, FileText,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,10 +13,11 @@ import { ScanInput } from '@/components/reconpro/scan-input';
 import { ScanResults } from '@/components/reconpro/scan-results';
 import { AttackSurface } from '@/components/reconpro/attack-surface';
 import { RiskGauge } from '@/components/reconpro/risk-gauge';
+import { RadarMap } from '@/components/reconpro/radar-map';
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'scan' | 'surface' | 'threats' | 'history';
+type View = 'dashboard' | 'scan' | 'radar' | 'surface' | 'threats' | 'history';
 
 interface Finding {
   id: string;
@@ -84,6 +85,7 @@ interface RecentScan {
 const navItems: { id: View; label: string; icon: React.ReactNode }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <Activity className="w-4 h-4" /> },
   { id: 'scan', label: 'New Scan', icon: <Radar className="w-4 h-4" /> },
+  { id: 'radar', label: 'Radar', icon: <Map className="w-4 h-4" /> },
   { id: 'surface', label: 'Attack Surface', icon: <Globe className="w-4 h-4" /> },
   { id: 'threats', label: 'Threat Intel', icon: <AlertTriangle className="w-4 h-4" /> },
   { id: 'history', label: 'Scan History', icon: <History className="w-4 h-4" /> },
@@ -95,6 +97,14 @@ const severityColors: Record<string, string> = {
   medium: 'bg-[#eab308]/15 text-[#eab308] border-[#eab308]/30',
   low: 'bg-[#22c55e]/15 text-[#22c55e] border-[#22c55e]/30',
   info: 'bg-[#6b7280]/15 text-[#6b7280] border-[#6b7280]/30',
+};
+
+const SEVERITY_RADAR_COLORS: Record<string, string> = {
+  critical: '#ef4444',
+  high: '#f97316',
+  medium: '#eab308',
+  low: '#22c55e',
+  info: '#6b7280',
 };
 
 // ─── Mini severity chart (SVG) ───────────────────────────────
@@ -172,15 +182,13 @@ export default function Home() {
 
   // Initial data load
   const initRef = useRef<boolean | null>(null);
-  if (initRef.current == null) {
-    initRef.current = true;
-    // Schedule fetches to run after render
-    queueMicrotask(() => {
-      fetchDashboard();
-      fetchThreats();
-      fetchScans();
-    });
-  }
+  useEffect(() => {
+    if (initRef.current == null) {
+      initRef.current = true;
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch on mount
+      void Promise.all([fetchDashboard(), fetchThreats(), fetchScans()]);
+    }
+  });
 
   // Handle scan
   const handleScan = async (domain: string, scanType: string) => {
@@ -195,7 +203,7 @@ export default function Home() {
       const data = await res.json();
       if (data.success) {
         setScanResult(data.scan);
-        setActiveView('surface');
+        setActiveView('radar');
         // Refresh dashboard and scans in background
         fetchDashboard();
         fetchScans();
@@ -473,6 +481,151 @@ export default function Home() {
     </div>
   );
 
+  // ─── Radar View ────────────────────────────────────────
+  const renderRadar = () => {
+    const lastScan = allScans.length > 0 ? allScans[0] : null;
+    const radarFindings = scanResult?.findings || (lastScan?.findings ?? []);
+    const radarDomain = scanResult?.domain || lastScan?.target?.domain || 'awaiting-target';
+
+    return (
+      <div className="space-y-4">
+        {/* Top bar */}
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(0,255,136,0.06)] border border-[rgba(0,255,136,0.12)]">
+              <Map className="w-4 h-4 text-[#00ff88]" />
+              <span className="text-sm font-mono text-[#00ff88]">RADAR MAPPING</span>
+            </div>
+            <span className="text-xs text-muted-foreground font-mono">{radarDomain}</span>
+          </div>
+          <div className="flex items-center gap-3">
+            {radarFindings.length > 0 && (
+              <>
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
+                  <Target className="w-3.5 h-3.5 text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">{radarFindings.length} contacts</span>
+                </div>
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
+                  <AlertTriangle className="w-3.5 h-3.5 text-[#ef4444]" />
+                  <span className="text-xs text-[#ef4444]">{radarFindings.filter(f => f.severity === 'critical').length} critical</span>
+                </div>
+              </>
+            )}
+            {radarFindings.length === 0 && (
+              <button
+                onClick={() => setActiveView('scan')}
+                className="px-4 py-2 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all flex items-center gap-2 text-sm"
+              >
+                <Radar className="w-4 h-4" />
+                Launch Scan First
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Radar */}
+        <RadarMap
+          findings={radarFindings}
+          domain={radarDomain}
+          isScanning={isScanning}
+          height={520}
+        />
+
+        {/* Radar + side panel on large screens */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Quick Stats */}
+          <div className="cyber-card rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-[#e6edf3] mb-4 flex items-center gap-2">
+              <Eye className="w-4 h-4 text-[#06b6d4]" />
+              Contact Summary
+            </h3>
+            <div className="space-y-2.5">
+              {[
+                { label: 'Critical', val: radarFindings.filter(f => f.severity === 'critical').length, c: '#ef4444' },
+                { label: 'High', val: radarFindings.filter(f => f.severity === 'high').length, c: '#f97316' },
+                { label: 'Medium', val: radarFindings.filter(f => f.severity === 'medium').length, c: '#eab308' },
+                { label: 'Low', val: radarFindings.filter(f => f.severity === 'low').length, c: '#22c55e' },
+                { label: 'Info', val: radarFindings.filter(f => f.severity === 'info').length, c: '#6b7280' },
+              ].map(s => (
+                <div key={s.label} className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: s.c, boxShadow: `0 0 6px ${s.c}60` }} />
+                    <span className="text-xs text-muted-foreground">{s.label}</span>
+                  </div>
+                  <span className="text-sm font-mono font-bold" style={{ color: s.c }}>{s.val}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Category Breakdown */}
+          <div className="cyber-card rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-[#e6edf3] mb-4 flex items-center gap-2">
+              <Wifi className="w-4 h-4 text-[#00ff88]" />
+              By Category
+            </h3>
+            <div className="space-y-2.5">
+              {[
+                { label: 'Vulnerabilities', filter: 'vulnerability', icon: <ShieldCheck className="w-3.5 h-3.5" />, c: '#ef4444' },
+                { label: 'Open Ports', filter: 'port', icon: <Wifi className="w-3.5 h-3.5" />, c: '#f97316' },
+                { label: 'Subdomains', filter: 'subdomain', icon: <Globe className="w-3.5 h-3.5" />, c: '#eab308' },
+                { label: 'Technologies', filter: 'technology', icon: <Cpu className="w-3.5 h-3.5" />, c: '#06b6d4' },
+                { label: 'SSL/TLS', filter: 'ssl', icon: <Lock className="w-3.5 h-3.5" />, c: '#22c55e' },
+                { label: 'DNS', filter: 'dns', icon: <Server className="w-3.5 h-3.5" />, c: '#a78bfa' },
+                { label: 'HTTP Headers', filter: 'header', icon: <FileText className="w-3.5 h-3.5" />, c: '#6b7280' },
+              ].map(cat => {
+                const count = radarFindings.filter(f => f.category === cat.filter).length;
+                const pct = radarFindings.length > 0 ? (count / radarFindings.length) * 100 : 0;
+                return (
+                  <div key={cat.label}>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span style={{ color: cat.c }}>{cat.icon}</span>
+                        {cat.label}
+                      </div>
+                      <span className="text-xs font-mono" style={{ color: cat.c }}>{count}</span>
+                    </div>
+                    <div className="h-1 rounded-full bg-[rgba(255,255,255,0.04)] overflow-hidden">
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{ backgroundColor: cat.c }}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${pct}%` }}
+                        transition={{ duration: 0.8, ease: 'easeOut' }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Detected Contacts List */}
+          <div className="cyber-card rounded-xl p-5">
+            <h3 className="text-sm font-semibold text-[#e6edf3] mb-4 flex items-center gap-2">
+              <Radio className="w-4 h-4 text-[#ef4444] animate-pulse" />
+              Detected Contacts
+            </h3>
+            <div className="space-y-1.5 max-h-[240px] overflow-y-auto">
+              {radarFindings.filter(f => f.severity !== 'info').slice(0, 12).map((f) => (
+                <div key={f.id} className="flex items-center gap-2 p-2 rounded-lg bg-[rgba(255,255,255,0.02)] hover:bg-[rgba(255,255,255,0.04)] transition-all">
+                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
+                    backgroundColor: SEVERITY_RADAR_COLORS[f.severity] || '#6b7280',
+                    boxShadow: `0 0 4px ${SEVERITY_RADAR_COLORS[f.severity] || '#6b7280'}60`,
+                  }} />
+                  <span className="text-[11px] font-mono text-muted-foreground truncate flex-1">{f.asset}</span>
+                  <Badge variant="outline" className={`text-[9px] px-1.5 py-0 flex-shrink-0 ${severityColors[f.severity]}`}>
+                    {f.severity.slice(0, 1).toUpperCase()}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ─── Attack Surface View ────────────────────────────────
   const renderSurface = () => (
     <div className="space-y-6">
@@ -684,6 +837,7 @@ export default function Home() {
     switch (activeView) {
       case 'dashboard': return renderDashboard();
       case 'scan': return renderScan();
+      case 'radar': return renderRadar();
       case 'surface': return renderSurface();
       case 'threats': return renderThreats();
       case 'history': return renderHistory();
