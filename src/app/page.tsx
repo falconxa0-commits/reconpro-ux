@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield, Activity, Globe, AlertTriangle, FileSearch, History,
   Radar, TrendingUp, Lock, Cpu, Wifi, Zap, ArrowUpRight,
-  Clock, Target, ShieldCheck, Eye, Radio, Map, Server, FileText, Brain,
+  Clock, Target, ShieldCheck, Eye, Radio, Map, Server, FileText, Brain, Orbit,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -15,10 +15,11 @@ import { AttackSurface } from '@/components/reconpro/attack-surface';
 import { RiskGauge } from '@/components/reconpro/risk-gauge';
 import { RadarMap } from '@/components/reconpro/radar-map';
 import { AIAdvisor } from '@/components/reconpro/ai-advisor';
+import { ThreatGlobe } from '@/components/reconpro/threat-globe';
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'scan' | 'radar' | 'surface' | 'threats' | 'history' | 'advisor';
+type View = 'dashboard' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history';
 
 interface Finding {
   id: string;
@@ -87,6 +88,7 @@ const navItems: { id: View; label: string; icon: React.ReactNode }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <Activity className="w-4 h-4" /> },
   { id: 'scan', label: 'New Scan', icon: <Radar className="w-4 h-4" /> },
   { id: 'radar', label: 'Radar', icon: <Map className="w-4 h-4" /> },
+  { id: 'globe', label: 'Threat Map', icon: <Orbit className="w-4 h-4" /> },
   { id: 'advisor', label: 'AI Advisor', icon: <Brain className="w-4 h-4" /> },
   { id: 'surface', label: 'Attack Surface', icon: <Globe className="w-4 h-4" /> },
   { id: 'threats', label: 'Threat Intel', icon: <AlertTriangle className="w-4 h-4" /> },
@@ -483,6 +485,9 @@ export default function Home() {
     </div>
   );
 
+  // ─── Threat Globe View ──────────────────────────────────
+  const renderGlobe = () => <ThreatGlobe />;
+
   // ─── AI Advisor View ───────────────────────────────────
   const renderAdvisor = () => {
     const lastScan = allScans.length > 0 ? allScans[0] : null;
@@ -849,6 +854,7 @@ export default function Home() {
       case 'dashboard': return renderDashboard();
       case 'scan': return renderScan();
       case 'radar': return renderRadar();
+      case 'globe': return renderGlobe();
       case 'advisor': return renderAdvisor();
       case 'surface': return renderSurface();
       case 'threats': return renderThreats();
