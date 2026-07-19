@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useMemo, useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, Stars } from '@react-three/drei';
 import { EffectComposer, Bloom } from '@react-three/postprocessing';
