@@ -375,91 +375,141 @@ function generateFullAnalysis(findings: Finding[], domain: string): string {
 }
 
 function findRemediation(finding: Finding) {
-  // Match by title keywords
+  // Match by title keywords — updated for real reconnaissance findings
   const title = finding.title.toLowerCase();
   const asset = finding.asset.toLowerCase();
   const combined = `${title} ${asset} ${finding.category}`;
 
-  if (combined.includes('ssl') && (combined.includes('expir') || combined.includes('cert')))
+  // SSL/TLS findings (from real cert analysis)
+  if (combined.includes('expired'))
     return REMEDIATION_DB['ssl-certificate-expired'];
-  if (combined.includes('ssl') && (combined.includes('cipher') || combined.includes('weak')))
+  if (combined.includes('ssl') && (combined.includes('expir') || combined.includes('cert') || combined.includes('validity') || combined.includes('lifespan')))
+    return REMEDIATION_DB['ssl-certificate-expired'];
+  if (combined.includes('cipher'))
     return REMEDIATION_DB['ssl-weak-cipher'];
-  if (combined.includes('ssl') && combined.includes('self'))
-    return REMEDIATION_DB['ssl-self-signed'];
-  if (combined.includes('tls') && (combined.includes('1.0') || combined.includes('1.1') || combined.includes('deprecated')))
+  if (combined.includes('tls 1.0') || combined.includes('tls 1.1') || (combined.includes('tls') && combined.includes('deprecated')) || (combined.includes('weak tls')))
     return REMEDIATION_DB['ssl-tls-v1.0'];
-  if (combined.includes('header') || combined.includes('security-header') || combined.includes('csp') || combined.includes('x-frame') || combined.includes('hsts') || combined.includes('content-security'))
+  if (combined.includes('self-signed'))
+    return REMEDIATION_DB['ssl-self-signed'];
+
+  // HTTP Security Header findings (from real header analysis)
+  if (combined.includes('csp') || combined.includes('content-security-policy'))
     return REMEDIATION_DB['missing-security-headers'];
-  if (combined.includes('hsts'))
+  if (combined.includes('hsts') || combined.includes('strict-transport'))
     return REMEDIATION_DB['missing-hsts'];
   if (combined.includes('frame') || combined.includes('clickjack'))
     return REMEDIATION_DB['x-frame-options-missing'];
+  if (combined.includes('cors') || combined.includes('access-control-allow-origin'))
+    return REMEDIATION_DB['missing-security-headers'];
+  if (combined.includes('x-content-type') || combined.includes('nosniff') || combined.includes('referrer-policy') || combined.includes('permissions-policy'))
+    return REMEDIATION_DB['missing-security-headers'];
+  if (combined.includes('header'))
+    return REMEDIATION_DB['missing-security-headers'];
+
+  // DNS findings (from real DNS enumeration)
   if (combined.includes('dns') && (combined.includes('zone') || combined.includes('transfer') || combined.includes('axfr')))
     return REMEDIATION_DB['dns-zone-transfer'];
-  if (combined.includes('dns') && (combined.includes('spf') || combined.includes('mail') || combined.includes('dmarc')))
+  if (combined.includes('spf'))
     return REMEDIATION_DB['dns-spf-missing'];
+  if (combined.includes('dmarc'))
+    return REMEDIATION_DB['dns-spf-missing'];
+  if (combined.includes('dkim'))
+    return REMEDIATION_DB['dns-spf-missing'];
+  if (combined.includes('dnssec'))
+    return REMEDIATION_DB['dns-zone-transfer'];
+  if (combined.includes('wildcard'))
+    return REMEDIATION_DB['dns-zone-transfer'];
+
+  // Port findings (from real port probing)
   if (combined.includes('ssh') || (combined.includes('port') && combined.includes('22')))
     return REMEDIATION_DB['open-ssh-version'];
+  if (combined.includes('port') && (combined.includes('open') || combined.includes('exposed') || combined.includes('accessible')))
+    return REMEDIATION_DB['open-port-ssh'];
+
+  // Subdomain findings (from real DNS resolution)
+  if (combined.includes('subdomain') && (combined.includes('sensitive') || combined.includes('admin') || combined.includes('internal') || combined.includes('staging')))
+    return REMEDIATION_DB['sensitive-data-exposure'];
+
+  // Technology/vulnerability findings
   if (combined.includes('sql') || combined.includes('injection'))
     return REMEDIATION_DB['sql-injection'];
   if (combined.includes('xss') || combined.includes('cross-site'))
     return REMEDIATION_DB['xss-vulnerability'];
-  if (combined.includes('outdat') || combined.includes('version') || combined.includes('server'))
+  if (combined.includes('version disclosure') || combined.includes('technology disclosure') || combined.includes('x-powered-by'))
     return REMEDIATION_DB['outdated-server'];
   if (combined.includes('traversal') || combined.includes('path') || combined.includes('directory'))
     return REMEDIATION_DB['directory-traversal'];
   if (combined.includes('sensitive') || combined.includes('expos') || combined.includes('.env') || combined.includes('.git'))
     return REMEDIATION_DB['sensitive-data-exposure'];
-  if (combined.includes('port'))
-    return REMEDIATION_DB['open-port-ssh'];
 
   // Generic fallback based on category
-  if (finding.category === 'ssl') return REMEDIATION_DB['ssl-weak-cipher'];
+  if (finding.category === 'ssl') return REMEDIATION_DB['ssl-certificate-expired'];
   if (finding.category === 'header') return REMEDIATION_DB['missing-security-headers'];
   if (finding.category === 'dns') return REMEDIATION_DB['dns-spf-missing'];
+  if (finding.category === 'port') return REMEDIATION_DB['open-port-ssh'];
   if (finding.category === 'vulnerability') return REMEDIATION_DB['outdated-server'];
+  if (finding.category === 'subdomain') return REMEDIATION_DB['sensitive-data-exposure'];
 
   return null;
 }
 
 function assessCompliance(findings: Finding[]): Record<string, { passed: boolean; failures: number; details: string }> {
-  const hasSSL = findings.some(f => f.category === 'ssl');
-  const hasHeader = findings.some(f => f.category === 'header');
-  const hasVuln = findings.some(f => f.category === 'vulnerability' && ['critical', 'high'].includes(f.severity));
-  const hasDNS = findings.some(f => f.category === 'dns');
-  const hasOpenPorts = findings.some(f => f.category === 'port');
+  const sslCrit = findings.some(f => f.category === 'ssl' && f.severity === 'critical');
+  const sslHigh = findings.some(f => f.category === 'ssl' && f.severity === 'high');
+  const missingHsts = findings.some(f => f.title.toLowerCase().includes('hsts') && f.severity !== 'info');
+  const missingCsp = findings.some(f => f.title.toLowerCase().includes('csp') && f.severity !== 'info');
+  const missingSPF = findings.some(f => f.title.toLowerCase().includes('spf') && f.severity !== 'info');
+  const missingDMARC = findings.some(f => f.title.toLowerCase().includes('dmarc') && f.severity !== 'info');
   const hasCritVuln = findings.some(f => f.severity === 'critical');
+  const hasHighVuln = findings.some(f => f.severity === 'high');
+  const openCriticalPorts = findings.some(f => f.category === 'port' && f.severity === 'critical');
+  const corsOpen = findings.some(f => f.title.toLowerCase().includes('cors') && f.title.includes('*'));
+  const weakTls = findings.some(f => f.title.toLowerCase().includes('tls') && (f.title.includes('1.0') || f.title.includes('1.1')));
+
+  const countFailures = (...conds: boolean[]) => conds.filter(Boolean).length;
 
   return {
     'SOC2 Type II': {
-      passed: !hasCritVuln && !hasSSL,
-      failures: (hasCritVuln ? 1 : 0) + (hasSSL ? 1 : 0) + (hasHeader ? 1 : 0),
-      details: hasCritVuln ? 'Critical vulnerabilities require immediate remediation' : 'Encryption and access controls are properly configured',
+      passed: !hasCritVuln && !sslCrit && !missingHsts,
+      failures: countFailures(hasCritVuln, sslCrit, missingHsts, missingCsp, corsOpen),
+      details: hasCritVuln || sslCrit
+        ? `Critical issues: ${findings.filter(f => f.severity === 'critical').map(f => f.title).slice(0, 3).join(', ')}. CC6.1 (encryption) and CC7.1 (access controls) require immediate attention.`
+        : 'Encryption and access controls are properly configured for SOC2 CC requirements.',
     },
     'PCI-DSS v4.0': {
-      passed: !hasCritVuln && !hasSSL && !hasOpenPorts,
-      failures: (hasSSL ? 2 : 0) + (hasCritVuln ? 1 : 0) + (hasOpenPorts ? 1 : 0),
-      details: hasSSL ? 'SSL/TLS configuration does not meet PCI-DSS requirements' : 'Cardholder data environment appears properly secured',
+      passed: !hasCritVuln && !sslCrit && !weakTls && !missingHsts,
+      failures: countFailures(sslCrit, weakTls, missingHsts, hasCritVuln, openCriticalPorts),
+      details: weakTls || sslCrit
+        ? `SSL/TLS does not meet PCI-DSS 4.1 requirements. ${weakTls ? 'TLS 1.0/1.1 must be disabled (Req 4.1).' : ''}${sslCrit ? 'Certificate issues detected.' : ''} Strong cryptography (Req 4.2.1) is mandatory.`
+        : 'Cardholder data environment encryption meets PCI-DSS requirements.',
     },
     'ISO 27001:2022': {
-      passed: !hasCritVuln,
-      failures: hasCritVuln ? findings.filter(f => f.severity === 'critical').length : 0,
-      details: hasCritVuln ? 'Information security controls need immediate attention' : 'Information security management controls are adequate',
+      passed: !hasCritVuln && !openCriticalPorts,
+      failures: countFailures(hasCritVuln, openCriticalPorts, missingSPF, missingDMARC, missingHsts),
+      details: hasCritVuln
+        ? `Annex A controls need attention: ${findings.filter(f => f.severity === 'critical').map(f => f.title).slice(0, 3).join(', ')}. A.12.2 (data classification) and A.13.1 (network security) controls require review.`
+        : 'Information security management controls are adequate per Annex A requirements.',
     },
     'HIPAA': {
-      passed: !hasCritVuln && !hasSSL,
-      failures: (hasCritVuln ? 2 : 0) + (hasSSL ? 1 : 0),
-      details: hasSSL ? 'ePHI transmission security requirements not met' : 'Technical safeguards for protected health information appear adequate',
+      passed: !hasCritVuln && !sslCrit && !missingHsts,
+      failures: countFailures(sslCrit, missingHsts, hasCritVuln, missingCsp, corsOpen),
+      details: sslCrit || missingHsts
+        ? `ePHI transmission security (§164.312(e)) not met. ${missingHsts ? 'HSTS is required for HIPAA compliant HTTPS enforcement.' : ''}${sslCrit ? 'Certificate issues risk data in transit.' : ''}`
+        : 'Technical safeguards for protected health information (§164.312) appear adequate.',
     },
     'GDPR': {
-      passed: !hasCritVuln && !hasHeader,
-      failures: (hasCritVuln ? 1 : 0) + (hasHeader ? 1 : 0),
-      details: hasCritVuln ? 'Data protection by design and default requires attention' : 'Data protection measures appear compliant',
+      passed: !hasCritVuln && !missingCsp && !corsOpen,
+      failures: countFailures(hasCritVuln, missingCsp, corsOpen, missingHsts, sslCrit),
+      details: missingCsp || corsOpen
+        ? `Data protection by design (Art. 25) requires proper security headers. ${missingCsp ? 'CSP is mandatory to prevent data injection.' : ''}${corsOpen ? 'Open CORS allows data exfiltration from any origin.' : ''}`
+        : 'Data protection measures (Art. 32) appear compliant.',
     },
     'NIST CSF 2.0': {
       passed: !hasCritVuln,
-      failures: hasCritVuln ? findings.filter(f => f.severity === 'critical').length : 0,
-      details: hasCritVuln ? 'Identify and Protect functions need strengthening' : 'Core functions are within acceptable risk tolerance',
+      failures: countFailures(hasCritVuln, openCriticalPorts, missingSPF, missingDMARC, weakTls),
+      details: hasCritVuln
+        ? `Identify (ID.RA) and Protect (PR.DS, PR.AC) functions need strengthening. ${findings.filter(f => f.severity === 'critical').length} critical findings require immediate risk management.`
+        : 'Core functions (Identify, Protect, Detect, Respond, Recover) are within acceptable risk tolerance.',
     },
   };
 }
