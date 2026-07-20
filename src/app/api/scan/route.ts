@@ -29,7 +29,7 @@ function digFull(domain: string, type: string): string {
 
 // ── Helper: Check if domain resolves ──────────────────────────────
 function resolves(domain: string): string | null {
-  const ip = run(`dig +short ${domain} A`, 5000);
+  const ip = run(`dig +short +time=2 +tries=1 ${domain} A`, 3000);
   if (!ip) return null;
   // Return first IP (skip CNAME lines)
   for (const line of ip.split('\n')) {
@@ -281,7 +281,7 @@ async function enumerateSubdomains(domain: string): Promise<Array<{
   }> = [];
 
   // Resolve in parallel batches
-  const batchSize = 20;
+  const batchSize = 30;
   const results: Array<{ subdomain: string; ip: string | null }> = [];
 
   for (let i = 0; i < SUBDOMAINS.length; i += batchSize) {
@@ -985,33 +985,24 @@ export async function POST(request: NextRequest) {
     const subdomainFindings = await enumerateSubdomains(cleanDomain);
     allFindings.push(...subdomainFindings);
 
+    // 3. HTTP Header Analysis (always)
+    const httpResult = analyzeHTTPHeaders(cleanDomain);
+    allFindings.push(...httpResult.findings);
+    httpResult.technologies.forEach(t => allTechnologies.add(t));
+
+    // 4. SSL/TLS Certificate Analysis (always)
+    const sslResult = analyzeSSL(cleanDomain);
+    allFindings.push(...sslResult.findings);
+    sslResult.technologies.forEach(t => allTechnologies.add(t));
+
+    // 5. Port probing (full scan only)
     if (!isQuick) {
-      // 3. HTTP Header Analysis
-      const httpResult = analyzeHTTPHeaders(cleanDomain);
-      allFindings.push(...httpResult.findings);
-      httpResult.technologies.forEach(t => allTechnologies.add(t));
-
-      // 4. SSL/TLS Certificate Analysis
-      const sslResult = analyzeSSL(cleanDomain);
-      allFindings.push(...sslResult.findings);
-      sslResult.technologies.forEach(t => allTechnologies.add(t));
-
-      // 5. Port probing
       const portFindings = await probePorts(cleanDomain);
       allFindings.push(...portFindings);
 
-      // 6. Traceroute
+      // 6. Traceroute (full scan only)
       const traceFindings = tracerouteAnalysis(cleanDomain);
       allFindings.push(...traceFindings);
-    } else {
-      // Quick scan: still do basic HTTP and SSL
-      const httpResult = analyzeHTTPHeaders(cleanDomain);
-      allFindings.push(...httpResult.findings);
-      httpResult.technologies.forEach(t => allTechnologies.add(t));
-
-      const sslResult = analyzeSSL(cleanDomain);
-      allFindings.push(...sslResult.findings);
-      sslResult.technologies.forEach(t => allTechnologies.add(t));
     }
 
     // ── Add technology findings ────────────────────────────────────
