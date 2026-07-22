@@ -1,110 +1,63 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Shield, Activity, Globe, AlertTriangle, FileSearch, History,
-  Radar, TrendingUp, Lock, Cpu, Wifi, Zap, ArrowUpRight,
-  Clock, Target, ShieldCheck, Eye, Radio, Map, Server, FileText, Brain, Orbit,
-} from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { AnimatedCounter } from '@/components/reconpro/animated-counter';
 import { ScanInput } from '@/components/reconpro/scan-input';
 import { ScanResults } from '@/components/reconpro/scan-results';
 import { AttackSurface } from '@/components/reconpro/attack-surface';
-import { RiskGauge } from '@/components/reconpro/risk-gauge';
 import { RadarMap } from '@/components/reconpro/radar-map';
 import { AIAdvisor } from '@/components/reconpro/ai-advisor';
 import { ThreatGlobe } from '@/components/reconpro/threat-globe';
 import { LiveTerminal } from '@/components/reconpro/live-terminal';
 import { ScanOverlay } from '@/components/reconpro/scan-overlay';
 import { CriticalAlertFeed } from '@/components/reconpro/critical-alerts';
-import { AnimatedCounter } from '@/components/reconpro/animated-counter';
+import { EnterpriseSidebar } from '@/components/reconpro/sidebar';
+import { CEODashboard } from '@/components/reconpro/ceo-dashboard';
+import { TeamManagement } from '@/components/reconpro/team-management';
+import { CompliancePanel } from '@/components/reconpro/compliance-panel';
+import { IntegrationHub } from '@/components/reconpro/integration-hub';
+import { MonitoringPanel } from '@/components/reconpro/monitoring-panel';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
 import { useXPSystem, XPBar, BadgePopup } from '@/hooks/use-xp-system';
 import {
   useDopamineEngine, ConfettiCanvas, FloatingXPCanvas, ScreenEffects,
-  CelebrationScreen, AchievementToasts, ComboCounter, AnimatedRiskDisplay,
+  CelebrationScreen, AchievementToasts, ComboCounter,
   MilestoneCelebration, AnticipationProgressBar,
 } from '@/components/reconpro/dopamine-engine';
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring';
 
 interface Finding {
-  id: string;
-  title: string;
-  severity: string;
-  category: string;
-  description: string;
-  evidence: string | null;
-  asset: string;
+  id: string; title: string; severity: string; category: string;
+  description: string; evidence: string | null; asset: string;
 }
 
 interface ScanResult {
-  id: string;
-  domain: string;
-  status: string;
-  riskScore: number;
-  totalVulns: number;
-  critical: number;
-  high: number;
-  medium: number;
-  low: number;
-  info: number;
-  findings: Finding[];
+  id: string; domain: string; status: string; riskScore: number;
+  totalVulns: number; critical: number; high: number; medium: number;
+  low: number; info: number; findings: Finding[];
 }
 
 interface DashboardStats {
-  totalScans: number;
-  totalFindings: number;
-  criticalFindings: number;
-  highFindings: number;
-  mediumFindings: number;
-  lowFindings: number;
-  infoFindings: number;
-  avgRiskScore: number;
+  totalScans: number; totalFindings: number; criticalFindings: number;
+  highFindings: number; mediumFindings: number; lowFindings: number;
+  infoFindings: number; avgRiskScore: number; complianceScore?: number;
 }
 
 interface Threat {
-  id: string;
-  title: string;
-  severity: string;
-  source: string;
-  description: string;
-  ioc: string | null;
-  createdAt: string;
+  id: string; title: string; severity: string; source: string;
+  description: string; ioc: string | null; createdAt: string;
 }
 
 interface RecentScan {
-  id: string;
-  domain: string;
-  riskScore: number;
-  totalVulns: number;
-  criticalCount: number;
-  highCount: number;
-  mediumCount: number;
-  lowCount: number;
-  infoCount: number;
-  status: string;
-  startedAt: string;
-  target: { domain: string; ip: string | null };
-  findings: Finding[];
+  id: string; domain: string; riskScore: number; totalVulns: number;
+  criticalCount: number; highCount: number; mediumCount: number;
+  lowCount: number; infoCount: number; status: string; startedAt: string;
+  target: { domain: string; ip: string | null }; findings: Finding[];
 }
-
-// ─── Navigation ──────────────────────────────────────────────
-
-const navItems: { id: View; label: string; icon: React.ReactNode }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: <Activity className="w-4 h-4" /> },
-  { id: 'scan', label: 'New Scan', icon: <Radar className="w-4 h-4" /> },
-  { id: 'radar', label: 'Radar', icon: <Map className="w-4 h-4" /> },
-  { id: 'globe', label: 'Threat Map', icon: <Orbit className="w-4 h-4" /> },
-  { id: 'advisor', label: 'AI Advisor', icon: <Brain className="w-4 h-4" /> },
-  { id: 'surface', label: 'Attack Surface', icon: <Globe className="w-4 h-4" /> },
-  { id: 'threats', label: 'Threat Intel', icon: <AlertTriangle className="w-4 h-4" /> },
-  { id: 'history', label: 'Scan History', icon: <History className="w-4 h-4" /> },
-];
 
 const severityColors: Record<string, string> = {
   critical: 'bg-[#ef4444]/15 text-[#ef4444] border-[#ef4444]/30',
@@ -115,42 +68,26 @@ const severityColors: Record<string, string> = {
 };
 
 const SEVERITY_RADAR_COLORS: Record<string, string> = {
-  critical: '#ef4444',
-  high: '#f97316',
-  medium: '#eab308',
-  low: '#22c55e',
-  info: '#6b7280',
+  critical: '#ef4444', high: '#f97316', medium: '#eab308',
+  low: '#22c55e', info: '#6b7280',
 };
 
-// ─── Mini severity chart (SVG) ───────────────────────────────
+// ─── Mini severity donut (SVG) ──────────────────────────────
 
 function SeverityDonut({ data }: { data: { name: string; value: number; color: string }[] }) {
   const total = data.reduce((s, d) => s + d.value, 0);
-  const segments = useMemo(() => {
-    if (total === 0) return [];
-    let off = 0;
-    return data.map((d) => {
-      const pct = d.value / total;
-      const seg = { ...d, pct, dasharray: `${pct * 283} ${283}`, offset: -off };
-      off += pct * 283;
-      return seg;
-    });
-  }, [data, total]);
+  const segments = data.map((d, i) => {
+    const pct = total === 0 ? 0 : d.value / total;
+    const off = data.slice(0, i).reduce((s2, prev) => s2 + (total === 0 ? 0 : prev.value / total), 0);
+    return { ...d, pct, dasharray: `${pct * 283} ${283}`, offset: -off * 283 };
+  });
   if (total === 0) return <div className="text-xs text-muted-foreground text-center py-4">No data yet</div>;
   return (
     <svg viewBox="0 0 120 120" className="w-32 h-32 mx-auto">
       {segments.map((d) => (
-        <circle
-          key={d.name}
-          cx="60" cy="60" r="45"
-          fill="none"
-          stroke={d.color}
-          strokeWidth="18"
-          strokeDasharray={d.dasharray}
-          strokeDashoffset={d.offset}
-          strokeLinecap="round"
-          opacity={0.85}
-        />
+        <circle key={d.name} cx="60" cy="60" r="45" fill="none"
+          stroke={d.color} strokeWidth="18" strokeDasharray={d.dasharray}
+          strokeDashoffset={d.offset} strokeLinecap="round" opacity={0.85} />
       ))}
       <text x="60" y="56" textAnchor="middle" fill="#e6edf3" fontSize="22" fontWeight="bold" fontFamily="Geist Sans, sans-serif">{total}</text>
       <text x="60" y="72" textAnchor="middle" fill="#7d8590" fontSize="9" fontFamily="Geist Sans, sans-serif">FINDINGS</text>
@@ -158,10 +95,13 @@ function SeverityDonut({ data }: { data: { name: string; value: number; color: s
   );
 }
 
-// ─── Main App ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
 
 export default function Home() {
-  const [activeView, setActiveView] = useState<View>('scan');
+  const [activeView, setActiveView] = useState<View>('executive');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
@@ -172,35 +112,22 @@ export default function Home() {
   const [liveFindingCount, setLiveFindingCount] = useState(0);
   const [lastNewBadge, setLastNewBadge] = useState<{ id: string; name: string; description: string; unlockedAt: string | null } | null>(null);
 
-  // Sound effects
   const sound = useSoundEffects();
-  // XP System
   const xp = useXPSystem();
-  // Critical Alert Feed
   const criticalFeed = CriticalAlertFeed();
-  // Dopamine Engine
   const dopamine = useDopamineEngine();
 
-  // Track badge unlocks
   const prevBadgeCount = useRef(0);
   useEffect(() => {
     const unlockedCount = xp.state.badges.filter(b => b.unlockedAt).length;
     if (unlockedCount > prevBadgeCount.current && prevBadgeCount.current > 0) {
-      // Find the newly unlocked badge
       for (const badge of xp.state.badges) {
-        if (badge.unlockedAt) {
-          const prev = prevBadgeCount.current;
-          // Badge just unlocked — show popup
-          setLastNewBadge(badge);
-          sound.play('levelUp');
-          break;
-        }
+        if (badge.unlockedAt) { setLastNewBadge(badge); sound.play('levelUp'); break; }
       }
     }
     prevBadgeCount.current = unlockedCount;
   }, [xp.state.badges]);
 
-  // Fetch dashboard data
   const fetchDashboard = useCallback(async () => {
     try {
       const res = await fetch('/api/dashboard');
@@ -226,7 +153,6 @@ export default function Home() {
     } catch { /* silent */ }
   }, []);
 
-  // Initial data load
   const initRef = useRef<boolean | null>(null);
   useEffect(() => {
     if (initRef.current == null) {
@@ -235,7 +161,6 @@ export default function Home() {
     }
   });
 
-  // Handle scan (upgraded with dopamine)
   const handleScan = async (domain: string, scanType: string) => {
     setIsScanning(true);
     setScanResult(null);
@@ -254,231 +179,84 @@ export default function Home() {
         setScanResult(data.scan);
         setActiveView('radar');
         sound.play('scanComplete');
-
-        // Feed critical/high findings to alert system
         const findings = data.scan.findings || [];
         for (const f of findings) {
-          if (f.severity === 'critical') {
-            criticalFeed.addAlert('critical', f.title, f.evidence || '');
-            sound.play('criticalHit');
-          } else if (f.severity === 'high') {
-            criticalFeed.addAlert('high', f.title, f.evidence || '');
-            sound.play('highHit');
-          }
+          if (f.severity === 'critical') { criticalFeed.addAlert('critical', f.title, f.evidence || ''); sound.play('criticalHit'); }
+          else if (f.severity === 'high') { criticalFeed.addAlert('high', f.title, f.evidence || ''); sound.play('highHit'); }
         }
-
-        // XP integration
         xp.onScanComplete(findings, domain);
-
-        // Dopamine scan complete celebration
         dopamine.onScanComplete({
-          domain,
-          findings,
-          riskScore: data.scan.riskScore,
-          criticalCount: data.scan.critical,
-          highCount: data.scan.high,
-          xpGained: 50 + findings.length * 3,
-          newLevel: false,
-          streak: xp.state.streak,
-          level: xp.state.level,
+          domain, findings, riskScore: data.scan.riskScore,
+          criticalCount: data.scan.critical, highCount: data.scan.high,
+          xpGained: 50 + findings.length * 3, newLevel: false,
+          streak: xp.state.streak, level: xp.state.level,
         });
         sound.play('xpGain');
-
-        // Refresh dashboard and scans in background
-        fetchDashboard();
-        fetchScans();
+        fetchDashboard(); fetchScans();
       }
     } catch { /* silent */ }
     setIsScanning(false);
     setScanDomain(null);
   };
 
-  // Handle live finding events from overlay (upgraded with dopamine)
   const handleLiveFinding = useCallback((finding: { severity: string; category: string; title: string }) => {
     setLiveFindingCount(prev => prev + 1);
     try {
       if (finding.severity === 'critical') sound.play('criticalHit');
       else if (finding.severity === 'high') sound.play('highHit');
       else sound.play('finding');
-    } catch { /* ignore sound errors */ }
-    // Dopamine hit
+    } catch { /* ignore */ }
     dopamine.onFindingDiscovered(finding.severity, finding.title, finding.category);
   }, [dopamine]);
+
+  // ─── View Handlers ───────────────────────────────────────
+
+  const handleViewChange = (view: string) => {
+    setActiveView(view as View);
+  };
 
   // ─── Dashboard View ─────────────────────────────────────
   const renderDashboard = () => (
     <div className="space-y-6">
-      {/* Stats Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { label: 'Total Scans', value: dashboardStats?.totalScans ?? 0, icon: <Radar className="w-5 h-5" />, color: '#00ff88' },
-          { label: 'Total Findings', value: dashboardStats?.totalFindings ?? 0, icon: <AlertTriangle className="w-5 h-5" />, color: '#f97316' },
-          { label: 'Critical Issues', value: dashboardStats?.criticalFindings ?? 0, icon: <Shield className="w-5 h-5" />, color: '#ef4444' },
-          { label: 'Avg Risk Score', value: dashboardStats?.avgRiskScore ?? 0, icon: <TrendingUp className="w-5 h-5" />, color: '#eab308' },
+          { label: 'Total Scans', value: dashboardStats?.totalScans ?? 0, color: '#00ff88' },
+          { label: 'Total Findings', value: dashboardStats?.totalFindings ?? 0, color: '#f97316' },
+          { label: 'Critical Issues', value: dashboardStats?.criticalFindings ?? 0, color: '#ef4444' },
+          { label: 'Avg Risk Score', value: dashboardStats?.avgRiskScore ?? 0, color: '#eab308' },
         ].map((stat) => (
-          <motion.div
-            key={stat.label}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="cyber-card rounded-xl p-4 group hover:border-[rgba(0,255,136,0.2)] transition-all"
-          >
-            <div className="flex items-center justify-between mb-3">
-              <span className="text-xs text-muted-foreground uppercase tracking-wider">{stat.label}</span>
-              <div className="p-2 rounded-lg bg-[rgba(255,255,255,0.04)] text-muted-foreground group-hover:text-[#00ff88] transition-colors">
-                {stat.icon}
-              </div>
-            </div>
-            <AnimatedCounter target={stat.value} color={stat.color} size="md" />
+          <motion.div key={stat.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+            className="cyber-card rounded-xl p-4 hover:border-[rgba(0,255,136,0.2)] transition-all">
+            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">{stat.label}</div>
+            <AnimatedCounter target={stat.value} color={stat.color} size="lg" />
           </motion.div>
         ))}
       </div>
-
-      {/* Middle Row: Chart + Recent Scans */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Severity Breakdown */}
         <div className="cyber-card rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-[#e6edf3] mb-4 flex items-center gap-2">
-            <Eye className="w-4 h-4 text-[#06b6d4]" />
-            Severity Breakdown
-          </h3>
-          <SeverityDonut
-            data={[
-              { name: 'Critical', value: dashboardStats?.criticalFindings ?? 0, color: '#ef4444' },
-              { name: 'High', value: dashboardStats?.highFindings ?? 0, color: '#f97316' },
-              { name: 'Medium', value: dashboardStats?.mediumFindings ?? 0, color: '#eab308' },
-              { name: 'Low', value: dashboardStats?.lowFindings ?? 0, color: '#22c55e' },
-              { name: 'Info', value: dashboardStats?.infoFindings ?? 0, color: '#6b7280' },
-            ]}
-          />
-          <div className="mt-4 space-y-1.5">
-            {[
-              { label: 'Critical', val: dashboardStats?.criticalFindings ?? 0, c: '#ef4444' },
-              { label: 'High', val: dashboardStats?.highFindings ?? 0, c: '#f97316' },
-              { label: 'Medium', val: dashboardStats?.mediumFindings ?? 0, c: '#eab308' },
-              { label: 'Low', val: dashboardStats?.lowFindings ?? 0, c: '#22c55e' },
-              { label: 'Info', val: dashboardStats?.infoFindings ?? 0, c: '#6b7280' },
-            ].map(s => (
-              <div key={s.label} className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full" style={{ backgroundColor: s.c }} />
-                  <span className="text-muted-foreground">{s.label}</span>
+          <h3 className="text-sm font-semibold text-[#e6edf3] mb-4">Severity Breakdown</h3>
+          <SeverityDonut data={[
+            { name: 'Critical', value: dashboardStats?.criticalFindings ?? 0, color: '#ef4444' },
+            { name: 'High', value: dashboardStats?.highFindings ?? 0, color: '#f97316' },
+            { name: 'Medium', value: dashboardStats?.mediumFindings ?? 0, color: '#eab308' },
+            { name: 'Low', value: dashboardStats?.lowFindings ?? 0, color: '#22c55e' },
+            { name: 'Info', value: dashboardStats?.infoFindings ?? 0, color: '#6b7280' },
+          ]} />
+        </div>
+        <div className="lg:col-span-2 cyber-card rounded-xl p-5">
+          <h3 className="text-sm font-semibold text-[#e6edf3] mb-4">Recent Scans</h3>
+          <div className="space-y-2 max-h-[280px] overflow-y-auto">
+            {recentScans.slice(0, 5).map((scan, i) => (
+              <motion.div key={scan.id} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }}
+                className="flex items-center justify-between p-3 rounded-lg bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] hover:border-[rgba(0,255,136,0.15)] cursor-pointer"
+                onClick={() => { if (scan.findings.length > 0) { setScanResult({ id: scan.id, domain: scan.target.domain, status: scan.status, riskScore: scan.riskScore, totalVulns: scan.totalVulns, critical: scan.criticalCount, high: scan.highCount, medium: scan.mediumCount, low: scan.lowCount, info: scan.infoCount, findings: scan.findings }); setActiveView('surface'); } }}>
+                <div className="flex items-center gap-3">
+                  <div className="text-sm font-mono text-[#e6edf3]">{scan.target.domain}</div>
                 </div>
-                <span className="font-mono" style={{ color: s.c }}>{s.val}</span>
-              </div>
+                <div className="text-sm font-mono font-bold" style={{ color: scan.riskScore > 70 ? '#ef4444' : scan.riskScore > 40 ? '#f97316' : '#00ff88' }}>{scan.riskScore}</div>
+              </motion.div>
             ))}
           </div>
-        </div>
-
-        {/* Recent Scans */}
-        <div className="lg:col-span-2 cyber-card rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-[#e6edf3] flex items-center gap-2">
-              <Clock className="w-4 h-4 text-[#00ff88]" />
-              Recent Scans
-            </h3>
-            <button onClick={() => setActiveView('history')} className="text-xs text-[#00ff88] hover:underline flex items-center gap-1">
-              View All <ArrowUpRight className="w-3 h-3" />
-            </button>
-          </div>
-          {recentScans.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <Radar className="w-10 h-10 text-muted-foreground/30 mb-3" />
-              <p className="text-sm text-muted-foreground">No scans yet</p>
-              <button onClick={() => setActiveView('scan')} className="text-xs text-[#00ff88] mt-2 hover:underline">
-                Launch your first scan
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-2 max-h-[280px] overflow-y-auto">
-              {recentScans.map((scan, i) => (
-                <motion.div
-                  key={scan.id}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.05 }}
-                  className="flex items-center justify-between p-3 rounded-lg bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] hover:border-[rgba(0,255,136,0.15)] transition-all cursor-pointer"
-                  onClick={() => {
-                    if (scan.findings.length > 0) {
-                      setScanResult({
-                        id: scan.id,
-                        domain: scan.target.domain,
-                        status: scan.status,
-                        riskScore: scan.riskScore,
-                        totalVulns: scan.totalVulns,
-                        critical: scan.criticalCount,
-                        high: scan.highCount,
-                        medium: scan.mediumCount,
-                        low: scan.lowCount,
-                        info: scan.infoCount,
-                        findings: scan.findings,
-                      });
-                      setActiveView('surface');
-                    }
-                  }}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                      scan.riskScore > 70 ? 'bg-[#ef4444]/15 text-[#ef4444]' : scan.riskScore > 40 ? 'bg-[#f97316]/15 text-[#f97316]' : 'bg-[#00ff88]/15 text-[#00ff88]'
-                    }`}>
-                      <Target className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-mono text-[#e6edf3]">{scan.target.domain}</div>
-                      <div className="text-[11px] text-muted-foreground">{new Date(scan.startedAt).toLocaleString()}</div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="text-right hidden sm:block">
-                      <div className="text-sm font-mono font-bold" style={{
-                        color: scan.riskScore > 70 ? '#ef4444' : scan.riskScore > 40 ? '#f97316' : '#00ff88'
-                      }}>{scan.riskScore}</div>
-                      <div className="text-[10px] text-muted-foreground">Risk</div>
-                    </div>
-                    <div className="text-right hidden md:block">
-                      <div className="text-sm font-mono text-[#e6edf3]">{scan.totalVulns}</div>
-                      <div className="text-[10px] text-muted-foreground">Findings</div>
-                    </div>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Live Threat Feed Preview */}
-      <div className="cyber-card rounded-xl p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-[#e6edf3] flex items-center gap-2">
-            <Radio className="w-4 h-4 text-[#ef4444] animate-pulse" />
-            Live Threat Intelligence
-          </h3>
-          <button onClick={() => setActiveView('threats')} className="text-xs text-[#00ff88] hover:underline flex items-center gap-1">
-            Full Feed <ArrowUpRight className="w-3 h-3" />
-          </button>
-        </div>
-        <div className="space-y-2 max-h-[250px] overflow-y-auto">
-          {threats.slice(0, 5).map((threat, i) => (
-            <motion.div
-              key={threat.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.05 }}
-              className="flex items-start gap-3 p-3 rounded-lg bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] hover:border-[rgba(239,68,68,0.15)] transition-all"
-            >
-              <Badge variant="outline" className={`text-[10px] px-2 py-0 mt-0.5 flex-shrink-0 ${severityColors[threat.severity]}`}>
-                {threat.severity.toUpperCase()}
-              </Badge>
-              <div className="min-w-0">
-                <div className="text-sm text-[#e6edf3] truncate">{threat.title}</div>
-                <div className="text-[11px] text-muted-foreground mt-0.5 line-clamp-1">{threat.description}</div>
-                <div className="flex items-center gap-3 mt-1.5">
-                  <span className="text-[10px] text-muted-foreground">{threat.source}</span>
-                  {threat.ioc && <span className="text-[10px] font-mono text-[#06b6d4]">{threat.ioc}</span>}
-                </div>
-              </div>
-            </motion.div>
-          ))}
         </div>
       </div>
     </div>
@@ -487,205 +265,55 @@ export default function Home() {
   // ─── Scan View ──────────────────────────────────────────
   const renderScan = () => (
     <div className="space-y-6">
-      {/* Hero Section */}
       <div className="text-center space-y-4 py-6">
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[rgba(0,255,136,0.08)] border border-[rgba(0,255,136,0.15)]"
-        >
+        <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[rgba(0,255,136,0.08)] border border-[rgba(0,255,136,0.15)]">
           <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse-glow" />
-          <span className="text-xs font-mono text-[#00ff88] tracking-wider">RECONPRO ASM ENGINE v2.4.1</span>
+          <span className="text-xs font-mono text-[#00ff88] tracking-wider">RECONPRO ASM ENGINE v3.0.0 — ENTERPRISE</span>
         </motion.div>
-
         <h1 className="text-3xl sm:text-4xl font-bold text-[#e6edf3]">
           Attack Surface <span className="text-glow-green text-[#00ff88]">Intelligence</span>
         </h1>
         <p className="text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
-          Discover subdomains, open ports, technologies, and security vulnerabilities across your entire digital footprint. Enterprise-grade reconnaissance in seconds.
+          Enterprise-grade reconnaissance across 13 categories. Real-time threat detection, compliance mapping, and continuous monitoring for your entire digital footprint.
         </p>
-
-        {/* Scan Input */}
         <ScanInput onScan={handleScan} isScanning={isScanning} />
       </div>
-
-      {/* XP Bar */}
       <XPBar state={xp.state} />
-
-      {/* Dopamine Scan Overlay */}
       <ScanOverlay isScanning={isScanning} domain={scanDomain} findingCount={liveFindingCount} onNewFinding={handleLiveFinding} />
-
-      {/* Live Terminal */}
       <AnimatePresence>
         {isScanning && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-          >
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
             <LiveTerminal isScanning={isScanning} domain={scanDomain} />
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Scan Results (if viewing results on scan page) */}
       {scanResult && activeView === 'scan' && <ScanResults result={scanResult} />}
     </div>
   );
-
-  // ─── Threat Globe View ──────────────────────────────────
-  const renderGlobe = () => <ThreatGlobe />;
-
-  // ─── AI Advisor View ───────────────────────────────────
-  const renderAdvisor = () => {
-    const lastScan = allScans.length > 0 ? allScans[0] : null;
-    const advisorFindings = scanResult?.findings || (lastScan?.findings ?? []);
-    const advisorDomain = scanResult?.domain || lastScan?.target?.domain || 'awaiting-target';
-
-    return <AIAdvisor findings={advisorFindings} domain={advisorDomain} />;
-  };
 
   // ─── Radar View ────────────────────────────────────────
   const renderRadar = () => {
     const lastScan = allScans.length > 0 ? allScans[0] : null;
     const radarFindings = scanResult?.findings || (lastScan?.findings ?? []);
     const radarDomain = scanResult?.domain || lastScan?.target?.domain || 'awaiting-target';
-
     return (
       <div className="space-y-4">
-        {/* Top bar */}
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(0,255,136,0.06)] border border-[rgba(0,255,136,0.12)]">
-              <Map className="w-4 h-4 text-[#00ff88]" />
               <span className="text-sm font-mono text-[#00ff88]">RADAR MAPPING</span>
             </div>
             <span className="text-xs text-muted-foreground font-mono">{radarDomain}</span>
           </div>
-          <div className="flex items-center gap-3">
-            {radarFindings.length > 0 && (
-              <>
-                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
-                  <Target className="w-3.5 h-3.5 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground">{radarFindings.length} contacts</span>
-                </div>
-                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
-                  <AlertTriangle className="w-3.5 h-3.5 text-[#ef4444]" />
-                  <span className="text-xs text-[#ef4444]">{radarFindings.filter(f => f.severity === 'critical').length} critical</span>
-                </div>
-              </>
-            )}
-            {radarFindings.length === 0 && (
-              <button
-                onClick={() => setActiveView('scan')}
-                className="px-4 py-2 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all flex items-center gap-2 text-sm"
-              >
-                <Radar className="w-4 h-4" />
-                Launch Scan First
-              </button>
-            )}
-          </div>
+          {radarFindings.length === 0 && (
+            <button onClick={() => setActiveView('scan')}
+              className="px-4 py-2 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all flex items-center gap-2 text-sm">
+              Launch Scan First
+            </button>
+          )}
         </div>
-
-        {/* Radar */}
-        <RadarMap
-          findings={radarFindings}
-          domain={radarDomain}
-          isScanning={isScanning}
-          height={520}
-        />
-
-        {/* Radar + side panel on large screens */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {/* Quick Stats */}
-          <div className="cyber-card rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-[#e6edf3] mb-4 flex items-center gap-2">
-              <Eye className="w-4 h-4 text-[#06b6d4]" />
-              Contact Summary
-            </h3>
-            <div className="space-y-2.5">
-              {[
-                { label: 'Critical', val: radarFindings.filter(f => f.severity === 'critical').length, c: '#ef4444' },
-                { label: 'High', val: radarFindings.filter(f => f.severity === 'high').length, c: '#f97316' },
-                { label: 'Medium', val: radarFindings.filter(f => f.severity === 'medium').length, c: '#eab308' },
-                { label: 'Low', val: radarFindings.filter(f => f.severity === 'low').length, c: '#22c55e' },
-                { label: 'Info', val: radarFindings.filter(f => f.severity === 'info').length, c: '#6b7280' },
-              ].map(s => (
-                <div key={s.label} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: s.c, boxShadow: `0 0 6px ${s.c}60` }} />
-                    <span className="text-xs text-muted-foreground">{s.label}</span>
-                  </div>
-                  <span className="text-sm font-mono font-bold" style={{ color: s.c }}>{s.val}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Category Breakdown */}
-          <div className="cyber-card rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-[#e6edf3] mb-4 flex items-center gap-2">
-              <Wifi className="w-4 h-4 text-[#00ff88]" />
-              By Category
-            </h3>
-            <div className="space-y-2.5">
-              {[
-                { label: 'Vulnerabilities', filter: 'vulnerability', icon: <ShieldCheck className="w-3.5 h-3.5" />, c: '#ef4444' },
-                { label: 'Open Ports', filter: 'port', icon: <Wifi className="w-3.5 h-3.5" />, c: '#f97316' },
-                { label: 'Subdomains', filter: 'subdomain', icon: <Globe className="w-3.5 h-3.5" />, c: '#eab308' },
-                { label: 'Technologies', filter: 'technology', icon: <Cpu className="w-3.5 h-3.5" />, c: '#06b6d4' },
-                { label: 'SSL/TLS', filter: 'ssl', icon: <Lock className="w-3.5 h-3.5" />, c: '#22c55e' },
-                { label: 'DNS', filter: 'dns', icon: <Server className="w-3.5 h-3.5" />, c: '#a78bfa' },
-                { label: 'HTTP Headers', filter: 'header', icon: <FileText className="w-3.5 h-3.5" />, c: '#6b7280' },
-              ].map(cat => {
-                const count = radarFindings.filter(f => f.category === cat.filter).length;
-                const pct = radarFindings.length > 0 ? (count / radarFindings.length) * 100 : 0;
-                return (
-                  <div key={cat.label}>
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span style={{ color: cat.c }}>{cat.icon}</span>
-                        {cat.label}
-                      </div>
-                      <span className="text-xs font-mono" style={{ color: cat.c }}>{count}</span>
-                    </div>
-                    <div className="h-1 rounded-full bg-[rgba(255,255,255,0.04)] overflow-hidden">
-                      <motion.div
-                        className="h-full rounded-full"
-                        style={{ backgroundColor: cat.c }}
-                        initial={{ width: 0 }}
-                        animate={{ width: `${pct}%` }}
-                        transition={{ duration: 0.8, ease: 'easeOut' }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Detected Contacts List */}
-          <div className="cyber-card rounded-xl p-5">
-            <h3 className="text-sm font-semibold text-[#e6edf3] mb-4 flex items-center gap-2">
-              <Radio className="w-4 h-4 text-[#ef4444] animate-pulse" />
-              Detected Contacts
-            </h3>
-            <div className="space-y-1.5 max-h-[240px] overflow-y-auto">
-              {radarFindings.filter(f => f.severity !== 'info').slice(0, 12).map((f) => (
-                <div key={f.id} className="flex items-center gap-2 p-2 rounded-lg bg-[rgba(255,255,255,0.02)] hover:bg-[rgba(255,255,255,0.04)] transition-all">
-                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
-                    backgroundColor: SEVERITY_RADAR_COLORS[f.severity] || '#6b7280',
-                    boxShadow: `0 0 4px ${SEVERITY_RADAR_COLORS[f.severity] || '#6b7280'}60`,
-                  }} />
-                  <span className="text-[11px] font-mono text-muted-foreground truncate flex-1">{f.asset}</span>
-                  <Badge variant="outline" className={`text-[9px] px-1.5 py-0 flex-shrink-0 ${severityColors[f.severity]}`}>
-                    {f.severity.slice(0, 1).toUpperCase()}
-                  </Badge>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+        <RadarMap findings={radarFindings} domain={radarDomain} isScanning={isScanning} height={520} />
       </div>
     );
   };
@@ -695,48 +323,22 @@ export default function Home() {
     <div className="space-y-6">
       {scanResult ? (
         <>
-          {/* Quick Stats Bar */}
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(0,255,136,0.06)] border border-[rgba(0,255,136,0.12)]">
-              <Globe className="w-4 h-4 text-[#00ff88]" />
               <span className="text-sm font-mono text-[#00ff88]">{scanResult.domain}</span>
             </div>
             <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
-              <Target className="w-3.5 h-3.5 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Risk: <span className="font-bold" style={{
-                color: scanResult.riskScore > 70 ? '#ef4444' : scanResult.riskScore > 40 ? '#f97316' : '#00ff88'
-              }}>{scanResult.riskScore}</span>/100</span>
-            </div>
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
-              <AlertTriangle className="w-3.5 h-3.5 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">{scanResult.totalVulns} findings</span>
+              <span className="text-xs text-muted-foreground">Risk: <span className="font-bold" style={{ color: scanResult.riskScore > 70 ? '#ef4444' : scanResult.riskScore > 40 ? '#f97316' : '#00ff88' }}>{scanResult.riskScore}</span>/100</span>
             </div>
           </div>
-
-          {/* Attack Surface Map */}
-          <AttackSurface
-            findings={scanResult.findings}
-            domain={scanResult.domain}
-            riskScore={scanResult.riskScore}
-          />
-
-          {/* Findings */}
+          <AttackSurface findings={scanResult.findings} domain={scanResult.domain} riskScore={scanResult.riskScore} />
           <ScanResults result={scanResult} />
         </>
       ) : (
         <div className="flex flex-col items-center justify-center py-20 text-center">
-          <Globe className="w-16 h-16 text-muted-foreground/20 mb-4" />
           <h3 className="text-lg font-semibold text-[#e6edf3] mb-2">No Scan Data</h3>
-          <p className="text-sm text-muted-foreground max-w-sm mb-6">
-            Run a scan first to visualize the attack surface. The interactive map will show all discovered assets and their connections.
-          </p>
-          <button
-            onClick={() => setActiveView('scan')}
-            className="px-6 py-3 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all flex items-center gap-2"
-          >
-            <Radar className="w-4 h-4" />
-            Launch Scan
-          </button>
+          <p className="text-sm text-muted-foreground max-w-sm mb-6">Run a scan first to visualize the attack surface.</p>
+          <button onClick={() => setActiveView('scan')} className="px-6 py-3 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all">Launch Scan</button>
         </div>
       )}
     </div>
@@ -746,45 +348,20 @@ export default function Home() {
   const renderThreats = () => (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-2 h-2 rounded-full bg-[#ef4444] animate-pulse" />
-          <h2 className="text-lg font-semibold text-[#e6edf3]">Threat Intelligence Feed</h2>
-        </div>
+        <h2 className="text-lg font-semibold text-[#e6edf3]">Threat Intelligence Feed</h2>
         <span className="text-xs text-muted-foreground font-mono">{threats.length} threats</span>
       </div>
-
       <div className="space-y-3">
         {threats.map((threat, i) => (
-          <motion.div
-            key={threat.id}
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.03 }}
-            className="cyber-card rounded-xl p-5 hover:border-[rgba(239,68,68,0.2)] transition-all group cursor-pointer"
-          >
+          <motion.div key={threat.id} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
+            className="cyber-card rounded-xl p-5 hover:border-[rgba(239,68,68,0.2)] transition-all group cursor-pointer">
             <div className="flex items-start gap-4">
-              <div className={`mt-0.5 p-2.5 rounded-lg flex-shrink-0 ${
-                threat.severity === 'critical' ? 'bg-[#ef4444]/10 text-[#ef4444]' :
-                threat.severity === 'high' ? 'bg-[#f97316]/10 text-[#f97316]' :
-                'bg-[#eab308]/10 text-[#eab308]'
-              }`}>
-                <AlertTriangle className="w-4 h-4" />
-              </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[threat.severity]}`}>
-                    {threat.severity.toUpperCase()}
-                  </Badge>
-                  <Badge variant="outline" className="text-[10px] px-2 py-0 border-[rgba(6,182,212,0.3)] text-[#06b6d4]">
-                    {threat.source}
-                  </Badge>
-                  <span className="text-[11px] text-muted-foreground">
-                    {new Date(threat.createdAt).toLocaleString()}
-                  </span>
+                  <span className={`text-[10px] px-2 py-0 rounded-full border ${severityColors[threat.severity]}`}>{threat.severity.toUpperCase()}</span>
+                  <span className="text-[10px] px-2 py-0 rounded-full border border-[rgba(6,182,212,0.3)] text-[#06b6d4]">{threat.source}</span>
                 </div>
-                <h3 className="text-sm font-semibold text-[#e6edf3] group-hover:text-[#00ff88] transition-colors mb-1">
-                  {threat.title}
-                </h3>
+                <h3 className="text-sm font-semibold text-[#e6edf3] group-hover:text-[#00ff88] transition-colors mb-1">{threat.title}</h3>
                 <p className="text-xs text-muted-foreground leading-relaxed">{threat.description}</p>
                 {threat.ioc && (
                   <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[rgba(6,182,212,0.08)] border border-[rgba(6,182,212,0.15)]">
@@ -793,7 +370,6 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              <ArrowUpRight className="w-4 h-4 text-muted-foreground/20 group-hover:text-[#00ff88] transition-colors mt-1 flex-shrink-0" />
             </div>
           </motion.div>
         ))}
@@ -808,85 +384,25 @@ export default function Home() {
         <h2 className="text-lg font-semibold text-[#e6edf3]">Scan History</h2>
         <span className="text-xs text-muted-foreground font-mono">{allScans.length} scans</span>
       </div>
-
       {allScans.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20 text-center">
-          <History className="w-16 h-16 text-muted-foreground/20 mb-4" />
           <h3 className="text-lg font-semibold text-[#e6edf3] mb-2">No Scan History</h3>
-          <p className="text-sm text-muted-foreground max-w-sm mb-6">
-            Your past scans will appear here. Each scan records the full attack surface analysis.
-          </p>
-          <button
-            onClick={() => setActiveView('scan')}
-            className="px-6 py-3 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all flex items-center gap-2"
-          >
-            <Radar className="w-4 h-4" />
-            Launch Your First Scan
-          </button>
+          <p className="text-sm text-muted-foreground max-w-sm mb-6">Your past scans will appear here.</p>
+          <button onClick={() => setActiveView('scan')} className="px-6 py-3 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all">Launch Your First Scan</button>
         </div>
       ) : (
         <div className="space-y-2">
           {allScans.map((scan, i) => (
-            <motion.div
-              key={scan.id}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: i * 0.03 }}
+            <motion.div key={scan.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
               className="cyber-card rounded-xl p-4 hover:border-[rgba(0,255,136,0.2)] transition-all cursor-pointer group"
-              onClick={() => {
-                if (scan.findings.length > 0) {
-                  setScanResult({
-                    id: scan.id,
-                    domain: scan.target.domain,
-                    status: scan.status,
-                    riskScore: scan.riskScore,
-                    totalVulns: scan.totalVulns,
-                    critical: scan.criticalCount,
-                    high: scan.highCount,
-                    medium: scan.mediumCount,
-                    low: scan.lowCount,
-                    info: scan.infoCount,
-                    findings: scan.findings,
-                  });
-                  setActiveView('surface');
-                }
-              }}
-            >
+              onClick={() => { if (scan.findings.length > 0) { setScanResult({ id: scan.id, domain: scan.target.domain, status: scan.status, riskScore: scan.riskScore, totalVulns: scan.totalVulns, critical: scan.criticalCount, high: scan.highCount, medium: scan.mediumCount, low: scan.lowCount, info: scan.infoCount, findings: scan.findings }); setActiveView('surface'); } }}>
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-4 min-w-0">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                    scan.riskScore > 70 ? 'bg-[#ef4444]/10 text-[#ef4444]' : scan.riskScore > 40 ? 'bg-[#f97316]/10 text-[#f97316]' : 'bg-[#00ff88]/10 text-[#00ff88]'
-                  }`}>
-                    <Target className="w-5 h-5" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-mono text-[#e6edf3] group-hover:text-[#00ff88] transition-colors">{scan.target.domain}</div>
-                    <div className="text-[11px] text-muted-foreground mt-0.5">
-                      {new Date(scan.startedAt).toLocaleString()} • {scan.scanType} scan • {scan.target.ip}
-                    </div>
-                  </div>
+                  <div className="text-sm font-mono text-[#e6edf3] group-hover:text-[#00ff88] transition-colors">{scan.target.domain}</div>
+                  <div className="text-[11px] text-muted-foreground">{new Date(scan.startedAt).toLocaleString()}</div>
                 </div>
                 <div className="flex items-center gap-6 flex-shrink-0">
-                  <div className="hidden sm:flex items-center gap-3">
-                    {[
-                      { label: 'C', val: scan.criticalCount, color: '#ef4444' },
-                      { label: 'H', val: scan.highCount, color: '#f97316' },
-                      { label: 'M', val: scan.mediumCount, color: '#eab308' },
-                      { label: 'L', val: scan.lowCount, color: '#22c55e' },
-                    ].map(s => (
-                      <div key={s.label} className="text-center">
-                        <div className="text-xs font-mono font-bold" style={{ color: s.color }}>{s.val}</div>
-                        <div className="text-[9px] text-muted-foreground">{s.label}</div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="text-center">
-                    <div className="text-lg font-mono font-bold" style={{
-                      color: scan.riskScore > 70 ? '#ef4444' : scan.riskScore > 40 ? '#f97316' : '#00ff88'
-                    }}>{scan.riskScore}</div>
-                    <div className="text-[9px] text-muted-foreground">RISK</div>
-                  </div>
-                  <ArrowUpRight className="w-4 h-4 text-muted-foreground/20 group-hover:text-[#00ff88] transition-colors" />
+                  <div className="text-lg font-mono font-bold" style={{ color: scan.riskScore > 70 ? '#ef4444' : scan.riskScore > 40 ? '#f97316' : '#00ff88' }}>{scan.riskScore}</div>
                 </div>
               </div>
             </motion.div>
@@ -899,117 +415,117 @@ export default function Home() {
   // ─── Render Active View ─────────────────────────────────
   const renderView = () => {
     switch (activeView) {
+      case 'executive': return <CEODashboard stats={dashboardStats} recentScans={recentScans} onNavigate={handleViewChange} />;
       case 'dashboard': return renderDashboard();
       case 'scan': return renderScan();
       case 'radar': return renderRadar();
-      case 'globe': return renderGlobe();
-      case 'advisor': return renderAdvisor();
+      case 'globe': return <ThreatGlobe />;
+      case 'advisor': {
+        const lastScan = allScans.length > 0 ? allScans[0] : null;
+        return <AIAdvisor findings={scanResult?.findings || (lastScan?.findings ?? [])} domain={scanResult?.domain || lastScan?.target?.domain || 'awaiting-target'} />;
+      }
       case 'surface': return renderSurface();
       case 'threats': return renderThreats();
       case 'history': return renderHistory();
+      case 'team': return <TeamManagement members={[]} teams={[]} />;
+      case 'compliance': return <CompliancePanel />;
+      case 'integrations': return <IntegrationHub />;
+      case 'monitoring': return <MonitoringPanel />;
+      default: return renderScan();
     }
   };
 
   // ─── Main Layout ────────────────────────────────────────
   return (
-    <div className="min-h-screen flex flex-col bg-[#080a10] cyber-grid">
-      {/* Top Navigation */}
-      <header className="sticky top-0 z-50 border-b border-[rgba(0,255,136,0.08)] bg-[#080a10]/90 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6">
-          <div className="flex items-center justify-between h-14">
-            {/* Logo */}
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <div className="w-8 h-8 rounded-lg bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)] flex items-center justify-center">
-                  <Shield className="w-4 h-4 text-[#00ff88]" />
-                </div>
-                <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#00ff88] animate-pulse-glow" />
-              </div>
+    <div className="min-h-screen flex bg-[#080a10] cyber-grid">
+      {/* Enterprise Sidebar */}
+      <EnterpriseSidebar
+        activeView={activeView}
+        onViewChange={handleViewChange}
+        collapsed={sidebarCollapsed}
+        onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Top Bar */}
+        <header className="sticky top-0 z-50 border-b border-[rgba(0,255,136,0.06)] bg-[#080a10]/80 backdrop-blur-xl">
+          <div className="px-6">
+            <div className="flex items-center justify-between h-14">
+              {/* Breadcrumb */}
               <div className="flex items-center gap-2">
-                <span className="text-base font-bold text-[#e6edf3] tracking-tight">
-                  Recon<span className="text-[#00ff88]">Pro</span>
-                </span>
-                <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-[rgba(0,255,136,0.2)] text-[#00ff88] hidden sm:inline-flex">
-                  ASM
-                </Badge>
+                <span className="text-xs text-muted-foreground">ReconPro</span>
+                <span className="text-xs text-muted-foreground/40">/</span>
+                <span className="text-xs text-[#e6edf3] font-medium capitalize">{activeView.replace(/([A-Z])/g, ' $1').trim()}</span>
+              </div>
+              {/* Right actions */}
+              <div className="flex items-center gap-3">
+                <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
+                  <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse" />
+                  <span className="text-[11px] text-muted-foreground font-mono">SYSTEM ONLINE</span>
+                </div>
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[rgba(0,255,136,0.06)] border border-[rgba(0,255,136,0.12)]">
+                  <span className="text-[10px] font-mono text-[#00ff88]">ENTERPRISE PLAN</span>
+                </div>
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#00ff88] to-[#06b6d4] flex items-center justify-center text-[#080a10] font-bold text-xs">
+                  AC
+                </div>
               </div>
             </div>
+          </div>
+        </header>
 
-            {/* Nav Items */}
-            <nav className="flex items-center gap-1">
-              {navItems.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setActiveView(item.id)}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all ${
-                    activeView === item.id
-                      ? 'bg-[rgba(0,255,136,0.1)] text-[#00ff88] border border-[rgba(0,255,136,0.15)]'
-                      : 'text-muted-foreground hover:text-[#e6edf3] hover:bg-[rgba(255,255,255,0.04)] border border-transparent'
-                  }`}
-                >
-                  {item.icon}
-                  <span className="hidden sm:inline text-xs">{item.label}</span>
-                </button>
-              ))}
-            </nav>
+        {/* Main Content */}
+        <main className="flex-1 overflow-y-auto">
+          <div className="max-w-[1400px] mx-auto px-6 py-6">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeView}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.2 }}
+              >
+                {renderView()}
+              </motion.div>
+            </AnimatePresence>
+          </div>
+        </main>
 
-            {/* Status */}
-            <div className="hidden md:flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse" />
-              <span className="text-xs text-muted-foreground font-mono">SYSTEM ONLINE</span>
+        {/* Dopamine Effects Layer */}
+        <ConfettiCanvas particles={dopamine.confettiParticles} />
+        <FloatingXPCanvas popups={dopamine.floatingXPPopups} />
+        <ScreenEffects shaking={dopamine.shaking} flashColor={dopamine.flashColor} />
+        <ComboCounter combo={dopamine.combo} />
+        <AchievementToasts achievements={dopamine.achievements} />
+        <CelebrationScreen data={dopamine.celebration} onClose={dopamine.closeCelebration} />
+        <MilestoneCelebration data={dopamine.milestone} onClose={dopamine.closeMilestone} />
+        <criticalFeed.AlertFeedUI alerts={criticalFeed.alerts} onDismiss={criticalFeed.dismiss} />
+        <BadgePopup badge={lastNewBadge} onClose={() => setLastNewBadge(null)} />
+
+        {/* Footer */}
+        <footer className="border-t border-[rgba(255,255,255,0.04)] py-3">
+          <div className="max-w-[1400px] mx-auto px-6 flex items-center justify-between">
+            <div className="flex items-center gap-4 text-[11px] text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00ff88]" />
+                SOC 2 Type II Certified
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#06b6d4]" />
+                HIPAA Compliant
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#a78bfa]" />
+                ISO 27001
+              </span>
+            </div>
+            <div className="text-[11px] text-muted-foreground/50">
+              ReconPro Enterprise v3.0.0
             </div>
           </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={activeView}
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.2 }}
-          >
-            {renderView()}
-          </motion.div>
-        </AnimatePresence>
-      </main>
-
-      {/* Dopamine Effects Layer */}
-      <ConfettiCanvas particles={dopamine.confettiParticles} />
-      <FloatingXPCanvas popups={dopamine.floatingXPPopups} />
-      <ScreenEffects shaking={dopamine.shaking} flashColor={dopamine.flashColor} />
-      <ComboCounter combo={dopamine.combo} />
-      <AchievementToasts achievements={dopamine.achievements} />
-      <CelebrationScreen data={dopamine.celebration} onClose={dopamine.closeCelebration} />
-      <MilestoneCelebration data={dopamine.milestone} onClose={dopamine.closeMilestone} />
-
-      {/* Critical Alert Notifications */}
-      <criticalFeed.AlertFeedUI alerts={criticalFeed.alerts} onDismiss={criticalFeed.dismiss} />
-
-      {/* Badge Unlock Popup */}
-      <BadgePopup badge={lastNewBadge} onClose={() => setLastNewBadge(null)} />
-
-      {/* Footer */}
-      <footer className="border-t border-[rgba(255,255,255,0.04)] py-4 mt-auto">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between">
-          <div className="flex items-center gap-4 text-[11px] text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <Lock className="w-3 h-3" />
-              Encrypted
-            </span>
-            <span className="flex items-center gap-1.5">
-              <Shield className="w-3 h-3" />
-              SOC 2 Compliant
-            </span>
-          </div>
-          <div className="text-[11px] text-muted-foreground/50">
-            ReconPro ASM Platform v2.4.1
-          </div>
-        </div>
-      </footer>
+        </footer>
+      </div>
     </div>
   );
 }

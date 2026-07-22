@@ -14,16 +14,16 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ReconPro — Attack Surface Management",
-  description: "Enterprise-grade attack surface management platform. Discover, analyze, and secure your digital assets.",
-  keywords: ["cybersecurity", "attack surface management", "ASM", "reconnaissance", "vulnerability scanner", "penetration testing"],
+  title: "ReconPro — Enterprise Attack Surface Management",
+  description: "Billion-dollar grade attack surface management platform. 13-category reconnaissance, real-time threat intelligence, compliance frameworks (SOC2, HIPAA, PCI-DSS), continuous monitoring, and team collaboration for enterprise security operations.",
+  keywords: ["cybersecurity", "attack surface management", "ASM", "reconnaissance", "vulnerability scanner", "penetration testing", "enterprise security", "SOC2 compliance", "threat intelligence", "continuous monitoring"],
   authors: [{ name: "ReconPro Security" }],
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
   },
   openGraph: {
-    title: "ReconPro — Attack Surface Management",
-    description: "Enterprise-grade attack surface management platform",
+    title: "ReconPro — Enterprise Attack Surface Management Platform",
+    description: "Enterprise-grade ASM with real-time threat intelligence, 13-category scanning, compliance frameworks, and continuous monitoring.",
     type: "website",
   },
 };
