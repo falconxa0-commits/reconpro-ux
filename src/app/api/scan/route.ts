@@ -658,7 +658,10 @@ export async function POST(request: NextRequest) {
 
     // ── Save to DB ─────────────────────────────────────────────────
     for (const f of allFindings) {
-      await db.finding.create({ data: { scanId: scan.id, ...f } });
+      // Destructure out any extra fields not in Prisma schema (e.g. technologies)
+      const { title: _t, severity: _s, category: _c, description: _d, evidence: _e, asset: _a, ...rest } = f;
+      const safeData = { scanId: scan.id, title: f.title, severity: f.severity, category: f.category, description: f.description, evidence: f.evidence, asset: f.asset };
+      await db.finding.create({ data: safeData });
     }
 
     // ── Risk score ─────────────────────────────────────────────────
