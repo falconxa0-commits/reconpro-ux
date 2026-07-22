@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Trophy, Flame, Zap, Shield, Target, Star, Crown, Bug, Skull, Crosshair } from 'lucide-react';
 
@@ -170,6 +170,10 @@ export function useXPSystem() {
     });
   }, []);
 
+  // Ref to expose level change detection
+  const prevLevelRef = useRef(1);
+  const [justLeveledUp, setJustLeveledUp] = useState(false);
+
   const onScanComplete = useCallback((findings: { severity: string; category: string }[], domain: string) => {
     setState(prev => {
       let xpGain = XP_PER_ACTION.scan_complete + XP_PER_ACTION.streak_bonus;
@@ -202,7 +206,7 @@ export function useXPSystem() {
     });
   }, [checkBadges]);
 
-  return { state, addXP, onScanComplete, getLevel, getXPProgress, getRank, BADGES, ICON_MAP };
+  return { state, addXP, onScanComplete, getLevel, getXPProgress, getRank, BADGES, ICON_MAP, justLeveledUp };
 }
 
 // ── XP Bar Component ──
@@ -213,21 +217,30 @@ export function XPBar({ state }: { state: XPState }) {
 
   return (
     <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[#161b22] border border-[rgba(255,255,255,0.06)]">
-      {/* Level badge */}
-      <div
+      {/* Level badge with glow */}
+      <motion.div
         className="flex items-center justify-center w-10 h-10 rounded-lg font-bold text-sm shrink-0"
         style={{ backgroundColor: `${rank.color}20`, color: rank.color, border: `1px solid ${rank.color}40` }}
+        animate={{ boxShadow: [`0 0 8px ${rank.color}30`, `0 0 16px ${rank.color}50`, `0 0 8px ${rank.color}30`] }}
+        transition={{ duration: 2, repeat: Infinity }}
       >
         {state.level}
-      </div>
+      </motion.div>
 
-      {/* XP bar */}
+      {/* XP bar with glow edge */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between text-xs mb-1">
-          <span style={{ color: rank.color }} className="font-semibold">{rank.name}</span>
+          <motion.span
+            style={{ color: rank.color }}
+            className="font-semibold"
+            animate={{ textShadow: [`0 0 8px ${rank.color}40`, `0 0 16px ${rank.color}60`, `0 0 8px ${rank.color}40`] }}
+            transition={{ duration: 2, repeat: Infinity }}
+          >
+            {rank.name}
+          </motion.span>
           <span className="text-muted-foreground font-mono">{state.xp} XP</span>
         </div>
-        <div className="h-1.5 bg-[#21262d] rounded-full overflow-hidden">
+        <div className="h-1.5 bg-[#21262d] rounded-full overflow-hidden relative">
           <motion.div
             className="h-full rounded-full"
             style={{ backgroundColor: rank.color }}
@@ -235,15 +248,33 @@ export function XPBar({ state }: { state: XPState }) {
             animate={{ width: `${progress.pct}%` }}
             transition={{ duration: 0.8, ease: 'easeOut' }}
           />
+          {/* Glow at leading edge */}
+          {progress.pct > 0 && (
+            <motion.div
+              className="absolute top-0 w-3 h-full rounded-full"
+              style={{ backgroundColor: 'white', opacity: 0.3, filter: 'blur(2px)' }}
+              animate={{ left: [`${Math.max(0, progress.pct - 3)}%`, `${progress.pct}%`] }}
+              transition={{ duration: 0.8, ease: 'easeOut' }}
+            />
+          )}
         </div>
       </div>
 
-      {/* Streak */}
+      {/* Streak with fire animation */}
       {state.streak > 0 && (
-        <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-[rgba(255,155,0,0.1)] border border-[rgba(255,155,0,0.2)] shrink-0">
-          <Flame className="w-3.5 h-3.5 text-[#ff9f43]" />
-          <span className="text-xs font-mono text-[#ff9f43] font-bold">{state.streak}</span>
-        </div>
+        <motion.div
+          className="flex items-center gap-1 px-2 py-1 rounded-md bg-[rgba(255,155,0,0.1)] border border-[rgba(255,155,0,0.2)] shrink-0"
+          animate={{ scale: state.streak >= 5 ? [1, 1.05, 1] : 1 }}
+          transition={{ duration: 0.5, repeat: state.streak >= 5 ? Infinity : 0 }}
+        >
+          <motion.div
+            animate={{ rotate: [0, -10, 10, -10, 0] }}
+            transition={{ duration: 0.5, repeat: Infinity, repeatDelay: 1 }}
+          >
+            <Flame className="w-3.5 h-3.5 text-[#ff9f43]" />
+          </motion.div>
+          <span className="text-xs font-mono text-[#ff9f43] font-bold">{state.streak}x</span>
+        </motion.div>
       )}
     </div>
   );

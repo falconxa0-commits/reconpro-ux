@@ -113,3 +113,40 @@ Stage Summary:
 - 6 rank tiers: Recruit → Scout → Field Agent → Veteran Operative → Elite Hunter → Apex Predator
 - Sound events: scanStart, finding, info, highHit, criticalHit, scanComplete, xpGain, levelUp
 - XP earned per finding: info=2, low=5, medium=10, high=20, critical=50, scan complete=50, streak bonus=25
+
+---
+Task ID: 4
+Agent: main
+Task: Dopamine Engine Upgrade — Make ReconPro psychologically addictive
+
+Work Log:
+- Analyzed entire ReconPro codebase (11 custom components, 40 shadcn/ui, hooks, API routes, Prisma schema)
+- Created `/src/components/reconpro/dopamine-engine.tsx` (~700 lines) — a complete dopamine feedback system
+- Integrated dopamine engine into `page.tsx` via `useDopamineEngine()` hook
+- Upgraded XP bar in `use-xp-system.tsx` with glow effects, animated rank display, fire streak badge
+- Added `useRef` to XP system for level-up detection
+
+Dopamine Features Implemented:
+1. **Confetti Particle System** — 120-particle burst on scan completion, directional bursts on critical findings
+2. **Floating XP Popups** — +2/+5/+10/+20/+50 XP floats with severity-colored glow
+3. **Screen Shake + Red Flash** — Camera shake and red overlay pulse on critical finding discovery
+4. **Scan Completion Celebration** — 3-phase cinematic overlay (Impact → Stats Cascade → Rewards)
+5. **Achievement Toast Stack** — Rarity-tiered achievements (Common/Rare/Epic/Legendary) with distinct glow colors
+6. **Combo Counter** — 3x/5x/10x/20x finding combo with increasing size/color intensity
+7. **Milestone Celebrations** — Full-screen level-up, streak, and legendary badge celebrations
+8. **Personal Best Tracker** — localStorage-persisted records for findings/risk/criticals
+9. **Anticipation Progress Bar** — Slowdown near 90% to build tension before completion
+10. **Animated Risk Display** — Heartbeat pulse animation on risk score
+11. **Enhanced XP Bar** — Glow edge, pulsing rank badge, animated flame streak icon
+
+- Verified with browser: page loads, scan executes successfully, celebration screen triggers
+- All dopamine-engine lint errors resolved, only pre-existing lint warnings remain in other files
+
+Stage Summary:
+- ReconPro now has a full dopamine feedback loop engine
+- Every scan finding triggers floating XP popups + sound effects
+- Critical findings cause screen shake + red flash + confetti burst
+- Scan completion shows a cinematic 3-phase celebration overlay
+- Combo system rewards rapid finding discovery
+- Achievement system tracks 10+ milestones with rarity tiers
+- Personal bests are persisted across sessions

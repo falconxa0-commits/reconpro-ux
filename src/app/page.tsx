@@ -22,6 +22,11 @@ import { CriticalAlertFeed } from '@/components/reconpro/critical-alerts';
 import { AnimatedCounter } from '@/components/reconpro/animated-counter';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
 import { useXPSystem, XPBar, BadgePopup } from '@/hooks/use-xp-system';
+import {
+  useDopamineEngine, ConfettiCanvas, FloatingXPCanvas, ScreenEffects,
+  CelebrationScreen, AchievementToasts, ComboCounter, AnimatedRiskDisplay,
+  MilestoneCelebration, AnticipationProgressBar,
+} from '@/components/reconpro/dopamine-engine';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -173,6 +178,8 @@ export default function Home() {
   const xp = useXPSystem();
   // Critical Alert Feed
   const criticalFeed = CriticalAlertFeed();
+  // Dopamine Engine
+  const dopamine = useDopamineEngine();
 
   // Track badge unlocks
   const prevBadgeCount = useRef(0);
@@ -224,7 +231,6 @@ export default function Home() {
   useEffect(() => {
     if (initRef.current == null) {
       initRef.current = true;
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch on mount
       void Promise.all([fetchDashboard(), fetchThreats(), fetchScans()]);
     }
   });
@@ -264,6 +270,20 @@ export default function Home() {
         // XP integration
         xp.onScanComplete(findings, domain);
 
+        // Dopamine scan complete celebration
+        dopamine.onScanComplete({
+          domain,
+          findings,
+          riskScore: data.scan.riskScore,
+          criticalCount: data.scan.critical,
+          highCount: data.scan.high,
+          xpGained: 50 + findings.length * 3,
+          newLevel: false,
+          streak: xp.state.streak,
+          level: xp.state.level,
+        });
+        sound.play('xpGain');
+
         // Refresh dashboard and scans in background
         fetchDashboard();
         fetchScans();
@@ -273,7 +293,7 @@ export default function Home() {
     setScanDomain(null);
   };
 
-  // Handle live finding events from overlay
+  // Handle live finding events from overlay (upgraded with dopamine)
   const handleLiveFinding = useCallback((finding: { severity: string; category: string; title: string }) => {
     setLiveFindingCount(prev => prev + 1);
     try {
@@ -281,7 +301,9 @@ export default function Home() {
       else if (finding.severity === 'high') sound.play('highHit');
       else sound.play('finding');
     } catch { /* ignore sound errors */ }
-  }, []);
+    // Dopamine hit
+    dopamine.onFindingDiscovered(finding.severity, finding.title, finding.category);
+  }, [dopamine]);
 
   // ─── Dashboard View ─────────────────────────────────────
   const renderDashboard = () => (
@@ -954,6 +976,15 @@ export default function Home() {
           </motion.div>
         </AnimatePresence>
       </main>
+
+      {/* Dopamine Effects Layer */}
+      <ConfettiCanvas particles={dopamine.confettiParticles} />
+      <FloatingXPCanvas popups={dopamine.floatingXPPopups} />
+      <ScreenEffects shaking={dopamine.shaking} flashColor={dopamine.flashColor} />
+      <ComboCounter combo={dopamine.combo} />
+      <AchievementToasts achievements={dopamine.achievements} />
+      <CelebrationScreen data={dopamine.celebration} onClose={dopamine.closeCelebration} />
+      <MilestoneCelebration data={dopamine.milestone} onClose={dopamine.closeMilestone} />
 
       {/* Critical Alert Notifications */}
       <criticalFeed.AlertFeedUI alerts={criticalFeed.alerts} onDismiss={criticalFeed.dismiss} />
