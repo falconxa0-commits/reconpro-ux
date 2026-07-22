@@ -16,6 +16,12 @@ import { RiskGauge } from '@/components/reconpro/risk-gauge';
 import { RadarMap } from '@/components/reconpro/radar-map';
 import { AIAdvisor } from '@/components/reconpro/ai-advisor';
 import { ThreatGlobe } from '@/components/reconpro/threat-globe';
+import { LiveTerminal } from '@/components/reconpro/live-terminal';
+import { ScanOverlay } from '@/components/reconpro/scan-overlay';
+import { CriticalAlertFeed } from '@/components/reconpro/critical-alerts';
+import { AnimatedCounter } from '@/components/reconpro/animated-counter';
+import { useSoundEffects } from '@/hooks/use-sound-effects';
+import { useXPSystem, XPBar, BadgePopup } from '@/hooks/use-xp-system';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -157,6 +163,35 @@ export default function Home() {
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
   const [threats, setThreats] = useState<Threat[]>([]);
   const [allScans, setAllScans] = useState<RecentScan[]>([]);
+  const [scanDomain, setScanDomain] = useState<string | null>(null);
+  const [liveFindingCount, setLiveFindingCount] = useState(0);
+  const [lastNewBadge, setLastNewBadge] = useState<{ id: string; name: string; description: string; unlockedAt: string | null } | null>(null);
+
+  // Sound effects
+  const sound = useSoundEffects();
+  // XP System
+  const xp = useXPSystem();
+  // Critical Alert Feed
+  const criticalFeed = CriticalAlertFeed();
+
+  // Track badge unlocks
+  const prevBadgeCount = useRef(0);
+  useEffect(() => {
+    const unlockedCount = xp.state.badges.filter(b => b.unlockedAt).length;
+    if (unlockedCount > prevBadgeCount.current && prevBadgeCount.current > 0) {
+      // Find the newly unlocked badge
+      for (const badge of xp.state.badges) {
+        if (badge.unlockedAt) {
+          const prev = prevBadgeCount.current;
+          // Badge just unlocked — show popup
+          setLastNewBadge(badge);
+          sound.play('levelUp');
+          break;
+        }
+      }
+    }
+    prevBadgeCount.current = unlockedCount;
+  }, [xp.state.badges]);
 
   // Fetch dashboard data
   const fetchDashboard = useCallback(async () => {
@@ -194,10 +229,14 @@ export default function Home() {
     }
   });
 
-  // Handle scan
+  // Handle scan (upgraded with dopamine)
   const handleScan = async (domain: string, scanType: string) => {
     setIsScanning(true);
     setScanResult(null);
+    setScanDomain(domain);
+    setLiveFindingCount(0);
+    sound.play('scanStart');
+
     try {
       const res = await fetch('/api/scan', {
         method: 'POST',
@@ -208,13 +247,41 @@ export default function Home() {
       if (data.success) {
         setScanResult(data.scan);
         setActiveView('radar');
+        sound.play('scanComplete');
+
+        // Feed critical/high findings to alert system
+        const findings = data.scan.findings || [];
+        for (const f of findings) {
+          if (f.severity === 'critical') {
+            criticalFeed.addAlert('critical', f.title, f.evidence || '');
+            sound.play('criticalHit');
+          } else if (f.severity === 'high') {
+            criticalFeed.addAlert('high', f.title, f.evidence || '');
+            sound.play('highHit');
+          }
+        }
+
+        // XP integration
+        xp.onScanComplete(findings, domain);
+
         // Refresh dashboard and scans in background
         fetchDashboard();
         fetchScans();
       }
     } catch { /* silent */ }
     setIsScanning(false);
+    setScanDomain(null);
   };
+
+  // Handle live finding events from overlay
+  const handleLiveFinding = useCallback((finding: { severity: string; category: string; title: string }) => {
+    setLiveFindingCount(prev => prev + 1);
+    try {
+      if (finding.severity === 'critical') sound.play('criticalHit');
+      else if (finding.severity === 'high') sound.play('highHit');
+      else sound.play('finding');
+    } catch { /* ignore sound errors */ }
+  }, []);
 
   // ─── Dashboard View ─────────────────────────────────────
   const renderDashboard = () => (
@@ -239,7 +306,7 @@ export default function Home() {
                 {stat.icon}
               </div>
             </div>
-            <div className="text-3xl font-bold font-mono" style={{ color: stat.color }}>{stat.value}</div>
+            <AnimatedCounter target={stat.value} color={stat.color} size="md" />
           </motion.div>
         ))}
       </div>
@@ -420,62 +487,21 @@ export default function Home() {
         <ScanInput onScan={handleScan} isScanning={isScanning} />
       </div>
 
-      {/* Scanning Animation */}
+      {/* XP Bar */}
+      <XPBar state={xp.state} />
+
+      {/* Dopamine Scan Overlay */}
+      <ScanOverlay isScanning={isScanning} domain={scanDomain} findingCount={liveFindingCount} onNewFinding={handleLiveFinding} />
+
+      {/* Live Terminal */}
       <AnimatePresence>
         {isScanning && (
           <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            exit={{ opacity: 0, height: 0 }}
-            className="cyber-card rounded-2xl p-8 overflow-hidden"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
           >
-            <div className="flex flex-col items-center gap-6">
-              <div className="relative w-24 h-24">
-                <div className="absolute inset-0 rounded-full border-2 border-[rgba(0,255,136,0.1)]" />
-                <div className="absolute inset-2 rounded-full border-2 border-[rgba(0,255,136,0.2)] animate-radar" style={{ borderTopColor: '#00ff88' }} />
-                <div className="absolute inset-4 rounded-full border-2 border-[rgba(0,255,136,0.15)] animate-radar" style={{ borderTopColor: '#00ff88', animationDuration: '3s', animationDirection: 'reverse' }} />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <Shield className="w-8 h-8 text-[#00ff88] animate-pulse" />
-                </div>
-              </div>
-
-              <div className="text-center">
-                <div className="text-lg font-semibold text-[#e6edf3] mb-1">Scanning Target...</div>
-                <div className="text-sm text-muted-foreground font-mono">Enumerating attack surface assets</div>
-              </div>
-
-              <div className="w-full max-w-md space-y-3">
-                {[
-                  { label: 'DNS Enumeration', icon: <Wifi className="w-4 h-4" />, active: true },
-                  { label: 'Subdomain Discovery', icon: <Globe className="w-4 h-4" />, active: true },
-                  { label: 'Port Scanning', icon: <Zap className="w-4 h-4" />, active: true },
-                  { label: 'Technology Fingerprinting', icon: <Cpu className="w-4 h-4" />, active: true },
-                  { label: 'Vulnerability Assessment', icon: <ShieldCheck className="w-4 h-4" />, active: true },
-                ].map((step, i) => (
-                  <motion.div
-                    key={step.label}
-                    initial={{ opacity: 0, x: -20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: i * 0.3 }}
-                    className="flex items-center gap-3"
-                  >
-                    <div className="p-2 rounded-lg bg-[rgba(0,255,136,0.08)] text-[#00ff88]">
-                      {step.icon}
-                    </div>
-                    <span className="text-sm text-[#e6edf3] flex-1">{step.label}</span>
-                    <div className="w-32 h-1.5 rounded-full bg-[rgba(255,255,255,0.06)] overflow-hidden">
-                      <motion.div
-                        className="h-full rounded-full bg-[#00ff88]"
-                        initial={{ width: '0%' }}
-                        animate={{ width: '100%' }}
-                        transition={{ delay: i * 0.3, duration: 0.8, ease: 'easeOut' }}
-                      />
-                    </div>
-                    <span className="text-xs text-[#00ff88] font-mono">DONE</span>
-                  </motion.div>
-                ))}
-              </div>
-            </div>
+            <LiveTerminal isScanning={isScanning} domain={scanDomain} />
           </motion.div>
         )}
       </AnimatePresence>
@@ -928,6 +954,12 @@ export default function Home() {
           </motion.div>
         </AnimatePresence>
       </main>
+
+      {/* Critical Alert Notifications */}
+      <criticalFeed.AlertFeedUI alerts={criticalFeed.alerts} onDismiss={criticalFeed.dismiss} />
+
+      {/* Badge Unlock Popup */}
+      <BadgePopup badge={lastNewBadge} onClose={() => setLastNewBadge(null)} />
 
       {/* Footer */}
       <footer className="border-t border-[rgba(255,255,255,0.04)] py-4 mt-auto">
