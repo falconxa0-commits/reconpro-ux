@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { Globe, Server, Shield, AlertTriangle, Lock, Wifi, FileText, Bug, ChevronRight } from 'lucide-react';
+import { Globe, Server, Shield, AlertTriangle, Lock, Wifi, FileText, Bug, ChevronRight, Search, Eye, Radar, Mail } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { RiskGauge } from './risk-gauge';
 
@@ -57,6 +57,20 @@ const categoryIcons: Record<string, React.ReactNode> = {
   dns: <Server className="w-4 h-4" />,
   header: <FileText className="w-4 h-4" />,
   vulnerability: <Bug className="w-4 h-4" />,
+  osint: <Search className="w-4 h-4" />,
+  security: <Shield className="w-4 h-4" />,
+};
+
+const categoryLabels: Record<string, string> = {
+  subdomain: 'Subdomain',
+  port: 'Port',
+  technology: 'Technology',
+  ssl: 'SSL/TLS',
+  dns: 'DNS',
+  header: 'HTTP Header',
+  vulnerability: 'Vulnerability',
+  osint: 'OSINT',
+  security: 'Security',
 };
 
 const container = {
@@ -182,7 +196,7 @@ export function ScanResults({ result }: ScanResultsProps) {
                         {finding.severity.toUpperCase()}
                       </Badge>
                       <Badge variant="outline" className="text-[10px] px-2 py-0 border-[rgba(255,255,255,0.08)] text-muted-foreground">
-                        {finding.category}
+                        {categoryLabels[finding.category] || finding.category}
                       </Badge>
                     </div>
                     <p className="text-xs text-muted-foreground leading-relaxed mb-2">{finding.description}</p>

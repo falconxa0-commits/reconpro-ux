@@ -578,6 +578,551 @@ async function probePorts(domain: string): Promise<Finding[]> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 6. CERTIFICATE TRANSPARENCY LOGS — crt.sh for ALL historical subdomains
+// ═══════════════════════════════════════════════════════════════════════
+async function enumerateCTLogs(domain: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  try {
+    const out = await run(`curl -s "https://crt.sh/?q=%25.${domain}&output=json" --max-time 15`, 20000);
+    if (!out) return findings;
+    const certs = JSON.parse(out);
+    // Deduplicate subdomains
+    const subs = new Set<string>();
+    for (const c of certs) {
+      if (c.name_value) {
+        for (const name of c.name_value.split('\n')) {
+          const clean = name.trim().replace(/^\*\./, '');
+          if (clean.endsWith(`.${domain}`) && clean !== domain) subs.add(clean);
+        }
+      }
+    }
+    const unique = Array.from(subs).sort();
+    if (unique.length > 0) {
+      findings.push({
+        title: `Certificate Transparency: ${unique.length} Subdomain(s) from CT Logs`,
+        severity: unique.length > 20 ? 'high' : 'info', category: 'osint',
+        description: `crt.sh reveals ${unique.length} unique subdomains from historical SSL certificate logs. These subdomains may not be in current DNS but existed in the past — old infrastructure may still be alive.`,
+        evidence: `CT subdomains: ${unique.slice(0, 30).join(', ')}${unique.length > 30 ? ` ... +${unique.length - 30} more` : ''}`,
+        asset: domain,
+      });
+    }
+    // Check for expired certs in CT logs
+    const now = Date.now();
+    const expiredCerts = certs.filter(c => {
+      const exp = c.not_after ? new Date(c.not_after + ' UTC').getTime() : 0;
+      return exp > 0 && exp < now;
+    });
+    if (expiredCerts.length > 3) {
+      findings.push({
+        title: `${expiredCerts.length} Expired Certificate(s) in CT Logs`,
+        severity: 'medium', category: 'ssl',
+        description: `${expiredCerts.length} historical certificates found in CT logs have expired. Expired certificates indicate abandoned infrastructure that may still be reachable.`,
+        evidence: `Expired certs: ${Math.min(expiredCerts.length, 5)} found in crt.sh`,
+        asset: domain,
+      });
+    }
+  } catch { /* crt.sh may fail — non-critical */ }
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 7. WAYBACK MACHINE RECON — historical endpoints, hidden paths
+// ═══════════════════════════════════════════════════════════════════════
+async function enumerateWayback(domain: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  try {
+    const out = await run(`curl -s "http://web.archive.org/cdx/search/cdx?url=${domain}/*&output=json&collapse=urlkey&fl=original&limit=200" --max-time 20`, 25000);
+    if (!out) return findings;
+    const lines = out.split('\n').filter(Boolean);
+    if (lines.length < 2) return findings;
+    const urls = lines.slice(1).map(l => {
+      try { return JSON.parse(l)[0]; } catch { return null; }
+    }).filter(Boolean);
+
+    // Extract unique paths
+    const paths = new Set<string>();
+    const sensitivePaths: string[] = [];
+    const sensitivePatterns = [/\/admin/i, /\/api\//i, /\/debug/i, /\/test/i, /\/staging/i, /\/backup/i, /\/config/i, /\/env/i, /\/\.git/i, /\/\.svn/i, /\/\.env/i, /\/wp-/i, /\/phpmyadmin/i, /\/server-status/i, /\/actuator/i, /\/console/i, /\/graphql/i, /\/swagger/i, /\/\.well-known\//i];
+    for (const url of urls) {
+      try {
+        const u = new URL(url);
+        const p = u.pathname;
+        paths.add(p);
+        if (sensitivePatterns.some(pat => pat.test(p))) sensitivePaths.push(p);
+      } catch {}
+    }
+
+    if (paths.size > 0) {
+      findings.push({
+        title: `Wayback Machine: ${paths.size} Historical URL(s) Archived`,
+        severity: 'info', category: 'osint',
+        description: `Web Archive reveals ${paths.size} unique paths for ${domain}. Historical pages often expose old API endpoints, admin panels, or backup files still on the server.`,
+        evidence: `Sample paths: ${Array.from(paths).slice(0, 15).join(', ')}`,
+        asset: domain,
+      });
+    }
+
+    if (sensitivePaths.length > 0) {
+      const unique = [...new Set(sensitivePaths)].sort();
+      findings.push({
+        title: `Wayback Machine: ${unique.length} Sensitive Path(s) Discovered`,
+        severity: 'high', category: 'vulnerability',
+        description: `Historical archives expose ${unique.length} sensitive paths that may still exist on the live server. These include admin panels, API endpoints, debug interfaces, config files, or version control directories.`,
+        evidence: `Sensitive: ${unique.slice(0, 20).join(', ')}`,
+        asset: domain,
+      });
+    }
+  } catch { /* Wayback may fail — non-critical */ }
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 8. REVERSE DNS + ASN INTELLIGENCE — map IPs to networks
+// ═══════════════════════════════════════════════════════════════════════
+async function reconReverseDNS(ips: string[]): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  const uniqueIPs = [...new Set(ips)].slice(0, 10);
+  const rdnsResults = await Promise.all(
+    uniqueIPs.map(async (ip) => {
+      const ptr = await run(`host ${ip} 2>/dev/null | grep 'domain name pointer'`, 5000);
+      return { ip, ptr: ptr.replace(/.*domain name pointer\s+/, '').trim() || '' };
+    })
+  );
+  for (const { ip, ptr } of rdnsResults) {
+    if (ptr) {
+      findings.push({
+        title: `Reverse DNS: ${ip} → ${ptr}`,
+        severity: 'info', category: 'osint',
+        description: `IP ${ip} resolves to hostname ${ptr} via reverse DNS. This reveals the hosting provider, CDN edge, or internal network naming convention.`,
+        evidence: `PTR: ${ptr}`, asset: ip,
+      });
+    }
+  }
+  // ASN lookup via ipinfo.io (free tier, no auth needed)
+  if (uniqueIPs[0]) {
+    try {
+      const asnOut = await run(`curl -s "https://ipinfo.io/${uniqueIPs[0]}/json" --max-time 8`, 10000);
+      if (asnOut) {
+        const info = JSON.parse(asnOut);
+        if (info.org || info.asn) {
+          findings.push({
+            title: `ASN Intelligence: ${info.org || info.asn}`,
+            severity: 'info', category: 'osint',
+            description: `Primary IP ${uniqueIPs[0]} belongs to ${info.org || info.asn}. Location: ${info.city || '?'}, ${info.region || '?'}, ${info.country || '?'}. ${info.hostname ? `Hostname: ${info.hostname}.` : ''}`,
+            evidence: `ASN: ${info.asn || '?'}, Org: ${info.org || '?'}, IP: ${uniqueIPs[0]}, Loc: ${info.city || '?'}/${info.country || '?'}`,
+            asset: uniqueIPs[0],
+          });
+        }
+      }
+    } catch {}
+  }
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 9. DNS ZONE TRANSFER (AXFR) ATTEMPTS — try all NS servers
+// ═══════════════════════════════════════════════════════════════════════
+async function attemptZoneTransfer(domain: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  const nsOut = await digAnswer(domain, 'NS');
+  const nsServers: string[] = [];
+  for (const line of nsOut.split('\n')) {
+    const m = line.match(/NS\s+(\S+)/);
+    if (m) nsServers.push(m[1].replace(/\.$/, ''));
+  }
+  if (nsServers.length === 0) return findings;
+
+  const transferResults = await Promise.all(
+    nsServers.map(async (ns) => {
+      const out = await run(`dig axfr ${domain} @${ns} +time=5 +tries=1 2>&1`, 8000);
+      const success = out.includes('XFR size') || (out.split('\n').length > 10 && !out.includes('REFUSED') && !out.includes('SERVFAIL'));
+      return { ns, success, recordCount: out.split('\n').filter(l => l.includes('IN\t')).length, sample: out.split('\n').slice(0, 20).join('\n') };
+    })
+  );
+
+  for (const { ns, success, recordCount, sample } of transferResults) {
+    if (success && recordCount > 5) {
+      findings.push({
+        title: `CRITICAL: DNS Zone Transfer Succeeded from ${ns}`,
+        severity: 'critical', category: 'vulnerability',
+        description: `FULL zone transfer (AXFR) succeeded from nameserver ${ns}! This exposes ALL DNS records for ${domain} — every subdomain, MX, TXT, SRV, and internal infrastructure record. This is a critical information disclosure vulnerability.`,
+        evidence: `AXFR from ${ns}: ${recordCount} records exposed. Sample:\n${sample.substring(0, 500)}`,
+        asset: `${ns} (AXFR)`,
+      });
+    }
+  }
+
+  // SOA record analysis
+  const soaOut = await digAnswer(domain, 'SOA');
+  if (soaOut) {
+    findings.push({
+      title: 'DNS SOA Record Analyzed',
+      severity: 'info', category: 'dns',
+      description: `SOA record reveals zone management details for ${domain}.`,
+      evidence: soaOut.split('\n').filter(l => l.includes('SOA')).join('; '),
+      asset: domain,
+    });
+  }
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 10. ROBOTS.TXT + SITEMAP.XML — hidden paths, API endpoints
+// ═══════════════════════════════════════════════════════════════════════
+async function analyzeRobotsAndSitemap(domain: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  const [robots, sitemap] = await Promise.all([
+    run(`curl -s --max-time 8 https://${domain}/robots.txt 2>/dev/null || curl -s --max-time 8 http://${domain}/robots.txt 2>/dev/null`, 12000),
+    run(`curl -s --max-time 8 https://${domain}/sitemap.xml 2>/dev/null || curl -s --max-time 8 http://${domain}/sitemap.xml 2>/dev/null`, 12000),
+  ]);
+
+  // Robots.txt
+  if (robots && robots.length > 10) {
+    const disallowed = robots.split('\n').filter(l => l.startsWith('Disallow:')).map(l => l.replace('Disallow:', '').trim()).filter(Boolean);
+    const sensitive = disallowed.filter(d => /admin|api|debug|config|backup|\.env|secret|internal|private|tmp|upload|staging/i.test(d));
+    if (sensitive.length > 0) {
+      findings.push({
+        title: `robots.txt: ${sensitive.length} Sensitive Disallowed Path(s)`,
+        severity: 'high', category: 'vulnerability',
+        description: `robots.txt reveals ${sensitive.length} sensitive paths that the site asks crawlers not to access. These paths likely exist and may be accessible without authentication: ${sensitive.join(', ')}`,
+        evidence: `Disallow: ${sensitive.join(', ')}`, asset: `${domain}/robots.txt`,
+      });
+    } else if (disallowed.length > 0) {
+      findings.push({
+        title: `robots.txt: ${disallowed.length} Disallowed Path(s) Found`,
+        severity: 'info', category: 'osint',
+        description: `robots.txt defines ${disallowed.length} restricted paths: ${disallowed.slice(0, 10).join(', ')}`,
+        evidence: `Disallow: ${disallowed.slice(0, 10).join(', ')}`, asset: `${domain}/robots.txt`,
+      });
+    }
+    // Check for sitemap reference
+    if (robots.includes('Sitemap:')) {
+      findings.push({
+        title: 'robots.txt References Sitemap', severity: 'info', category: 'osint',
+        description: 'Sitemap URL found in robots.txt — reveals site structure.',
+        evidence: robots.split('\n').find(l => l.startsWith('Sitemap:')) || '', asset: `${domain}/robots.txt`,
+      });
+    }
+  } else if (!robots || robots.length <= 10) {
+    findings.push({
+      title: 'robots.txt Not Found or Empty', severity: 'low', category: 'osint',
+      description: 'No robots.txt file. This means all pages are crawlable by default, including any admin/debug paths.',
+      evidence: 'robots.txt returned empty or 404', asset: `${domain}/robots.txt`,
+    });
+  }
+
+  // Sitemap.xml
+  if (sitemap && sitemap.includes('<url')) {
+    const urls = (sitemap.match(/<loc>([^<]+)<\/loc>/g) || []).map(u => u.replace(/<\/?loc>/g, ''));
+    findings.push({
+      title: `sitemap.xml: ${urls.length} URL(s) Exposed`,
+      severity: urls.length > 100 ? 'medium' : 'info', category: 'osint',
+      description: `sitemap.xml exposes ${urls.length} URLs revealing the full site structure. This aids attackers in mapping the application for targeted attacks.`,
+      evidence: `URLs: ${urls.slice(0, 10).join(', ')}${urls.length > 10 ? ` ... +${urls.length - 10} more` : ''}`,
+      asset: `${domain}/sitemap.xml`,
+    });
+  }
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 11. JAVASCRIPT FILE ANALYSIS — extract API endpoints, secrets, keys
+// ═══════════════════════════════════════════════════════════════════════
+async function analyzeJSFiles(domain: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  try {
+    // Fetch the main page and extract JS file URLs
+    const page = await run(`curl -s --max-time 10 https://${domain} 2>/dev/null || curl -s --max-time 10 http://${domain} 2>/dev/null`, 15000);
+    if (!page || page.length < 100) return findings;
+
+    const jsUrls = [...new Set(
+      (page.match(/src=["']([^"']+\.js[^"']*)/g) || [])
+        .map(m => m.replace(/src=["']/, '').replace(/["']$/, ''))
+        .filter(u => !u.startsWith('data:') && !u.includes('chrome-extension'))
+    )].slice(0, 8);
+
+    if (jsUrls.length === 0) return findings;
+
+    // Fetch and analyze each JS file
+    const jsContents = await Promise.all(
+      jsUrls.map(async (url) => {
+        const fullUrl = url.startsWith('http') ? url : `https://${domain}${url}`;
+        return run(`curl -s --max-time 8 "${fullUrl}" 2>/dev/null`, 12000);
+      })
+    );
+
+    const allJs = jsContents.join('\n');
+    if (allJs.length < 50) return findings;
+
+    // Extract API endpoints
+    const apiEndpoints = [...new Set(
+      (allJs.match(/["'](\/api\/[^"']+)["']/g) || [])
+        .map(m => m.replace(/["']/g, ''))
+    )];
+    if (apiEndpoints.length > 0) {
+      findings.push({
+        title: `JavaScript: ${apiEndpoints.length} API Endpoint(s) Exposed`,
+        severity: 'high', category: 'vulnerability',
+        description: `JavaScript files expose ${apiEndpoints.length} API endpoints. Attackers can reverse-engineer the API surface, craft targeted requests, and test for authentication bypass or IDOR vulnerabilities.`,
+        evidence: `Endpoints: ${apiEndpoints.slice(0, 20).join(', ')}`,
+        asset: domain,
+      });
+    }
+
+    // Check for secrets/keys/tokens
+    const secretPatterns = [
+      { name: 'API Key', regex: /["'](api[_-]?key|apikey)["']\s*[:=]\s*["']([^"']{8,})["']/gi },
+      { name: 'Auth Token', regex: /["'](auth[_-]?token|bearer|access[_-]?token)["']\s*[:=]\s*["']([^"']{8,})["']/gi },
+      { name: 'AWS Key', regex: /AKIA[0-9A-Z]{16}/g },
+      { name: 'Firebase', regex: /firebase[a-zA-Z]*\.appspot\.com/g },
+      { name: 'Stripe Key', regex: /pk_(test|live)_[a-zA-Z0-9]{24,}/g },
+      { name: 'Generic Secret', regex: /["'](secret|password|token|private[_-]?key)["']\s*[:=]\s*["']([^"']{8,})["']/gi },
+    ];
+    const secrets: string[] = [];
+    for (const { name, regex } of secretPatterns) {
+      const matches = allJs.match(regex);
+      if (matches) secrets.push(...matches.map(m => `[${name}] ${m.substring(0, 60)}`));
+    }
+    if (secrets.length > 0) {
+      findings.push({
+        title: `CRITICAL: ${secrets.length} Secret(s)/Key(s) Found in JavaScript`,
+        severity: 'critical', category: 'vulnerability',
+        description: `JavaScript files contain ${secrets.length} hardcoded secrets, API keys, or tokens. These can be extracted by anyone viewing the page source and used to access internal services, databases, or third-party APIs.`,
+        evidence: `Secrets: ${secrets.slice(0, 5).join(' | ')}`,
+        asset: domain,
+      });
+    }
+
+    // Extract internal URLs/paths
+    const internalPaths = [...new Set(
+      (allJs.match(/["'](\/[a-zA-Z0-9_\-\/]+(?:admin|dashboard|console|manage|debug|internal|private|staging)[^"']*)["']/gi) || [])
+        .map(m => m.replace(/["']/g, ''))
+    )];
+    if (internalPaths.length > 0) {
+      findings.push({
+        title: `JavaScript: ${internalPaths.length} Internal Path(s) Referenced`,
+        severity: 'medium', category: 'osint',
+        description: `JavaScript files reference ${internalPaths.length} internal/sensitive paths. These may be admin interfaces, debug endpoints, or internal tools.`,
+        evidence: `Paths: ${internalPaths.slice(0, 15).join(', ')}`,
+        asset: domain,
+      });
+    }
+
+    // Count JS files and total size
+    findings.push({
+      title: `JavaScript Analysis: ${jsUrls.length} File(s), ${Math.round(allJs.length / 1024)}KB Analyzed`,
+      severity: 'info', category: 'technology',
+      description: `${jsUrls.length} JavaScript files totaling ~${Math.round(allJs.length / 1024)}KB were downloaded and analyzed for API endpoints, secrets, and internal paths.`,
+      evidence: `JS files: ${jsUrls.slice(0, 5).join(', ')}`,
+      asset: domain,
+    });
+  } catch {}
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 12. WAF/SECURITY CONTROL DETECTION — fingerprint protection layers
+// ═══════════════════════════════════════════════════════════════════════
+async function detectWAF(domain: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  // Trigger WAF with suspicious paths and analyze response
+  const [normalResp, attackResp] = await Promise.all([
+    run(`curl -sI --max-time 8 https://${domain}/ 2>/dev/null`, 10000),
+    run(`curl -sI --max-time 8 "https://${domain}/../../../etc/passwd" 2>/dev/null`, 10000),
+  ]);
+
+  const wafSignatures: Record<string, string[]> = {
+    'Cloudflare': ['cf-ray', 'cf-cache-status', '__cf_bm', 'cloudflare'],
+    'AWS WAF': ['x-amzn-requestid', 'awselb'],
+    'Akamai': ['akamai', 'x-akamai'],
+    'Sucuri': ['x-sucuri-id', 'sucuri'],
+    'Imperva': ['x-iinfo', 'incap_ses'],
+    'Fastly': ['x-fastly-request-id', 'x-served-by'],
+    'Varnish': ['x-varnish', 'x-hits'],
+    'ModSecurity': ['mod_security', 'modsecurity'],
+    'F5 BIG-IP': ['bigip', 'f5'],
+  };
+
+  const detectedWAFs: string[] = [];
+  for (const [waf, sigs] of Object.entries(wafSignatures)) {
+    const combined = (normalResp + attackResp).toLowerCase();
+    if (sigs.some(s => combined.includes(s.toLowerCase()))) detectedWAFs.push(waf);
+  }
+
+  // Check if attack path was blocked differently
+  const normalStatus = normalResp.split('\n')[0] || '';
+  const attackStatus = attackResp.split('\n')[0] || '';
+  const blocked = attackResp.includes('403') || attackResp.includes('blocked') || attackResp.includes('Forbidden');
+
+  if (detectedWAFs.length > 0) {
+    const techList = detectedWAFs.join(', ');
+    findings.push({
+      title: `WAF Detected: ${techList}`,
+      severity: 'info', category: 'security',
+      description: `${techList} detected protecting ${domain}. WAF presence indicates active security posture but also reveals the defense layer for targeted evasion research.`,
+      evidence: `Signatures found: ${detectedWAFs.map(w => wafSignatures[w].join(', ')).join('; ')}`,
+      asset: domain,
+    });
+  }
+
+  if (blocked) {
+    findings.push({
+      title: 'Path Traversal Attempt Blocked',
+      severity: 'info', category: 'security',
+      description: `Directory traversal attempt (../../../etc/passwd) was blocked with ${attackStatus}. This indicates active input validation or WAF protection.`,
+      evidence: `Attack response: ${attackStatus} | Normal: ${normalStatus}`,
+      asset: domain,
+    });
+  } else if (attackResp.includes('200') || attackResp.includes('301')) {
+    findings.push({
+      title: 'Path Traversal Attempt NOT Blocked',
+      severity: 'high', category: 'vulnerability',
+      description: `Directory traversal attempt (../../../etc/passwd) returned ${attackStatus} — the request was NOT blocked. This may indicate missing input validation, no WAF, or a misconfigured security layer.`,
+      evidence: `Attack response: ${attackStatus} | Normal: ${normalStatus}`,
+      asset: domain,
+    });
+  }
+
+  // Rate limit detection
+  const burst = await Promise.all([
+    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
+    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
+    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
+    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
+    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
+  ]);
+  const rateLimited = burst.some(r => r.includes('429') || r.includes('Too Many'));
+  if (!rateLimited) {
+    findings.push({
+      title: 'No Rate Limiting Detected',
+      severity: 'medium', category: 'vulnerability',
+      description: `5 rapid requests returned no rate limiting (429). The server accepts unlimited requests, making it vulnerable to brute force, credential stuffing, and DoS attacks.`,
+      evidence: '5 rapid requests: all returned non-429 status',
+      asset: domain,
+    });
+  } else {
+    findings.push({
+      title: 'Rate Limiting Active', severity: 'info', category: 'security',
+      description: 'Rate limiting detected on rapid requests.', evidence: '429 response received on burst', asset: domain,
+    });
+  }
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 13. TECHNOLOGY FINGERPRINTING — deep Wappalyzer-style detection
+// ═══════════════════════════════════════════════════════════════════════
+async function deepFingerprint(domain: string, headers: string, pageContent: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  const techs: string[] = [];
+  const h = headers.toLowerCase();
+  const p = (pageContent || '').toLowerCase();
+
+  // Server tech
+  const serverMap: Record<string, string> = {
+    'nginx': 'Nginx', 'apache': 'Apache HTTPD', 'express': 'Express.js',
+    'cloudflare': 'Cloudflare', 'vercel': 'Vercel', 'netlify': 'Netlify',
+    'awselb': 'AWS ELB', 'amazon': 'Amazon Web Services',
+    'gws': 'Google Web Server', 'gse': 'Google Search Appliance',
+    'microsoft-iis': 'Microsoft IIS', 'tomcat': 'Apache Tomcat',
+    'openresty': 'OpenResty', 'caddy': 'Caddy',
+  };
+  for (const [sig, name] of Object.entries(serverMap)) {
+    if (h.includes(sig) && !techs.includes(name)) techs.push(name);
+  }
+
+  // Framework detection from page content
+  const frameworkSigs: Record<string, string[]> = {
+    'React': ['react', 'reactjs', '__next', '_next/static', 'next/router', 'data-reactroot'],
+    'Next.js': ['__next', '_next/static', '_next/image', 'next/link', 'next-route-announcer'],
+    'Vue.js': ['vue', 'v-cloak', 'data-v-', 'vue-router', 'vuetify'],
+    'Angular': ['ng-version', 'ng-app', 'angular', 'ng-controller'],
+    'Svelte': ['svelte', '__svelte'],
+    'jQuery': ['jquery', 'jquery.min.js'],
+    'Bootstrap': ['bootstrap', 'bootstrap.min.css'],
+    'Tailwind CSS': ['tailwind'],
+    'WordPress': ['wp-content', 'wp-includes', 'wordpress'],
+    'Drupal': ['drupal', 'sites/default'],
+    'Shopify': ['shopify', 'cdn.shopify.com'],
+    'Magento': ['magento', 'mage-cache'],
+    'Laravel': ['laravel', 'laravel_session', 'xsrf-token'],
+    'Django': ['csrfmiddlewaretoken', 'django'],
+    'Ruby on Rails': ['csrf-token', 'turbolinks', 'rails'],
+    'PHP': ['.php', 'phpsessid'],
+    'ASP.NET': ['asp.net', '__viewstate', '__requestverificationtoken'],
+  };
+  for (const [name, sigs] of Object.entries(frameworkSigs)) {
+    if (sigs.some(s => p.includes(s)) && !techs.includes(name)) techs.push(name);
+  }
+
+  // Analytics
+  const analyticsSigs: Record<string, string[]> = {
+    'Google Analytics': ['google-analytics.com', 'gtag', 'ga.js', 'analytics.js'],
+    'Google Tag Manager': ['googletagmanager.com', 'gtm.js'],
+    'Hotjar': ['hotjar.com', 'hjSdk'],
+    'Mixpanel': ['mixpanel', 'mp.page'],
+    'Segment': ['segment.com', 'analytics.js'],
+    'Plausible': ['plausible.io'],
+    'Fathom': ['fathomanalytics.com'],
+  };
+  for (const [name, sigs] of Object.entries(analyticsSigs)) {
+    if (sigs.some(s => p.includes(s)) && !techs.includes(name)) techs.push(name);
+  }
+
+  if (techs.length > 0) {
+    for (const tech of techs) {
+      findings.push({
+        title: `Technology Fingerprinted: ${tech}`,
+        severity: 'info', category: 'technology',
+        description: `${tech} detected on ${domain} via deep header, HTML, and JavaScript fingerprinting.`,
+        evidence: 'Deep fingerprinting (headers + page content analysis)',
+        asset: domain,
+      });
+    }
+  }
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 14. EMAIL HARVESTING — WHOIS, website, JS, DNS
+// ═══════════════════════════════════════════════════════════════════════
+async function harvestEmails(domain: string, pageContent: string): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  const emails = new Set<string>();
+
+  // From page content
+  const escapedDomain = domain.replace(/\./g, '\\.');
+  const emailRegex = new RegExp(`[a-zA-Z0-9._%+-]+@${escapedDomain}`, 'gi');
+  const pageEmails = (pageContent || '').match(emailRegex) || [];
+  pageEmails.forEach(e => emails.add(e.toLowerCase()));
+
+  // From MX records (mail server hostnames often reveal email provider)
+  const mxOut = await digAnswer(domain, 'MX');
+  const mxHosts = mxOut.split('\n').filter(l => l.includes('MX')).map(l => l.trim().split(/\s+/).pop());
+
+  if (emails.size > 0) {
+    findings.push({
+      title: `${emails.size} Email Address(es) Harvested`,
+      severity: 'medium', category: 'osint',
+      description: `${emails.size} email address(es) found on ${domain} via page content analysis. These can be used for social engineering, credential stuffing, or targeted phishing campaigns.`,
+      evidence: `Emails: ${Array.from(emails).slice(0, 10).join(', ')}`,
+      asset: domain,
+    });
+  }
+
+  if (mxHosts.length > 0) {
+    findings.push({
+      title: `Email Infrastructure: ${mxHosts.join(', ')}`,
+      severity: 'info', category: 'osint',
+      description: `Mail routed through: ${mxHosts.join(', ')}. This reveals the email provider (Google Workspace, Microsoft 365, self-hosted, etc.) and can be targeted for email-based attacks.`,
+      evidence: `MX: ${mxHosts.join(', ')}`,
+      asset: domain,
+    });
+  }
+  return findings;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // MAIN SCAN ENDPOINT
 // ═══════════════════════════════════════════════════════════════════════
 export async function POST(request: NextRequest) {
@@ -621,10 +1166,14 @@ export async function POST(request: NextRequest) {
     const subFindings = await enumerateSubdomains(cleanDomain, isQuick);
     allFindings.push(...subFindings);
 
-    // ── 3. HTTP headers (async curl) ───────────────────────────────
+    // ── 3. HTTP headers + page content (async curl) ──────────────────
     const httpResult = await analyzeHTTPHeaders(cleanDomain);
     allFindings.push(...httpResult.findings);
     httpResult.technologies.forEach(t => allTech.add(t));
+
+    // Fetch page content once for multiple modules
+    const pageContent = await run(`curl -s --max-time 12 https://${cleanDomain} 2>/dev/null || curl -s --max-time 12 http://${cleanDomain} 2>/dev/null`, 15000);
+    const rawHeaders = await run(`curl -sI --max-time 8 https://${cleanDomain} 2>/dev/null`, 10000);
 
     // ── 4. SSL/TLS (async openssl) ─────────────────────────────────
     const sslResult = await analyzeSSL(cleanDomain);
@@ -635,6 +1184,34 @@ export async function POST(request: NextRequest) {
     if (!isQuick) {
       const portFindings = await probePorts(cleanDomain);
       allFindings.push(...portFindings);
+    }
+
+    // ═══ NEW DEADLY MODULES (full scan only) ═══════════════════════
+    if (!isQuick) {
+      // ── 6. Certificate Transparency Logs ──────────────────────────
+      const [ctFindings, waybackFindings, rdnsFindings, axfrFindings, robotsFindings, jsFindings, wafFindings, fpFindings, emailFindings] = await Promise.all([
+        enumerateCTLogs(cleanDomain),
+        enumerateWayback(cleanDomain),
+        reconReverseDNS([...dnsResult.mainIp ? [dnsResult.mainIp] : [], ...subFindings.map(f => {
+          const m = f.evidence.match(/\d+\.\d+\.\d+\.\d+/);
+          return m ? m[0] : null;
+        }).filter(Boolean)]),
+        attemptZoneTransfer(cleanDomain),
+        analyzeRobotsAndSitemap(cleanDomain),
+        analyzeJSFiles(cleanDomain),
+        detectWAF(cleanDomain),
+        deepFingerprint(cleanDomain, rawHeaders, pageContent),
+        harvestEmails(cleanDomain, pageContent),
+      ]);
+
+      allFindings.push(...ctFindings, ...waybackFindings, ...rdnsFindings, ...axfrFindings, ...robotsFindings, ...jsFindings, ...wafFindings, ...fpFindings, ...emailFindings);
+    } else {
+      // Quick scan: still run CT logs and basic fingerprinting (lightweight)
+      const [ctFindings, fpFindings] = await Promise.all([
+        enumerateCTLogs(cleanDomain),
+        deepFingerprint(cleanDomain, rawHeaders, pageContent),
+      ]);
+      allFindings.push(...ctFindings, ...fpFindings);
     }
 
     // ── Technology findings ─────────────────────────────────────────
