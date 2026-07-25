@@ -24,6 +24,8 @@ import {
   ChevronLeft,
   ChevronRight,
   BadgeCheck,
+  Skull,
+  Bot,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -86,6 +88,13 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Proof of Concept',
     items: [
       { id: 'proof', label: 'Live Scan Proof', icon: BadgeCheck, badge: 'VERIFIED' },
+    ],
+  },
+  {
+    title: 'Offensive',
+    items: [
+      { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
+      { id: 'botcage', label: 'Bot Hunter & Cage', icon: Bot, badge: 'C2 DETECT' },
     ],
   },
   {
