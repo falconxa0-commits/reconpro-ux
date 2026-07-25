@@ -180,3 +180,29 @@ Stage Summary:
 - Full compliance mapping for SOC2, HIPAA, PCI-DSS, ISO 27001, NIST CSF, GDPR (72 controls)
 - Premium glassmorphism UI with ambient effects, gradient borders, and micro-interactions
 - Landing view is now CEO Executive Briefing instead of scan page
+
+---
+Task ID: 6
+Agent: Main Agent + Subagents (full-stack-developer)
+Task: Add pricing tiers, demo mode for investors, and white-label branding
+
+Work Log:
+- Built PricingPlans component: 4 tiers (Starter $0, Professional $299, Enterprise $999, Custom), monthly/annual toggle with 20% savings, feature comparison table (13 rows × 4 cols), trust section with 6 company logos, enterprise CTA
+- Built DemoModeProvider context: toggles demo mode with preset fake data (Acme Corp, 2847 scans, 97% compliance, $2.4B protected, 18492 threats blocked), auto-renders InvestorWalkthrough
+- Built DemoModeToggle: floating bottom-right button + header button variant, pulsing green glow when active
+- Built InvestorWalkthrough: 6-step overlay (Welcome, Threat Detection, Compliance, Attack Surface, Team Collaboration, Ready to Deploy) with auto-advance timer (15s), progress dots, slide transitions
+- Built WhiteLabelPanel: 8 sections (Brand Identity with 6 color presets, Domain/Email with DNS helper, Report Branding, Login Page with 3 style options, Advanced with CSS editor, Live Preview)
+- Fixed InvestorWalkthrough export (was missing export keyword)
+- Fixed Turbopack JSX parsing issue with DemoModeProvider wrapper
+- Aligned sidebar nav IDs with page view IDs (18 nav items across 4 sections)
+- Added Pricing + White-Label nav items to sidebar Enterprise section
+- Integrated DemoModeProvider wrapping entire app, DemoModeToggle in footer + floating
+- Build verified: 0 errors, all routes registered
+
+Stage Summary:
+- 3 new enterprise features: Pricing Tiers, Investor Demo Mode, White-Label Branding
+- 21 total components, 12 API routes, 12 Prisma models
+- Pricing page with 4 tiers, feature comparison, trust section
+- Demo mode with 6-step investor walkthrough, preset fake data
+- White-label with 6 color presets, domain config, DNS helper, report branding, CSS editor
+- All navigation aligned — sidebar items map correctly to page views

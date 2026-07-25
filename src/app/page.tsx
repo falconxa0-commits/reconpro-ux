@@ -18,6 +18,9 @@ import { TeamManagement } from '@/components/reconpro/team-management';
 import { CompliancePanel } from '@/components/reconpro/compliance-panel';
 import { IntegrationHub } from '@/components/reconpro/integration-hub';
 import { MonitoringPanel } from '@/components/reconpro/monitoring-panel';
+import { PricingPlans } from '@/components/reconpro/pricing-plans';
+import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
+import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
 import { useXPSystem, XPBar, BadgePopup } from '@/hooks/use-xp-system';
 import {
@@ -28,7 +31,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'pricing' | 'white-label';
 
 interface Finding {
   id: string; title: string; severity: string; category: string;
@@ -431,20 +434,23 @@ export default function Home() {
       case 'compliance': return <CompliancePanel />;
       case 'integrations': return <IntegrationHub />;
       case 'monitoring': return <MonitoringPanel />;
+      case 'pricing': return <PricingPlans onNavigate={handleViewChange} />;
+      case 'white-label': return <WhiteLabelPanel />;
       default: return renderScan();
     }
   };
 
   // ─── Main Layout ────────────────────────────────────────
   return (
-    <div className="min-h-screen flex bg-[#080a10] cyber-grid">
-      {/* Enterprise Sidebar */}
-      <EnterpriseSidebar
-        activeView={activeView}
-        onViewChange={handleViewChange}
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
+    <DemoModeProvider>
+      <div className="min-h-screen flex flex-col bg-[#080a10] cyber-grid">
+        {/* Enterprise Sidebar */}
+        <EnterpriseSidebar
+          activeView={activeView}
+          onViewChange={handleViewChange}
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -520,12 +526,20 @@ export default function Home() {
                 ISO 27001
               </span>
             </div>
-            <div className="text-[11px] text-muted-foreground/50">
-              ReconPro Enterprise v3.0.0
+            <div className="flex items-center gap-3">
+              <DemoModeToggle position="header" />
+              <div className="text-[11px] text-muted-foreground/50">
+                ReconPro Enterprise v3.1.0
+              </div>
             </div>
           </div>
         </footer>
       </div>
+
+      {/* Demo Mode Floating Toggle */}
+      <DemoModeToggle position="floating" />
     </div>
+    </DemoModeProvider>
   );
 }
+
