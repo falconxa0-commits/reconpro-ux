@@ -19,6 +19,7 @@ import { CompliancePanel } from '@/components/reconpro/compliance-panel';
 import { IntegrationHub } from '@/components/reconpro/integration-hub';
 import { MonitoringPanel } from '@/components/reconpro/monitoring-panel';
 import { PricingPlans } from '@/components/reconpro/pricing-plans';
+import { LiveProofPanel } from '@/components/reconpro/live-proof';
 import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
 import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
@@ -31,7 +32,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'pricing' | 'white-label';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'pricing' | 'white-label';
 
 interface Finding {
   id: string; title: string; severity: string; category: string;
@@ -434,6 +435,7 @@ export default function Home() {
       case 'compliance': return <CompliancePanel />;
       case 'integrations': return <IntegrationHub />;
       case 'monitoring': return <MonitoringPanel />;
+      case 'proof': return <LiveProofPanel onNavigate={handleViewChange} />;
       case 'pricing': return <PricingPlans onNavigate={handleViewChange} />;
       case 'white-label': return <WhiteLabelPanel />;
       default: return renderScan();

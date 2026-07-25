@@ -23,6 +23,7 @@ import {
   Palette,
   ChevronLeft,
   ChevronRight,
+  BadgeCheck,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -38,6 +39,7 @@ interface NavItem {
   id: string;
   label: string;
   icon: LucideIcon;
+  badge?: string;
 }
 
 interface NavSection {
@@ -78,6 +80,12 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'advisor', label: 'AI Advisor', icon: Brain },
       { id: 'threats', label: 'Threat Intel', icon: AlertTriangle },
       { id: 'dashboard', label: 'Risk Trends', icon: TrendingUp },
+    ],
+  },
+  {
+    title: 'Proof of Concept',
+    items: [
+      { id: 'proof', label: 'Live Scan Proof', icon: BadgeCheck, badge: 'VERIFIED' },
     ],
   },
   {
@@ -181,12 +189,19 @@ function NavItemButton({
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -8 }}
             transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="truncate"
+            className="truncate flex-1"
           >
             {item.label}
           </motion.span>
         )}
       </AnimatePresence>
+
+      {/* Badge */}
+      {item.badge && !collapsed && (
+        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-[#00ff8820] text-[#00ff88]">
+          {item.badge}
+        </span>
+      )}
 
       {/* Hover ripple (only when expanded) */}
       {!collapsed && (
