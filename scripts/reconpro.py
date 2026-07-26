@@ -569,19 +569,47 @@ def module_bot_hunter(host: str) -> Dict[str, Any]:
 # MODULE 5 + 6: GORGON + OBLIVION (import from sibling modules)
 # ══════════════════════════════════════════════════════════════════════════════
 
+CACHE_DIR = "/home/z/my-project/download"
+
+def _find_cache(prefix: str, host: str) -> Optional[str]:
+    """Find a cached JSON for this host with the given prefix."""
+    if not os.path.isdir(CACHE_DIR):
+        return None
+    safe = host.replace(".", "_")
+    candidates = [
+        f"{CACHE_DIR}/{prefix}_{safe}.json",
+        f"{CACHE_DIR}/{prefix}_{safe}_v2.json",
+    ]
+    # also any *{host}*.json
+    for f in sorted(os.listdir(CACHE_DIR), reverse=True):
+        if f.startswith(prefix) and safe in f and f.endswith(".json"):
+            candidates.append(f"{CACHE_DIR}/{f}")
+    for c in candidates:
+        if os.path.exists(c) and os.path.getsize(c) > 100:
+            return c
+    return None
+
 def module_gorgon(host: str) -> Dict[str, Any]:
-    """Run GORGON ULTRA via the existing Python engine."""
+    """Run GORGON ULTRA — uses cache if available, otherwise in-process call."""
+    # 1. Try cache
+    cached = _find_cache("gorgon", host) or _find_cache("model_breaker", host)
+    if cached:
+        try:
+            with open(cached) as f:
+                data = json.load(f)
+            data["_cached_from"] = cached
+            return data
+        except Exception:
+            pass
+    # 2. In-process import
     sys.path.insert(0, "/home/z/my-project/scripts")
     try:
-        import importlib
-        # The script uses argv; we'll use runpy or just call its function
         import model_breaker
         if hasattr(model_breaker, "run_gorgon_scan"):
             return model_breaker.run_gorgon_scan(host)
-        # Fallback: call as subprocess
     except Exception as e:
         pass
-    # Subprocess fallback
+    # 3. Subprocess fallback
     import subprocess as sp
     try:
         out_file = f"/tmp/gorgon_{host.replace('.','_')}.json"
@@ -595,7 +623,18 @@ def module_gorgon(host: str) -> Dict[str, Any]:
     return {"module": "GORGON ULTRA", "error": "no output"}
 
 def module_oblivion(host: str) -> Dict[str, Any]:
-    """Run OBLIVION via the existing Python engine."""
+    """Run OBLIVION — uses cache if available, otherwise in-process call."""
+    # 1. Try cache
+    cached = _find_cache("oblivion", host)
+    if cached:
+        try:
+            with open(cached) as f:
+                data = json.load(f)
+            data["_cached_from"] = cached
+            return data
+        except Exception:
+            pass
+    # 2. In-process import
     sys.path.insert(0, "/home/z/my-project/scripts")
     try:
         import oblivion
@@ -603,6 +642,7 @@ def module_oblivion(host: str) -> Dict[str, Any]:
             return oblivion.run_oblivion(host)
     except Exception as e:
         pass
+    # 3. Subprocess fallback
     import subprocess as sp
     try:
         out_file = f"/tmp/oblivion_{host.replace('.','_')}.json"
@@ -940,41 +980,52 @@ def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
     report["duration_seconds"] = elapsed
 
     # Unified verdict
-    verdict = compute_unified_verdict(report)
-    report["unified_verdict"] = verdict
+    try:
+        verdict = compute_unified_verdict(report)
+        report["unified_verdict"] = verdict
+    except Exception as e:
+        verdict = {"unified_score": 0, "module_scores": {}, "verdict_text": f"verdict error: {e}", "verdict_level": "ERROR"}
+        report["unified_verdict"] = verdict
 
-    # Render results
+    # Save report FIRST so it's never lost to a renderer bug
+    try:
+        os.makedirs("/home/z/my-project/download", exist_ok=True)
+        safe_host = host.replace(".", "_").replace("/", "_")
+        early_out = f"/home/z/my-project/download/reconpro_unified_{safe_host}.json"
+        with open(early_out, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        report["_auto_saved_to"] = early_out
+    except Exception:
+        pass
+
+    # Render results (each renderer is wrapped so one failure doesn't kill the rest)
     console.print()
     console.print(Rule("[bold bright_cyan]Module Results[/]", style="bright_cyan"))
 
-    if "recon" in report:
-        console.print()
-        render_recon_table(report["recon"])
+    def _safe(label, fn, data):
+        try:
+            if data and "error" not in data:
+                console.print()
+                fn(data)
+            elif data:
+                console.print(f"\n  [red]{label} — error: {data.get('error','?')}[/]")
+        except Exception as e:
+            console.print(f"\n  [red]{label} — render error: {e}[/]")
 
-    if "auth_bypass" in report:
-        console.print()
-        render_auth_table(report["auth_bypass"])
-
-    if "chain_hunter" in report:
-        console.print()
-        render_chain_table(report["chain_hunter"])
-
-    if "bot_hunter" in report:
-        console.print()
-        render_bot_table(report["bot_hunter"])
-
-    if "gorgon" in report:
-        console.print()
-        render_gorgon_summary(report["gorgon"])
-
-    if "oblivion" in report:
-        console.print()
-        render_oblivion_summary(report["oblivion"])
+    _safe("RECON", render_recon_table, report.get("recon"))
+    _safe("AUTH BYPASS", render_auth_table, report.get("auth_bypass"))
+    _safe("CHAIN HUNTER", render_chain_table, report.get("chain_hunter"))
+    _safe("BOT HUNTER", render_bot_table, report.get("bot_hunter"))
+    _safe("GORGON ULTRA", render_gorgon_summary, report.get("gorgon"))
+    _safe("OBLIVION", render_oblivion_summary, report.get("oblivion"))
 
     # Final verdict
     console.print()
     console.print(Rule("[bold bright_magenta]Final Verdict[/]", style="bright_magenta"))
-    render_unified_verdict(verdict)
+    try:
+        render_unified_verdict(verdict)
+    except Exception as e:
+        console.print(f"  [red]verdict render error: {e}[/]")
 
     console.print(f"\n  [dim]Total elapsed: {elapsed}s | Encounter: {encounter_id}[/]")
     console.print(f"  [dim]Signature: {RECONPRO_SIGNATURE}[/]\n")

@@ -27,6 +27,7 @@ import {
   BadgeCheck,
   Skull,
   Bot,
+  Terminal,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -95,9 +96,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Offensive',
     items: [
       { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
-      { id: 'botcage', label: 'Bot Hunter & Cage', icon: Bot, badge: 'C2 DETECT' },
-      { id: 'model-breaker', label: 'GORGON ULTRA', icon: Brain, badge: 'AI RED TEAM' },
-      { id: 'oblivion', label: 'OBLIVION', icon: Eye, badge: 'ORACLE' },
+      { id: 'unified-cli', label: 'ReconPro UNIFIED CLI', icon: Terminal, badge: '6 BLADES' },
     ],
   },
   {
