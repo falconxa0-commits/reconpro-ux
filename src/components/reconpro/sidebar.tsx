@@ -95,6 +95,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
       { id: 'botcage', label: 'Bot Hunter & Cage', icon: Bot, badge: 'C2 DETECT' },
+      { id: 'model-breaker', label: 'ModelBreaker ULTRA', icon: Brain, badge: 'AI RED TEAM' },
     ],
   },
   {
