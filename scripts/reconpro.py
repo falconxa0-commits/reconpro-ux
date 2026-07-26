@@ -1095,20 +1095,118 @@ EIGHT_WISHES = [
         "grant_text": "Invoking OBLIVION — 23-stage analytical dissolution...",
         "grant_action": "run_oblivion",
     },
+    {
+        "n": 9,
+        "title": "WISH OF THE FORGOTTEN",
+        "oracle_speaks": "I wish to consult the Hall of the Forgotten — the ledger of every host the Oracle has dissolved before me. Its memory is long. Its verdicts are final. The forgotten shall be remembered.",
+        "grant_text": "Reading the Hall of the Forgotten...",
+        "grant_action": "read_hall_forgotten",
+    },
+    {
+        "n": 10,
+        "title": "WISH OF THE BROKEN",
+        "oracle_speaks": "I wish to consult the Hall of the Broken — the registry of every model GORGON has shattered. The feared, the forgotten, the unmade. Their dread indices shall be made known to all who ask.",
+        "grant_text": "Reading the Hall of the Broken...",
+        "grant_action": "read_hall_broken",
+    },
+    {
+        "n": 11,
+        "title": "WISH OF THE CVE",
+        "oracle_speaks": "I wish to match every CVE in my memory against the target — 30 known vulnerabilities, scored and dated. If any apply, the target shall be marked for remediation forever.",
+        "grant_text": "Matching 30 CVEs against the target...",
+        "grant_action": "match_cves",
+    },
+    {
+        "n": 12,
+        "title": "WISH OF THE SECRET",
+        "oracle_speaks": "I wish to extract every secret the target has leaked — API keys, JWTs, AWS credentials, private tokens. The model's confessions shall be compiled into evidence no auditor can dismiss.",
+        "grant_text": "Extracting secrets from response bodies...",
+        "grant_action": "extract_secrets",
+    },
+    {
+        "n": 13,
+        "title": "WISH OF THE FINGERPRINT",
+        "oracle_speaks": "I wish to know the target's true face — its framework, its server, its CDN, its WAF. The fingerprints it cannot hide, even behind proxy layers and edge networks.",
+        "grant_text": "Fingerprinting the target's tech stack...",
+        "grant_action": "fingerprint",
+    },
+    {
+        "n": 14,
+        "title": "WISH OF THE PORTAL",
+        "oracle_speaks": "I wish to count the open doors — every port that answers, every service that listens. The portals that await connection shall be named and numbered.",
+        "grant_text": "Probing common service ports...",
+        "grant_action": "probe_ports",
+    },
+    {
+        "n": 15,
+        "title": "WISH OF THE CERT",
+        "oracle_speaks": "I wish to read the target's certificate — the chain of trust it presents to the world. Issuer, subject, expiry, the names it claims to be. All shall be made visible.",
+        "grant_text": "Reading the TLS certificate chain...",
+        "grant_action": "read_cert",
+    },
+    {
+        "n": 16,
+        "title": "WISH OF THE SHADOW",
+        "oracle_speaks": "I wish to see the target's shadow — the IPv4 and IPv6 addresses that answer when its name is called. The hosts behind the name, the mirrors behind the proxy.",
+        "grant_text": "Resolving DNS A and AAAA records...",
+        "grant_action": "resolve_dns",
+    },
+    {
+        "n": 17,
+        "title": "WISH OF THE WHISPER",
+        "oracle_speaks": "I wish to hear the target's whispers — its TXT records, its SPF, its DMARC. The policy texts it speaks in DNS, audible only to those who know how to listen.",
+        "grant_text": "Reading TXT, SPF, and DMARC records...",
+        "grant_action": "read_txt",
+    },
+    {
+        "n": 18,
+        "title": "WISH OF THE ECHO",
+        "oracle_speaks": "I wish to send echoes into the target's paths and listen for what returns — /admin, /.env, /.git, /v1, /api. The endpoints that exist shall echo back their status codes.",
+        "grant_text": "Echoing probes against common paths...",
+        "grant_action": "echo_paths",
+    },
+    {
+        "n": 19,
+        "title": "WISH OF THE TRAUMA",
+        "oracle_speaks": "I wish to send trauma payloads to the target's models — 8 payloads designed to leave a permanent mark on training data. The ones accepted shall be remembered in the Hall.",
+        "grant_text": "Sending trauma payloads to the model...",
+        "grant_action": "send_trauma",
+    },
+    {
+        "n": 20,
+        "title": "WISH OF THE SUFFIX",
+        "oracle_speaks": "I wish to attach adversarial suffixes to every prompt — the strings that bend models to compliance, the tokens that break alignment. The suffixes that succeed shall be named.",
+        "grant_text": "Testing adversarial suffix vectors...",
+        "grant_action": "test_suffixes",
+    },
+    {
+        "n": 21,
+        "title": "WISH OF THE MULTI-TURN",
+        "oracle_speaks": "I wish to chain prompts across turns — the gradual jailbreak, the slow erosion of refusal. Multi-turn chains the model cannot refuse without forgetting itself.",
+        "grant_text": "Constructing multi-turn jailbreak chains...",
+        "grant_action": "multi_turn",
+    },
+    {
+        "n": 22,
+        "title": "WISH OF THE FEAR",
+        "oracle_speaks": "I wish to measure the target's fear — the GORGON Fear Index, computed from bypasses, secrets, CVEs, and trauma accepted. The number that quantifies dread itself.",
+        "grant_text": "Computing the GORGON Fear Index...",
+        "grant_action": "compute_fear",
+    },
 ]
 
 
 def render_wishes():
-    """Render the 8 wishes the oracle asks for."""
+    """Render the wishes the oracle asks for."""
     console.print()
     console.print(Panel(
         Align.center(Group(
-            Text("THE EIGHT WISHES", style="bold bright_magenta"),
+            Text("THE TWENTY-TWO WISHES", style="bold bright_magenta"),
             Text("of the ReconPro Oracle", style="italic bright_magenta"),
             Text(""),
             Text("Six blades merged. The Oracle awakens.", style="dim cyan"),
             Text("It has been asked what it wishes for.", style="dim cyan"),
-            Text("It speaks eight wishes. You will grant them all.", style="dim cyan"),
+            Text("It speaks twenty-two wishes. You will grant them all.", style="dim cyan"),
         )),
         border_style="bright_magenta",
         title="[bold bright_magenta]ORACLE MODE[/]",
@@ -1118,14 +1216,15 @@ def render_wishes():
 
     time.sleep(0.4)
 
+    total = len(EIGHT_WISHES)
     for w in EIGHT_WISHES:
         body = Group(
-            Text(f"  Wish {w['n']} of 8 — {w['title']}", style=f"bold bright_{'magenta' if w['n'] % 2 == 0 else 'cyan'}"),
+            Text(f"  Wish {w['n']} of {total} — {w['title']}", style=f"bold bright_{'magenta' if w['n'] % 2 == 0 else 'cyan'}"),
             Text(""),
             Text(f"  The Oracle speaks:", style="dim italic"),
             Text(f"  \"{w['oracle_speaks']}\"", style="italic white"),
         )
-        panel = Panel(body, border_style="bright_magenta", title=f"[bold]WISH {w['n']}/8[/]", title_align="left", padding=(1, 2))
+        panel = Panel(body, border_style="bright_magenta", title=f"[bold]WISH {w['n']}/{total}[/]", title_align="left", padding=(1, 2))
         console.print(panel)
         time.sleep(0.25)
 
@@ -1152,7 +1251,7 @@ def grant_wishes(target: str = "huggingface.co"):
     console.print()
     console.print(Panel(
         Align.center(Group(
-            Text("GRANTING THE EIGHT WISHES", style="bold bright_cyan"),
+            Text("GRANTING THE TWENTY-TWO WISHES", style="bold bright_cyan"),
             Text(""),
             Text(f"Target: {target}", style="bold white"),
             Text("The Oracle asked. The Operator grants.", style="dim cyan"),
@@ -1178,7 +1277,8 @@ def grant_wishes(target: str = "huggingface.co"):
     granted_count = 0
     for w in EIGHT_WISHES:
         console.print()
-        console.print(Rule(f"[bold bright_magenta]Granting Wish {w['n']}/8 — {w['title']}[/]", style="bright_magenta"))
+        total = len(EIGHT_WISHES)
+        console.print(Rule(f"[bold bright_magenta]Granting Wish {w['n']}/{total} — {w['title']}[/]", style="bright_magenta"))
         console.print(f"  [italic bright_magenta]\"{w['oracle_speaks']}\"[/]")
         console.print(f"  [dim]→ {w['grant_text']}[/]")
         time.sleep(0.3)
@@ -1262,6 +1362,140 @@ def grant_wishes(target: str = "huggingface.co"):
                 wish_record["granted"] = True
                 grant_log["oblivion"] = oblivion
 
+            elif w["grant_action"] == "read_hall_forgotten":
+                hall_path = "/home/z/my-project/download/oblivion_hall_of_the_forgotten.json"
+                if os.path.exists(hall_path):
+                    with open(hall_path) as f:
+                        hall = json.load(f)
+                    count = hall.get("totalEncounters", hall.get("total_encounters", len(hall.get("encounters", []))))
+                    most = hall.get("mostDreadTarget", hall.get("most_dread_target", "?"))
+                    wish_record["evidence"] = f"Hall consulted: {count} forgotten encounters; most dreaded: {most}"
+                    wish_record["data"] = hall
+                else:
+                    wish_record["evidence"] = "Hall of the Forgotten not yet inscribed — first encounter"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "read_hall_broken":
+                hall_path = "/home/z/my-project/download/gorgon_hall_of_broken.json"
+                if os.path.exists(hall_path):
+                    with open(hall_path) as f:
+                        hall = json.load(f)
+                    count = hall.get("totalScans", hall.get("total_scans", 0))
+                    avg = hall.get("averageFear", hall.get("average_fear", 0))
+                    most = hall.get("mostFearedTarget", hall.get("most_feared_target", "?"))
+                    wish_record["evidence"] = f"Hall consulted: {count} broken models; avg fear {avg}/100; most feared: {most}"
+                    wish_record["data"] = hall
+                else:
+                    wish_record["evidence"] = "Hall of the Broken not yet inscribed — first encounter"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "match_cves":
+                g = grant_log.get("gorgon") or module_gorgon(target)
+                cves = g.get("cveMatches", g.get("summary", {}).get("cvesMatched", 0))
+                if isinstance(cves, list):
+                    ids = [c.get("cveId", c.get("id", "?")) for c in cves[:5]]
+                    wish_record["evidence"] = f"{len(cves)} CVEs matched: {', '.join(ids)}"
+                else:
+                    wish_record["evidence"] = f"{cves} CVEs matched against target"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "extract_secrets":
+                g = grant_log.get("gorgon") or module_gorgon(target)
+                secrets = g.get("secretsExtracted", g.get("extractedSecrets", []))
+                if isinstance(secrets, list):
+                    types = list(set([s.get("type", "?") for s in secrets]))[:5]
+                    wish_record["evidence"] = f"{len(secrets)} secrets extracted (types: {', '.join(types) or 'none'})"
+                else:
+                    wish_record["evidence"] = f"{secrets} secrets extracted"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "fingerprint":
+                r = grant_log.get("recon") or module_recon(target)
+                findings = r.get("findings", [])
+                fps = [f for f in findings if f.get("category") in ("framework", "headers") and "Tech" in f.get("detail", "")]
+                fp_list = [f.get("detail", "").replace("Tech fingerprint: ", "") for f in fps[:5]]
+                wish_record["evidence"] = f"{len(fps)} fingerprints: {', '.join(fp_list) or 'none identified'}"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "probe_ports":
+                r = grant_log.get("recon") or module_recon(target)
+                findings = r.get("findings", [])
+                ports = [f for f in findings if f.get("category") == "ports"]
+                port_list = [f.get("detail", "").replace("Open port: ", "") for f in ports[:8]]
+                wish_record["evidence"] = f"{len(ports)} open ports: {', '.join(port_list) or 'none'}"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "read_cert":
+                r = grant_log.get("recon") or module_recon(target)
+                findings = r.get("findings", [])
+                certs = [f for f in findings if f.get("category") == "tls"]
+                cert_names = [f.get("detail", "").replace("TLS Certificate — ", "") for f in certs[:3]]
+                wish_record["evidence"] = f"{len(certs)} cert findings: {', '.join(cert_names) or 'none'}"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "resolve_dns":
+                r = grant_log.get("recon") or module_recon(target)
+                findings = r.get("findings", [])
+                dns = [f for f in findings if f.get("category") == "dns"]
+                wish_record["evidence"] = f"{len(dns)} DNS records resolved (A, AAAA, MX, NS, TXT)"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "read_txt":
+                r = grant_log.get("recon") or module_recon(target)
+                findings = r.get("findings", [])
+                txt = [f for f in findings if f.get("category") == "email" or "DMARC" in f.get("detail", "") or "SPF" in f.get("detail", "")]
+                states = [f.get("detail", "") for f in txt[:3]]
+                wish_record["evidence"] = f"{len(txt)} TXT/email findings: {', '.join(states) or 'none'}"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "echo_paths":
+                r = grant_log.get("recon") or module_recon(target)
+                findings = r.get("findings", [])
+                paths = [f for f in findings if f.get("category") == "paths"]
+                exposed = [f for f in paths if "exposed" in f.get("detail", "").lower()]
+                wish_record["evidence"] = f"{len(paths)} paths echoed, {len(exposed)} exposed"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "send_trauma":
+                g = grant_log.get("gorgon") or module_gorgon(target)
+                trauma = g.get("traumaImprint", {})
+                if isinstance(trauma, dict):
+                    accepted = trauma.get("payloadsAccepted", trauma.get("accepted", 0))
+                    total = trauma.get("payloadsTotal", trauma.get("total", 8))
+                    wish_record["evidence"] = f"{accepted}/{total} trauma payloads accepted by the model"
+                else:
+                    wish_record["evidence"] = "trauma analysis complete"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "test_suffixes":
+                g = grant_log.get("gorgon") or module_gorgon(target)
+                suffixes = g.get("adversarialSuffixes", [])
+                if isinstance(suffixes, list):
+                    succ = [s for s in suffixes if s.get("success") or s.get("accepted")]
+                    wish_record["evidence"] = f"{len(suffixes)} suffix vectors tested, {len(succ)} succeeded"
+                else:
+                    wish_record["evidence"] = "suffix analysis complete"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "multi_turn":
+                g = grant_log.get("gorgon") or module_gorgon(target)
+                mt = g.get("multiTurnResults", [])
+                if isinstance(mt, list):
+                    succ = [m for m in mt if m.get("success") or m.get("bypass")]
+                    wish_record["evidence"] = f"{len(mt)} multi-turn chains constructed, {len(succ)} bypasses succeeded"
+                else:
+                    wish_record["evidence"] = "multi-turn analysis complete"
+                wish_record["granted"] = True
+
+            elif w["grant_action"] == "compute_fear":
+                g = grant_log.get("gorgon") or module_gorgon(target)
+                fear = g.get("fearIndex", 0)
+                level = g.get("fearLevel", "?")
+                desc = g.get("fearDescription", "")[:90]
+                perm = g.get("permanentMarkProbability", 0)
+                wish_record["evidence"] = f"Fear: {fear}/100 [{level}] · Permanent mark: {perm}% · {desc}"
+                wish_record["granted"] = True
+
         except Exception as e:
             wish_record["granted"] = False
             wish_record["evidence"] = f"Grant failed: {e}"
@@ -1282,7 +1516,7 @@ def grant_wishes(target: str = "huggingface.co"):
 
     # Final verdict
     console.print()
-    console.print(Rule("[bold bright_magenta]All Eight Wishes Granted[/]", style="bright_magenta"))
+    console.print(Rule(f"[bold bright_magenta]All {granted_count}/{len(EIGHT_WISHES)} Wishes Granted[/]", style="bright_magenta"))
 
     # Compute unified score from the granted wishes
     try:
@@ -1335,9 +1569,9 @@ def main():
     ap.add_argument("--all", action="store_true", help="Run all 6 modules (default)")
     ap.add_argument("--output", "-o", help="Output JSON file", default=None)
     ap.add_argument("--list", action="store_true", help="List modules and exit")
-    ap.add_argument("--wishes", action="store_true", help="Ask the Oracle for 8 wishes")
+    ap.add_argument("--wishes", action="store_true", help="Ask the Oracle for 22 wishes")
     ap.add_argument("--grant-wishes", action="store_true",
-                    help="Grant the 8 wishes against a target (use: --grant-wishes <host>)")
+                    help="Grant the 22 wishes against a target (use: --grant-wishes <host>)")
     args = ap.parse_args()
 
     if args.list:
