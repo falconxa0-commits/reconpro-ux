@@ -23,6 +23,7 @@ import { LiveProofPanel } from '@/components/reconpro/live-proof';
 import { VulnArsenal } from '@/components/reconpro/vuln-arsenal';
 import { BotCage } from '@/components/reconpro/bot-cage';
 import { ModelBreaker } from '@/components/reconpro/model-breaker';
+import { Oblivion } from '@/components/reconpro/oblivion';
 import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
 import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
@@ -35,7 +36,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'botcage' | 'model-breaker' | 'pricing' | 'white-label';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'botcage' | 'model-breaker' | 'oblivion' | 'pricing' | 'white-label';
 
 interface Finding {
   id: string; title: string; severity: string; category: string;
@@ -442,6 +443,7 @@ export default function Home() {
       case 'vulns': return <VulnArsenal />;
       case 'botcage': return <BotCage />;
       case 'model-breaker': return <ModelBreaker />;
+      case 'oblivion': return <Oblivion />;
       case 'pricing': return <PricingPlans onNavigate={handleViewChange} />;
       case 'white-label': return <WhiteLabelPanel />;
       default: return renderScan();

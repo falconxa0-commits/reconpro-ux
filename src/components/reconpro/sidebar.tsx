@@ -11,6 +11,7 @@ import {
   Map,
   Orbit,
   Brain,
+  Eye,
   AlertTriangle,
   TrendingUp,
   Users,
@@ -96,6 +97,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
       { id: 'botcage', label: 'Bot Hunter & Cage', icon: Bot, badge: 'C2 DETECT' },
       { id: 'model-breaker', label: 'GORGON ULTRA', icon: Brain, badge: 'AI RED TEAM' },
+      { id: 'oblivion', label: 'OBLIVION', icon: Eye, badge: 'ORACLE' },
     ],
   },
   {
