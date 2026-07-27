@@ -22,11 +22,14 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import shlex
 import socket
 import ssl
 import subprocess
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -47,6 +50,24 @@ from rich.live import Live
 from rich.layout import Layout
 
 console = Console(width=120)
+
+# ── Global Config ──────────────────────────────────────────────────────────
+
+AUDIT_LOG_PATH = "/home/z/my-project/download/reconpro_audit.log"
+_AUDIT_FAIL_WARNED = False
+
+
+class _Config:
+    """Runtime configuration flags — set once from CLI args."""
+    verify_tls: bool = True
+    insecure: bool = False
+    confirm: bool = False
+    dry_run: bool = False
+    quiet: bool = False
+    json_output: bool = False
+
+
+CONFIG = _Config()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RECONPRO UNIFIED IDENTITY
@@ -80,12 +101,28 @@ MODULES = [
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def run(cmd: str, timeout: int = 8) -> Tuple[str, str]:
+def run_argv(argv: list, timeout: int = 8) -> Tuple[str, str]:
+    """Execute a pre-parsed argv list without any shell interpretation."""
     try:
-        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=timeout)
         return r.stdout.strip(), r.stderr.strip()
     except Exception:
         return "", ""
+
+
+def run(cmd: str, timeout: int = 8) -> Tuple[str, str]:
+    """Execute a command string safely via shlex.split — no /bin/sh spawned."""
+    if CONFIG.dry_run:
+        audit_log("subprocess.skip", detail=f"dry-run: {cmd[:120]}")
+        return "", ""
+    try:
+        argv = shlex.split(cmd)
+    except ValueError as e:
+        audit_log("subprocess.shlex.error", status=type(e).__name__, detail=str(e))
+        return "", ""
+    if not argv:
+        return "", ""
+    return run_argv(argv, timeout=timeout)
 
 def http_probe(url: str, method: str = "GET", body: Optional[bytes] = None,
                headers: Optional[Dict[str, str]] = None, timeout: int = 8) -> Dict[str, Any]:
@@ -99,8 +136,9 @@ def http_probe(url: str, method: str = "GET", body: Optional[bytes] = None,
     req = urllib.request.Request(url, data=body, method=method, headers=h)
     try:
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        if CONFIG.insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             raw = resp.read(8192)
             return {
@@ -122,10 +160,53 @@ def http_probe(url: str, method: str = "GET", body: Optional[bytes] = None,
     except Exception as e:
         return {"ok": False, "status": 0, "reason": str(e), "headers": {}, "body": ""}
 
+# ── C3: JSON Lines audit log (injection-immune) ──────────────────────────
+
+def audit_log(event: str, status: str = "ok", detail: str = "") -> None:
+    """Append a JSON Lines record to the audit log. Injection-immune via json.dumps."""
+    global _AUDIT_FAIL_WARNED
+    record = {
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "event": event,
+        "status": status,
+        "detail": detail,
+    }
+    try:
+        os.makedirs(os.path.dirname(AUDIT_LOG_PATH) or ".", exist_ok=True)
+        with open(AUDIT_LOG_PATH, "a") as f:
+            f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception:
+        if not _AUDIT_FAIL_WARNED:
+            _AUDIT_FAIL_WARNED = True
+            sys.stderr.write(f"[reconpro] WARNING: audit log write failed for {AUDIT_LOG_PATH}\n")
+
+# ── M1: Confirm gate ──────────────────────────────────────────────────────
+
+def _confirm_proceed(label: str) -> bool:
+    """Prompt user for confirmation before destructive operations.
+    Only activates when CONFIG.confirm is True AND not in dry-run mode.
+    """
+    if not CONFIG.confirm or CONFIG.dry_run:
+        return True
+    from rich.panel import Panel as _Panel
+    from rich.text import Text as _Text
+    try:
+        console.print(_Panel(
+            _Text(f"About to execute: {label}", style="bold yellow"),
+            border_style="yellow",
+            title="[bold]CONFIRM[/bold]",
+            title_align="left",
+            padding=(1, 2),
+        ))
+        answer = input("proceed? > ").strip().lower()
+        return answer in ("y", "yes", "ok")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
 def generate_encounter_id(host: str) -> str:
-    ts = str(int(time.time()))
-    h = hashlib.sha256(f"{host}-{ts}-RECONPRO".encode()).hexdigest()[:12].upper()
-    return f"RPU-{h}"
+    """Generate a globally unique encounter ID. Uses uuid4 — no collision window."""
+    raw = uuid.uuid4().hex[:12].upper()
+    return f"RPU-{raw}"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MODULE 1: RECON — 13-category surface reconnaissance
@@ -571,11 +652,30 @@ def module_bot_hunter(host: str) -> Dict[str, Any]:
 
 CACHE_DIR = "/home/z/my-project/download"
 
+# ── Filename safety (m4) ────────────────────────────────────────────────────
+_FILENAME_UNSAFE_RE = re.compile(r'[\x00-\x1f\x7f\x80-\x9f/\\:\n\r\t]')
+_FILENAME_MAX_LEN = 120
+
+def _safe_filename(raw: str) -> str:
+    """Sanitize a user-supplied string for use as a filename component.
+
+    Strips: null bytes, control chars, path separators, backslashes.
+    Truncates to _FILENAME_MAX_LEN. Rejects empty results (returns 'unnamed').
+    """
+    cleaned = _FILENAME_UNSAFE_RE.sub('_', raw)
+    # Collapse consecutive underscores
+    cleaned = re.sub(r'_{2,}', '_', cleaned)
+    cleaned = cleaned.strip('._-')
+    cleaned = cleaned[:_FILENAME_MAX_LEN]
+    if not cleaned or cleaned in ('.', '..'):
+        return 'unnamed'
+    return cleaned
+
 def _find_cache(prefix: str, host: str) -> Optional[str]:
     """Find a cached JSON for this host with the given prefix."""
     if not os.path.isdir(CACHE_DIR):
         return None
-    safe = host.replace(".", "_")
+    safe = _safe_filename(host)
     candidates = [
         f"{CACHE_DIR}/{prefix}_{safe}.json",
         f"{CACHE_DIR}/{prefix}_{safe}_v2.json",
@@ -990,7 +1090,7 @@ def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
     # Save report FIRST so it's never lost to a renderer bug
     try:
         os.makedirs("/home/z/my-project/download", exist_ok=True)
-        safe_host = host.replace(".", "_").replace("/", "_")
+        safe_host = _safe_filename(host)
         early_out = f"/home/z/my-project/download/reconpro_unified_{safe_host}.json"
         with open(early_out, "w") as f:
             json.dump(report, f, indent=2, default=str)
@@ -1295,7 +1395,7 @@ def grant_wishes(target: str = "huggingface.co"):
 
             elif w["grant_action"] == "write_witness":
                 # Wish 2: write witness JSON
-                witness_path = f"/home/z/my-project/download/reconpro_witness_{target.replace('.','_')}.json"
+                witness_path = f"/home/z/my-project/download/reconpro_witness_{_safe_filename(target)}.json"
                 witness = {
                     "encounter_id": encounter_id,
                     "target": target,
@@ -1550,7 +1650,7 @@ def grant_wishes(target: str = "huggingface.co"):
         console.print(f"  [red]verdict error: {e}[/]")
 
     # Save the full grant log
-    grant_path = f"/home/z/my-project/download/reconpro_wishes_granted_{target.replace('.','_')}.json"
+    grant_path = f"/home/z/my-project/download/reconpro_wishes_granted_{_safe_filename(target)}.json"
     with open(grant_path, "w") as f:
         json.dump(grant_log, f, indent=2, default=str)
     console.print(f"\n  [green]✓ Full grant log saved:[/] [bold]{grant_path}[/]")
@@ -1568,11 +1668,36 @@ def main():
                     default="recon,auth,chain,bot,gorgon,oblivion")
     ap.add_argument("--all", action="store_true", help="Run all 6 modules (default)")
     ap.add_argument("--output", "-o", help="Output JSON file", default=None)
-    ap.add_argument("--list", action="store_true", help="List modules and exit")
-    ap.add_argument("--wishes", action="store_true", help="Ask the Oracle for 22 wishes")
-    ap.add_argument("--grant-wishes", action="store_true",
+    ap.add_argument("--insecure", action="store_true",
+                    help="Disable TLS certificate verification (NOT recommended)")
+    ap.add_argument("--confirm", action="store_true",
+                    help="Require confirmation before destructive operations")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Show what would be executed without making changes")
+    ap.add_argument("--quiet", action="store_true",
+                    help="Suppress banner and info panels")
+    ap.add_argument("--json", action="store_true",
+                    help="Output pure JSON to stdout (implies --quiet)")
+
+    # M5: Mutually exclusive mode flags
+    mode_group = ap.add_mutually_exclusive_group()
+    mode_group.add_argument("--list", action="store_true", help="List modules and exit")
+    mode_group.add_argument("--wishes", action="store_true", help="Ask the Oracle for 22 wishes")
+    mode_group.add_argument("--grant-wishes", action="store_true",
                     help="Grant the 22 wishes against a target (use: --grant-wishes <host>)")
     args = ap.parse_args()
+
+    # Propagate config flags
+    CONFIG.insecure = args.insecure
+    CONFIG.confirm = args.confirm
+    CONFIG.dry_run = args.dry_run
+    CONFIG.quiet = args.quiet
+    CONFIG.json_output = args.json
+    if CONFIG.json_output:
+        CONFIG.quiet = True
+
+    if CONFIG.insecure:
+        console.print("[yellow]⚠ TLS verification DISABLED — connections are not secure[/]")
 
     if args.list:
         render_banner()
@@ -1617,12 +1742,25 @@ def main():
         out_path = args.output
     else:
         os.makedirs("/home/z/my-project/download", exist_ok=True)
-        safe = args.target.replace(".", "_").replace("/", "_")
-        out_path = f"/home/z/my-project/download/reconpro_unified_{safe}.json"
+        out_path = f"/home/z/my-project/download/reconpro_unified_{_safe_filename(args.target)}.json"
 
     with open(out_path, "w") as f:
         json.dump(report, f, indent=2, default=str)
     console.print(f"  [green]✓ Report saved:[/] [bold]{out_path}[/]")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except BrokenPipeError:
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"[red]Fatal: {e}[/]")
+        try:
+            audit_log("fatal.error", status=type(e).__name__, detail=str(e)[:200])
+        except Exception:
+            pass
+        if os.environ.get("RECONPRO_DEBUG") == "1":
+            raise
+        sys.exit(1)
