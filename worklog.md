@@ -614,3 +614,27 @@ Stage Summary:
 - Production packaging: pytest scaffold (23 tests), requirements.txt
 - CLI now has: --insecure, --confirm, --dry-run, --quiet, --json, mutually exclusive --list/--wishes/--grant-wishes
 - No shell=True anywhere, no CERT_NONE by default, JSON Lines audit log with injection immunity
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: Batch 4 — Production polish (m5, n1-n4)
+
+Work Log:
+- m5: Added _RateLimiter class with threading.Lock — token-bucket at 10 req/s, wired into http_probe()
+- m12: Skipped — --haunt-named flag does not exist in codebase (was likely from a different tool version)
+- n1: Added classify_ipv6() with regex-based detection for 7 scope classes (link_local, unique_local, loopback, mapped_v4, documentation, multicast, unspecified, global). Wired into DNS AAAA section — non-global IPv6 addresses now flagged as medium severity
+- n2: Fixed banner Unicode glyph U+2553 (broken ╓) → U+2551 (correct ║) on line 141
+- n3: Synced module docstring: --module (singular) → --modules (plural), added --insecure, --dry-run, --list examples
+- n4: Converted 6 silent except:pass blocks to audit_log calls: gorgon.cache_read.error, gorgon.import.error, oblivion.cache_read.error, oblivion.import.error, bot.resolve.error, bot.probe.error, recon.subdomain.error, report.autosave.error
+- Also applied _safe_filename() to gorgon/oblivion subprocess fallback output paths
+- Added 22 new tests: TestRateLimiter (5), TestIPv6Classification (8), TestBannerUnicode (2), TestDocstringSync (2), TestSilentExceptAudit (5)
+- Total test count: 45 tests, all passing
+
+Stage Summary:
+- reconpro.py now 1837 LOC, test_reconpro.py 430 LOC
+- Full audit trail: no silent exception swallowing in critical paths
+- Thread-safe rate limiting on all HTTP probes (10 req/s)
+- IPv6 addresses properly classified — non-global ranges flagged
+- Banner renders correctly, docstrings match actual CLI flags
+- 45/45 tests pass, py_compile clean, CLI smoke green

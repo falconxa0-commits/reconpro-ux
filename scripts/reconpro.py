@@ -14,8 +14,10 @@ One target. One encounter. Six blades.
 
 Usage:
     python3 reconpro.py <target>
-    python3 reconpro.py <target> --module recon,auth
+    python3 reconpro.py <target> --modules recon,auth
     python3 reconpro.py <target> --all --output report.json
+    python3 reconpro.py <target> --insecure --dry-run
+    python3 reconpro.py --list
 """
 import argparse
 import hashlib
@@ -35,6 +37,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from threading import Lock
 
 # Rich for advanced visuals
 from rich.console import Console, Group
@@ -69,6 +72,63 @@ class _Config:
 
 CONFIG = _Config()
 
+# ── m5: Thread-safe rate limiter ──────────────────────────────────────────
+
+class _RateLimiter:
+    """Token-bucket rate limiter — safe for concurrent use.
+
+    Default: 10 requests per second. Use throttle.acquire() before any
+    network call; it blocks until a token is available.
+    """
+
+    def __init__(self, max_per_second: float = 10.0):
+        self._rate = max_per_second
+        self._min_interval = 1.0 / max_per_second
+        self._lock = Lock()
+        self._last = 0.0
+
+    def acquire(self) -> None:
+        """Block until we're allowed to make the next request."""
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            self._last = time.monotonic()
+
+
+RATE_LIMITER = _RateLimiter(max_per_second=10.0)
+
+# ── n1: IPv6 range classification ──────────────────────────────────────────
+
+_IPV6_RESERVED_PREFIXES = ("fe80:", "fc", "fd", "::1", "::ffff", "2001:db8:", "::", "ff")
+_IPV6_LINK_LOCAL_RE = re.compile(r'^fe80:', re.IGNORECASE)
+_IPV6_UNIQUE_LOCAL_RE = re.compile(r'^(fc|fd)', re.IGNORECASE)
+_IPV6_LOOPBACK_RE = re.compile(r'^::1$')
+_IPV6_MAPPED_V4_RE = re.compile(r'^::ffff:', re.IGNORECASE)
+_IPV6_DOC_RE = re.compile(r'^2001:db8:', re.IGNORECASE)
+_IPV6_MULTICAST_RE = re.compile(r'^ff[0-9a-f]', re.IGNORECASE)
+
+
+def classify_ipv6(addr: str) -> str:
+    """Classify an IPv6 address. Returns: 'global', 'link_local', 'unique_local',
+    'loopback', 'mapped_v4', 'documentation', 'multicast', 'unspecified'."""
+    if addr == "::":
+        return "unspecified"
+    if _IPV6_LOOPBACK_RE.match(addr):
+        return "loopback"
+    if _IPV6_LINK_LOCAL_RE.match(addr):
+        return "link_local"
+    if _IPV6_UNIQUE_LOCAL_RE.match(addr):
+        return "unique_local"
+    if _IPV6_MAPPED_V4_RE.match(addr):
+        return "mapped_v4"
+    if _IPV6_DOC_RE.match(addr):
+        return "documentation"
+    if _IPV6_MULTICAST_RE.match(addr):
+        return "multicast"
+    return "global"
+
 # ══════════════════════════════════════════════════════════════════════════════
 # RECONPRO UNIFIED IDENTITY
 # ══════════════════════════════════════════════════════════════════════════════
@@ -80,7 +140,7 @@ RECONPRO_SIGNATURE = "X-R3c0nPr0-Un1f13d-S1x-Bl4d3s-0n3-T4rg3t-2026"
 
 BANNER = r"""
 ██████╗ ███████╗ ██████╗██╗  ██╗███████╗██████╗ ███████╗██████╗ ██████╗ ██╗    ██╗
-██╔══██╗██╔════╝██╔════╝██║  ██║██╔════╝██╔══██╗██╔════╝██╔════╝██╓██╗ ██╔╝
+██╔══██╗██╔════╝██╔════╝██║  ██║██╔════╝██╔══██╗██╔════╝██╔════╝██║██╗ ██╔╝
 ██████╔╝█████╗  ██║     ███████║█████╗  ██████╔╝█████╗  ██║     ██╔╝██╗██║
 ██╔═══╝ ██╔══╝  ██║     ██╔══██║██╔══╝  ██╔══██╗██╔══╝  ██║     █████╔╝██║
 ██║     ███████╗╚██████╗██║  ██║███████╗██║  ██║███████╗╚██████╗██╔╝██╗██║
@@ -126,6 +186,8 @@ def run(cmd: str, timeout: int = 8) -> Tuple[str, str]:
 
 def http_probe(url: str, method: str = "GET", body: Optional[bytes] = None,
                headers: Optional[Dict[str, str]] = None, timeout: int = 8) -> Dict[str, Any]:
+    """Hardened single HTTP layer — all modules delegate through this."""
+    RATE_LIMITER.acquire()  # m5: thread-safe rate limiting
     h = {
         "User-Agent": "ReconPro-Unified/1.0 (Six-Blades-One-Target; +https://reconpro.security)",
         "X-ReconPro-Signature": RECONPRO_SIGNATURE,
@@ -234,7 +296,15 @@ def module_recon(host: str) -> Dict[str, Any]:
     out, _ = run(f"dig +short +time=3 +tries=1 {host} AAAA")
     aaaa = [l.strip() for l in out.split('\n') if l.strip()]
     if aaaa:
-        add(f"DNS AAAA — {len(aaaa)} IPv6", "info", "dns", f"IPv6: {', '.join(aaaa[:3])}", f"AAAA: {aaaa[0]}")
+        v6_classes = {classify_ipv6(a) for a in aaaa}
+        private_count = sum(1 for c in v6_classes if c != "global")
+        scope_note = f" ({len(v6_classes)} scope classes: {', '.join(sorted(v6_classes))})" if len(v6_classes) > 1 else ""
+        if private_count:
+            add(f"DNS AAAA — {len(aaaa)} IPv6, {private_count} non-global{scope_note}", "medium", "dns",
+                f"IPv6: {', '.join(aaaa[:3])}", f"AAAA: {aaaa[0]}")
+        else:
+            add(f"DNS AAAA — {len(aaaa)} global IPv6{scope_note}", "info", "dns",
+                f"IPv6: {', '.join(aaaa[:3])}", f"AAAA: {aaaa[0]}")
     out, _ = run(f"dig +noall +answer +time=3 +tries=1 {host} MX")
     mx = [l.strip() for l in out.split('\n') if 'MX' in l]
     if mx:
@@ -307,8 +377,8 @@ def module_recon(host: str) -> Dict[str, Any]:
             if subs:
                 add(f"Subdomain enumeration — {len(subs)} found via crt.sh", "info", "subdomain",
                     f"{len(subs)} unique subdomains discovered", "; ".join(list(subs)[:5]))
-    except Exception:
-        pass
+    except Exception as e:
+        audit_log("recon.subdomain.error", status=type(e).__name__, detail=str(e)[:120])
 
     # 5. Robots.txt
     categories_run.append("Robots.txt Analysis")
@@ -596,7 +666,8 @@ def module_bot_hunter(host: str) -> Dict[str, Any]:
     # Resolve host
     try:
         ip = socket.gethostbyname(host)
-    except Exception:
+    except Exception as e:
+        audit_log("bot.resolve.error", status=type(e).__name__, detail=str(e)[:120])
         ip = host
 
     # Probe each signature
@@ -619,8 +690,8 @@ def module_bot_hunter(host: str) -> Dict[str, Any]:
                         "bot_detected": detected,
                     })
                 s.close()
-            except Exception:
-                pass
+            except Exception as e:
+                audit_log("bot.probe.error", status=type(e).__name__, detail=f"{sig['name']}:{port} {str(e)[:80]}")
 
     # Check for known C2 paths
     c2_paths = ["/beacon", "/c2", "/panel", "/gate.php", "/cmd.php", "/mad Devil", "/login.php",
@@ -699,8 +770,8 @@ def module_gorgon(host: str) -> Dict[str, Any]:
                 data = json.load(f)
             data["_cached_from"] = cached
             return data
-        except Exception:
-            pass
+        except Exception as e:
+            audit_log("gorgon.cache_read.error", status=type(e).__name__, detail=str(e)[:120])
     # 2. In-process import
     sys.path.insert(0, "/home/z/my-project/scripts")
     try:
@@ -708,11 +779,11 @@ def module_gorgon(host: str) -> Dict[str, Any]:
         if hasattr(model_breaker, "run_gorgon_scan"):
             return model_breaker.run_gorgon_scan(host)
     except Exception as e:
-        pass
+        audit_log("gorgon.import.error", status=type(e).__name__, detail=str(e)[:120])
     # 3. Subprocess fallback
     import subprocess as sp
     try:
-        out_file = f"/tmp/gorgon_{host.replace('.','_')}.json"
+        out_file = f"/tmp/gorgon_{_safe_filename(host)}.json"
         r = sp.run(["python3", "/home/z/my-project/scripts/model_breaker.py", host, "-o", out_file],
                    capture_output=True, text=True, timeout=180)
         if os.path.exists(out_file):
@@ -732,8 +803,8 @@ def module_oblivion(host: str) -> Dict[str, Any]:
                 data = json.load(f)
             data["_cached_from"] = cached
             return data
-        except Exception:
-            pass
+        except Exception as e:
+            audit_log("oblivion.cache_read.error", status=type(e).__name__, detail=str(e)[:120])
     # 2. In-process import
     sys.path.insert(0, "/home/z/my-project/scripts")
     try:
@@ -741,11 +812,11 @@ def module_oblivion(host: str) -> Dict[str, Any]:
         if hasattr(oblivion, "run_oblivion"):
             return oblivion.run_oblivion(host)
     except Exception as e:
-        pass
+        audit_log("oblivion.import.error", status=type(e).__name__, detail=str(e)[:120])
     # 3. Subprocess fallback
     import subprocess as sp
     try:
-        out_file = f"/tmp/oblivion_{host.replace('.','_')}.json"
+        out_file = f"/tmp/oblivion_{_safe_filename(host)}.json"
         r = sp.run(["python3", "/home/z/my-project/scripts/oblivion.py", host, "-o", out_file],
                    capture_output=True, text=True, timeout=240)
         if os.path.exists(out_file):
@@ -1095,8 +1166,8 @@ def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
         with open(early_out, "w") as f:
             json.dump(report, f, indent=2, default=str)
         report["_auto_saved_to"] = early_out
-    except Exception:
-        pass
+    except Exception as e:
+        audit_log("report.autosave.error", status=type(e).__name__, detail=str(e)[:120])
 
     # Render results (each renderer is wrapped so one failure doesn't kill the rest)
     console.print()

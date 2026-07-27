@@ -261,3 +261,170 @@ class TestCompileCheck:
         """reconpro.py must compile without syntax errors."""
         import py_compile
         py_compile.compile(reconpro.__file__, doraise=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# m5: Thread-safe rate limiter
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestRateLimiter:
+    """_RateLimiter must enforce max_per_second and be thread-safe."""
+
+    def test_class_exists(self):
+        assert hasattr(reconpro, "_RateLimiter"), "RateLimiter class missing"
+
+    def test_acquire_returns_none(self):
+        rl = reconpro._RateLimiter(max_per_second=1000.0)
+        result = rl.acquire()
+        assert result is None, "acquire() should return None (blocking call)"
+
+    def test_rate_is_respected(self):
+        """With a very slow rate (500/s), multiple calls should take real time."""
+        rl = reconpro._RateLimiter(max_per_second=500.0)
+        import time
+        start = time.monotonic()
+        for _ in range(5):
+            rl.acquire()
+        elapsed = time.monotonic() - start
+        # 5 calls at 500/s = at least ~8ms (4 gaps × 2ms)
+        assert elapsed >= 0.005, f"Rate limiter too fast: {elapsed:.4f}s for 5 calls at 500/s"
+
+    def test_thread_safety(self):
+        """Multiple threads calling acquire() should not raise."""
+        import threading
+        rl = reconpro._RateLimiter(max_per_second=1000.0)
+        errors = []
+
+        def worker():
+            try:
+                for _ in range(50):
+                    rl.acquire()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(errors) == 0, f"Thread safety errors: {errors}"
+
+    def test_global_instance_exists(self):
+        assert hasattr(reconpro, "RATE_LIMITER"), "RATE_LIMITER singleton missing"
+        assert isinstance(reconpro.RATE_LIMITER, reconpro._RateLimiter)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# n1: IPv6 classification
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestIPv6Classification:
+    """classify_ipv6 must correctly identify reserved/private ranges."""
+
+    def test_link_local(self):
+        assert reconpro.classify_ipv6("fe80::1") == "link_local"
+        assert reconpro.classify_ipv6("fe80::1:2:3") == "link_local"
+
+    def test_unique_local(self):
+        assert reconpro.classify_ipv6("fc00::1") == "unique_local"
+        assert reconpro.classify_ipv6("fd12:3456::1") == "unique_local"
+
+    def test_loopback(self):
+        assert reconpro.classify_ipv6("::1") == "loopback"
+
+    def test_unspecified(self):
+        assert reconpro.classify_ipv6("::") == "unspecified"
+
+    def test_mapped_v4(self):
+        assert reconpro.classify_ipv6("::ffff:192.168.1.1") == "mapped_v4"
+
+    def test_documentation(self):
+        assert reconpro.classify_ipv6("2001:db8::1") == "documentation"
+
+    def test_multicast(self):
+        assert reconpro.classify_ipv6("ff02::1") == "multicast"
+        assert reconpro.classify_ipv6("ff05::1:3") == "multicast"
+
+    def test_global(self):
+        assert reconpro.classify_ipv6("2606:4700::6810:abcd") == "global"
+        assert reconpro.classify_ipv6("2001:4860:4860::8888") == "global"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# n2: Banner Unicode
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestBannerUnicode:
+    """BANNER must not contain broken Unicode glyphs."""
+
+    def test_no_broken_glyph(self):
+        src = open(reconpro.__file__).read()
+        # U+2553 (╓) is the broken glyph from the original banner
+        assert "\u2553" not in src, "Broken banner glyph U+2553 still present"
+
+    def test_banner_uses_valid_box_chars(self):
+        allowed_box = set("█╗╔═╝║╚╔")
+        import re as _re
+        banner_start = src = open(reconpro.__file__).read()
+        idx = banner_start.find('BANNER = r"""')
+        if idx == -1:
+            return  # banner not found, skip
+        banner_text = banner_start[idx:idx+600]
+        for ch in banner_text:
+            if ord(ch) > 127 and ch not in allowed_box and ch not in " \n\r":
+                assert False, f"Unexpected Unicode char in banner: U+{ord(ch):04X} ({ch!r})"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# n3: Docstring sync
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestDocstringSync:
+    """Module docstring must reference actual CLI flags."""
+
+    def test_docstring_has_modules_flag(self):
+        assert "--modules" in reconpro.__doc__, "Docstring should reference --modules (plural)"
+        assert "--module " not in reconpro.__doc__ or "--module recon" not in reconpro.__doc__, \
+            "Docstring should NOT reference --module (singular)"
+
+    def test_docstring_has_new_flags(self):
+        assert "--insecure" in reconpro.__doc__, "Docstring should reference --insecure"
+        assert "--dry-run" in reconpro.__doc__, "Docstring should reference --dry-run"
+        assert "--list" in reconpro.__doc__, "Docstring should reference --list"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# n4: Silent except blocks audit trail
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestSilentExceptAudit:
+    """Critical except blocks must call audit_log — not pass silently."""
+
+    def test_gorgon_cache_uses_audit(self):
+        import inspect
+        src = inspect.getsource(reconpro.module_gorgon)
+        assert 'audit_log("gorgon.cache_read.error"' in src, \
+            "gorgon cache read failure should be audit-logged"
+
+    def test_oblivion_cache_uses_audit(self):
+        import inspect
+        src = inspect.getsource(reconpro.module_oblivion)
+        assert 'audit_log("oblivion.cache_read.error"' in src, \
+            "oblivion cache read failure should be audit-logged"
+
+    def test_bot_resolve_uses_audit(self):
+        import inspect
+        src = inspect.getsource(reconpro.module_bot_hunter)
+        assert 'audit_log("bot.resolve.error"' in src, \
+            "bot resolve failure should be audit-logged"
+
+    def test_autosave_uses_audit(self):
+        import inspect
+        src = inspect.getsource(reconpro.run_unified_scan)
+        assert 'audit_log("report.autosave.error"' in src, \
+            "report auto-save failure should be audit-logged"
+
+    def test_no_shell_true_anywhere(self):
+        src = open(reconpro.__file__).read()
+        assert "shell=True" not in src, "shell=True must never appear"
+
