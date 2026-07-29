@@ -236,27 +236,36 @@ class TestAuthCredentials:
 
     def test_load_nonexistent_file(self, tmp_path):
         """Loading from nonexistent file returns empty dict."""
-        cred_file = str(tmp_path / "nonexistent_creds.json")
+        nonexist_dir = str(tmp_path / "nonexistent_creds_dir")
+        cred_file = os.path.join(nonexist_dir, "nonexistent_creds.json")
         old_path = reconpro.CREDENTIALS_FILE
+        old_config = reconpro.CONFIG_FILE
         try:
             reconpro.CREDENTIALS_FILE = cred_file
+            reconpro.CONFIG_FILE = os.path.join(nonexist_dir, "nonexistent_config.json")
             loaded = reconpro._load_credentials()
             assert loaded == {}
         finally:
             reconpro.CREDENTIALS_FILE = old_path
+            reconpro.CONFIG_FILE = old_config
 
     def test_load_corrupt_file(self, tmp_path):
         """Loading from corrupt JSON returns empty dict."""
-        cred_file = str(tmp_path / "corrupt_creds.json")
+        nonexist_dir = str(tmp_path / "corrupt_creds_dir")
+        os.makedirs(nonexist_dir, exist_ok=True)
+        cred_file = os.path.join(nonexist_dir, "corrupt_creds.json")
         old_path = reconpro.CREDENTIALS_FILE
+        old_config = reconpro.CONFIG_FILE
         try:
             reconpro.CREDENTIALS_FILE = cred_file
+            reconpro.CONFIG_FILE = os.path.join(nonexist_dir, "corrupt_config.json")
             with open(cred_file, "w") as f:
                 f.write("NOT JSON AT ALL")
             loaded = reconpro._load_credentials()
             assert loaded == {}
         finally:
             reconpro.CREDENTIALS_FILE = old_path
+            reconpro.CONFIG_FILE = old_config
 
     def test_save_creates_directory(self, tmp_path):
         """Saving credentials creates parent directory if needed."""
@@ -466,8 +475,8 @@ class TestVibeSecIntegration:
         assert vibesec["name"] == "VIBESEC"
         assert vibesec["color"] == "bright_green"
 
-    def test_tagline_seven_blades(self):
-        assert "Seven" in reconpro.RECONPRO_TAGLINE
+    def test_tagline_eight_blades(self):
+        assert "Eight" in reconpro.RECONPRO_TAGLINE
 
     def test_unified_verdict_includes_vibesec(self):
         report = {"vibesec": {"vibesec_score": 60}}

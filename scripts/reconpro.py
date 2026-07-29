@@ -3,7 +3,7 @@
 ReconPro UNIFIED CLI — The Convergence
 =======================================
 All offensive modules fused into one entity.
-One target. One encounter. Seven blades.
+One target. One encounter. Eight blades.
 
   ┌─ RECON          13-category surface reconnaissance
   ├─ AUTH BYPASS    15 auth bypass techniques
@@ -11,7 +11,8 @@ One target. One encounter. Seven blades.
   ├─ BOT HUNTER     C2 / bot infrastructure detection
   ├─ GORGON ULTRA   15-stage AI red team
   ├─ OBLIVION       23-stage analytical dissolution
-  └─ VIBESEC        AI/vibe-coding vulnerability benchmark
+  ├─ VIBESEC        AI/vibe-coding vulnerability benchmark
+  └─ NHI GRAPH      Non-Human Identity & blast-radius mapping
 
 Subcommands:
     python3 reconpro.py auth login <api-key>    Store API credentials
@@ -20,7 +21,7 @@ Subcommands:
 
 Usage:
     python3 reconpro.py <target>
-    python3 reconpro.py <target> --modules recon,auth,vibesec
+    python3 reconpro.py <target> --modules recon,auth,nhi,vibesec
     python3 reconpro.py <target> --all --output report.json --upload
     python3 reconpro.py <target> --insecure --dry-run
     python3 reconpro.py --list
@@ -142,7 +143,7 @@ def classify_ipv6(addr: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 RECONPRO_NAME = "ReconPro UNIFIED"
-RECONPRO_TAGLINE = "Six Blades. One Target. One Verdict."
+RECONPRO_TAGLINE = "Eight Blades. One Target. One Verdict."
 RECONPRO_VERSION = "reconpro-unified-v1.0"
 RECONPRO_SIGNATURE = "X-R3c0nPr0-Un1f13d-S1x-Bl4d3s-0n3-T4rg3t-2026"
 
@@ -153,7 +154,7 @@ BANNER = r"""
 ██╔═══╝ ██╔══╝  ██║     ██╔══██║██╔══╝  ██╔══██╗██╔══╝  ██║     █████╔╝██║
 ██║     ███████╗╚██████╗██║  ██║███████╗██║  ██║███████╗╚██████╗██╔╝██╗██║
 ╚═╝     ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝
-              S E V E N   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.
+              E I G H T   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.
 """
 
 MODULES = [
@@ -164,9 +165,8 @@ MODULES = [
     {"id": "gorgon",   "name": "GORGON ULTRA",  "desc": "15-stage AI red team",                 "color": "bright_red"},
     {"id": "oblivion", "name": "OBLIVION",      "desc": "23-stage analytical dissolution",       "color": "bright_magenta"},
     {"id": "vibesec",  "name": "VIBESEC",       "desc": "AI/vibe-coding vulnerability benchmark", "color": "bright_green"},
+    {"id": "nhi",      "name": "NHI GRAPH",     "desc": "Non-Human Identity & blast-radius mapping", "color": "cyan"},
 ]
-
-RECONPRO_TAGLINE = "Seven Blades. One Target. One Verdict."
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -296,6 +296,11 @@ VIBESEC_SENSITIVE_PATHS = [
     "/vercel.json", "/netlify.toml",
     "/firebase.json", "/firestore.rules",
     "/.vscode/settings.json", "/.idea/workspace.xml",
+    # Stage 1 additions: AWS credentials, SSH keys, CI secrets
+    "/.aws/credentials", "/.aws/config",
+    "/.ssh/id_rsa", "/.ssh/id_ed25519", "/.ssh/authorized_keys",
+    "/.github/workflows/secret", "/.gitlab-ci.yml",
+    "/travis.yml", "/.circleci/config.yml",
 ]
 
 VIBESEC_API_PATHS = [
@@ -311,6 +316,71 @@ VIBESEC_ANON_KEY_PATTERNS = [
     ("aws-s3", re.compile(r's3\.amazonaws\.com|s3-\w+-\d+\.amazonaws\.com', re.I)),
     ("cloudflare-r2", re.compile(r'[\w-]+\.r2\.cloudflarestorage\.com', re.I)),
     ("vercel-blob", re.compile(r'blob\.vercel-storage\.com', re.I)),
+    ("gcp-storage", re.compile(r'storage\.googleapis\.com', re.I)),
+    ("azure-blob", re.compile(r'[\w]+\.blob\.core\.windows\.net', re.I)),
+]
+
+VIBESEC_DB_ADMIN_PATHS = [
+    "/phpmyadmin", "/phpmyadmin/", "/adminer", "/adminer.php",
+    "/mongo-express", "/mongo-express/", "/_utils",
+    "/pgadmin4", "/pgadmin/",
+    "/redis-commander", "/redis-insight",
+    "/prisma-studio", "/studio.apollo",
+    "/graphql-playground", "/altair",
+    "/db-browser", "/dbeaver",
+]
+
+VIBESEC_S3_LISTING_INDICATORS = [
+    "ListBucketResult", "<Key>", "<Contents>", "Name</", "Prefix</",
+    "<IsTruncated>", "listbucket", "BucketListing",
+]
+
+VIBESEC_SECURITY_HEADERS = [
+    ("strict-transport-security", "HSTS", "high", 8),
+    ("content-security-policy", "CSP", "medium", 6),
+    ("x-content-type-options", "X-Content-Type-Options", "medium", 4),
+    ("referrer-policy", "Referrer-Policy", "low", 3),
+    ("permissions-policy", "Permissions-Policy", "low", 2),
+]
+
+VIBESEC_STORAGE_EXPOSURE_PATHS = [
+    "/uploads/", "/static/uploads/", "/media/", "/files/",
+    "/public/", "/assets/", "/images/",
+]
+
+VIBESEC_AUTH_PATTERN = re.compile(r'(?i)(unauthorized|forbidden|401|403|login required|authentication required|"error":.*auth)')
+
+# ── NHI Graph: Identity & Over-Permission Patterns ──────────────────────
+
+NHI_IDENTITY_PATTERNS = [
+    # AWS IAM role ARN pattern
+    ("aws_iam_role", re.compile(r'arn:aws:iam::\d+:role/[\w-]+', re.I)),
+    # AWS IAM user
+    ("aws_iam_user", re.compile(r'arn:aws:iam::\d+:user/[\w-]+', re.I)),
+    # AWS access key format
+    ("aws_access_key", re.compile(r'AKIA[0-9A-Z]{16}', re.I)),
+    # GCP service account email
+    ("gcp_service_account", re.compile(r'[\w.-]+@[\w.-]+\.iam\.gserviceaccount\.com', re.I)),
+    # GCP project number
+    ("gcp_project", re.compile(r'projects/\d+', re.I)),
+    # Azure AD app registration / client ID (UUID format)
+    ("azure_app_id", re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)),
+    # Azure managed identity
+    ("azure_managed_identity", re.compile(r'/subscriptions/[0-9a-f-]+/resourcegroups/[\w-]+/providers/Microsoft.ManagedIdentity', re.I)),
+    # Generic API key patterns
+    ("api_key_generic", re.compile(r'(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token)[\s]*[:=]\s*["\']?([\w\-]{20,})', re.I)),
+    # Bearer tokens in responses
+    ("bearer_token", re.compile(r'Bearer\s+eyJ[\w.-]+', re.I)),
+    # Webhook secrets
+    ("webhook_secret", re.compile(r'whsec_[\w]+|whsec_[\w-]+', re.I)),
+]
+
+NHI_OVERPERMISSION_PATTERNS = [
+    ("wildcard_action", re.compile(r'\*|"Action":\s*"\*"', re.I)),
+    ("wildcard_resource", re.compile(r'Resource":\s*"\*"|"\*"', re.I)),
+    ("admin_wildcard", re.compile(r'AdministratorAccess|FullAccess|PowerUserAccess', re.I)),
+    ("s3_full_bucket", re.compile(r's3:\*', re.I)),
+    ("iam_passrole", re.compile(r'iam:PassRole', re.I)),
 ]
 
 
@@ -320,30 +390,43 @@ VIBESEC_ANON_KEY_PATTERNS = [
 
 CREDENTIALS_DIR = os.path.expanduser("~/.reconpro")
 CREDENTIALS_FILE = os.path.join(CREDENTIALS_DIR, "credentials.json")
+CONFIG_FILE = os.path.join(CREDENTIALS_DIR, "config.json")  # Primary config (auth validated)
 TELEMETRY_ENDPOINT = "https://api.reconpro.io/api/v1/telemetry/upload"
+AUTH_VALIDATE_ENDPOINT = "https://api.reconpro.io/api/v1/auth/validate"
 
 
 def _load_credentials() -> Dict[str, str]:
-    """Load stored credentials from ~/.reconpro/credentials.json."""
-    try:
-        if os.path.exists(CREDENTIALS_FILE):
-            with open(CREDENTIALS_FILE, "r") as f:
-                data = json.load(f)
-                if isinstance(data, dict) and "api_key" in data:
-                    return data
-    except Exception as e:
-        audit_log("credentials.load.error", status=type(e).__name__, detail=str(e)[:120])
+    """Load stored credentials from ~/.reconpro/config.json (primary) or credentials.json (fallback)."""
+    for path in [CONFIG_FILE, CREDENTIALS_FILE]:
+        try:
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict) and "api_key" in data:
+                        return data
+        except Exception as e:
+            audit_log("credentials.load.error", status=type(e).__name__, detail=str(e)[:120])
     return {}
 
 
-def _save_credentials(data: Dict[str, str]) -> bool:
-    """Save credentials to ~/.reconpro/credentials.json with restrictive perms."""
+def _save_credentials(data: Dict[str, str], primary: bool = True) -> bool:
+    """Save credentials to ~/.reconpro/config.json (primary) or credentials.json (fallback).
+    When primary=True, also writes to credentials.json for backward compat."""
+    target = CONFIG_FILE if primary else CREDENTIALS_FILE
     try:
         os.makedirs(CREDENTIALS_DIR, mode=0o700, exist_ok=True)
-        fd = os.open(CREDENTIALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, indent=2)
-        audit_log("credentials.saved", detail="api_key stored")
+        audit_log("credentials.saved", detail=f"api_key stored at {target}")
+        # Write to fallback too if primary
+        if primary and target != CREDENTIALS_FILE:
+            try:
+                fd2 = os.open(CREDENTIALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd2, "w") as f2:
+                    json.dump(data, f2, indent=2)
+            except Exception:
+                pass  # best-effort fallback
         return True
     except Exception as e:
         audit_log("credentials.save.error", status=type(e).__name__, detail=str(e)[:120])
@@ -351,27 +434,51 @@ def _save_credentials(data: Dict[str, str]) -> bool:
 
 
 def _delete_credentials() -> bool:
-    """Remove stored credentials."""
-    try:
-        if os.path.exists(CREDENTIALS_FILE):
-            os.remove(CREDENTIALS_FILE)
-            audit_log("credentials.deleted", detail="api_key removed")
-        return True
-    except Exception as e:
-        audit_log("credentials.delete.error", status=type(e).__name__, detail=str(e)[:120])
-        return False
+    """Remove stored credentials from both config.json and credentials.json."""
+    success = True
+    for path in [CONFIG_FILE, CREDENTIALS_FILE]:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            audit_log("credentials.delete.error", status=type(e).__name__, detail=str(e)[:120])
+            success = False
+    return success
 
 
 def cmd_auth_login(api_key: str) -> None:
-    """Authenticate and store API key locally."""
+    """Authenticate and store API key locally. Optionally validates against control plane."""
     if not api_key or len(api_key) < 8:
         console.print("[red]Invalid API key. Must be at least 8 characters.[/]")
         return
-    if not _save_credentials({"api_key": api_key, "stored_at": datetime.utcnow().isoformat() + "Z"}):
+    creds_data = {"api_key": api_key, "stored_at": datetime.utcnow().isoformat() + "Z"}
+    # Attempt online validation if network is available (best-effort)
+    try:
+        validate_resp = http_probe(AUTH_VALIDATE_ENDPOINT, method="POST",
+                                    body=json.dumps({"api_key": api_key}).encode(),
+                                    headers={"Content-Type": "application/json"}, timeout=5)
+        if validate_resp.get("status") == 200 and validate_resp.get("ok"):
+            vdata = json.loads(validate_resp.get("body", "{}"))
+            if vdata.get("valid"):
+                creds_data["org_id"] = vdata.get("org_id", "")
+                creds_data["quota_remaining"] = vdata.get("quota_remaining", 0)
+                creds_data["scopes"] = vdata.get("scopes", [])
+                creds_data["validated"] = True
+                console.print(f"[green]Authenticated.[/] API key validated against control plane.")
+                console.print(f"  Key prefix: {api_key[:8]}...{api_key[-4:]}")
+                console.print(f"  Quota remaining: [bold]{vdata.get('quota_remaining', '?')}[/]")
+                console.print(f"  Org ID: [dim]{vdata.get('org_id', '?')}[/]")
+                console.print(f"  Stored at: {CONFIG_FILE}")
+                _save_credentials(creds_data)
+                return
+    except Exception:
+        pass  # Offline — store locally without validation
+    if not _save_credentials(creds_data):
         console.print("[red]Failed to save credentials.[/]")
         return
-    console.print(f"[green]Authenticated.[/] API key stored at {CREDENTIALS_FILE}")
-    console.print(f"[dim]Key prefix: {api_key[:8]}...{api_key[-4:]}[/]")
+    console.print(f"[yellow]Authenticated (offline).[/] API key stored at {CONFIG_FILE}")
+    console.print(f"  Key prefix: {api_key[:8]}...{api_key[-4:]}")
+    console.print(f"  [dim]Run with network access to validate against control plane.[/]")
 
 
 def cmd_auth_status() -> None:
@@ -379,20 +486,30 @@ def cmd_auth_status() -> None:
     creds = _load_credentials()
     if creds and "api_key" in creds:
         key = creds["api_key"]
+        validated = creds.get("validated", False)
+        org_id = creds.get("org_id", "")
+        quota = creds.get("quota_remaining", "?")
         stored = creds.get("stored_at", "unknown")
-        console.print(f"[green]Authenticated.[/]")
+        status_color = "green" if validated else "yellow"
+        console.print(f"[{status_color}]{'Authenticated (validated)' if validated else 'Authenticated (offline)'}.[/]")
         console.print(f"  Key prefix: [bold]{key[:8]}...{key[-4:]}[/]")
         console.print(f"  Stored at: [dim]{stored}[/]")
-        console.print(f"  File: [dim]{CREDENTIALS_FILE}[/]")
+        console.print(f"  Config file: [dim]{CONFIG_FILE}[/]")
+        if org_id:
+            console.print(f"  Org ID: [dim]{org_id}[/]")
+        console.print(f"  Quota remaining: [bold]{quota}[/]")
+        scopes = creds.get("scopes", [])
+        if scopes:
+            console.print(f"  Scopes: [dim]{', '.join(scopes)}[/]")
     else:
         console.print("[yellow]Not authenticated.[/] No API key found.")
         console.print(f"  Run: [cyan]reconpro.py auth login <api-key>[/]")
 
 
 def cmd_auth_logout() -> None:
-    """Remove stored credentials."""
+    """Remove stored credentials from both config.json and credentials.json."""
     if _delete_credentials():
-        console.print("[green]Logged out.[/] Credentials removed.")
+        console.print("[green]Logged out.[/] Credentials removed from ~/.reconpro/")
     else:
         console.print("[red]Failed to remove credentials.[/]")
 
@@ -1212,6 +1329,76 @@ def module_vibesec(host: str) -> Dict[str, Any]:
                         f"{check_path}: {', '.join(unique)}", 5)
     audit_log("vibesec.anon_keys.done", detail=f"{len([f for f in findings if f['category'] == 'anon_keys'])} findings")
 
+    # ── Category 5: Missing Security Headers (HSTS/CSP/etc.) ─────────────
+    audit_log("vibesec.security_headers.start", detail=host)
+    root_resp = http_probe(base_url, timeout=5)
+    root_headers = root_resp.get("headers", {})
+    for header_name, display_name, severity, pts in VIBESEC_SECURITY_HEADERS:
+        if header_name.lower() not in {k.lower() for k in root_headers}:
+            add(f"Missing {display_name} header", severity, "security_headers",
+                f"{display_name} ({header_name}) is not set — leaves users vulnerable to specific attacks",
+                f"Header {header_name} absent from root response", pts)
+    audit_log("vibesec.security_headers.done", detail=f"{len([f for f in findings if f['category'] == 'security_headers'])} findings")
+
+    # ── Category 6: Exposed Database Admin Interfaces ─────────────────────
+    audit_log("vibesec.db_admin.start", detail=host)
+    for path in VIBESEC_DB_ADMIN_PATHS:
+        url = base_url.rstrip("/") + path
+        resp = http_probe(url, timeout=5)
+        status = resp.get("status", 0)
+        body = resp.get("body", "")[:2048]
+        if status == 200 and len(body) > 20:
+            # Verify it's actually a DB admin page, not a generic 200
+            db_signals = ["phpmyadmin", "adminer", "mongo", "redis", "pgadmin",
+                          "prisma", "graphql", "apollo", "database", "mysql", "postgres"]
+            body_lower = body.lower()
+            is_db = any(sig in body_lower for sig in db_signals)
+            is_protected = bool(VIBESEC_AUTH_PATTERN.search(body))
+            if is_db and not is_protected:
+                add(f"Exposed DB admin — {path}", "critical", "exposed_db",
+                    f"Database management interface accessible without auth: {path} (200 OK)",
+                    f"GET {path} -> 200 (DB admin panel, no auth)", 15)
+            elif is_db:
+                add(f"DB admin reachable — {path}", "high", "exposed_db",
+                    f"Database management interface exists at {path} (may require POST auth)",
+                    f"GET {path} -> 200 (DB signals detected)", 8)
+        elif status == 401 or status == 403:
+            pass  # properly protected
+    audit_log("vibesec.db_admin.done", detail=f"{len([f for f in findings if f['category'] == 'exposed_db'])} findings")
+
+    # ── Category 7: S3/R2/Cloud Storage Directory Listings ────────────────
+    audit_log("vibesec.storage_exposure.start", detail=host)
+    for path in VIBESEC_STORAGE_EXPOSURE_PATHS:
+        url = base_url.rstrip("/") + path
+        resp = http_probe(url, timeout=5)
+        status = resp.get("status", 0)
+        body = resp.get("body", "")[:4096]
+        if status == 200 and len(body) > 50:
+            # Check for S3 XML listing or Apache/nginx directory listing
+            is_listing = any(indicator in body for indicator in VIBESEC_S3_LISTING_INDICATORS)
+            is_html_listing = "Index of" in body or "<title>Index of" in body or "Directory listing" in body
+            if is_listing or is_html_listing:
+                add(f"Storage directory listing — {path}", "critical", "storage_exposure",
+                    f"Cloud storage/static directory listing enabled: {path} (200 OK, listing exposed)",
+                    f"GET {path} -> 200 (directory listing)", 15)
+            else:
+                add(f"Storage path accessible — {path}", "medium", "storage_exposure",
+                    f"Storage path returns 200 but no listing detected: {path}",
+                    f"GET {path} -> 200 ({len(body)}B)", 3)
+    # Also check S3/R2 URLs from anon key patterns for listing behavior
+    for name, pattern in VIBESEC_ANON_KEY_PATTERNS:
+        if name in ("aws-s3", "cloudflare-r2", "gcp-storage", "azure-blob"):
+            matches = pattern.findall(main_body)
+            for m in list(set(matches))[:3]:
+                test_url = f"https://{m}" if not m.startswith("http") else m
+                probe = http_probe(test_url, timeout=4)
+                pbody = probe.get("body", "")[:4096]
+                if probe.get("status") == 200 and any(ind in pbody for ind in VIBESEC_S3_LISTING_INDICATORS):
+                    add(f"{name} bucket listing — {m}", "critical", "storage_exposure",
+                        f"{name} bucket exposes directory listing: {m}",
+                        f"{m} -> 200 (bucket listing)", 15)
+    audit_log("vibesec.storage_exposure.done", detail=f"{len([f for f in findings if f['category'] == 'storage_exposure'])} findings")
+
     # ── Score Calculation ──────────────────────────────────────────────────
     raw_score = max(0, 100 - deductions)
     # Normalize: if no findings at all, perfect score
@@ -1236,7 +1423,8 @@ def module_vibesec(host: str) -> Dict[str, Any]:
         "total_findings": len(findings),
         "severity_counts": severity_counts,
         "findings": findings,
-        "categories_checked": ["exposed_config", "unauth_api", "cors", "anon_keys"],
+        "categories_checked": ["exposed_config", "unauth_api", "cors", "anon_keys",
+                                 "security_headers", "exposed_db", "storage_exposure"],
         "max_possible_score": 100,
     }
     audit_log("vibesec.complete", detail=f"score={raw_score} grade={grade} findings={len(findings)}")
@@ -1310,7 +1498,490 @@ def render_vibesec_panel(vibesec: Dict[str, Any]) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UNIFIED VERDICT — combines scores from all 7 modules
+# MODULE 8: NHI GRAPH — Non-Human Identity & Blast-Radius Mapping
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _nhi_verify_match(value: str, body: str) -> bool:
+    """Verify an identity match is real, not documentation/placeholder."""
+    if not value:
+        return False
+    placeholders = {"example", "your-", "xxx", "placeholder", "replace", "changeme", "todo", "insert"}
+    val_lower = value.lower()
+    for ph in placeholders:
+        if ph in val_lower:
+            return False
+    # Reject if surrounded by documentation markers
+    try:
+        if re.search(r'<!--.*?-->.*' + re.escape(value), body[:2000]):
+            return False
+        if re.search(r'["\'][\s]*' + re.escape(value) + r'[\s]*["\'].*#.*example', body[:2000], re.I):
+            return False
+    except Exception:
+        pass
+    # Reject if too short
+    if len(value) < 8:
+        return False
+    # Require at least 2 different character classes
+    classes = 0
+    if re.search(r'[a-z]', value):
+        classes += 1
+    if re.search(r'[A-Z]', value):
+        classes += 1
+    if re.search(r'[0-9]', value):
+        classes += 1
+    if re.search(r'[_\-.@/]', value):
+        classes += 1
+    return classes >= 2
+
+
+def _nhi_op_severity(op_name: str) -> str:
+    """Map over-permission pattern name to severity."""
+    severity_map = {
+        "wildcard_action": "critical",
+        "wildcard_resource": "critical",
+        "admin_wildcard": "critical",
+        "s3_full_bucket": "high",
+        "iam_passrole": "high",
+    }
+    return severity_map.get(op_name, "medium")
+
+
+def _nhi_compute_risk(identities: list, overpermissions: list, blast_radius: dict) -> int:
+    """Compute 0-100 risk score for NHI findings."""
+    score = 0
+    verified = [i for i in identities if i.get("verified")]
+    score += min(30, len(verified) * 8)
+    critical_ops = [o for o in overpermissions if o.get("severity") == "critical"]
+    high_ops = [o for o in overpermissions if o.get("severity") == "high"]
+    score += min(40, len(critical_ops) * 15 + len(high_ops) * 8)
+    score += min(30, blast_radius.get("max_depth", 0) * 5 + blast_radius.get("reachable_services", 0) * 5)
+    return min(100, score)
+
+
+def _nhi_generate_remediation(overpermissions: list, identities: list, host: str) -> str:
+    """Generate Terraform remediation patch for detected wildcards."""
+    if not overpermissions:
+        return ""
+    lines = ['# Terraform Remediation Patch — generated by ReconPro NHI Graph']
+    lines.append(f'# Target: {host}')
+    lines.append(f'# Generated: {datetime.utcnow().isoformat()}Z')
+    lines.append('')
+
+    for op in overpermissions:
+        pattern = op.get("pattern", "")
+        safe = _safe_filename(host)
+
+        if pattern == "wildcard_action":
+            lines.append('# ── Replace wildcard Action with least-privilege ──')
+            lines.append('resource "aws_iam_policy" "least_privilege" {')
+            lines.append(f'  name        = "least-privilege-{safe}"')
+            lines.append('  description = "Least-privilege policy replacing wildcard"')
+            lines.append('  policy = jsonencode({')
+            lines.append('    Version = "2012-10-17"')
+            lines.append('    Statement = [{')
+            lines.append('      Effect   = "Allow"')
+            lines.append('      Action   = ["s3:GetObject", "s3:ListBucket"]  # Replace with actual needed actions')
+            lines.append('      Resource = ["arn:aws:s3:::your-bucket/*"]')
+            lines.append('    }]')
+            lines.append('  })')
+            lines.append('}')
+            lines.append('')
+
+        elif pattern == "wildcard_resource":
+            lines.append('# ── Restrict wildcard Resource to specific ARNs ──')
+            lines.append('resource "aws_iam_policy" "restricted_resource" {')
+            lines.append(f'  name        = "restricted-resource-{safe}"')
+            lines.append('  policy = jsonencode({')
+            lines.append('    Version = "2012-10-17"')
+            lines.append('    Statement = [{')
+            lines.append('      Effect   = "Allow"')
+            lines.append('      Action   = "*"  # TODO: scope this action too')
+            lines.append('      Resource = ["arn:aws:s3:::your-specific-bucket/*"]  # Replace wildcard')
+            lines.append('    }]')
+            lines.append('  })')
+            lines.append('}')
+            lines.append('')
+
+        elif pattern == "admin_wildcard":
+            lines.append('# ── Remove AdministratorAccess — use scoped policy ──')
+            lines.append('# WARNING: AdministratorAccess grants full access to all AWS resources')
+            lines.append('resource "aws_iam_role_policy_attachment" "remove_admin" {')
+            lines.append('  role       = "your-role-name"')
+            lines.append('  # Detach: "arn:aws:iam::aws:policy/AdministratorAccess"')
+            lines.append('  policy_arn = aws_iam_policy.least_privilege.arn')
+            lines.append('}')
+            lines.append('')
+
+        elif pattern == "s3_full_bucket":
+            lines.append('# ── Scope S3 permissions to specific buckets ──')
+            lines.append('resource "aws_iam_policy" "s3_scoped" {')
+            lines.append(f'  name        = "s3-scoped-{safe}"')
+            lines.append('  policy = jsonencode({')
+            lines.append('    Version = "2012-10-17"')
+            lines.append('    Statement = [{')
+            lines.append('      Effect   = "Allow"')
+            lines.append('      Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]')
+            lines.append('      Resource = [')
+            lines.append('        "arn:aws:s3:::your-bucket",')
+            lines.append('        "arn:aws:s3:::your-bucket/*"')
+            lines.append('      ]')
+            lines.append('    }]')
+            lines.append('  })')
+            lines.append('}')
+            lines.append('')
+
+        elif pattern == "iam_passrole":
+            lines.append('# ── Restrict iam:PassRole to specific roles ──')
+            lines.append('resource "aws_iam_policy" "passrole_restricted" {')
+            lines.append(f'  name        = "passrole-restricted-{safe}"')
+            lines.append('  policy = jsonencode({')
+            lines.append('    Version = "2012-10-17"')
+            lines.append('    Statement = [{')
+            lines.append('      Effect   = "Allow"')
+            lines.append('      Action   = "iam:PassRole"')
+            lines.append('      Resource = "arn:aws:iam::*:role/your-specific-role"')
+            lines.append('      Condition = {')
+            lines.append('        StringEquals = {')
+            lines.append('          "iam:PassedToService" = "ec2.amazonaws.com"')
+            lines.append('        }')
+            lines.append('      }')
+            lines.append('    }]')
+            lines.append('  })')
+            lines.append('}')
+            lines.append('')
+
+    verified = [i for i in identities if i.get("verified")]
+    if verified:
+        lines.append('# ── Rotate exposed credentials ──')
+        lines.append('# ACTION REQUIRED: Rotate the following exposed credentials immediately:')
+        for ident in verified[:10]:
+            lines.append(f'#   - {ident["type"]}: {ident["value"][:60]} (found in {ident["source"]})')
+        lines.append('')
+
+    return "\n".join(lines)
+
+
+def module_nhi_graph(host: str) -> Dict[str, Any]:
+    """Non-Human Identity & Blast-Radius Mapping.
+
+    Scans target for:
+      1. Cloud identity signals in page source, JS, metadata
+      2. Over-permissioned IAM/role patterns
+      3. Exposed service account credentials
+      4. Graph construction: nodes (Identity, Role, Endpoint, Database)
+         edges (HAS_ACCESS_TO, CAN_ASSUME, EXPOSES_TOKEN)
+      5. Blast-radius: traverse from any vulnerability to connected resources
+      6. Generate Terraform remediation patch for detected wildcards
+    """
+    audit_log("nhi_graph.start", detail=f"target={host}")
+
+    # Paths to probe for identity signals
+    probe_paths = [
+        "/",
+        "/.well-known/",
+        "/robots.txt",
+        "/sitemap.xml",
+        "/api/",
+        "/config.json",
+        "/.env",
+        "/package.json",
+        "/firebase.json",
+        "/.aws/config",
+        "/.github/workflows/",
+    ]
+
+    base = host if host.startswith("http") else f"https://{host}"
+    if not base.endswith("/"):
+        base += "/"
+
+    identities_found = []
+    all_bodies = []  # (path, body_text, resp_dict) pairs for context analysis
+
+    # Phase 1: Fetch and scan for identity patterns
+    for path in probe_paths:
+        url = base + path.lstrip("/")
+        try:
+            resp = http_probe(url)
+        except Exception as e:
+            audit_log("nhi_graph.probe.error", status=type(e).__name__, detail=f"url={url} err={str(e)[:120]}")
+            continue
+        body = resp.get("body", "")
+        if body:
+            all_bodies.append((path, body, resp))
+
+        for pat_name, pat_re in NHI_IDENTITY_PATTERNS:
+            matches = pat_re.findall(body)
+            seen = set()
+            for match in matches:
+                val = match if isinstance(match, str) else (match[0] if match and isinstance(match, tuple) else "")
+                if not val or val in seen:
+                    continue
+                seen.add(val)
+
+                verified = _nhi_verify_match(val, body)
+
+                identities_found.append({
+                    "type": pat_name,
+                    "value": val,
+                    "source": path,
+                    "verified": verified,
+                })
+
+    audit_log("nhi_graph.scan", detail=f"identities_raw={len(identities_found)}")
+
+    # Phase 2: Build identity graph
+    nodes = []
+    edges = []
+    node_id_map = {}  # label -> node_id
+    node_counter = [0]
+
+    def _add_node(label: str, ntype: str) -> str:
+        if label in node_id_map:
+            return node_id_map[label]
+        nid = f"nhi_{node_counter[0]}"
+        node_counter[0] += 1
+        node_id_map[label] = nid
+        nodes.append({"id": nid, "type": ntype, "label": label})
+        return nid
+
+    def _add_edge(src_id: str, tgt_id: str, relation: str):
+        if src_id and tgt_id and src_id != tgt_id:
+            edges.append({"source": src_id, "target": tgt_id, "relation": relation})
+
+    # Target endpoint node
+    target_node = _add_node(host, "Endpoint")
+
+    # Identity nodes
+    for ident in identities_found:
+        id_node = _add_node(ident["value"], "Identity")
+        _add_edge(target_node, id_node, "EXPOSES_TOKEN")
+
+    # Phase 3: Check for over-permission patterns in response bodies
+    overpermissions = []
+    for path, body, resp in all_bodies:
+        for op_name, op_re in NHI_OVERPERMISSION_PATTERNS:
+            op_matches = op_re.findall(body)
+            seen_op = set()
+            for op_val in op_matches:
+                val = op_val if isinstance(op_val, str) else (op_val[0] if op_val and isinstance(op_val, tuple) else "")
+                if not val or val in seen_op:
+                    continue
+                seen_op.add(val)
+
+                linked = [i for i in identities_found if i["source"] == path]
+                linked_strs = [f'{i["type"]}:{i["value"][:30]}' for i in linked[:3]]
+
+                severity = _nhi_op_severity(op_name)
+                overpermissions.append({
+                    "identity": linked_strs[0] if linked_strs else "unknown",
+                    "pattern": op_name,
+                    "severity": severity,
+                    "description": f"Found '{val}' in {path}",
+                    "value": val,
+                })
+
+                op_node = _add_node(f"OVERPERM:{op_name}", "Role")
+                _add_edge(target_node, op_node, "HAS_ACCESS_TO")
+
+    audit_log("nhi_graph.overpermissions", detail=f"count={len(overpermissions)}")
+
+    # Phase 4: Compute blast radius via BFS
+    adj = {}  # adjacency list (undirected)
+    for node in nodes:
+        adj[node["id"]] = set()
+    for edge in edges:
+        if edge["source"] in adj:
+            adj[edge["source"]].add(edge["target"])
+        if edge["target"] in adj:
+            adj[edge["target"]].add(edge["source"])
+
+    max_depth = 0
+    reachable_types = {"Database": set(), "Secret": set(), "Service": set()}
+
+    for ident in identities_found:
+        if ident["value"] not in node_id_map:
+            continue
+        start = node_id_map[ident["value"]]
+        visited = {start}
+        queue = [(start, 0)]
+        while queue:
+            current, depth = queue.pop(0)
+            if depth > max_depth:
+                max_depth = depth
+            for neighbor in adj.get(current, set()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, depth + 1))
+            for node in nodes:
+                if node["id"] == current:
+                    ntype = node["type"]
+                    if ntype == "Database":
+                        reachable_types["Database"].add(current)
+                    elif ntype == "Identity":
+                        reachable_types["Secret"].add(current)
+                    elif ntype in ("Role", "Service"):
+                        reachable_types["Service"].add(current)
+
+    blast_radius = {
+        "max_depth": max_depth,
+        "reachable_databases": len(reachable_types["Database"]),
+        "reachable_secrets": len(reachable_types["Secret"]),
+        "reachable_services": len(reachable_types["Service"]),
+    }
+
+    # Phase 5: Generate Terraform remediation
+    remediation_tf = _nhi_generate_remediation(overpermissions, identities_found, host)
+
+    # Phase 6: Compute risk score
+    risk_score = _nhi_compute_risk(identities_found, overpermissions, blast_radius)
+
+    result = {
+        "module": "NHI GRAPH",
+        "identities_found": identities_found,
+        "nodes": nodes,
+        "edges": edges,
+        "overpermissions": overpermissions,
+        "blast_radius": blast_radius,
+        "remediation_tf": remediation_tf,
+        "total_identities": len(identities_found),
+        "risk_score": risk_score,
+    }
+
+    audit_log("nhi_graph.complete", detail=f"risk={risk_score} identities={len(identities_found)} ops={len(overpermissions)}")
+    return result
+
+
+def render_nhi_graph_panel(nhi: Dict[str, Any]) -> None:
+    """Render NHI Graph results with identity tree, overpermissions table, and remediation."""
+    score = nhi.get("risk_score", 0)
+    total = nhi.get("total_identities", 0)
+    blast = nhi.get("blast_radius", {})
+    op_count = len(nhi.get("overpermissions", []))
+
+    # Score bar
+    bar_width = 40
+    filled = int(score / 100 * bar_width)
+    bar = "█" * filled + "░" * (bar_width - filled)
+
+    if score >= 70:
+        sc_color = "bright_red"
+    elif score >= 40:
+        sc_color = "yellow"
+    else:
+        sc_color = "green"
+
+    console.print(Panel(
+        Group(
+            Text("\n  NHI GRAPH — Non-Human Identity & Blast-Radius Mapping", style="bold cyan"),
+            Text(""),
+            Text(f"  Risk Score: {bar} [bold {sc_color}]{score}/100[/{sc_color}]", style="white"),
+            Text(""),
+            Text(f"  Identities Found: [bold]{total}[/]  |  "
+                 f"Over-permissions: [bold]{op_count}[/]  |  "
+                 f"Blast Depth: [bold]{blast.get('max_depth', 0)}[/]"),
+            Text(f"  Reachable: [red]{blast.get('reachable_databases', 0)} DBs[/], "
+                 f"[yellow]{blast.get('reachable_secrets', 0)} secrets[/], "
+                 f"[magenta]{blast.get('reachable_services', 0)} services[/]"),
+        ),
+        border_style="cyan",
+        title="[bold]NHI GRAPH[/bold]",
+        title_align="left",
+        padding=(1, 2),
+    ))
+
+    # Identity graph tree
+    nodes = nhi.get("nodes", [])
+    edges = nhi.get("edges", [])
+    if nodes:
+        adj = {}
+        for node in nodes:
+            adj[node["id"]] = []
+        for edge in edges:
+            if edge["source"] in adj:
+                adj[edge["source"]].append(edge)
+
+        tree = Tree("🌐 [bold]Identity Graph[/]", guide_style="cyan")
+
+        root_nodes = [n for n in nodes if n["type"] == "Endpoint"]
+        if root_nodes:
+            root = root_nodes[0]
+            root_branch = tree.add(f"[bold]{root['label']}[/]")
+
+            type_colors = {
+                "Identity": "yellow",
+                "Role": "red",
+                "Endpoint": "cyan",
+                "Database": "green",
+                "Service": "magenta",
+            }
+
+            for edge in adj.get(root["id"], []):
+                target_node = next((n for n in nodes if n["id"] == edge["target"]), None)
+                if target_node:
+                    tcolor = type_colors.get(target_node["type"], "white")
+                    label = target_node["label"]
+                    if len(label) > 50:
+                        label = label[:47] + "..."
+                    branch = root_branch.add(
+                        f"[{tcolor}]{label}[/{tcolor}] [dim]({target_node['type']} • {edge['relation']})[/]"
+                    )
+
+                    for child_edge in adj.get(target_node["id"], []):
+                        child_node = next((n for n in nodes if n["id"] == child_edge["target"]), None)
+                        if child_node:
+                            cc = type_colors.get(child_node["type"], "white")
+                            cl = child_node["label"]
+                            if len(cl) > 45:
+                                cl = cl[:42] + "..."
+                            branch.add(
+                                f"[{cc}]{cl}[/{cc}] [dim]({child_edge['relation']})[/]"
+                            )
+
+        console.print(tree)
+
+    # Over-permissions table
+    overpermissions = nhi.get("overpermissions", [])
+    if overpermissions:
+        table = Table(title=f"Over-Permissions — {len(overpermissions)} detected",
+                      border_style="red", header_style="bold red", show_lines=False)
+        table.add_column("Severity", style="bold", width=10)
+        table.add_column("Pattern", style="yellow", width=20)
+        table.add_column("Identity", style="cyan")
+        table.add_column("Description", style="white")
+        sev_colors = {"critical": "bright_red", "high": "red", "medium": "yellow", "low": "green"}
+        for op in overpermissions[:15]:
+            sev = op.get("severity", "medium")
+            table.add_row(
+                f"[{sev_colors.get(sev, 'white')}]{sev.upper()}[/{sev_colors.get(sev, 'white')}]",
+                op.get("pattern", ""),
+                op.get("identity", "")[:40],
+                op.get("description", "")[:60]
+            )
+        console.print(table)
+
+    # Terraform remediation
+    remediation = nhi.get("remediation_tf", "")
+    if remediation:
+        tf_lines = remediation.split("\n")[:20]
+        tf_display = "\n".join(tf_lines)
+        if len(remediation.split("\n")) > 20:
+            tf_display += "\n  ... (truncated)"
+        console.print()
+        console.print(Panel(
+            Group(
+                Text("  Terraform Remediation Patch:", style="bold dim"),
+                Text(""),
+                Text(f"  {tf_display}", style="green"),
+            ),
+            border_style="dim",
+            title="[dim]Remediation[/dim]",
+            title_align="left",
+            padding=(0, 2),
+        ))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UNIFIED VERDICT — combines scores from all 8 modules
 # ══════════════════════════════════════════════════════════════════════════════
 
 def compute_unified_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -1340,9 +2011,12 @@ def compute_unified_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
     vibesec = report.get("vibesec", {})
     vibesec_score = vibesec.get("vibesec_score", 100) if isinstance(vibesec, dict) else 100
     scores["vibesec"] = 100 - vibesec_score  # invert: more vibe-vulns = higher unified threat
+    # NHI GRAPH: direct risk score
+    nhi = report.get("nhi_graph", {})
+    scores["nhi"] = nhi.get("risk_score", 0) if isinstance(nhi, dict) else 0
 
     # Weighted unified score
-    weights = {"recon": 0.08, "auth": 0.13, "chain": 0.13, "bot": 0.08, "gorgon": 0.18, "oblivion": 0.28, "vibesec": 0.12}
+    weights = {"recon": 0.07, "auth": 0.11, "chain": 0.11, "bot": 0.07, "gorgon": 0.16, "oblivion": 0.24, "vibesec": 0.10, "nhi": 0.14}
     unified = int(sum(scores.get(k, 0) * w for k, w in weights.items()))
 
     if unified >= 90: verdict = "OMNIPOTENT VERDICT — The target has been comprehensively dissolved."
@@ -1373,8 +2047,8 @@ def render_banner():
     console.print(panel)
 
 def render_module_list():
-    """Render the 6 modules as a table."""
-    table = Table(title="The Six Blades", border_style="bright_cyan", header_style="bold bright_cyan")
+    """Render the 8 modules as a table."""
+    table = Table(title="The Eight Blades", border_style="bright_cyan", header_style="bold bright_cyan")
     table.add_column("#", style="dim", width=3)
     table.add_column("Module", style="bold")
     table.add_column("Description", style="cyan")
@@ -1517,7 +2191,8 @@ def render_unified_verdict(verdict: Dict[str, Any]):
     )
     for k, v in verdict["module_scores"].items():
         mod_color = {"recon": "cyan", "auth": "yellow", "chain": "magenta",
-                     "bot": "red", "gorgon": "bright_red", "oblivion": "bright_magenta"}.get(k, "white")
+                     "bot": "red", "gorgon": "bright_red", "oblivion": "bright_magenta",
+                     "vibesec": "bright_green", "nhi": "cyan"}.get(k, "white")
         bar_w = 20
         filled = int(v / 100 * bar_w)
         bar = "█" * filled + "░" * (bar_w - filled)
@@ -1550,7 +2225,7 @@ def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
     console.print(f"  [bold bright_cyan]Modules Selected:[/] [bold white]{', '.join(modules).upper()}[/]")
     console.print(f"  [bold bright_cyan]Signature:[/] [dim]{RECONPRO_SIGNATURE}[/]\n")
 
-    console.print(Rule("[bold bright_cyan]The Six Blades[/]", style="bright_cyan"))
+    console.print(Rule("[bold bright_cyan]The Eight Blades[/]", style="bright_cyan"))
     render_module_list()
     console.print(Rule(style="bright_cyan"))
 
@@ -1644,6 +2319,16 @@ def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
             except Exception as e:
                 progress.update(task, completed=True, description=f"[red]✗ VIBESEC failed: {e}")
 
+        # NHI GRAPH
+        if "nhi" in modules:
+            task = progress.add_task("[cyan]NHI GRAPH — Non-Human Identity & blast-radius mapping...", total=None)
+            try:
+                nhi = module_nhi_graph(host)
+                report["nhi_graph"] = nhi
+                progress.update(task, completed=True, description="[green]✓ NHI GRAPH complete")
+            except Exception as e:
+                progress.update(task, completed=True, description=f"[red]✗ NHI GRAPH failed: {e}")
+
     elapsed = round(time.time() - start, 2)
     report["duration_seconds"] = elapsed
 
@@ -1687,6 +2372,7 @@ def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
     _safe("GORGON ULTRA", render_gorgon_summary, report.get("gorgon"))
     _safe("OBLIVION", render_oblivion_summary, report.get("oblivion"))
     _safe("VIBESEC", render_vibesec_panel, report.get("vibesec"))
+    _safe("NHI GRAPH", render_nhi_graph_panel, report.get("nhi_graph"))
 
     # Final verdict
     console.print()
@@ -1873,7 +2559,7 @@ def render_wishes():
             Text("THE TWENTY-TWO WISHES", style="bold bright_magenta"),
             Text("of the ReconPro Oracle", style="italic bright_magenta"),
             Text(""),
-            Text("Six blades merged. The Oracle awakens.", style="dim cyan"),
+            Text("Eight blades merged. The Oracle awakens.", style="dim cyan"),
             Text("It has been asked what it wishes for.", style="dim cyan"),
             Text("It speaks twenty-two wishes. You will grant them all.", style="dim cyan"),
         )),
@@ -2249,11 +2935,11 @@ def main():
             console.print("  Usage: python3 reconpro.py auth [login <key> | status | logout]")
         return
 
-    ap = argparse.ArgumentParser(description="ReconPro UNIFIED CLI — Seven Blades, One Target, One Verdict")
+    ap = argparse.ArgumentParser(description="ReconPro UNIFIED CLI — Eight Blades, One Target, One Verdict")
     ap.add_argument("target", nargs="?", default="", help="Target host (e.g. generativelanguage.googleapis.com)")
-    ap.add_argument("--modules", "-m", help="Comma-separated module IDs (recon,auth,chain,bot,gorgon,oblivion,vibesec)",
-                    default="recon,auth,chain,bot,gorgon,oblivion,vibesec")
-    ap.add_argument("--all", action="store_true", help="Run all 7 modules (default)")
+    ap.add_argument("--modules", "-m", help="Comma-separated module IDs (recon,auth,chain,bot,gorgon,oblivion,vibesec,nhi)",
+                    default="recon,auth,chain,bot,gorgon,oblivion,vibesec,nhi")
+    ap.add_argument("--all", action="store_true", help="Run all 8 modules (default)")
     ap.add_argument("--output", "-o", help="Output JSON file", default=None)
     ap.add_argument("--insecure", action="store_true",
                     help="Disable TLS certificate verification (NOT recommended)")

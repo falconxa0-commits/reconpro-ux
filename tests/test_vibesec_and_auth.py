@@ -259,31 +259,44 @@ class TestLoadCredentials:
 
     def test_missing_file(self, tmp_path):
         original = reconpro.CREDENTIALS_FILE
-        reconpro.CREDENTIALS_FILE = str(tmp_path / "nonexistent" / "credentials.json")
+        original_config = reconpro.CONFIG_FILE
+        nonexist = str(tmp_path / "nonexistent")
+        reconpro.CREDENTIALS_FILE = nonexist + "/credentials.json"
+        reconpro.CONFIG_FILE = nonexist + "/config.json"
         try:
             result = reconpro._load_credentials()
             assert result == {}, f"Missing file must return {{}}, got {result}"
         finally:
             reconpro.CREDENTIALS_FILE = original
+            reconpro.CONFIG_FILE = original_config
 
     def test_invalid_json(self, tmp_path):
         original = reconpro.CREDENTIALS_FILE
-        bad_file = str(tmp_path / "bad.json")
+        original_config = reconpro.CONFIG_FILE
+        nonexist = str(tmp_path / "bad_json_test")
+        os.makedirs(nonexist, exist_ok=True)
+        bad_file = os.path.join(nonexist, "bad.json")
         with open(bad_file, "w") as f:
             f.write("NOT VALID JSON {{{")
         reconpro.CREDENTIALS_FILE = bad_file
+        reconpro.CONFIG_FILE = nonexist + "/config.json"
         try:
             result = reconpro._load_credentials()
             assert result == {}, f"Invalid JSON must return {{}}, got {result}"
         finally:
             reconpro.CREDENTIALS_FILE = original
+            reconpro.CONFIG_FILE = original_config
 
     def test_no_api_key_field(self, tmp_path):
         original = reconpro.CREDENTIALS_FILE
-        bad_file = str(tmp_path / "no_key.json")
+        original_config = reconpro.CONFIG_FILE
+        nonexist = str(tmp_path / "no_key_test")
+        os.makedirs(nonexist, exist_ok=True)
+        bad_file = os.path.join(nonexist, "no_key.json")
         with open(bad_file, "w") as f:
             json.dump({"other": "data"}, f)
         reconpro.CREDENTIALS_FILE = bad_file
+        reconpro.CONFIG_FILE = nonexist + "/config.json"
         try:
             result = reconpro._load_credentials()
             assert result == {}, f"Missing api_key field must return {{}}, got {result}"
@@ -468,8 +481,11 @@ class TestCmdAuthStatus:
     def test_unauthenticated_shows_message(self, tmp_path, capsys):
         original_dir = reconpro.CREDENTIALS_DIR
         original_file = reconpro.CREDENTIALS_FILE
-        reconpro.CREDENTIALS_DIR = str(tmp_path / ".nonexistent2")
-        reconpro.CREDENTIALS_FILE = str(tmp_path / ".nonexistent2" / "creds.json")
+        original_config = reconpro.CONFIG_FILE
+        nonexist_dir = str(tmp_path / ".nonexistent2")
+        reconpro.CREDENTIALS_DIR = nonexist_dir
+        reconpro.CREDENTIALS_FILE = os.path.join(nonexist_dir, "creds.json")
+        reconpro.CONFIG_FILE = os.path.join(nonexist_dir, "config.json")
         try:
             reconpro.cmd_auth_status()
             captured = capsys.readouterr()
@@ -478,6 +494,7 @@ class TestCmdAuthStatus:
         finally:
             reconpro.CREDENTIALS_DIR = original_dir
             reconpro.CREDENTIALS_FILE = original_file
+            reconpro.CONFIG_FILE = original_config
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -669,8 +686,8 @@ class TestIntegrationVibesec:
         assert vibesec[0]["name"] == "VIBESEC"
         assert vibesec[0]["color"] == "bright_green"
 
-    def test_seven_modules_total(self):
-        assert len(reconpro.MODULES) == 7, f"Expected 7 modules, got {len(reconpro.MODULES)}"
+    def test_eight_modules_total(self):
+        assert len(reconpro.MODULES) == 8, f"Expected 8 modules, got {len(reconpro.MODULES)}"
 
     def test_unified_verdict_includes_vibesec(self):
         import inspect
@@ -783,9 +800,9 @@ class TestDocstringSyncNewModules:
     def test_docstring_has_upload_flag(self):
         assert "--upload" in reconpro.__doc__, "Docstring must reference --upload flag"
 
-    def test_docstring_has_seven_blades(self):
-        assert "Seven" in reconpro.__doc__ or "Seven" in reconpro.__doc__, \
-            "Docstring must reference seven blades/modules"
+    def test_docstring_has_eight_blades(self):
+        assert "Eight" in reconpro.__doc__ or "eight" in reconpro.__doc__.lower(), \
+            "Docstring must reference eight blades/modules"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -793,11 +810,11 @@ class TestDocstringSyncNewModules:
 # ══════════════════════════════════════════════════════════════════════════
 
 class TestBannerSync:
-    """Banner must reference seven blades."""
+    """Banner must reference eight blades."""
 
-    def test_banner_seven_blades(self):
-        # Banner uses spaced letters: "S E V E N   B L A D E S"
-        assert "S E V E N" in reconpro.BANNER, "Banner must say SEVEN BLADES"
+    def test_banner_eight_blades(self):
+        # Banner uses spaced letters: "E I G H T   B L A D E S"
+        assert "E I G H T" in reconpro.BANNER, "Banner must say EIGHT BLADES"
 
-    def test_tagline_seven(self):
-        assert "Seven" in reconpro.RECONPRO_TAGLINE, "Tagline must say Seven Blades"
+    def test_tagline_eight(self):
+        assert "Eight" in reconpro.RECONPRO_TAGLINE, "Tagline must say Eight Blades"

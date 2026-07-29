@@ -676,3 +676,57 @@ Stage Summary:
 - CLI Auth: auth login/status/logout subcommands, ~/.reconpro/credentials.json with 0700/0600 perms
 - Telemetry: --upload flag, HMAC-SHA256 signed JSON POST, graceful offline fallback to local JSON
 - Zero-fabrication verified: all findings use http_probe with HTTP status validation
+
+---
+Task ID: 8
+Agent: Main Agent
+Task: Build Stage 1 (VibeSec Enhanced), Stage 2 (Next.js API Gateway + CLI Auth), Stage 3 (NHI Graph Engine)
+
+Work Log:
+- STAGE 1: Enhanced VibeSec engine with 3 new audit categories:
+  - Category 5 (security_headers): Missing HSTS, CSP, X-Content-Type-Options, Referrer-Policy, Permissions-Policy
+  - Category 6 (exposed_db): 17 DB admin paths (phpMyAdmin, pgAdmin, MongoDB Express, Prisma Studio, etc.)
+  - Category 7 (storage_exposure): S3/R2 bucket directory listing detection, 8 XML indicators, HTML directory listing
+  - Added 7 new sensitive paths: .aws/credentials, .aws/config, .ssh/id_rsa, .ssh/id_ed25519, .ssh/authorized_keys, .gitlab-ci.yml, .circleci/config.yml
+  - Added 2 new anon key patterns: GCP Storage, Azure Blob (total 7 patterns)
+  - categories_checked expanded from 4 to 7
+
+- STAGE 2a: Built Next.js API Gateway:
+  - Added ApiKey model to Prisma schema with keyHash, keyPrefix, scopes, lastUsedAt, requestCount, isActive, expiresAt
+  - Created /api/v1/telemetry/upload/route.ts — POST handler: Bearer auth → SHA-256 key lookup → validate scopes → create Scan + Finding records → update quota
+  - Created /api/v1/auth/validate/route.ts — POST handler: validate API key → return org_id, quota_remaining, scopes
+  - Added ApiKey relation to Organization and AuditLog models
+  - Both prisma db push and prisma generate completed successfully
+
+- STAGE 2b: Enhanced CLI Auth & Telemetry:
+  - Added CONFIG_FILE (~/.reconpro/config.json) as primary credential location
+  - _load_credentials checks both config.json (primary) and credentials.json (fallback)
+  - _save_credentials writes to config.json primary with backward-compat copy to credentials.json
+  - _delete_credentials removes both files
+  - cmd_auth_login now validates against control plane API (AUTH_VALIDATE_ENDPOINT) when online
+  - cmd_auth_status shows validated/offline status, org_id, quota remaining, scopes
+  - Added AUTH_VALIDATE_ENDPOINT constant
+
+- STAGE 3: Built NHI Graph Engine (8th module):
+  - 10 identity patterns: AWS IAM role/user, AWS access key, GCP service account/project, Azure app ID/managed identity, generic API key, Bearer token, webhook secret
+  - 5 over-permission patterns: wildcard action/resource, admin wildcard, s3:*, iam:PassRole
+  - module_nhi_graph(): 6-phase scan (probe→scan→graph→over-perms→blast radius→remediation)
+  - Graph construction: nodes (Identity, Role, Endpoint, Database) + edges (HAS_ACCESS_TO, CAN_ASSUME, EXPOSES_TOKEN)
+  - Blast-radius analysis: BFS traversal from vulnerable edges to connected resources
+  - Terraform remediation: auto-generates least-privilege IAM patches
+  - render_nhi_graph_panel(): Rich terminal with risk panel, tree graph, over-perms table, TF remediation panel
+  - Wired into MODULES list (8 entries), run_unified_scan(), compute_unified_verdict() (0.14 weight), render pipeline
+  - Updated banner/tagline from "Seven Blades" to "Eight Blades"
+  - Updated CLI docstring to reference 8 modules
+
+- Tests: Created tests/test_stage1_nhi.py with 55 new tests covering all 3 stages
+- Fixed test regressions: updated blade count references (7→8), CONFIG_FILE overrides in all auth tests
+- Full test suite: 230/230 passing across 4 test files (45 + 54 + 75 + 56 tests)
+
+Stage Summary:
+- reconpro.py grew from 2375 to ~3030 LOC (+650 lines)
+- VibeSec: 7 categories, 29 sensitive paths, 7 anon key patterns, 5 security headers, 17 DB admin paths, 7 storage paths
+- Next.js: 2 new API routes (/api/v1/telemetry/upload, /api/v1/auth/validate), ApiKey Prisma model
+- CLI Auth: dual-file credential support, online validation, enriched status display
+- NHI Graph: 10 identity patterns, 5 over-permission patterns, graph + blast-radius + Terraform remediation
+- All 230 tests pass, 8 modules operational
