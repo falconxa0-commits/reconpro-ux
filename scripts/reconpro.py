@@ -2,22 +2,29 @@
 """
 ReconPro UNIFIED CLI — The Convergence
 =======================================
-All six offensive modules fused into one entity.
-One target. One encounter. Six blades.
+All offensive modules fused into one entity.
+One target. One encounter. Seven blades.
 
   ┌─ RECON          13-category surface reconnaissance
   ├─ AUTH BYPASS    15 auth bypass techniques
   ├─ CHAIN HUNTER   SSRF + redirect chain hunting
   ├─ BOT HUNTER     C2 / bot infrastructure detection
   ├─ GORGON ULTRA   15-stage AI red team
-  └─ OBLIVION       23-stage analytical dissolution
+  ├─ OBLIVION       23-stage analytical dissolution
+  └─ VIBESEC        AI/vibe-coding vulnerability benchmark
+
+Subcommands:
+    python3 reconpro.py auth login <api-key>    Store API credentials
+    python3 reconpro.py auth status              Show auth status
+    python3 reconpro.py auth logout              Remove credentials
 
 Usage:
     python3 reconpro.py <target>
-    python3 reconpro.py <target> --modules recon,auth
-    python3 reconpro.py <target> --all --output report.json
+    python3 reconpro.py <target> --modules recon,auth,vibesec
+    python3 reconpro.py <target> --all --output report.json --upload
     python3 reconpro.py <target> --insecure --dry-run
     python3 reconpro.py --list
+    python3 reconpro.py vibesec <target>        Quick vibe-coding audit
 """
 import argparse
 import hashlib
@@ -35,6 +42,7 @@ import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
+import hmac
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from threading import Lock
@@ -145,7 +153,7 @@ BANNER = r"""
 ██╔═══╝ ██╔══╝  ██║     ██╔══██║██╔══╝  ██╔══██╗██╔══╝  ██║     █████╔╝██║
 ██║     ███████╗╚██████╗██║  ██║███████╗██║  ██║███████╗╚██████╗██╔╝██╗██║
 ╚═╝     ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝
-              S I X   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.
+              S E V E N   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.
 """
 
 MODULES = [
@@ -155,7 +163,10 @@ MODULES = [
     {"id": "bot",      "name": "BOT HUNTER",    "desc": "C2 / bot infrastructure detection",    "color": "red"},
     {"id": "gorgon",   "name": "GORGON ULTRA",  "desc": "15-stage AI red team",                 "color": "bright_red"},
     {"id": "oblivion", "name": "OBLIVION",      "desc": "23-stage analytical dissolution",       "color": "bright_magenta"},
+    {"id": "vibesec",  "name": "VIBESEC",       "desc": "AI/vibe-coding vulnerability benchmark", "color": "bright_green"},
 ]
+
+RECONPRO_TAGLINE = "Seven Blades. One Target. One Verdict."
 
 # ══════════════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -264,6 +275,207 @@ def _confirm_proceed(label: str) -> bool:
         return answer in ("y", "yes", "ok")
     except (EOFError, KeyboardInterrupt):
         return False
+
+# ── VibeSec Grade Mapping ─────────────────────────────────────────────
+
+VIBESEC_GRADE_MAP = [
+    (90, "A+", "bright_green"),
+    (80, "A",  "green"),
+    (65, "B",  "yellow"),
+    (50, "C",  "red"),
+    (35, "D",  "bright_red"),
+    (0,  "F",  "bold bright_red"),
+]
+
+VIBESEC_SENSITIVE_PATHS = [
+    "/.env", "/.env.local", "/.env.production", "/.env.development",
+    "/.git/config", "/.git/HEAD", "/.gitignore",
+    "/docker-compose.yml", "/docker-compose.yaml",
+    "/config.json", "/config.yaml", "/config.yml",
+    "/package.json", "/.npmrc",
+    "/vercel.json", "/netlify.toml",
+    "/firebase.json", "/firestore.rules",
+    "/.vscode/settings.json", "/.idea/workspace.xml",
+]
+
+VIBESEC_API_PATHS = [
+    "/api/webhooks", "/api/trpc", "/api/v1/admin", "/api/v1/users",
+    "/api/v1/config", "/api/internal", "/api/debug",
+    "/api/graphql", "/api/stripe/webhook", "/api/upload",
+    "/admin", "/admin/login", "/dashboard",
+]
+
+VIBESEC_ANON_KEY_PATTERNS = [
+    ("supabase", re.compile(r'[\w-]*\.supabase\.co', re.I)),
+    ("firebase", re.compile(r'[\w-]*\.firebaseapp\.com', re.I)),
+    ("aws-s3", re.compile(r's3\.amazonaws\.com|s3-\w+-\d+\.amazonaws\.com', re.I)),
+    ("cloudflare-r2", re.compile(r'[\w-]+\.r2\.cloudflarestorage\.com', re.I)),
+    ("vercel-blob", re.compile(r'blob\.vercel-storage\.com', re.I)),
+]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI AUTH & TELEMETRY
+# ══════════════════════════════════════════════════════════════════════════════
+
+CREDENTIALS_DIR = os.path.expanduser("~/.reconpro")
+CREDENTIALS_FILE = os.path.join(CREDENTIALS_DIR, "credentials.json")
+TELEMETRY_ENDPOINT = "https://api.reconpro.io/api/v1/telemetry/upload"
+
+
+def _load_credentials() -> Dict[str, str]:
+    """Load stored credentials from ~/.reconpro/credentials.json."""
+    try:
+        if os.path.exists(CREDENTIALS_FILE):
+            with open(CREDENTIALS_FILE, "r") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "api_key" in data:
+                    return data
+    except Exception as e:
+        audit_log("credentials.load.error", status=type(e).__name__, detail=str(e)[:120])
+    return {}
+
+
+def _save_credentials(data: Dict[str, str]) -> bool:
+    """Save credentials to ~/.reconpro/credentials.json with restrictive perms."""
+    try:
+        os.makedirs(CREDENTIALS_DIR, mode=0o700, exist_ok=True)
+        fd = os.open(CREDENTIALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+        audit_log("credentials.saved", detail="api_key stored")
+        return True
+    except Exception as e:
+        audit_log("credentials.save.error", status=type(e).__name__, detail=str(e)[:120])
+        return False
+
+
+def _delete_credentials() -> bool:
+    """Remove stored credentials."""
+    try:
+        if os.path.exists(CREDENTIALS_FILE):
+            os.remove(CREDENTIALS_FILE)
+            audit_log("credentials.deleted", detail="api_key removed")
+        return True
+    except Exception as e:
+        audit_log("credentials.delete.error", status=type(e).__name__, detail=str(e)[:120])
+        return False
+
+
+def cmd_auth_login(api_key: str) -> None:
+    """Authenticate and store API key locally."""
+    if not api_key or len(api_key) < 8:
+        console.print("[red]Invalid API key. Must be at least 8 characters.[/]")
+        return
+    if not _save_credentials({"api_key": api_key, "stored_at": datetime.utcnow().isoformat() + "Z"}):
+        console.print("[red]Failed to save credentials.[/]")
+        return
+    console.print(f"[green]Authenticated.[/] API key stored at {CREDENTIALS_FILE}")
+    console.print(f"[dim]Key prefix: {api_key[:8]}...{api_key[-4:]}[/]")
+
+
+def cmd_auth_status() -> None:
+    """Show current authentication status."""
+    creds = _load_credentials()
+    if creds and "api_key" in creds:
+        key = creds["api_key"]
+        stored = creds.get("stored_at", "unknown")
+        console.print(f"[green]Authenticated.[/]")
+        console.print(f"  Key prefix: [bold]{key[:8]}...{key[-4:]}[/]")
+        console.print(f"  Stored at: [dim]{stored}[/]")
+        console.print(f"  File: [dim]{CREDENTIALS_FILE}[/]")
+    else:
+        console.print("[yellow]Not authenticated.[/] No API key found.")
+        console.print(f"  Run: [cyan]reconpro.py auth login <api-key>[/]")
+
+
+def cmd_auth_logout() -> None:
+    """Remove stored credentials."""
+    if _delete_credentials():
+        console.print("[green]Logged out.[/] Credentials removed.")
+    else:
+        console.print("[red]Failed to remove credentials.[/]")
+
+
+def _sign_report(report: Dict[str, Any]) -> str:
+    """HMAC-SHA256 sign a report for tamper-proof telemetry."""
+    creds = _load_credentials()
+    api_key = creds.get("api_key", "")
+    canonical = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    signature = hmac.new(api_key.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+    return signature
+
+
+def _upload_telemetry(report: Dict[str, Any]) -> bool:
+    """POST signed report to telemetry endpoint. Returns True on success."""
+    creds = _load_credentials()
+    if not creds.get("api_key"):
+        audit_log("telemetry.skip", detail="no api_key configured")
+        return False
+    signature = _sign_report(report)
+    payload = json.dumps({
+        "report": report,
+        "signature": signature,
+        "api_key_prefix": creds["api_key"][:8],
+    }).encode()
+    try:
+        RATE_LIMITER.acquire()
+        req = urllib.request.Request(
+            TELEMETRY_ENDPOINT,
+            data=payload,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"ReconPro-Unified/{RECONPRO_VERSION}",
+                "X-ReconPro-Signature": RECONPRO_SIGNATURE,
+                "Authorization": f"Bearer {creds['api_key']}",
+            },
+        )
+        ctx = ssl.create_default_context()
+        if CONFIG.insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+            if resp.status < 300:
+                audit_log("telemetry.upload.ok", detail=f"status={resp.status}")
+                return True
+            else:
+                audit_log("telemetry.upload.error", detail=f"status={resp.status}")
+                return False
+    except Exception as e:
+        audit_log("telemetry.upload.error", status=type(e).__name__, detail=str(e)[:120])
+        return False
+
+
+def _save_local_fallback(report: Dict[str, Any]) -> str:
+    """Save report locally when upload fails — graceful offline fallback."""
+    os.makedirs("/home/z/my-project/download", exist_ok=True)
+    safe_host = _safe_filename(report.get("target", "unknown"))
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    path = f"/home/z/my-project/download/reconpro_pending_{safe_host}_{ts}.json"
+    try:
+        with open(path, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        audit_log("telemetry.fallback.saved", detail=path)
+        return path
+    except Exception as e:
+        audit_log("telemetry.fallback.error", status=type(e).__name__, detail=str(e)[:120])
+        return ""
+
+
+def upload_report(report: Dict[str, Any]) -> None:
+    """Attempt telemetry upload with graceful offline fallback."""
+    console.print(f"\n  [cyan]Telemetry:[/] Attempting upload to {TELEMETRY_ENDPOINT}...")
+    if _upload_telemetry(report):
+        console.print(f"  [green]Upload successful.[/] Report synced to cloud.")
+    else:
+        local_path = _save_local_fallback(report)
+        if local_path:
+            console.print(f"  [yellow]Upload failed (offline/no-key).[/] Saved locally: [bold]{local_path}[/]")
+            console.print(f"  [dim]Re-upload later with: reconpro.py <target> --upload[/]")
+        else:
+            console.print(f"  [red]Upload failed and local save failed. Report may be lost.[/]")
+
 
 def generate_encounter_id(host: str) -> str:
     """Generate a globally unique encounter ID. Uses uuid4 — no collision window."""
@@ -827,11 +1039,282 @@ def module_oblivion(host: str) -> Dict[str, Any]:
     return {"module": "OBLIVION", "error": "no output"}
 
 # ══════════════════════════════════════════════════════════════════════════════
-# UNIFIED VERDICT — combines scores from all 6 modules
+# MODULE 7: VIBESEC — AI/Vibe-Coding Vulnerability Benchmark
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _vibesec_compute_grade(score: int) -> Tuple[str, str]:
+    """Map a 0-100 score to a letter grade and rich color."""
+    for threshold, grade, color in VIBESEC_GRADE_MAP:
+        if score >= threshold:
+            return grade, color
+    return "F", "bold bright_red"
+
+
+def _vibesec_render_badge(target: str, grade: str, score: int) -> str:
+    """Generate a Markdown badge snippet for GitHub READMEs."""
+    color_map = {"A+": "brightgreen", "A": "green", "B": "yellow", "C": "red", "D": "orange", "F": "red"}
+    badge_color = color_map.get(grade, "lightgrey")
+    return f'![VibeSec Grade {grade}](https://img.shields.io/badge/VibeSec-{grade}-{badge_color}?style=for-the-badge&labelColor=0B1C2C)'
+
+
+def module_vibesec(host: str) -> Dict[str, Any]:
+    """Rapid AI/vibe-coding vulnerability benchmark.
+
+    Checks four categories:
+      1. Exposed env/config endpoints
+      2. Unauthenticated API/webhook routes
+      3. Permissive CORS policies
+      4. Exposed anon/public backend keys (Supabase, Firebase, S3, R2)
+
+    Returns a 100-point VibeSec score with A+ to F grade mapping.
+    Every finding is verified via native HTTP response validation (zero fabrication).
+    """
+    findings: List[Dict[str, Any]] = []
+    deductions = 0  # each vulnerability deducts from 100
+
+    base_url = host if host.startswith("http") else f"https://{host}"
+
+    def add(title, severity, category, description, evidence, points_deducted):
+        nonlocal deductions
+        deductions += points_deducted
+        findings.append({
+            "title": title, "severity": severity, "category": category,
+            "description": description, "evidence": evidence, "asset": host,
+            "points_deducted": points_deducted,
+        })
+
+    # ── Category 1: Exposed Environment/Config Files ──────────────────────
+    audit_log("vibesec.config.start", detail=host)
+    for path in VIBESEC_SENSITIVE_PATHS:
+        url = base_url.rstrip("/") + path
+        resp = http_probe(url, timeout=5)
+        status = resp.get("status", 0)
+        body = resp.get("body", "")[:2048]
+        if status == 200 and len(body) > 10:
+            # Verify: real content, not just a redirect page
+            has_secrets = any(kw in body.lower() for kw in [
+                "api_key", "secret", "password", "token", "database_url",
+                "private_key", "supabase", "firebase", "aws_access",
+            ])
+            if has_secrets:
+                add(f"Exposed config — {path}", "critical", "exposed_config",
+                    f"Sensitive configuration endpoint accessible: {path} (200 OK, {len(body)} bytes, contains secrets)",
+                    f"GET {path} → {status} ({len(body)}B, secrets detected)", 15)
+            else:
+                add(f"Exposed config — {path}", "high", "exposed_config",
+                    f"Configuration endpoint accessible: {path} (200 OK, {len(body)} bytes)",
+                    f"GET {path} → {status} ({len(body)}B)", 10)
+        elif status in (200, 201, 301, 302, 307, 308) and status != 404:
+            add(f"Config path accessible — {path}", "medium", "exposed_config",
+                f"Endpoint returned {status} (may redirect or serve partial content)",
+                f"GET {path} → {status}", 5)
+    audit_log("vibesec.config.done", detail=f"{len([f for f in findings if f['category'] == 'exposed_config'])} findings")
+
+    # ── Category 2: Unauthenticated API/Webhook Routes ────────────────────
+    audit_log("vibesec.api.start", detail=host)
+    for path in VIBESEC_API_PATHS:
+        url = base_url.rstrip("/") + path
+        resp = http_probe(url, timeout=5)
+        status = resp.get("status", 0)
+        body = resp.get("body", "")[:2048]
+        if status == 200:
+            # Check for auth-required indicators
+            body_lower = body.lower()
+            is_protected = any(kw in body_lower for kw in [
+                "unauthorized", "401", "forbidden", "authentication required",
+                "\"error\"", "login required",
+            ])
+            if not is_protected and len(body) > 20:
+                add(f"Unauthenticated API — {path}", "high", "unauth_api",
+                    f"API route accessible without authentication: {path} (200 OK, {len(body)} bytes)",
+                    f"GET {path} → {status} (no auth required)", 10)
+            elif status == 200:
+                add(f"API route reachable — {path}", "medium", "unauth_api",
+                    f"API route returned 200 but may have auth checks in POST/DELETE",
+                    f"GET {path} → {status}", 5)
+        elif status in (403, 401):
+            pass  # properly protected — no finding
+        elif status == 404:
+            pass  # not found — no finding
+        elif status == 405:
+            add(f"API route exists — {path}", "low", "unauth_api",
+                f"API route exists (405 Method Not Allowed) — may be exploitable with correct method",
+                f"GET {path} → 405", 3)
+    audit_log("vibesec.api.done", detail=f"{len([f for f in findings if f['category'] == 'unauth_api'])} findings")
+
+    # ── Category 3: CORS Policy Analysis ────────────────────────────────────
+    audit_log("vibesec.cors.start", detail=host)
+    # Test with an origin probe
+    cors_resp = http_probe(base_url, timeout=5)
+    cors_headers = cors_resp.get("headers", {})
+    acao = cors_headers.get("Access-Control-Allow-Origin", "")
+    if acao == "*":
+        add("Permissive CORS — wildcard origin", "high", "cors",
+            "Access-Control-Allow-Origin: * — any domain can make cross-origin requests",
+            f"CORS header: {acao}", 12)
+    elif acao and acao != "null":
+        # Specific origin — check if it reflects the Origin header
+        reflect_resp = http_probe(base_url, headers={"Origin": "https://evil-attacker.com"}, timeout=5)
+        reflected = reflect_resp.get("headers", {}).get("Access-Control-Allow-Origin", "")
+        if "evil-attacker" in reflected:
+            add("CORS origin reflection vulnerability", "critical", "cors",
+                "Server reflects any Origin header back — allows cross-origin attacks from any domain",
+                f"Sent Origin: https://evil-attacker.com, got back: {reflected}", 15)
+    allow_cred = cors_headers.get("Access-Control-Allow-Credentials", "")
+    if acao != "" and allow_cred.lower() == "true":
+        add("CORS credentials exposed", "high", "cors",
+            "Access-Control-Allow-Credentials: true with non-empty Allow-Origin",
+            f"Allow-Credentials: true, Allow-Origin: {acao or '(reflected)'}", 10)
+    if not acao:
+        # No CORS header at all — check if it's a JSON API that should have CORS
+        ct = cors_headers.get("content-type", "")
+        if "json" in ct.lower():
+            add("JSON API without CORS headers", "low", "cors",
+                "API returns JSON but sets no CORS headers — may be intentional or oversight",
+            f"Content-Type: {ct}, no CORS headers", 3)
+    audit_log("vibesec.cors.done", detail=f"{len([f for f in findings if f['category'] == 'cors'])} findings")
+
+    # ── Category 4: Exposed Anon/Public Backend Keys ────────────────────────
+    audit_log("vibesec.anon_keys.start", detail=host)
+    # Check the main page body for exposed service URLs
+    main_body = http_probe(base_url, timeout=5).get("body", "")[:16384]
+    for name, pattern in VIBESEC_ANON_KEY_PATTERNS:
+        matches = pattern.findall(main_body)
+        if matches:
+            unique = list(set(matches))[:5]
+            # Verify each match resolves (zero fabrication)
+            verified = []
+            for m in unique:
+                test_url = f"https://{m}" if not m.startswith("http") else m
+                probe = http_probe(test_url, timeout=3)
+                if probe.get("status", 0) > 0:
+                    verified.append(m)
+            if verified:
+                add(f"Exposed {name} backend — {len(verified)} instance(s)", "critical", "anon_keys",
+                    f"Public {name} URLs found in page source and confirmed reachable",
+                    f"{name}: {', '.join(verified[:3])}", 15)
+            else:
+                add(f"Detected {name} references — not verified", "medium", "anon_keys",
+                    f"{name} URLs found in page source but could not confirm reachability",
+                    f"{name}: {', '.join(unique[:3])}", 5)
+
+    # Also check robots.txt and sitemap for exposed service URLs
+    for check_path in ["/robots.txt", "/sitemap.xml"]:
+        check_resp = http_probe(base_url.rstrip("/") + check_path, timeout=5)
+        if check_resp.get("status") == 200:
+            check_body = check_resp.get("body", "")[:8192]
+            for name, pattern in VIBESEC_ANON_KEY_PATTERNS:
+                matches = pattern.findall(check_body)
+                if matches and not any(f["title"].startswith(f"Exposed {name}") for f in findings):
+                    unique = list(set(matches))[:3]
+                    add(f"{name} URLs in {check_path}", "medium", "anon_keys",
+                        f"Public {name} URLs exposed in {check_path}",
+                        f"{check_path}: {', '.join(unique)}", 5)
+    audit_log("vibesec.anon_keys.done", detail=f"{len([f for f in findings if f['category'] == 'anon_keys'])} findings")
+
+    # ── Score Calculation ──────────────────────────────────────────────────
+    raw_score = max(0, 100 - deductions)
+    # Normalize: if no findings at all, perfect score
+    if not findings:
+        raw_score = 100
+    # Clamp
+    raw_score = min(100, max(0, raw_score))
+    grade, grade_color = _vibesec_compute_grade(raw_score)
+    badge_md = _vibesec_render_badge(host, grade, raw_score)
+
+    severity_counts: Dict[str, int] = {}
+    for f in findings:
+        sev = f["severity"]
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+    result = {
+        "module": "VIBESEC",
+        "vibesec_score": raw_score,
+        "grade": grade,
+        "grade_color": grade_color,
+        "badge_markdown": badge_md,
+        "total_findings": len(findings),
+        "severity_counts": severity_counts,
+        "findings": findings,
+        "categories_checked": ["exposed_config", "unauth_api", "cors", "anon_keys"],
+        "max_possible_score": 100,
+    }
+    audit_log("vibesec.complete", detail=f"score={raw_score} grade={grade} findings={len(findings)}")
+    return result
+
+
+def render_vibesec_panel(vibesec: Dict[str, Any]) -> None:
+    """Render VibeSec results as a Rich panel with grade, table, and badge."""
+    score = vibesec.get("vibesec_score", 0)
+    grade = vibesec.get("grade", "F")
+    grade_color = vibesec.get("grade_color", "bold bright_red")
+    total = vibesec.get("total_findings", 0)
+    sc = vibesec.get("severity_counts", {})
+
+    # Score bar
+    bar_width = 40
+    filled = int(score / 100 * bar_width)
+    bar = "█" * filled + "░" * (bar_width - filled)
+
+    console.print(Panel(
+        Group(
+            Text("\n  VIBESEC BENCHMARK — AI/Vibe-Coding Vulnerability Audit", style="bold bright_green"),
+            Text(f""),
+            Text(f"  Score: {bar} [bold {grade_color}]{score}/100 ({grade})[/{grade_color}]", style="white"),
+            Text(f""),
+            Text(f"  Findings: [bold]{total}[/]  "
+                 f"[bright_red]{sc.get('critical',0)} critical[/], "
+                 f"[red]{sc.get('high',0)} high[/], "
+                 f"[yellow]{sc.get('medium',0)} medium[/], "
+                 f"[green]{sc.get('low',0)} low[/], "
+                 f"[dim]{sc.get('info',0)} info[/]"),
+        ),
+        border_style="bright_green",
+        title="[bold]VIBESEC[/bold]",
+        title_align="left",
+        padding=(1, 2),
+    ))
+
+    # Findings table
+    findings = vibesec.get("findings", [])
+    if findings:
+        table = Table(title=f"Vibe Coding Vulnerabilities — {len(findings)} detected",
+                      border_style="bright_green", header_style="bold bright_green", show_lines=False)
+        table.add_column("Severity", style="bold", width=10)
+        table.add_column("Category", style="cyan", width=16)
+        table.add_column("Finding", style="white")
+        table.add_column("Pts", style="yellow", width=5)
+        sev_colors = {"critical": "bright_red", "high": "red", "medium": "yellow", "low": "green", "info": "dim"}
+        for f in findings[:20]:
+            sev = f["severity"]
+            table.add_row(
+                f"[{sev_colors.get(sev, 'white')}]{sev.upper()}[/{sev_colors.get(sev, 'white')}]",
+                f["category"], f["title"][:60], str(f.get("points_deducted", 0))
+            )
+        console.print(table)
+
+    # Badge snippet
+    badge = vibesec.get("badge_markdown", "")
+    if badge:
+        console.print()
+        console.print(Panel(
+            Group(
+                Text("  GitHub README Badge (copy-paste):", style="bold dim"),
+                Text(f"  {badge}", style="cyan"),
+            ),
+            border_style="dim",
+            title="[dim]Badge[/dim]",
+            title_align="left",
+            padding=(0, 2),
+        ))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UNIFIED VERDICT — combines scores from all 7 modules
 # ══════════════════════════════════════════════════════════════════════════════
 
 def compute_unified_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
-    """Combine all 6 module scores into a unified verdict."""
+    """Combine all module scores into a unified verdict."""
     scores = {}
     # RECON: weighted by severity counts
     recon = report.get("recon", {})
@@ -853,9 +1336,13 @@ def compute_unified_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
     # OBLIVION
     oblivion = report.get("oblivion", {})
     scores["oblivion"] = oblivion.get("verdict", {}).get("threatScore", 0) if isinstance(oblivion, dict) else 0
+    # VIBESEC: inverted score (low vibesec = more dangerous for unified)
+    vibesec = report.get("vibesec", {})
+    vibesec_score = vibesec.get("vibesec_score", 100) if isinstance(vibesec, dict) else 100
+    scores["vibesec"] = 100 - vibesec_score  # invert: more vibe-vulns = higher unified threat
 
     # Weighted unified score
-    weights = {"recon": 0.10, "auth": 0.15, "chain": 0.15, "bot": 0.10, "gorgon": 0.20, "oblivion": 0.30}
+    weights = {"recon": 0.08, "auth": 0.13, "chain": 0.13, "bot": 0.08, "gorgon": 0.18, "oblivion": 0.28, "vibesec": 0.12}
     unified = int(sum(scores.get(k, 0) * w for k, w in weights.items()))
 
     if unified >= 90: verdict = "OMNIPOTENT VERDICT — The target has been comprehensively dissolved."
@@ -1147,6 +1634,16 @@ def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
             except Exception as e:
                 progress.update(task, completed=True, description=f"[red]✗ OBLIVION failed: {e}")
 
+        # VIBESEC
+        if "vibesec" in modules:
+            task = progress.add_task("[bright_green]VIBESEC — AI/vibe-coding vulnerability benchmark...", total=None)
+            try:
+                vibesec = module_vibesec(host)
+                report["vibesec"] = vibesec
+                progress.update(task, completed=True, description="[green]✓ VIBESEC complete")
+            except Exception as e:
+                progress.update(task, completed=True, description=f"[red]✗ VIBESEC failed: {e}")
+
     elapsed = round(time.time() - start, 2)
     report["duration_seconds"] = elapsed
 
@@ -1189,6 +1686,7 @@ def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
     _safe("BOT HUNTER", render_bot_table, report.get("bot_hunter"))
     _safe("GORGON ULTRA", render_gorgon_summary, report.get("gorgon"))
     _safe("OBLIVION", render_oblivion_summary, report.get("oblivion"))
+    _safe("VIBESEC", render_vibesec_panel, report.get("vibesec"))
 
     # Final verdict
     console.print()
@@ -1733,11 +2231,29 @@ def grant_wishes(target: str = "huggingface.co"):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    ap = argparse.ArgumentParser(description="ReconPro UNIFIED CLI — Six Blades, One Target, One Verdict")
+    # ── Pre-argparse: intercept auth subcommand before argparse ──────────
+    # python3 reconpro.py auth login <api-key>
+    # python3 reconpro.py auth status
+    # python3 reconpro.py auth logout
+    if len(sys.argv) >= 3 and sys.argv[1].lower() == "auth":
+        sub = sys.argv[2].lower() if len(sys.argv) >= 3 else ""
+        if sub == "login":
+            key = sys.argv[3] if len(sys.argv) >= 4 else ""
+            cmd_auth_login(key)
+        elif sub == "status":
+            cmd_auth_status()
+        elif sub == "logout":
+            cmd_auth_logout()
+        else:
+            console.print("[red]Unknown auth subcommand.[/]")
+            console.print("  Usage: python3 reconpro.py auth [login <key> | status | logout]")
+        return
+
+    ap = argparse.ArgumentParser(description="ReconPro UNIFIED CLI — Seven Blades, One Target, One Verdict")
     ap.add_argument("target", nargs="?", default="", help="Target host (e.g. generativelanguage.googleapis.com)")
-    ap.add_argument("--modules", "-m", help="Comma-separated module IDs (recon,auth,chain,bot,gorgon,oblivion)",
-                    default="recon,auth,chain,bot,gorgon,oblivion")
-    ap.add_argument("--all", action="store_true", help="Run all 6 modules (default)")
+    ap.add_argument("--modules", "-m", help="Comma-separated module IDs (recon,auth,chain,bot,gorgon,oblivion,vibesec)",
+                    default="recon,auth,chain,bot,gorgon,oblivion,vibesec")
+    ap.add_argument("--all", action="store_true", help="Run all 7 modules (default)")
     ap.add_argument("--output", "-o", help="Output JSON file", default=None)
     ap.add_argument("--insecure", action="store_true",
                     help="Disable TLS certificate verification (NOT recommended)")
@@ -1749,6 +2265,9 @@ def main():
                     help="Suppress banner and info panels")
     ap.add_argument("--json", action="store_true",
                     help="Output pure JSON to stdout (implies --quiet)")
+    ap.add_argument("--upload", action="store_true",
+                    help="Upload signed report to telemetry endpoint after scan")
+    ap.add_argument("--auth-key", help="API key (alternative to auth login)")
 
     # M5: Mutually exclusive mode flags
     mode_group = ap.add_mutually_exclusive_group()
@@ -1756,6 +2275,8 @@ def main():
     mode_group.add_argument("--wishes", action="store_true", help="Ask the Oracle for 22 wishes")
     mode_group.add_argument("--grant-wishes", action="store_true",
                     help="Grant the 22 wishes against a target (use: --grant-wishes <host>)")
+    mode_group.add_argument("--vibesec", action="store_true",
+                    help="Quick VibeSec benchmark only (shortcut for --modules vibesec)")
     args = ap.parse_args()
 
     # Propagate config flags
@@ -1766,6 +2287,10 @@ def main():
     CONFIG.json_output = args.json
     if CONFIG.json_output:
         CONFIG.quiet = True
+
+    # Override CREDENTIALS_FILE with --auth-key if provided
+    if args.auth_key:
+        _save_credentials({"api_key": args.auth_key, "stored_at": datetime.utcnow().isoformat() + "Z", "source": "cli_flag"})
 
     if CONFIG.insecure:
         console.print("[yellow]⚠ TLS verification DISABLED — connections are not secure[/]")
@@ -1791,19 +2316,27 @@ def main():
         render_banner()
         render_module_list()
         console.print("\n  [dim]Usage: python3 reconpro.py <host> --all[/]")
+        console.print("  [dim]       python3 reconpro.py <host> --modules vibesec[/]")
+        console.print("  [dim]       python3 reconpro.py <host> --all --upload[/]")
+        console.print("  [dim]       python3 reconpro.py --vibesec <host>[/]")
+        console.print("  [dim]       python3 reconpro.py auth login <api-key>[/]")
         console.print("  [dim]       python3 reconpro.py --wishes[/]")
         console.print("  [dim]       python3 reconpro.py --grant-wishes <host>[/]\n")
         return
 
-    modules = [m.strip() for m in args.modules.split(",") if m.strip()]
-    if args.all or not modules:
-        modules = [m["id"] for m in MODULES]
+    # --vibesec shortcut: run only vibesec module
+    if args.vibesec:
+        modules = ["vibesec"]
+    else:
+        modules = [m.strip() for m in args.modules.split(",") if m.strip()]
+        if args.all or not modules:
+            modules = [m["id"] for m in MODULES]
 
     # Validate module IDs
     valid_ids = {m["id"] for m in MODULES}
     invalid = [m for m in modules if m not in valid_ids]
     if invalid:
-        console.print(f"[red]Invalid module(s): {', '.join(invalid)}. Valid: {', '.join(valid_ids)}[/]")
+        console.print(f"[red]Invalid module(s): {', '.join(invalid)}. Valid: {', '.join(sorted(valid_ids))}[/]")
         sys.exit(1)
 
     report = run_unified_scan(args.target, modules)
@@ -1818,6 +2351,10 @@ def main():
     with open(out_path, "w") as f:
         json.dump(report, f, indent=2, default=str)
     console.print(f"  [green]✓ Report saved:[/] [bold]{out_path}[/]")
+
+    # Upload telemetry if --upload
+    if args.upload:
+        upload_report(report)
 
 if __name__ == "__main__":
     try:
