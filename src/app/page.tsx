@@ -24,6 +24,11 @@ import { VulnArsenal } from '@/components/reconpro/vuln-arsenal';
 import { UnifiedCLI } from '@/components/reconpro/unified-cli';
 import { HallOfFame } from '@/components/reconpro/hall-of-fame';
 import { NHIKillSwitch } from '@/components/reconpro/nhi-kill-switch';
+import { GenesisStampPanel } from '@/components/reconpro/genesis-stamp';
+import { ImplosionPanel } from '@/components/reconpro/implosion-panel';
+import { WarRoomPanel } from '@/components/reconpro/war-room';
+import { ProofGallery } from '@/components/reconpro/proof-gallery';
+import { AILeaderboard } from '@/components/reconpro/ai-leaderboard';
 import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
 import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
@@ -36,7 +41,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame' | 'nhi-kill-switch';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame' | 'nhi-kill-switch' | 'genesis-stamp' | 'implosion' | 'war-room' | 'proof-gallery' | 'ai-leaderboard';
 
 interface Finding {
   id: string; title: string; severity: string; category: string;
@@ -446,6 +451,11 @@ export default function Home() {
       case 'white-label': return <WhiteLabelPanel />;
       case 'hall-of-fame': return <HallOfFame />;
       case 'nhi-kill-switch': return <NHIKillSwitch />;
+      case 'genesis-stamp': return <GenesisStampPanel />;
+      case 'implosion': return <ImplosionPanel />;
+      case 'war-room': return <WarRoomPanel />;
+      case 'proof-gallery': return <ProofGallery />;
+      case 'ai-leaderboard': return <AILeaderboard />;
       default: return renderScan();
     }
   };

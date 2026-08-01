@@ -30,6 +30,9 @@ import {
   Terminal,
  Trophy,
   ShieldAlert,
+  Radio,
+  Film,
+  Ghost,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -101,12 +104,17 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
       { id: 'unified-cli', label: 'ReconPro UNIFIED CLI', icon: Terminal, badge: '6 BLADES' },
+      { id: 'war-room', label: 'War Room', icon: Radio, badge: 'LIVE', accentColor: '#ef4444' },
+      { id: 'ai-leaderboard', label: 'Hall of Broken Models', icon: Ghost, badge: 'VIRAL', accentColor: '#ef4444' },
+      { id: 'proof-gallery', label: 'Proof Gallery', icon: Film, badge: 'SHARE' },
     ],
   },
   {
     title: 'Operations',
     items: [
       { id: 'nhi-kill-switch', label: 'NHI Kill Switch', icon: ShieldAlert, badge: 'ENTERPRISE', accentColor: '#ef4444' },
+      { id: 'genesis-stamp', label: 'Genesis Stamp', icon: BadgeCheck, badge: 'ENTERPRISE', accentColor: '#00ff88' },
+      { id: 'implosion', label: 'Risk Simulator', icon: Skull, badge: 'SALES', accentColor: '#ef4444' },
     ],
   },
   {
