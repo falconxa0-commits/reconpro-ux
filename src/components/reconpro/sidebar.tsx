@@ -29,6 +29,7 @@ import {
   Bot,
   Terminal,
  Trophy,
+  ShieldAlert,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -45,6 +46,7 @@ interface NavItem {
   label: string;
   icon: LucideIcon;
   badge?: string;
+  accentColor?: string;
 }
 
 interface NavSection {
@@ -99,6 +101,12 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
       { id: 'unified-cli', label: 'ReconPro UNIFIED CLI', icon: Terminal, badge: '6 BLADES' },
+    ],
+  },
+  {
+    title: 'Operations',
+    items: [
+      { id: 'nhi-kill-switch', label: 'NHI Kill Switch', icon: ShieldAlert, badge: 'ENTERPRISE', accentColor: '#ef4444' },
     ],
   },
   {

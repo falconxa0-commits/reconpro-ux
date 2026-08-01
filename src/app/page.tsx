@@ -23,6 +23,7 @@ import { LiveProofPanel } from '@/components/reconpro/live-proof';
 import { VulnArsenal } from '@/components/reconpro/vuln-arsenal';
 import { UnifiedCLI } from '@/components/reconpro/unified-cli';
 import { HallOfFame } from '@/components/reconpro/hall-of-fame';
+import { NHIKillSwitch } from '@/components/reconpro/nhi-kill-switch';
 import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
 import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
@@ -35,7 +36,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame' | 'nhi-kill-switch';
 
 interface Finding {
   id: string; title: string; severity: string; category: string;
@@ -444,6 +445,7 @@ export default function Home() {
       case 'pricing': return <PricingPlans onNavigate={handleViewChange} />;
       case 'white-label': return <WhiteLabelPanel />;
       case 'hall-of-fame': return <HallOfFame />;
+      case 'nhi-kill-switch': return <NHIKillSwitch />;
       default: return renderScan();
     }
   };
