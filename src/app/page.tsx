@@ -22,6 +22,7 @@ import { PricingPlans } from '@/components/reconpro/pricing-plans';
 import { LiveProofPanel } from '@/components/reconpro/live-proof';
 import { VulnArsenal } from '@/components/reconpro/vuln-arsenal';
 import { UnifiedCLI } from '@/components/reconpro/unified-cli';
+import { HallOfFame } from '@/components/reconpro/hall-of-fame';
 import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
 import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
@@ -34,7 +35,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame';
 
 interface Finding {
   id: string; title: string; severity: string; category: string;
@@ -442,6 +443,7 @@ export default function Home() {
       case 'unified-cli': return <UnifiedCLI />;
       case 'pricing': return <PricingPlans onNavigate={handleViewChange} />;
       case 'white-label': return <WhiteLabelPanel />;
+      case 'hall-of-fame': return <HallOfFame />;
       default: return renderScan();
     }
   };

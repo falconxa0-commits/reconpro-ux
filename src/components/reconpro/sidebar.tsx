@@ -28,6 +28,7 @@ import {
   Skull,
   Bot,
   Terminal,
+ Trophy,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -66,6 +67,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
       { id: 'executive', label: 'Executive Briefing', icon: FileBarChart },
+      { id: 'hall-of-fame', label: 'Hall of Fame', icon: Trophy, badge: 'VIBESEC' },
     ],
   },
   {

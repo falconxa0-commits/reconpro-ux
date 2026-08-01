@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Users,
@@ -13,12 +13,11 @@ import {
   Edit3,
   Trash2,
   Crown,
-  Activity,
   Clock,
   AlertCircle,
   Copy,
-  X,
   Check,
+  Plus,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -69,119 +68,6 @@ interface Team {
   color: string;
   memberCount: number;
 }
-
-interface TeamManagementProps {
-  members?: Member[];
-  teams?: Team[];
-}
-
-// ── Mock Data ────────────────────────────────────────────────────────────────
-
-const mockMembers: Member[] = [
-  {
-    id: 'm1',
-    name: 'Marcus Chen',
-    email: 'marcus.chen@reconpro.io',
-    role: 'Admin',
-    lastActive: '2 min ago',
-    teamMemberships: ['Red Team', 'Engineering'],
-    status: 'online',
-  },
-  {
-    id: 'm2',
-    name: 'Sarah Nakamura',
-    email: 'sarah.n@reconpro.io',
-    role: 'Security Lead',
-    lastActive: '5 min ago',
-    teamMemberships: ['Blue Team'],
-    status: 'online',
-  },
-  {
-    id: 'm3',
-    name: 'James Rodriguez',
-    email: 'j.rodriguez@reconpro.io',
-    role: 'Analyst',
-    lastActive: '12 min ago',
-    teamMemberships: ['Red Team', 'Compliance'],
-    status: 'online',
-  },
-  {
-    id: 'm4',
-    name: 'Elena Petrova',
-    email: 'elena.p@reconpro.io',
-    role: 'Analyst',
-    lastActive: '1h ago',
-    teamMemberships: ['Compliance'],
-    status: 'away',
-  },
-  {
-    id: 'm5',
-    name: 'David Okonkwo',
-    email: 'd.okonkwo@reconpro.io',
-    role: 'Security Lead',
-    lastActive: '30 min ago',
-    teamMemberships: ['Engineering'],
-    status: 'online',
-  },
-  {
-    id: 'm6',
-    name: 'Aisha Patel',
-    email: 'aisha.p@reconpro.io',
-    role: 'Viewer',
-    lastActive: '3h ago',
-    teamMemberships: ['Compliance'],
-    status: 'offline',
-  },
-  {
-    id: 'm7',
-    name: 'Liam Foster',
-    email: 'l.foster@reconpro.io',
-    role: 'Admin',
-    lastActive: '8 min ago',
-    teamMemberships: ['Red Team', 'Blue Team', 'Engineering'],
-    status: 'online',
-  },
-  {
-    id: 'm8',
-    name: 'Mei-Ling Wu',
-    email: 'meiling.wu@reconpro.io',
-    role: 'Analyst',
-    lastActive: '45 min ago',
-    teamMemberships: ['Blue Team'],
-    status: 'offline',
-  },
-];
-
-const mockTeams: Team[] = [
-  {
-    id: 't1',
-    name: 'Red Team',
-    description: 'Offensive security operations and penetration testing',
-    color: '#f85149',
-    memberCount: 4,
-  },
-  {
-    id: 't2',
-    name: 'Blue Team',
-    description: 'Defensive security monitoring and incident response',
-    color: '#58a6ff',
-    memberCount: 3,
-  },
-  {
-    id: 't3',
-    name: 'Compliance',
-    description: 'Regulatory compliance auditing and governance',
-    color: '#d29922',
-    memberCount: 3,
-  },
-  {
-    id: 't4',
-    name: 'Engineering',
-    description: 'Platform engineering and security tooling development',
-    color: '#00ff88',
-    memberCount: 3,
-  },
-];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -264,12 +150,62 @@ const cardHover = {
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export function TeamManagement({ members = mockMembers, teams = mockTeams }: TeamManagementProps) {
+export function TeamManagement() {
+  const [members, setMembers] = useState<Member[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState('Viewer');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Team add dialog
+  const [teamOpen, setTeamOpen] = useState(false);
+  const [teamName, setTeamName] = useState('');
+  const [teamDesc, setTeamDesc] = useState('');
+
+  // Role edit dialog
+  const [roleEditOpen, setRoleEditOpen] = useState(false);
+  const [roleEditId, setRoleEditId] = useState('');
+  const [roleEditValue, setRoleEditValue] = useState('');
+
+  const fetchMembers = useCallback(async () => {
+    try {
+      const res = await fetch('/api/members');
+      const json = await res.json();
+      setMembers(json.members || []);
+    } catch (err) {
+      console.error('Failed to fetch members:', err);
+    }
+  }, []);
+
+  const fetchTeams = useCallback(async () => {
+    try {
+      const res = await fetch('/api/teams');
+      const json = await res.json();
+      setTeams(json.teams || []);
+    } catch (err) {
+      console.error('Failed to fetch teams:', err);
+    }
+  }, []);
+
+  const fetchAllRef = useCallback(async () => {
+    await Promise.all([fetchMembers(), fetchTeams()]);
+  }, [fetchMembers, fetchTeams]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        await fetchAllRef();
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [fetchAllRef]);
 
   const filteredMembers = members.filter(
     (m) =>
@@ -281,11 +217,72 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
   const adminCount = members.filter((m) => m.role === 'Admin').length;
   const onlineCount = members.filter((m) => m.status === 'online').length;
 
-  const handleInvite = () => {
-    console.log('Invite member:', { email: inviteEmail, role: inviteRole });
-    setInviteOpen(false);
-    setInviteEmail('');
-    setInviteRole('Viewer');
+  const handleInvite = async () => {
+    if (!inviteName || !inviteEmail) return;
+    try {
+      await fetch('/api/members', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: inviteName, email: inviteEmail, role: inviteRole.toLowerCase().replace(' ', '_') }),
+      });
+      setInviteOpen(false);
+      setInviteEmail('');
+      setInviteName('');
+      setInviteRole('Viewer');
+      await fetchMembers();
+    } catch (err) {
+      console.error('Failed to invite member:', err);
+    }
+  };
+
+  const handleRoleChange = async () => {
+    if (!roleEditId || !roleEditValue) return;
+    try {
+      await fetch('/api/members', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: roleEditId, role: roleEditValue.toLowerCase().replace(' ', '_') }),
+      });
+      setRoleEditOpen(false);
+      await fetchMembers();
+    } catch (err) {
+      console.error('Failed to update role:', err);
+    }
+  };
+
+  const handleDeleteMember = async (id: string) => {
+    try {
+      await fetch(`/api/members?id=${id}`, { method: 'DELETE' });
+      await fetchMembers();
+    } catch (err) {
+      console.error('Failed to delete member:', err);
+    }
+  };
+
+  const handleAddTeam = async () => {
+    if (!teamName) return;
+    try {
+      await fetch('/api/teams', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: teamName, description: teamDesc }),
+      });
+      setTeamOpen(false);
+      setTeamName('');
+      setTeamDesc('');
+      await fetchTeams();
+    } catch (err) {
+      console.error('Failed to create team:', err);
+    }
+  };
+
+  const handleDeleteTeam = async (id: string) => {
+    try {
+      await fetch(`/api/teams?id=${id}`, { method: 'DELETE' });
+      await fetchTeams();
+    } catch (err) {
+      console.error('Failed to delete team:', err);
+    }
   };
 
   const handleCopyId = (id: string) => {
@@ -293,6 +290,20 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
+
+  const openRoleEdit = (member: Member) => {
+    setRoleEditId(member.id);
+    setRoleEditValue(member.role);
+    setRoleEditOpen(true);
+  };
+
+  if (loading) {
+    return (
+      <div className="w-full flex items-center justify-center py-20">
+        <p className="text-[#8b949e]">Loading...</p>
+      </div>
+    );
+  }
 
   return (
     <motion.div
@@ -327,6 +338,15 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-[#e6edf3]">Name</label>
+                <Input
+                  placeholder="John Doe"
+                  value={inviteName}
+                  onChange={(e) => setInviteName(e.target.value)}
+                  className="bg-[#0a0d14] border-[#21262d] text-[#e6edf3] placeholder:text-[#484f58] focus:border-[#00ff88]"
+                />
+              </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-[#e6edf3]">Email Address</label>
                 <Input
@@ -372,7 +392,7 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
         {[
           { label: 'Total Members', value: members.length, icon: Users, color: '#00ff88' },
           { label: 'Active Teams', value: teams.length, icon: Shield, color: '#58a6ff' },
-          { label: 'Pending Invites', value: 3, icon: AlertCircle, color: '#d29922' },
+          { label: 'Pending Invites', value: 0, icon: AlertCircle, color: '#d29922' },
           { label: 'Admins', value: adminCount, icon: Crown, color: '#a855f7' },
         ].map((stat) => (
           <motion.div
@@ -430,6 +450,12 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
 
               {/* Table */}
               <div className="max-h-[400px] overflow-y-auto">
+                {members.length === 0 ? (
+                  <div className="px-4 py-8 text-center">
+                    <Users className="w-8 h-8 text-[#484f58] mx-auto mb-3" />
+                    <p className="text-sm text-[#8b949e]">No members yet. Click &quot;Invite Member&quot; to add your first team member.</p>
+                  </div>
+                ) : (
                 <Table>
                   <TableHeader>
                     <TableRow className="border-b border-[#21262d] hover:bg-transparent">
@@ -503,7 +529,10 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
                                 </Button>
                               </DropdownMenuTrigger>
                               <DropdownMenuContent className="bg-[#161b22] border-[#21262d] text-[#e6edf3] min-w-[160px]" align="end">
-                                <DropdownMenuItem className="text-[#8b949e] hover:text-[#e6edf3] hover:bg-[rgba(0,255,136,0.1)] cursor-pointer gap-2">
+                                <DropdownMenuItem
+                                  className="text-[#8b949e] hover:text-[#e6edf3] hover:bg-[rgba(0,255,136,0.1)] cursor-pointer gap-2"
+                                  onClick={() => openRoleEdit(member)}
+                                >
                                   <Edit3 className="w-4 h-4" />
                                   Edit Role
                                 </DropdownMenuItem>
@@ -519,7 +548,10 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
                                   {copiedId === member.id ? 'Copied!' : 'Copy ID'}
                                 </DropdownMenuItem>
                                 <DropdownMenuSeparator className="bg-[#21262d]" />
-                                <DropdownMenuItem className="text-[#f85149] hover:text-[#f85149] hover:bg-[rgba(248,81,73,0.1)] cursor-pointer gap-2">
+                                <DropdownMenuItem
+                                  className="text-[#f85149] hover:text-[#f85149] hover:bg-[rgba(248,81,73,0.1)] cursor-pointer gap-2"
+                                  onClick={() => handleDeleteMember(member.id)}
+                                >
                                   <Trash2 className="w-4 h-4" />
                                   Remove Member
                                 </DropdownMenuItem>
@@ -531,6 +563,7 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
                     </AnimatePresence>
                   </TableBody>
                 </Table>
+                )}
               </div>
 
               {/* Table footer */}
@@ -543,83 +576,185 @@ export function TeamManagement({ members = mockMembers, teams = mockTeams }: Tea
 
           {/* ── Teams Tab ───────────────────────────────────────────────── */}
           <TabsContent value="teams" className="mt-4">
-            <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-4" variants={containerVariants} initial="hidden" animate="visible">
-              {teams.map((team, idx) => (
-                <motion.div
-                  key={team.id}
-                  variants={itemVariants}
-                  whileHover={cardHover}
-                  className="rounded-xl border overflow-hidden transition-shadow"
-                  style={{
-                    borderColor: team.color + '30',
-                    backgroundColor: '#0d1117',
-                  }}
-                >
-                  {/* Color accent top border */}
-                  <div className="h-1" style={{ backgroundColor: team.color }} />
-
-                  <div className="p-5">
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex items-center gap-3">
-                        <div
-                          className="w-10 h-10 rounded-lg flex items-center justify-center"
-                          style={{ backgroundColor: team.color + '15' }}
-                        >
-                          <Shield className="w-5 h-5" style={{ color: team.color }} />
-                        </div>
-                        <div>
-                          <h3 className="text-sm font-bold text-[#e6edf3]">{team.name}</h3>
-                          <p className="text-xs text-[#8b949e]">{team.memberCount} members</p>
-                        </div>
-                      </div>
-                      <Badge
-                        variant="outline"
-                        className="text-[10px] border-[#21262d] text-[#8b949e]"
-                      >
-                        Active
-                      </Badge>
+            <div className="flex justify-end mb-4">
+              <Dialog open={teamOpen} onOpenChange={setTeamOpen}>
+                <DialogTrigger asChild>
+                  <Button className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
+                    <Plus className="w-4 h-4" />
+                    Add Team
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-[#0d1117] border-[#21262d] text-[#e6edf3]">
+                  <DialogHeader>
+                    <DialogTitle className="text-[#e6edf3]">Create New Team</DialogTitle>
+                    <DialogDescription className="text-[#8b949e]">
+                      Add a new team to your organization.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-[#e6edf3]">Team Name</label>
+                      <Input
+                        placeholder="e.g. Red Team"
+                        value={teamName}
+                        onChange={(e) => setTeamName(e.target.value)}
+                        className="bg-[#0a0d14] border-[#21262d] text-[#e6edf3] placeholder:text-[#484f58] focus:border-[#00ff88]"
+                      />
                     </div>
-
-                    <p className="text-xs text-[#8b949e] mb-4 leading-relaxed">{team.description}</p>
-
-                    {/* Member avatars stack */}
-                    <div className="flex items-center">
-                      <div className="flex -space-x-2">
-                        {members
-                          .filter((m) => m.teamMemberships.includes(team.name))
-                          .slice(0, 5)
-                          .map((member) => (
-                            <div
-                              key={member.id}
-                              className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold border-2 border-[#0d1117] shrink-0"
-                              style={{
-                                backgroundColor: getAvatarBg(member.name),
-                                color: getAvatarTextColor(member.name),
-                              }}
-                              title={member.name}
-                            >
-                              {getInitials(member.name)}
-                            </div>
-                          ))}
-                      </div>
-                      {members.filter((m) => m.teamMemberships.includes(team.name)).length > 5 && (
-                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-medium border-2 border-[#0d1117] bg-[#161b22] text-[#8b949e] -ml-2 shrink-0">
-                          +{members.filter((m) => m.teamMemberships.includes(team.name)).length - 5}
-                        </div>
-                      )}
-                      <span className="ml-3 text-xs text-[#484f58]">
-                        {members.filter((m) => m.teamMemberships.includes(team.name)).length > 1
-                          ? `${members.filter((m) => m.teamMemberships.includes(team.name)).length} members`
-                          : `${members.filter((m) => m.teamMemberships.includes(team.name)).length} member`}
-                      </span>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-[#e6edf3]">Description</label>
+                      <Input
+                        placeholder="e.g. Offensive security operations"
+                        value={teamDesc}
+                        onChange={(e) => setTeamDesc(e.target.value)}
+                        className="bg-[#0a0d14] border-[#21262d] text-[#e6edf3] placeholder:text-[#484f58] focus:border-[#00ff88]"
+                      />
                     </div>
                   </div>
-                </motion.div>
-              ))}
-            </motion.div>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setTeamOpen(false)} className="border-[#21262d] text-[#8b949e] hover:bg-[#0a0d14]">
+                      Cancel
+                    </Button>
+                    <Button onClick={handleAddTeam} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+                      Create Team
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </div>
+            {teams.length === 0 ? (
+              <div className="rounded-xl border border-[#21262d] bg-[#0d1117] p-8 text-center">
+                <Shield className="w-8 h-8 text-[#484f58] mx-auto mb-3" />
+                <p className="text-sm text-[#8b949e]">No teams yet. Click &quot;Add Team&quot; to create your first team.</p>
+              </div>
+            ) : (
+              <motion.div className="grid grid-cols-1 md:grid-cols-2 gap-4" variants={containerVariants} initial="hidden" animate="visible">
+                {teams.map((team, idx) => (
+                  <motion.div
+                    key={team.id}
+                    variants={itemVariants}
+                    whileHover={cardHover}
+                    className="rounded-xl border overflow-hidden transition-shadow relative"
+                    style={{
+                      borderColor: team.color + '30',
+                      backgroundColor: '#0d1117',
+                    }}
+                  >
+                    {/* Color accent top border */}
+                    <div className="h-1" style={{ backgroundColor: team.color }} />
+
+                    <div className="p-5">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className="w-10 h-10 rounded-lg flex items-center justify-center"
+                            style={{ backgroundColor: team.color + '15' }}
+                          >
+                            <Shield className="w-5 h-5" style={{ color: team.color }} />
+                          </div>
+                          <div>
+                            <h3 className="text-sm font-bold text-[#e6edf3]">{team.name}</h3>
+                            <p className="text-xs text-[#8b949e]">{team.memberCount} members</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Badge
+                            variant="outline"
+                            className="text-[10px] border-[#21262d] text-[#8b949e]"
+                          >
+                            Active
+                          </Badge>
+                          <button
+                            onClick={() => handleDeleteTeam(team.id)}
+                            className="p-1.5 rounded-md border border-[#21262d] text-[#8b949e] hover:text-[#f85149] hover:border-[rgba(248,81,73,0.3)] hover:bg-[rgba(248,81,73,0.1)] transition-all"
+                            title="Delete team"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <p className="text-xs text-[#8b949e] mb-4 leading-relaxed">{team.description || 'No description'}</p>
+
+                      {/* Member avatars stack */}
+                      <div className="flex items-center">
+                        <div className="flex -space-x-2">
+                          {members
+                            .filter((m) => m.teamMemberships.includes(team.name))
+                            .slice(0, 5)
+                            .map((member) => (
+                              <div
+                                key={member.id}
+                                className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold border-2 border-[#0d1117] shrink-0"
+                                style={{
+                                  backgroundColor: getAvatarBg(member.name),
+                                  color: getAvatarTextColor(member.name),
+                                }}
+                                title={member.name}
+                              >
+                                {getInitials(member.name)}
+                              </div>
+                            ))}
+                        </div>
+                        {members.filter((m) => m.teamMemberships.includes(team.name)).length > 5 && (
+                          <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-medium border-2 border-[#0d1117] bg-[#161b22] text-[#8b949e] -ml-2 shrink-0">
+                            +{members.filter((m) => m.teamMemberships.includes(team.name)).length - 5}
+                          </div>
+                        )}
+                        <span className="ml-3 text-xs text-[#484f58]">
+                          {members.filter((m) => m.teamMemberships.includes(team.name)).length > 1
+                            ? `${members.filter((m) => m.teamMemberships.includes(team.name)).length} members`
+                            : `${members.filter((m) => m.teamMemberships.includes(team.name)).length} member`}
+                        </span>
+                      </div>
+                    </div>
+                  </motion.div>
+                ))}
+              </motion.div>
+            )}
           </TabsContent>
         </Tabs>
       </motion.div>
+
+      {/* ── Role Edit Dialog ──────────────────────────────────────────── */}
+      <Dialog open={roleEditOpen} onOpenChange={setRoleEditOpen}>
+        <DialogContent className="bg-[#0d1117] border-[#21262d] text-[#e6edf3]">
+          <DialogHeader>
+            <DialogTitle className="text-[#e6edf3]">Edit Member Role</DialogTitle>
+            <DialogDescription className="text-[#8b949e]">
+              Change the role for this team member.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-[#e6edf3]">Role</label>
+              <div className="grid grid-cols-2 gap-2">
+                {['Admin', 'Security Lead', 'Analyst', 'Viewer'].map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setRoleEditValue(r)}
+                    className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
+                      roleEditValue === r
+                        ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
+                        : 'bg-[#0a0d14] border-[#21262d] text-[#8b949e] hover:border-[#30363d]'
+                    }`}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRoleEditOpen(false)} className="border-[#21262d] text-[#8b949e] hover:bg-[#0a0d14]">
+              Cancel
+            </Button>
+            <Button onClick={handleRoleChange} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </motion.div>
   );
 }

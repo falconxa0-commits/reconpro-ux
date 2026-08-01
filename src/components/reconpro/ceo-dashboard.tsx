@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import {
   ShieldAlert,
@@ -8,7 +8,6 @@ import {
   ShieldX,
   Activity,
   TrendingUp,
-  TrendingDown,
   Clock,
   Globe,
   Lock,
@@ -30,6 +29,40 @@ import { AnimatedCounter } from './animated-counter';
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Executive API response types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ExecutiveComplianceItem {
+  score: number | null;
+  status: string | null;
+  controlsPassed: number | null;
+  controlsTotal: number | null;
+}
+
+interface ExecutiveData {
+  overview: {
+    mttd: string | null;
+    mttr: string | null;
+    complianceScore: number | null;
+  } | null;
+  riskTrend: { date: string; score: number }[];
+  compliance: Record<string, ExecutiveComplianceItem>;
+  topAssets: Array<{
+    id: string;
+    riskScore: number;
+    totalVulns: number;
+    startedAt: string;
+    target: { domain: string };
+  }>;
+  recentActivity: Array<{
+    type: string;
+    description: string;
+    timestamp: string;
+    severity: string;
+  }>;
+}
+
 interface CEODashboardProps {
   stats: {
     totalScans: number;
@@ -39,7 +72,6 @@ interface CEODashboardProps {
     mediumFindings: number;
     lowFindings: number;
     avgRiskScore: number;
-    complianceScore: number;
   } | null;
   recentScans: any[];
   onNavigate: (view: string) => void;
@@ -73,39 +105,19 @@ const cardHover = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Mock data generators
+// Framework display names (maps API keys to human-readable names)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function generateRiskTrendData(): number[] {
-  const data: number[] = [];
-  let value = 52;
-  for (let i = 0; i < 30; i++) {
-    value += (Math.random() - 0.48) * 8;
-    value = Math.max(35, Math.min(75, value));
-    data.push(Math.round(value));
-  }
-  return data;
-}
+const FRAMEWORK_LABELS: Record<string, string> = {
+  soc2: 'SOC 2 Type II',
+  hipaa: 'HIPAA',
+  pci_dss: 'PCI-DSS',
+  iso27001: 'ISO 27001',
+  nist: 'NIST CSF',
+  gdpr: 'GDPR',
+};
 
-function generateDayLabels(): string[] {
-  const labels: string[] = [];
-  const now = new Date();
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    labels.push(`${d.getMonth() + 1}/${d.getDate()}`);
-  }
-  return labels;
-}
-
-const COMPLIANCE_MATRIX = [
-  { framework: 'SOC 2 Type II', score: 94, status: 'PASS' as const },
-  { framework: 'HIPAA', score: 87, status: 'WARN' as const },
-  { framework: 'PCI-DSS', score: 91, status: 'PASS' as const },
-  { framework: 'ISO 27001', score: 82, status: 'WARN' as const },
-  { framework: 'NIST CSF', score: 96, status: 'PASS' as const },
-  { framework: 'GDPR', score: 88, status: 'WARN' as const },
-];
+const FRAMEWORK_KEYS = ['soc2', 'hipaa', 'pci_dss', 'iso27001', 'nist', 'gdpr'] as const;
 
 const ACTIVITY_FEED = [
   {
@@ -290,10 +302,23 @@ function riskScoreColor(score: number): string {
 // Section: KPI Hero Row
 // ─────────────────────────────────────────────────────────────────────────────
 
-function KPIHeroRow({ stats, onNavigate }: { stats: CEODashboardProps['stats']; onNavigate: (view: string) => void }) {
+function KPIHeroRow({ stats, onNavigate, mttd, complianceData }: {
+  stats: CEODashboardProps['stats'];
+  onNavigate: (view: string) => void;
+  mttd: string | null;
+  complianceData: Record<string, ExecutiveComplianceItem> | null;
+}) {
   const attackSurfaceScore = stats ? 100 - stats.avgRiskScore : 87;
-  const criticalThreats = stats?.criticalFindings ?? 7;
-  const complianceHealth = stats?.complianceScore ?? 89;
+  const criticalThreats = stats?.criticalFindings ?? 0;
+
+  // Derive compliance health from real compliance data when available
+  let complianceHealth: number | null = null;
+  if (complianceData) {
+    const scores = Object.values(complianceData)
+      .map((c) => c.score)
+      .filter((s): s is number => s !== null);
+    complianceHealth = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
+  }
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6">
@@ -381,13 +406,17 @@ function KPIHeroRow({ stats, onNavigate }: { stats: CEODashboardProps['stats']; 
             <span className="text-xs font-semibold uppercase tracking-widest text-[#8b949e]">Compliance Health</span>
           </div>
           <div className="flex flex-col items-center gap-1 py-2">
-            <AnimatedCounter target={complianceHealth} duration={1800} color="#58a6ff" size="lg" suffix="%" />
+            {complianceHealth !== null ? (
+              <AnimatedCounter target={complianceHealth} duration={1800} color="#58a6ff" size="lg" suffix="%" />
+            ) : (
+              <span className="text-5xl font-bold font-mono" style={{ color: '#8b949e' }}>—</span>
+            )}
             <span className="text-xs text-[#8b949e]">Overall score</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-center">
-            {['SOC2', 'HIPAA', 'PCI'].map((badge) => (
+            {(complianceData ? Object.keys(complianceData) : ['SOC2', 'HIPAA', 'PCI']).slice(0, 3).map((key) => (
               <span
-                key={badge}
+                key={key}
                 className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider"
                 style={{
                   background: 'rgba(88,166,255,0.1)',
@@ -395,7 +424,7 @@ function KPIHeroRow({ stats, onNavigate }: { stats: CEODashboardProps['stats']; 
                   border: '1px solid rgba(88,166,255,0.2)',
                 }}
               >
-                {badge}
+                {FRAMEWORK_LABELS[key] || key.toUpperCase()}
               </span>
             ))}
           </div>
@@ -424,14 +453,28 @@ function KPIHeroRow({ stats, onNavigate }: { stats: CEODashboardProps['stats']; 
           </div>
           <div className="flex flex-col items-center gap-1 py-2">
             <div className="flex items-baseline gap-1">
-              <span className="text-5xl font-bold font-mono" style={{ color: '#00ff88' }}>2.4</span>
-              <span className="text-lg font-semibold text-[#8b949e]">min</span>
+              {mttd ? (
+                <>
+                  <span className="text-5xl font-bold font-mono" style={{ color: '#00ff88' }}>
+                    {mttd.split(' ')[0]}
+                  </span>
+                  <span className="text-lg font-semibold text-[#8b949e]">{mttd.split(' ').slice(1).join(' ')}</span>
+                </>
+              ) : (
+                <span className="text-5xl font-bold font-mono" style={{ color: '#8b949e' }}>—</span>
+              )}
             </div>
             <span className="text-xs text-[#8b949e]">Detection latency</span>
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-[#00ff88]">
-            <TrendingUp size={14} />
-            <span>94% faster than industry avg</span>
+          <div className="flex items-center gap-1.5 text-xs text-[#8b949e]">
+            {mttd ? (
+              <>
+                <TrendingUp size={14} style={{ color: '#00ff88' }} />
+                <span style={{ color: '#00ff88' }}>Real scan data</span>
+              </>
+            ) : (
+              <span>Pending scan data</span>
+            )}
           </div>
         </div>
       </motion.div>
@@ -443,9 +486,39 @@ function KPIHeroRow({ stats, onNavigate }: { stats: CEODashboardProps['stats']; 
 // Section: Risk Trend Chart
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RiskTrendChart() {
-  const data = useMemo(() => generateRiskTrendData(), []);
-  const labels = useMemo(() => generateDayLabels(), []);
+function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: number }[] | null }) {
+  // Empty state: no scan data yet
+  if (!riskTrend || riskTrend.length === 0) {
+    return (
+      <motion.div
+        variants={itemVariants}
+        className="cyber-card overflow-hidden"
+        style={{
+          background: 'linear-gradient(135deg, rgba(0,255,136,0.03) 0%, rgba(10,13,20,0.95) 100%)',
+          border: '1px solid rgba(0,255,136,0.1)',
+        }}
+      >
+        <div className="p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Activity size={18} style={{ color: '#00ff88' }} />
+            <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Risk Score Trend</h3>
+          </div>
+          <div className="flex flex-col items-center justify-center py-16 gap-3">
+            <Activity size={40} style={{ color: 'rgba(0,255,136,0.2)' }} />
+            <p className="text-sm text-[#8b949e] font-medium">No scan data yet</p>
+            <p className="text-xs text-[#8b949e]/60">Run a scan to see your risk score trend over time.</p>
+          </div>
+        </div>
+      </motion.div>
+    );
+  }
+
+  // Derive data from real riskTrend
+  const data = riskTrend.map((d) => d.score);
+  const labels = riskTrend.map((d) => {
+    const dt = new Date(d.date);
+    return `${dt.getMonth() + 1}/${dt.getDate()}`;
+  });
 
   const width = 700;
   const height = 260;
@@ -457,7 +530,7 @@ function RiskTrendChart() {
   const maxVal = Math.max(...data) + 5;
 
   const points = data.map((v, i) => ({
-    x: padding.left + (i / (data.length - 1)) * chartW,
+    x: padding.left + (i / Math.max(data.length - 1, 1)) * chartW,
     y: padding.top + (1 - (v - minVal) / (maxVal - minVal)) * chartH,
   }));
 
@@ -470,8 +543,13 @@ function RiskTrendChart() {
     return { y, val };
   });
 
-  const xLabels = [0, 7, 14, 21, 29].map((i) => ({
-    x: padding.left + (i / (data.length - 1)) * chartW,
+  // Pick up to 5 evenly-spaced x-axis labels
+  const labelCount = Math.min(5, data.length);
+  const xLabelIndices = Array.from({ length: labelCount }, (_, i) =>
+    data.length === 1 ? 0 : Math.round((i / (labelCount - 1)) * (data.length - 1))
+  );
+  const xLabels = xLabelIndices.map((i) => ({
+    x: padding.left + (i / Math.max(data.length - 1, 1)) * chartW,
     label: labels[i],
   }));
 
@@ -488,7 +566,7 @@ function RiskTrendChart() {
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <Activity size={18} style={{ color: '#00ff88' }} />
-            <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">30-Day Risk Score Trend</h3>
+            <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Risk Score Trend</h3>
           </div>
           <div className="flex items-center gap-4 text-xs text-[#8b949e]">
             <div className="flex items-center gap-1.5">
@@ -496,8 +574,7 @@ function RiskTrendChart() {
               <span>Risk Score</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <TrendingDown size={14} style={{ color: '#00ff88' }} />
-              <span style={{ color: '#00ff88' }}>-12% trend</span>
+              <span className="text-[#8b949e]">{data.length} data point{data.length !== 1 ? 's' : ''}</span>
             </div>
           </div>
         </div>
@@ -509,7 +586,7 @@ function RiskTrendChart() {
               <stop offset="100%" stopColor="#00ff88" stopOpacity="0.02" />
             </linearGradient>
             <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0%" stopColor="#00ff88" stopOpacity="0.4" />
+              <stop offset="0" stopColor="#00ff88" stopOpacity="0.4" />
               <stop offset="50%" stopColor="#00ff88" stopOpacity="1" />
               <stop offset="100%" stopColor="#00ff88" stopOpacity="0.8" />
             </linearGradient>
@@ -616,7 +693,18 @@ function RiskTrendChart() {
 // Section: Security Posture Matrix
 // ─────────────────────────────────────────────────────────────────────────────
 
-function SecurityPostureMatrix() {
+function SecurityPostureMatrix({ compliance }: { compliance: Record<string, ExecutiveComplianceItem> | null }) {
+  // Build the display items from real compliance data or show pending state
+  const items = FRAMEWORK_KEYS.map((fwKey) => {
+    const fw = compliance?.[fwKey];
+    return {
+      key: fwKey,
+      framework: FRAMEWORK_LABELS[fwKey] || fwKey,
+      score: fw?.score ?? null,
+      status: fw?.status ? (fw.status.toUpperCase() as 'PASS' | 'WARN' | 'FAIL') : null,
+    };
+  });
+
   return (
     <motion.div
       variants={itemVariants}
@@ -632,9 +720,9 @@ function SecurityPostureMatrix() {
           <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Security Posture Matrix</h3>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {COMPLIANCE_MATRIX.map((item, idx) => (
+          {items.map((item, idx) => (
             <motion.div
-              key={item.framework}
+              key={item.key}
               initial={{ opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.6 + idx * 0.08 }}
@@ -650,17 +738,33 @@ function SecurityPostureMatrix() {
             >
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-semibold text-[#e6edf3]">{item.framework}</span>
-                <StatusBadge status={item.status} />
+                {item.status ? (
+                  <StatusBadge status={item.status} />
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider border"
+                    style={{ backgroundColor: 'rgba(139,148,158,0.1)', borderColor: 'rgba(139,148,158,0.2)', color: '#8b949e' }}
+                  >
+                    Pending
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-2 mb-2.5">
-                <span
-                  className="text-2xl font-bold font-mono"
-                  style={{ color: item.status === 'PASS' ? '#00ff88' : '#eab308' }}
-                >
-                  {item.score}%
-                </span>
+                {item.score !== null ? (
+                  <span
+                    className="text-2xl font-bold font-mono"
+                    style={{ color: item.status === 'PASS' ? '#00ff88' : item.status === 'FAIL' ? '#f85149' : '#eab308' }}
+                  >
+                    {item.score}%
+                  </span>
+                ) : (
+                  <span className="text-2xl font-bold font-mono" style={{ color: '#8b949e' }}>—</span>
+                )}
               </div>
-              <ComplianceBar score={item.score} status={item.status} />
+              {item.score !== null && item.status ? (
+                <ComplianceBar score={item.score} status={item.status} />
+              ) : (
+                <div className="w-full h-1.5 rounded-full bg-white/5" />
+              )}
             </motion.div>
           ))}
         </div>
@@ -1094,6 +1198,34 @@ function GlobalThreatMapMini() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardProps) {
+  // Fetch executive-specific data from /api/executive
+  const [execData, setExecData] = useState<ExecutiveData | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/executive');
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) {
+          setExecData({
+            overview: json.overview ?? null,
+            riskTrend: json.riskTrend ?? [],
+            compliance: json.compliance ?? {},
+            topAssets: json.topAssets ?? [],
+            recentActivity: json.recentActivity ?? [],
+          });
+        }
+      } catch { /* silent */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const mttd = execData?.overview?.mttd ?? null;
+  const riskTrend = execData?.riskTrend ?? null;
+  const complianceData = execData?.compliance ?? null;
+
   return (
     <div className="min-h-screen" style={{ background: '#0a0d14' }}>
       {/* Subtle background grid */}
@@ -1172,10 +1304,9 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
         {/* Quick Stats Bar */}
         <motion.div variants={itemVariants} className="flex flex-wrap items-center gap-3">
           {[
-            { label: 'Total Scans', value: stats?.totalScans ?? 1247, color: '#00ff88' },
-            { label: 'Assets Monitored', value: 384, color: '#58a6ff' },
-            { label: 'Findings', value: stats?.totalFindings ?? 156, color: '#f97316' },
-            { label: 'Risk Avg', value: `${stats?.avgRiskScore ?? 42}`, color: '#eab308' },
+            { label: 'Total Scans', value: stats?.totalScans ?? 0, color: '#00ff88' },
+            { label: 'Findings', value: stats?.totalFindings ?? 0, color: '#f97316' },
+            { label: 'Risk Avg', value: `${stats?.avgRiskScore ?? 0}`, color: '#eab308' },
           ].map((item) => (
             <div
               key={item.label}
@@ -1194,14 +1325,14 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
         </motion.div>
 
         {/* KPI Hero Row */}
-        <KPIHeroRow stats={stats} onNavigate={onNavigate} />
+          <KPIHeroRow stats={stats} onNavigate={onNavigate} mttd={mttd} complianceData={complianceData} />
 
         {/* Risk Trend Chart */}
-        <RiskTrendChart />
+        <RiskTrendChart riskTrend={riskTrend} />
 
         {/* Two-column layout: Security Posture + Activity Feed */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <SecurityPostureMatrix />
+          <SecurityPostureMatrix compliance={complianceData} />
           <RecentActivityFeed />
         </div>
 

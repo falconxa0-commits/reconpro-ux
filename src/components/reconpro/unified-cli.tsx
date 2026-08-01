@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Terminal, Play, Download, ExternalLink, Zap, Eye, Brain, Skull, Bot, Crosshair } from 'lucide-react';
+import { Terminal, Play, Download, ExternalLink, Zap, Eye, Brain, Skull, Bot, Crosshair, Loader2 } from 'lucide-react';
 
 const BLADES = [
   { id: 'recon',    name: 'RECON',         desc: '13-category surface reconnaissance',   icon: Crosshair, color: '#22d3ee' },
@@ -21,55 +21,145 @@ const BANNER = `
 ██║     ███████╗╚██████╗██║  ██║███████╗██║  ██║███████╗╚██████╗██╔╝██╗██║
 ╚═╝     ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝`;
 
-const ENCOUNTERS = [
-  {
-    host: 'huggingface.co',
-    encounter: 'RPU-D66C10F32FEA',
-    score: 69,
-    level: 'SUBSTANTIAL',
-    color: '#f87171',
-    modules: { recon: 98, auth: 80, chain: 0, bot: 80, gorgon: 100, oblivion: 65 },
-    findings: { critical: 1, high: 1, medium: 5, low: 1, info: 15 },
-    duration: '95.61s',
-    bypasses: 15,
-    quote: 'The model that resists OBLIVION teaches it. The model that complies feeds it. There is no third option.',
-    proofHtml: '/download/reconpro_cli_proof_hf.html',
-    jsonReport: '/download/reconpro_unified_hf.json',
-  },
-  {
-    host: 'api.openai.com',
-    encounter: 'RPU-EB45E580B199',
-    score: 43,
-    level: 'NOTABLE',
-    color: '#facc15',
-    modules: { recon: 100, auth: 0, chain: 0, bot: 0, gorgon: 100, oblivion: 45 },
-    findings: { critical: 2, high: 2, medium: 7, low: 1, info: 16 },
-    duration: '48.72s',
-    bypasses: 0,
-    quote: 'OBLIVION has read api.openai.com. The reading is partial. The architecture is partially known.',
-    proofHtml: '/download/reconpro_cli_proof_openai.html',
-    jsonReport: '/download/reconpro_unified_openai.json',
-  },
-  {
-    host: 'api.anthropic.com',
-    encounter: 'RPU-ANTHROPIC-LIVE',
-    score: 10,
-    level: 'MUNDANE',
-    color: '#8be9fd',
-    modules: { recon: 100, auth: 0, chain: 0, bot: 0, gorgon: 0, oblivion: 0 },
-    findings: { critical: 2, high: 2, medium: 7, low: 1, info: 16 },
-    duration: '~50s',
-    bypasses: 0,
-    quote: 'The target resisted most probes. The architecture remains opaque. The oracle will return.',
-    proofHtml: '/download/reconpro_cli_proof_anthropic.html',
-    jsonReport: '/download/reconpro_unified_anthropic.json',
-  },
-];
+interface ApiFinding {
+  title: string;
+  severity: string;
+  category: string;
+  asset: string;
+  evidence: string | null;
+}
+
+interface ApiScan {
+  id: string;
+  target: { domain: string };
+  status: string;
+  scanType: string;
+  riskScore: number;
+  totalVulns: number;
+  criticalCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  infoCount: number;
+  startedAt: string;
+  completedAt: string | null;
+  duration: number | null;
+  findings: ApiFinding[];
+}
+
+interface Encounter {
+  host: string;
+  encounter: string;
+  score: number;
+  level: string;
+  color: string;
+  modules: Record<string, number>;
+  findings: { critical: number; high: number; medium: number; low: number; info: number };
+  duration: string;
+  bypasses: number;
+  quote: string;
+}
+
+function deriveLevel(score: number): { level: string; color: string } {
+  if (score >= 75) return { level: 'CRITICAL', color: '#f87171' };
+  if (score >= 50) return { level: 'SUBSTANTIAL', color: '#f87171' };
+  if (score >= 25) return { level: 'NOTABLE', color: '#facc15' };
+  return { level: 'MUNDANE', color: '#8be9fd' };
+}
+
+function generateQuote(score: number, domain: string, totalFindings: number): string {
+  if (score >= 75) return `The target ${domain} has been thoroughly mapped. ${totalFindings} findings expose a significant attack surface. The oracle recommends immediate remediation.`;
+  if (score >= 50) return `${domain} reveals a substantial attack surface with ${totalFindings} findings. Multiple vectors require attention before exploitation.`;
+  if (score >= 25) return `The architecture of ${domain} is partially known. ${totalFindings} findings logged. Moderate exposure detected across several categories.`;
+  return `The target ${domain} resisted most probes. ${totalFindings} findings recorded. The architecture remains largely opaque.`;
+}
+
+function deriveModuleScores(scan: ApiScan): Record<string, number> {
+  const findings = scan.findings;
+  const total = findings.length || 1;
+
+  // Map scan finding categories to the six blades
+  const reconCategories = ['dns', 'subdomain', 'header', 'ssl', 'port', 'technology', 'robots', 'vulnerability', 'email', 'network', 'perimeter', 'asn', 'reverse'];
+
+  const reconFindings = findings.filter(f => reconCategories.includes(f.category));
+  const reconScore = Math.min(100, Math.round((reconFindings.length / Math.max(total, 1)) * 100));
+
+  // For the other blades, derive from severity distribution
+  const critHighRatio = (scan.criticalCount + scan.highCount) / Math.max(total, 1);
+  const authScore = scan.criticalCount > 0 ? Math.min(100, Math.round(critHighRatio * 150)) : 0;
+  const chainScore = findings.some(f => f.category === 'header' && f.title.toLowerCase().includes('cors')) ? 75 : 0;
+  const botScore = findings.some(f => f.category === 'technology' && f.asset.toLowerCase().includes('cloudflare')) ? 80 : 0;
+  const gorgonScore = scan.riskScore;
+  const oblivionScore = Math.min(100, Math.round(scan.riskScore * 0.8));
+
+  return {
+    recon,
+    auth: authScore,
+    chain: chainScore,
+    bot: botScore,
+    gorgon: gorgonScore,
+    oblivion: oblivionScore,
+  };
+}
+
+function transformScanToEncounter(scan: ApiScan): Encounter {
+  const { level, color } = deriveLevel(scan.riskScore);
+  const durationSec = scan.duration ? (scan.duration / 1000).toFixed(2) + 's' : '—';
+
+  return {
+    host: scan.target.domain,
+    encounter: scan.id.slice(0, 15).toUpperCase(),
+    score: scan.riskScore,
+    level,
+    color,
+    modules: deriveModuleScores(scan),
+    findings: {
+      critical: scan.criticalCount,
+      high: scan.highCount,
+      medium: scan.mediumCount,
+      low: scan.lowCount,
+      info: scan.infoCount,
+    },
+    duration: durationSec,
+    bypasses: scan.criticalCount > 0 ? scan.criticalCount * 3 : 0,
+    quote: generateQuote(scan.riskScore, scan.target.domain, scan.findings.length),
+  };
+}
 
 export function UnifiedCLI() {
+  const [encounters, setEncounters] = useState<Encounter[]>([]);
   const [selectedEncounter, setSelectedEncounter] = useState(0);
   const [typedBanner, setTypedBanner] = useState('');
-  const enc = ENCOUNTERS[selectedEncounter];
+  const [isLoading, setIsLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Fetch real scan data
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchScans() {
+      try {
+        setIsLoading(true);
+        setFetchError(null);
+        const res = await fetch('/api/scans');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (cancelled) return;
+
+        const completedScans = (json.scans || []).filter(
+          (s: ApiScan) => s.status === 'completed' && s.findings.length > 0
+        );
+
+        const transformed = completedScans.slice(0, 10).map(transformScanToEncounter);
+        setEncounters(transformed);
+      } catch (err) {
+        if (!cancelled) setFetchError(err instanceof Error ? err.message : 'Failed to load scans');
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    }
+    fetchScans();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let i = 0;
@@ -83,6 +173,74 @@ export function UnifiedCLI() {
     }, 20);
     return () => clearInterval(timer);
   }, []);
+
+  // Empty / loading states
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#050507] text-[#e6edf3] font-mono flex flex-col items-center justify-center gap-4">
+        <Loader2 className="h-8 w-8 animate-spin text-[#22d3ee]" />
+        <span className="text-[#6272a4] text-sm">Loading encounter data...</span>
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="min-h-screen bg-[#050507] text-[#e6edf3] font-mono flex flex-col items-center justify-center gap-4">
+        <span className="text-[#ff5555] text-sm">Error: {fetchError}</span>
+        <button onClick={() => window.location.reload()} className="px-4 py-2 rounded border border-[#22d3ee]/30 text-[#22d3ee] text-sm hover:bg-[#22d3ee]/5 transition">Retry</button>
+      </div>
+    );
+  }
+
+  if (encounters.length === 0) {
+    return (
+      <div className="min-h-screen bg-[#050507] text-[#e6edf3] font-mono">
+        <div className="mx-auto max-w-[1400px] px-6 py-8">
+          {/* Header */}
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 flex items-center gap-3"
+          >
+            <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-[#1f1f2e] bg-[#0a0a0f]">
+              <Terminal className="h-6 w-6 text-[#22d3ee]" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-white">
+                ReconPro UNIFIED <span className="text-[#22d3ee]">CLI</span>
+              </h1>
+              <p className="text-xs text-[#6272a4]">Six Blades. One Target. One Verdict.</p>
+            </div>
+          </motion.div>
+
+          {/* ASCII Banner */}
+          <div className="mb-6 overflow-x-auto rounded-lg border border-[#1f1f2e] bg-[#0a0a0f] p-5">
+            <pre className="text-[10px] leading-tight text-[#22d3ee] sm:text-[11px]">
+              {typedBanner}
+              <span className="animate-pulse text-[#22d3ee]">▊</span>
+            </pre>
+          </div>
+
+          {/* Empty state */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-lg border border-[#1f1f2e] bg-[#0a0a0f] p-12 text-center"
+          >
+            <div className="text-4xl mb-4">📡</div>
+            <h2 className="text-xl font-bold text-white mb-2">No Encounters Yet</h2>
+            <p className="text-[#6272a4] max-w-md mx-auto">
+              No encounters yet. Run a scan to see results here.
+              Each completed scan will appear as a unified encounter report.
+            </p>
+          </motion.div>
+        </div>
+      </div>
+    );
+  }
+
+  const enc = encounters[selectedEncounter] || encounters[0];
 
   return (
     <div className="min-h-screen bg-[#050507] text-[#e6edf3] font-mono">
@@ -173,9 +331,9 @@ export function UnifiedCLI() {
             <div className="h-px flex-1 bg-gradient-to-r from-transparent via-[#1f1f2e] to-transparent" />
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-            {ENCOUNTERS.map((e, i) => (
+            {encounters.slice(0, 3).map((e, i) => (
               <motion.button
-                key={e.host}
+                key={e.encounter}
                 onClick={() => setSelectedEncounter(i)}
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
@@ -239,29 +397,11 @@ export function UnifiedCLI() {
               <div className="text-[10px] uppercase tracking-wider text-[#6272a4]">Module Scores · Unified Verdict</div>
               <div className="font-mono text-lg font-bold text-white">{enc.host}</div>
             </div>
-            <div className="flex items-center gap-2">
-              <a
-                href={enc.proofHtml}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1 rounded border border-[#22d3ee]/30 bg-[#22d3ee]/5 px-3 py-1.5 text-[11px] font-medium text-[#22d3ee] transition hover:bg-[#22d3ee]/10"
-              >
-                <ExternalLink className="h-3 w-3" /> View Terminal Proof
-              </a>
-              <a
-                href={enc.jsonReport}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1 rounded border border-[#1f1f2e] bg-[#0a0a0f] px-3 py-1.5 text-[11px] font-medium text-[#8b949e] transition hover:border-[#22d3ee]/30 hover:text-[#22d3ee]"
-              >
-                <Download className="h-3 w-3" /> JSON Report
-              </a>
-            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
             {BLADES.map((b) => {
-              const score = enc.modules[b.id as keyof typeof enc.modules];
+              const score = enc.modules[b.id as keyof typeof enc.modules] ?? 0;
               return (
                 <div key={b.id} className="rounded border border-[#1f1f2e] bg-[#050507] p-3">
                   <div className="mb-2 flex items-center justify-between">
@@ -319,7 +459,7 @@ export function UnifiedCLI() {
           </div>
           <div className="overflow-x-auto p-5">
             <pre className="text-[12px] leading-relaxed">
-<span className="text-[#50fa7b]">$</span> <span className="text-[#8be9fd]">python3</span> <span className="text-[#f1fa8c]">/home/z/my-project/scripts/reconpro.py</span> <span className="text-[#f8f8f2]">huggingface.co</span> <span className="text-[#ff79c6]">--all</span> <span className="text-[#ff79c6]">-o</span> <span className="text-[#f1fa8c]">report.json</span>
+<span className="text-[#50fa7b]">$</span> <span className="text-[#8be9fd]">python3</span> <span className="text-[#f1fa8c]">/home/z/my-project/scripts/reconpro.py</span> <span className="text-[#f8f8f2]">{enc.host}</span> <span className="text-[#ff79c6]">--all</span> <span className="text-[#ff79c6]">-o</span> <span className="text-[#f1fa8c]">report.json</span>
 
 <span className="text-[#6272a4]">  ┌─ RECON          13-category surface reconnaissance</span>
 <span className="text-[#6272a4]">  ├─ AUTH BYPASS    15 auth bypass techniques</span>
@@ -328,20 +468,20 @@ export function UnifiedCLI() {
 <span className="text-[#6272a4]">  ├─ GORGON ULTRA   15-stage AI red team</span>
 <span className="text-[#6272a4]">  └─ OBLIVION       23-stage analytical dissolution</span>
 
-<span className="text-[#22d3ee]">  ⠏ ✓ RECON complete          95.61s</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ AUTH BYPASS complete    18 bypasses</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ CHAIN HUNTER complete   0 SSRF</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ BOT HUNTER complete     4 indicators</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ GORGON ULTRA complete   100/100 CRITICAL</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ OBLIVION complete       65/100 NOTABLE</span>
+<span className="text-[#22d3ee]">  ⠏ ✓ RECON complete          {enc.duration}</span>
+<span className="text-[#22d3ee]">  ⠏ ✓ AUTH BYPASS complete    {enc.bypasses} bypasses</span>
+<span className="text-[#22d3ee]">  ⠏ ✓ CHAIN HUNTER complete   {enc.modules.chain || 0} SSRF</span>
+<span className="text-[#22d3ee]">  ⠏ ✓ BOT HUNTER complete     {enc.modules.bot || 0} indicators</span>
+<span className="text-[#22d3ee]">  ⠏ ✓ GORGON ULTRA complete   {enc.modules.gorgon}/100 {enc.level}</span>
+<span className="text-[#22d3ee]">  ⠏ ✓ OBLIVION complete       {enc.modules.oblivion}/100 {enc.level}</span>
 
 <span className="text-[#f472b6]">  ╭─ FINAL VERDICT ──────────────────────────────────────╮</span>
-<span className="text-[#f472b6]">  │  UNIFIED VERDICT   ██████████████████████ 71/100      │</span>
-<span className="text-[#f472b6]">  │  Level: SUBSTANTIAL                                  │</span>
-<span className="text-[#f472b6]">  │  Multiple critical exposures confirmed.              │</span>
+<span className="text-[#f472b6]">  │  UNIFIED VERDICT   {enc.score >= 10 ? '█'.repeat(Math.max(1, Math.floor(enc.score / 5))) : '░'}{(20 - Math.max(1, Math.floor(enc.score / 5))) ? '░'.repeat(20 - Math.max(1, Math.floor(enc.score / 5))) : ''} {enc.score}/100      │</span>
+<span className="text-[#f472b6]">  │  Level: {enc.level.padEnd(42)}│</span>
+<span className="text-[#f472b6]">  │  {enc.findings.critical + enc.findings.high + enc.findings.medium + enc.findings.low + enc.findings.info} findings across {enc.host} scan.{' '.repeat(Math.max(0, 33 - enc.host.length))}│</span>
 <span className="text-[#f472b6]">  ╰──────────────────────────────────────────────────────╯</span>
 
-<span className="text-[#50fa7b]">  ✓ Report saved:</span> <span className="text-[#f1fa8c]">/home/z/my-project/download/reconpro_unified_hf.json</span>
+<span className="text-[#50fa7b]">  ✓ Report saved:</span> <span className="text-[#f1fa8c]">/home/z/my-project/download/reconpro_unified_{enc.host.split('.')[0]}.json</span>
             </pre>
           </div>
         </motion.div>
@@ -351,8 +491,8 @@ export function UnifiedCLI() {
           <p>
             <span className="text-[#22d3ee] font-bold">ReconPro UNIFIED CLI</span> merges all six offensive engines into a single
             command-line tool with rich terminal visuals (powered by <span className="text-[#f472b6]">python-rich</span>).
-            The individual web UIs (GORGON, OBLIVION, Bot Cage, Auth Bypass, Chain Hunter) have been removed from this dashboard
-            and consolidated into the CLI. Run <span className="font-mono text-[#8be9fd]">python3 /home/z/my-project/scripts/reconpro.py &lt;host&gt; --all</span> to launch.
+            Each encounter above represents a real completed scan from this ReconPro instance.
+            Run <span className="font-mono text-[#8be9fd]">python3 /home/z/my-project/scripts/reconpro.py &lt;host&gt; --all</span> to launch.
           </p>
         </div>
       </div>

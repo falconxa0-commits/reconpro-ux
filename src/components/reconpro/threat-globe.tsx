@@ -78,36 +78,97 @@ const LAND_POINTS: [number, number][] = [
   [-22,128],[-20,126],[-18,124],[-16,126],[-14,128],[-12,130],
 ];
 
-// Real world cities for threat visualization
-const THREAT_CITIES: { name: string; lat: number; lng: number; type: 'source' | 'target' | 'hotspot'; threat: string }[] = [
-  { name: 'Moscow', lat: 55.75, lng: 37.62, type: 'source', threat: 'APT29' },
-  { name: 'Beijing', lat: 39.9, lng: 116.4, type: 'source', threat: 'APT41' },
-  { name: 'Tehran', lat: 35.7, lng: 51.4, type: 'source', threat: 'APT33' },
-  { name: 'Pyongyang', lat: 39.03, lng: 125.75, type: 'source', threat: 'Lazarus' },
-  { name: 'São Paulo', lat: -23.55, lng: -46.63, type: 'hotspot', threat: 'Banking Trojans' },
-  { name: 'Lagos', lat: 6.52, lng: 3.38, type: 'source', threat: 'BEC Fraud' },
-  { name: 'Bucharest', lat: 44.43, lng: 26.1, type: 'source', threat: 'Ransomware' },
-  { name: 'Mumbai', lat: 19.08, lng: 72.88, type: 'hotspot', threat: 'APT Groups' },
-  { name: 'New York', lat: 40.71, lng: -74.01, type: 'target', threat: 'Finance' },
-  { name: 'London', lat: 51.51, lng: -0.13, type: 'target', threat: 'Government' },
-  { name: 'Tokyo', lat: 35.68, lng: 139.69, type: 'target', threat: 'Technology' },
-  { name: 'Silicon Valley', lat: 37.39, lng: -122.08, type: 'target', threat: 'Tech Giants' },
-  { name: 'Frankfurt', lat: 50.11, lng: 8.68, type: 'target', threat: 'Finance EU' },
-  { name: 'Tel Aviv', lat: 32.07, lng: 34.78, type: 'hotspot', threat: 'Cyber Defense' },
-  { name: 'Singapore', lat: 1.35, lng: 103.82, type: 'target', threat: 'APAC Hub' },
-  { name: 'Sydney', lat: -33.87, lng: 151.21, type: 'target', threat: 'ANZ Hub' },
-  { name: 'Arlington', lat: 38.88, lng: -77.05, type: 'target', threat: 'Defense' },
-  { name: 'Shanghai', lat: 31.23, lng: 121.47, type: 'hotspot', threat: 'Data Centers' },
-  { name: 'Berlin', lat: 52.52, lng: 13.41, type: 'target', threat: 'EU Gov' },
-  { name: 'Seoul', lat: 37.57, lng: 126.98, type: 'target', threat: 'Semiconductor' },
+// ═══════════════════════════════════════════════════════════════════════
+// TYPES
+// ═══════════════════════════════════════════════════════════════════════
+
+interface ThreatCity {
+  name: string;
+  lat: number;
+  lng: number;
+  type: 'source' | 'target' | 'hotspot';
+  threat: string;
+}
+
+// Fallback city pool — used when threat data lacks geolocation
+const FALLBACK_CITIES: ThreatCity[] = [
+  { name: 'Moscow',        lat: 55.75,  lng: 37.62,  type: 'source',  threat: 'APT29' },
+  { name: 'Beijing',       lat: 39.9,   lng: 116.4,  type: 'source',  threat: 'APT41' },
+  { name: 'Tehran',        lat: 35.7,   lng: 51.4,   type: 'source',  threat: 'APT33' },
+  { name: 'Pyongyang',     lat: 39.03,  lng: 125.75, type: 'source',  threat: 'Lazarus' },
+  { name: 'São Paulo',     lat: -23.55, lng: -46.63, type: 'hotspot', threat: 'Banking Trojans' },
+  { name: 'Lagos',         lat: 6.52,   lng: 3.38,   type: 'source',  threat: 'BEC Fraud' },
+  { name: 'Bucharest',     lat: 44.43,  lng: 26.1,   type: 'source',  threat: 'Ransomware' },
+  { name: 'Mumbai',        lat: 19.08,  lng: 72.88,  type: 'hotspot', threat: 'APT Groups' },
+  { name: 'New York',      lat: 40.71,  lng: -74.01, type: 'target',  threat: 'Finance' },
+  { name: 'London',        lat: 51.51,  lng: -0.13,  type: 'target',  threat: 'Government' },
+  { name: 'Tokyo',         lat: 35.68,  lng: 139.69, type: 'target',  threat: 'Technology' },
+  { name: 'Silicon Valley',lat: 37.39,  lng: -122.08,type: 'target',  threat: 'Tech Giants' },
+  { name: 'Frankfurt',     lat: 50.11,  lng: 8.68,   type: 'target',  threat: 'Finance EU' },
+  { name: 'Tel Aviv',      lat: 32.07,  lng: 34.78,  type: 'hotspot', threat: 'Cyber Defense' },
+  { name: 'Singapore',     lat: 1.35,   lng: 103.82, type: 'target',  threat: 'APAC Hub' },
+  { name: 'Sydney',        lat: -33.87, lng: 151.21, type: 'target',  threat: 'ANZ Hub' },
+  { name: 'Arlington',     lat: 38.88,  lng: -77.05, type: 'target',  threat: 'Defense' },
+  { name: 'Shanghai',      lat: 31.23,  lng: 121.47, type: 'hotspot', threat: 'Data Centers' },
+  { name: 'Berlin',        lat: 52.52,  lng: 13.41,  type: 'target',  threat: 'EU Gov' },
+  { name: 'Seoul',         lat: 37.57,  lng: 126.98, type: 'target',  threat: 'Semiconductor' },
 ];
 
-// Attack connections (source index → target index)
-const ATTACK_CONNECTIONS: [number, number][] = [
-  [0,8],[0,9],[0,16],[0,18],[1,10],[1,11],[1,14],[1,19],
-  [2,8],[2,12],[2,9],[3,10],[3,19],[5,15],[5,9],[6,12],[6,18],
-  [7,14],[4,15],[1,0],[2,3],
-];
+interface ApiThreat {
+  id: string;
+  title: string;
+  severity: string;
+  source: string;
+  description: string;
+  ioc: string | null;
+  createdAt: string;
+}
+
+// Derive threat cities and connections from API threat data
+function deriveThreatData(threats: ApiThreat[]): { cities: ThreatCity[]; connections: [number, number][] } {
+  if (threats.length === 0) {
+    return { cities: [], connections: [] };
+  }
+
+  // Map threats to fallback cities, using as many as we have threats
+  const count = Math.min(threats.length, FALLBACK_CITIES.length);
+  const cities: ThreatCity[] = FALLBACK_CITIES.slice(0, count).map((city, i) => {
+    const t = threats[i];
+    // Assign type based on threat severity
+    let type: ThreatCity['type'] = 'target';
+    if (t.severity === 'critical' || t.severity === 'high') type = 'source';
+    else if (t.severity === 'medium') type = 'hotspot';
+
+    return {
+      ...city,
+      type,
+      threat: t.title.length > 25 ? t.title.slice(0, 25) + '…' : t.title,
+    };
+  });
+
+  // Derive connections: pair source-type indices with target-type indices
+  const sourceIndices = cities.reduce<number[]>((acc, c, i) => { if (c.type === 'source') acc.push(i); return acc; }, []);
+  const targetIndices = cities.reduce<number[]>((acc, c, i) => { if (c.type === 'target' || c.type === 'hotspot') acc.push(i); return acc; }, []);
+
+  const connections: [number, number][] = [];
+  for (const si of sourceIndices) {
+    // Connect each source to 1-2 targets
+    for (let j = 0; j < Math.min(2, targetIndices.length); j++) {
+      const ti = targetIndices[(si + j) % targetIndices.length];
+      connections.push([si, ti]);
+    }
+  }
+  // Also connect some hotspots to targets
+  const hotspotIndices = cities.reduce<number[]>((acc, c, i) => { if (c.type === 'hotspot') acc.push(i); return acc; }, []);
+  for (const hi of hotspotIndices) {
+    if (targetIndices.length > 0) {
+      const ti = targetIndices[hi % targetIndices.length];
+      connections.push([hi, ti]);
+    }
+  }
+
+  return { cities, connections };
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // HELPERS
@@ -261,10 +322,10 @@ function LandDots() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// THREAT POINTS (cities)
+// THREAT POINTS (cities) — now accepts cities as prop
 // ═══════════════════════════════════════════════════════════════════════
 
-function ThreatPoints() {
+function ThreatPoints({ cities }: { cities: ThreatCity[] }) {
   const ref = useRef<THREE.Group>(null);
   const pulseRef = useRef(0);
 
@@ -274,12 +335,12 @@ function ThreatPoints() {
   });
 
   const points = useMemo(() => {
-    return THREAT_CITIES.map(city => ({
+    return cities.map(city => ({
       ...city,
       pos: latLngToVec3(city.lat, city.lng, R + 0.02),
       color: city.type === 'source' ? '#ef4444' : city.type === 'hotspot' ? '#f97316' : '#00ff88',
     }));
-  }, []);
+  }, [cities]);
 
   return (
     <group ref={ref}>
@@ -311,10 +372,10 @@ function ThreatPoints() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// ATTACK ARCS
+// ATTACK ARCS — now accepts cities and connections as props
 // ═══════════════════════════════════════════════════════════════════════
 
-function AttackArcs() {
+function AttackArcs({ cities, connections }: { cities: ThreatCity[]; connections: [number, number][] }) {
   const groupRef = useRef<THREE.Group>(null);
   const arcsRef = useRef<{
     curve: THREE.CubicBezierCurve3;
@@ -325,17 +386,17 @@ function AttackArcs() {
 
   // Initialize arcs
   useMemo(() => {
-    arcsRef.current = ATTACK_CONNECTIONS.map(([si, ti]) => {
-      const start = latLngToVec3(THREAT_CITIES[si].lat, THREAT_CITIES[si].lng, R + 0.02);
-      const end = latLngToVec3(THREAT_CITIES[ti].lat, THREAT_CITIES[ti].lng, R + 0.02);
+    arcsRef.current = connections.map(([si, ti]) => {
+      const start = latLngToVec3(cities[si].lat, cities[si].lng, R + 0.02);
+      const end = latLngToVec3(cities[ti].lat, cities[ti].lng, R + 0.02);
       return {
         curve: createArcCurve(start, end, 0.6),
         progress: Math.random(),
         speed: 0.08 + Math.random() * 0.12,
-        color: THREAT_CITIES[si].type === 'source' ? '#ef4444' : '#f97316',
+        color: cities[si].type === 'source' ? '#ef4444' : '#f97316',
       };
     });
-  }, []);
+  }, [cities, connections]);
 
   useFrame((_, delta) => {
     if (groupRef.current) groupRef.current.rotation.y += delta * 0.03;
@@ -364,9 +425,9 @@ function AttackArcs() {
   });
 
   const arcData = useMemo(() => {
-    return ATTACK_CONNECTIONS.map(([si, ti]) => {
-      const start = latLngToVec3(THREAT_CITIES[si].lat, THREAT_CITIES[si].lng, R + 0.02);
-      const end = latLngToVec3(THREAT_CITIES[ti].lat, THREAT_CITIES[ti].lng, R + 0.02);
+    return connections.map(([si, ti]) => {
+      const start = latLngToVec3(cities[si].lat, cities[si].lng, R + 0.02);
+      const end = latLngToVec3(cities[ti].lat, cities[ti].lng, R + 0.02);
       const curve = createArcCurve(start, end, 0.6);
       const pts = 51;
       const positions = new Float32Array(pts * 3);
@@ -378,10 +439,10 @@ function AttackArcs() {
       }
       return {
         positions,
-        color: THREAT_CITIES[si].type === 'source' ? '#ef4444' : '#f97316',
+        color: cities[si].type === 'source' ? '#ef4444' : '#f97316',
       };
     });
-  }, []);
+  }, [cities, connections]);
 
   return (
     <group ref={groupRef}>
@@ -398,29 +459,38 @@ function AttackArcs() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// TRAVELING PACKETS (dots moving along arcs)
+// TRAVELING PACKETS (dots moving along arcs) — now accepts props
 // ═══════════════════════════════════════════════════════════════════════
 
-function TravelingPackets() {
+function TravelingPackets({ cities, connections }: { cities: ThreatCity[]; connections: [number, number][] }) {
   const meshRefs = useRef<THREE.InstancedMesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
-  const packets = useMemo(() => {
-    return ATTACK_CONNECTIONS.map(([si, ti]) => {
-      const start = latLngToVec3(THREAT_CITIES[si].lat, THREAT_CITIES[si].lng, R + 0.02);
-      const end = latLngToVec3(THREAT_CITIES[ti].lat, THREAT_CITIES[ti].lng, R + 0.02);
+  const packetsRef = useRef<Array<{
+    curve: THREE.CubicBezierCurve3;
+    progress: number;
+    speed: number;
+    color: THREE.Color;
+  }>>([]);
+
+  const count = connections.length;
+
+  // Initialize packets into ref
+  useEffect(() => {
+    packetsRef.current = connections.map(([si, ti]) => {
+      const start = latLngToVec3(cities[si].lat, cities[si].lng, R + 0.02);
+      const end = latLngToVec3(cities[ti].lat, cities[ti].lng, R + 0.02);
       return {
         curve: createArcCurve(start, end, 0.6),
         progress: Math.random(),
         speed: 0.06 + Math.random() * 0.1,
-        color: new THREE.Color(THREAT_CITIES[si].type === 'source' ? '#ef4444' : '#f97316'),
+        color: new THREE.Color(cities[si].type === 'source' ? '#ef4444' : '#f97316'),
       };
     });
-  }, []);
-
-  const count = packets.length;
+  }, [cities, connections]);
 
   useFrame((_, delta) => {
     if (!meshRefs.current) return;
+    const packets = packetsRef.current;
 
     for (let i = 0; i < count; i++) {
       const p = packets[i];
@@ -435,6 +505,8 @@ function TravelingPackets() {
     meshRefs.current.instanceMatrix.needsUpdate = true;
     if (meshRefs.current.instanceColor) meshRefs.current.instanceColor.needsUpdate = true;
   });
+
+  if (count === 0) return null;
 
   return (
     <instancedMesh ref={meshRefs} args={[undefined, undefined, count]}>
@@ -514,10 +586,10 @@ function CameraController() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// SCENE (all 3D objects)
+// SCENE (all 3D objects) — now accepts data props
 // ═══════════════════════════════════════════════════════════════════════
 
-function Scene() {
+function Scene({ cities, connections }: { cities: ThreatCity[]; connections: [number, number][] }) {
   return (
     <>
       <ambientLight intensity={0.15} />
@@ -525,9 +597,9 @@ function Scene() {
       <GlobeSphere />
       <Atmosphere />
       <LandDots />
-      <ThreatPoints />
-      <AttackArcs />
-      <TravelingPackets />
+      <ThreatPoints cities={cities} />
+      <AttackArcs cities={cities} connections={connections} />
+      <TravelingPackets cities={cities} connections={connections} />
       <OrbitalRing />
       <CameraController />
       <OrbitControls
@@ -545,28 +617,32 @@ function Scene() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// HUD OVERLAY (HTML on top of canvas)
+// HUD OVERLAY (HTML on top of canvas) — now accepts data props
 // ═══════════════════════════════════════════════════════════════════════
 
-function HUD() {
+function HUD({ cities, connections, noThreats }: { cities: ThreatCity[]; connections: [number, number][]; noThreats: boolean }) {
   const [time, setTime] = useState('');
   const [activeThreats, setActiveThreats] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
       setTime(new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC');
-      setActiveThreats(Math.floor(12 + Math.sin(Date.now() / 5000) * 4));
+      if (noThreats) {
+        setActiveThreats(0);
+      } else {
+        setActiveThreats(Math.floor(cities.length + Math.sin(Date.now() / 5000) * 2));
+      }
     }, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [cities.length, noThreats]);
 
   return (
     <div className="absolute inset-0 pointer-events-none">
       {/* Top-left */}
       <div className="absolute top-4 left-4">
         <div className="flex items-center gap-2 mb-2">
-          <div className="w-2 h-2 rounded-full bg-[#ef4444] animate-pulse" />
-          <span className="text-[10px] font-mono text-[#ef4444] uppercase tracking-wider">Live Threat Intelligence</span>
+          <div className={`w-2 h-2 rounded-full ${noThreats ? 'bg-[#6272a4]' : 'bg-[#ef4444] animate-pulse'}`} />
+          <span className={`text-[10px] font-mono uppercase tracking-wider ${noThreats ? 'text-[#6272a4]' : 'text-[#ef4444]'}`}>{noThreats ? 'No Active Threats' : 'Live Threat Intelligence'}</span>
         </div>
         <div className="text-[9px] font-mono text-muted-foreground/60">GLOBAL ATTACK SURFACE MONITORING</div>
       </div>
@@ -574,7 +650,7 @@ function HUD() {
       {/* Top-right */}
       <div className="absolute top-4 right-4 text-right">
         <div className="text-[10px] font-mono text-[#00ff88]">{time}</div>
-        <div className="text-[9px] font-mono text-muted-foreground/60 mt-1">NODES: {THREAT_CITIES.length} ACTIVE</div>
+        <div className="text-[9px] font-mono text-muted-foreground/60 mt-1">NODES: {cities.length} ACTIVE</div>
       </div>
 
       {/* Bottom-left stats */}
@@ -584,7 +660,7 @@ function HUD() {
             <span className="text-[10px] font-mono text-[#ef4444]">{activeThreats} ACTIVE THREATS</span>
           </div>
           <div className="px-2 py-1 rounded bg-[#f97316]/10 border border-[#f97316]/20">
-            <span className="text-[10px] font-mono text-[#f97316]">{ATTACK_CONNECTIONS.length} ATTACK VECTORS</span>
+            <span className="text-[10px] font-mono text-[#f97316]">{connections.length} ATTACK VECTORS</span>
           </div>
         </div>
         <div className="text-[9px] font-mono text-muted-foreground/50">
@@ -618,15 +694,60 @@ function HUD() {
       <div className="absolute inset-0 pointer-events-none" style={{
         background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,255,136,0.015) 2px, rgba(0,255,136,0.015) 4px)',
       }} />
+
+      {/* No active threats overlay */}
+      {noThreats && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="text-center">
+            <div className="text-3xl mb-2">🛡️</div>
+            <div className="text-sm font-mono text-[#00ff88]/60">No active threats detected</div>
+            <div className="text-[10px] font-mono text-[#6272a4] mt-1">Run a scan to populate threat intelligence</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// MAIN COMPONENT
+// MAIN COMPONENT — fetches real threat data
 // ═══════════════════════════════════════════════════════════════════════
 
 export function ThreatGlobe() {
+  const [cities, setCities] = useState<ThreatCity[]>([]);
+  const [connections, setConnections] = useState<[number, number][]>([]);
+  const [noThreats, setNoThreats] = useState(false);
+  const [dataReady, setDataReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchThreats() {
+      try {
+        const res = await fetch('/api/threats');
+        if (!res.ok) return;
+        const json = await res.json();
+        if (cancelled) return;
+
+        const threats: ApiThreat[] = json.threats || [];
+        const { cities: derivedCities, connections: derivedConnections } = deriveThreatData(threats);
+
+        if (cancelled) return;
+        setCities(derivedCities);
+        setConnections(derivedConnections);
+        setNoThreats(threats.length === 0);
+        setDataReady(true);
+      } catch {
+        // On error, show empty globe
+        if (!cancelled) {
+          setNoThreats(true);
+          setDataReady(true);
+        }
+      }
+    }
+    fetchThreats();
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -642,7 +763,7 @@ export function ThreatGlobe() {
         style={{ background: '#030806' }}
         dpr={[1, 2]}
       >
-        <Scene />
+        {dataReady && <Scene cities={cities} connections={connections} />}
         <EffectComposer>
           <Bloom
             intensity={0.8}
@@ -654,7 +775,7 @@ export function ThreatGlobe() {
       </Canvas>
 
       {/* HUD Overlay */}
-      <HUD />
+      {dataReady && <HUD cities={cities} connections={connections} noThreats={noThreats} />}
     </motion.div>
   );
 }
