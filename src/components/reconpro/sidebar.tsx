@@ -37,6 +37,8 @@ import {
   Crown,
   Cpu,
   Cloud,
+  Server,
+  Smartphone,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -137,6 +139,29 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'pricing', label: 'Pricing', icon: CreditCard },
       { id: 'white-label', label: 'White-Label', icon: Palette },
       { id: 'settings', label: 'Settings', icon: Settings },
+    ],
+  },
+  {
+    title: 'Government',
+    items: [
+      { id: 'cni-sentinel', label: 'CNI Sentinel', icon: ShieldAlert, badge: 'OT', accentColor: '#00ff41' },
+      { id: 'air-gapped-appliance', label: 'Air-Gapped Appliance', icon: Server, badge: 'MILSPEC', accentColor: '#22c55e' },
+      { id: 'pegasus-inspector', label: 'Pegasus Inspector', icon: Smartphone, badge: 'FORENSICS' },
+    ],
+  },
+  {
+    title: 'Authority',
+    items: [
+      { id: 'sovereign-control', label: 'Sovereign Control', icon: Crown, badge: 'BOSS', accentColor: '#FFD700' },
+      { id: 'broadcast-center', label: 'Broadcast Center', icon: Radio, badge: 'ECHO-SIGN', accentColor: '#f59e0b' },
+      { id: 'wall-of-shame', label: 'Wall of Shame', icon: Eye, badge: 'LIVE', accentColor: '#ef4444' },
+    ],
+  },
+  {
+    title: 'Labs',
+    items: [
+      { id: 'matrix-terminal', label: 'Matrix Terminal', icon: Terminal, badge: 'PLAY' },
+      { id: 'training-cluster', label: 'GPU Training', icon: Cpu, badge: 'CLUSTER' },
     ],
   },
 ];

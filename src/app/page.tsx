@@ -35,6 +35,14 @@ import { PQCVaultPanel } from '@/components/reconpro/pqc-vault';
 import { ExposedAssetMapPanel } from '@/components/reconpro/exposed-asset-map';
 import { ConfusedDeputyPanel } from '@/components/reconpro/confused-deputy';
 import { CognitiveDreadPanel } from '@/components/reconpro/cognitive-dread';
+import { WallOfShamePanel } from '@/components/reconpro/wall-of-shame';
+import { SovereignControlPanel } from '@/components/reconpro/sovereign-control';
+import { CNISentinelPanel } from '@/components/reconpro/cni-sentinel';
+import { BroadcastCenterPanel } from '@/components/reconpro/broadcast-center';
+import { MatrixTerminalPanel } from '@/components/reconpro/matrix-terminal';
+import { PegasusInspectorPanel } from '@/components/reconpro/pegasus-inspector';
+import { TrainingClusterPanel } from '@/components/reconpro/training-cluster';
+import { AirGappedAppliancePanel } from '@/components/reconpro/air-gapped-appliance';
 import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
 import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
@@ -47,7 +55,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame' | 'nhi-kill-switch' | 'genesis-stamp' | 'implosion' | 'war-room' | 'proof-gallery' | 'ai-leaderboard' | 'doom-clock' | 'fear-index' | 'pqc-vault' | 'exposed-asset-map' | 'confused-deputy' | 'cognitive-dread';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame' | 'nhi-kill-switch' | 'genesis-stamp' | 'implosion' | 'war-room' | 'proof-gallery' | 'ai-leaderboard' | 'doom-clock' | 'fear-index' | 'pqc-vault' | 'exposed-asset-map' | 'confused-deputy' | 'cognitive-dread' | 'wall-of-shame' | 'sovereign-control' | 'cni-sentinel' | 'broadcast-center' | 'matrix-terminal' | 'pegasus-inspector' | 'training-cluster' | 'air-gapped-appliance';
 
 interface Finding {
   id: string; title: string; severity: string; category: string;
@@ -468,6 +476,14 @@ export default function Home() {
       case 'exposed-asset-map': return <ExposedAssetMapPanel />;
       case 'confused-deputy': return <ConfusedDeputyPanel />;
       case 'cognitive-dread': return <CognitiveDreadPanel />;
+      case 'wall-of-shame': return <WallOfShamePanel />;
+      case 'sovereign-control': return <SovereignControlPanel />;
+      case 'cni-sentinel': return <CNISentinelPanel />;
+      case 'broadcast-center': return <BroadcastCenterPanel />;
+      case 'matrix-terminal': return <MatrixTerminalPanel />;
+      case 'pegasus-inspector': return <PegasusInspectorPanel />;
+      case 'training-cluster': return <TrainingClusterPanel />;
+      case 'air-gapped-appliance': return <AirGappedAppliancePanel />;
       default: return renderScan();
     }
   };
