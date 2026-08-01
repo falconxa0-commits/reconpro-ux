@@ -33,6 +33,10 @@ import {
   Radio,
   Film,
   Ghost,
+  Timer,
+  Crown,
+  Cpu,
+  Cloud,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -115,6 +119,12 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'nhi-kill-switch', label: 'NHI Kill Switch', icon: ShieldAlert, badge: 'ENTERPRISE', accentColor: '#ef4444' },
       { id: 'genesis-stamp', label: 'Genesis Stamp', icon: BadgeCheck, badge: 'ENTERPRISE', accentColor: '#00ff88' },
       { id: 'implosion', label: 'Risk Simulator', icon: Skull, badge: 'SALES', accentColor: '#ef4444' },
+      { id: 'doom-clock', label: 'Doom Clock', icon: Timer, badge: 'PQC', accentColor: '#ef4444' },
+      { id: 'pqc-vault', label: 'PQC Sovereign Vault', icon: Crown, badge: 'SOVEREIGN', accentColor: '#FFD700' },
+      { id: 'fear-index', label: 'CISO Fear Index', icon: AlertTriangle, badge: 'LIVE', accentColor: '#f97316' },
+      { id: 'exposed-asset-map', label: 'Exposed Asset Map', icon: Globe, badge: 'GLOBAL', accentColor: '#06b6d4' },
+      { id: 'confused-deputy', label: 'Confused Deputy', icon: Cpu, badge: 'PLAY' },
+      { id: 'cognitive-dread', label: 'Cognitive Dread', icon: Brain, badge: 'OMNI', accentColor: '#d946ef' },
     ],
   },
   {

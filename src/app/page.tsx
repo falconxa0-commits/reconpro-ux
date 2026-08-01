@@ -29,6 +29,12 @@ import { ImplosionPanel } from '@/components/reconpro/implosion-panel';
 import { WarRoomPanel } from '@/components/reconpro/war-room';
 import { ProofGallery } from '@/components/reconpro/proof-gallery';
 import { AILeaderboard } from '@/components/reconpro/ai-leaderboard';
+import { DoomClockPanel } from '@/components/reconpro/doom-clock';
+import { FearIndexPanel } from '@/components/reconpro/fear-index';
+import { PQCVaultPanel } from '@/components/reconpro/pqc-vault';
+import { ExposedAssetMapPanel } from '@/components/reconpro/exposed-asset-map';
+import { ConfusedDeputyPanel } from '@/components/reconpro/confused-deputy';
+import { CognitiveDreadPanel } from '@/components/reconpro/cognitive-dread';
 import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
 import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
@@ -41,7 +47,7 @@ import {
 
 // ─── Types ───────────────────────────────────────────────────
 
-type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame' | 'nhi-kill-switch' | 'genesis-stamp' | 'implosion' | 'war-room' | 'proof-gallery' | 'ai-leaderboard';
+type View = 'dashboard' | 'executive' | 'scan' | 'radar' | 'globe' | 'advisor' | 'surface' | 'threats' | 'history' | 'team' | 'compliance' | 'integrations' | 'monitoring' | 'proof' | 'vulns' | 'unified-cli' | 'pricing' | 'white-label' | 'hall-of-fame' | 'nhi-kill-switch' | 'genesis-stamp' | 'implosion' | 'war-room' | 'proof-gallery' | 'ai-leaderboard' | 'doom-clock' | 'fear-index' | 'pqc-vault' | 'exposed-asset-map' | 'confused-deputy' | 'cognitive-dread';
 
 interface Finding {
   id: string; title: string; severity: string; category: string;
@@ -456,6 +462,12 @@ export default function Home() {
       case 'war-room': return <WarRoomPanel />;
       case 'proof-gallery': return <ProofGallery />;
       case 'ai-leaderboard': return <AILeaderboard />;
+      case 'doom-clock': return <DoomClockPanel />;
+      case 'fear-index': return <FearIndexPanel />;
+      case 'pqc-vault': return <PQCVaultPanel />;
+      case 'exposed-asset-map': return <ExposedAssetMapPanel />;
+      case 'confused-deputy': return <ConfusedDeputyPanel />;
+      case 'cognitive-dread': return <CognitiveDreadPanel />;
       default: return renderScan();
     }
   };
