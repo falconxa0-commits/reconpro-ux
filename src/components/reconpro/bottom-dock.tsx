@@ -186,7 +186,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
           </div>
         </motion.button>
 
-        {/* Scan button — gold CTA */}
+        {/* Scan button — white CTA */}
         <div className="ml-1">
           <motion.button
             onClick={() => onViewChange('scan')}

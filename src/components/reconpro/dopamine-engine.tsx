@@ -253,9 +253,9 @@ function FloatingXPCanvas({ popups }: { popups: FloatingXP[] }) {
 
 function useScreenShake() {
   const [shaking, setShaking] = useState(false);
-  const [flash, setFlash] = useState<'none' | 'red' | 'gold'>('none');
+  const [flash, setFlash] = useState<'none' | 'red' | 'white'>('none');
 
-  const triggerShake = useCallback((flashColor: 'red' | 'gold' = 'red') => {
+  const triggerShake = useCallback((flashColor: 'red' | 'white' = 'red') => {
     setShaking(true);
     setFlash(flashColor);
     setTimeout(() => setShaking(false), 500);
@@ -265,7 +265,7 @@ function useScreenShake() {
   return { shaking, flash, triggerShake };
 }
 
-function ScreenEffects({ shaking, flash }: { shaking: boolean; flash: 'none' | 'red' | 'gold' }) {
+function ScreenEffects({ shaking, flash }: { shaking: boolean; flash: 'none' | 'red' | 'white' }) {
   return (
     <>
       {/* Flash overlay */}
@@ -278,7 +278,7 @@ function ScreenEffects({ shaking, flash }: { shaking: boolean; flash: 'none' | '
             transition={{ duration: 0.3 }}
             className="fixed inset-0 pointer-events-none z-[80]"
             style={{
-              backgroundColor: flash === 'red' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(255, 217, 61, 0.2)',
+              backgroundColor: flash === 'red' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(255, 255, 255, 0.15)',
             }}
           />
         )}

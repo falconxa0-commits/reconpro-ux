@@ -5,7 +5,7 @@ import { type ReactNode } from 'react';
 
 // ═══════════════════════════════════════════════════════════════════════
 // ONYX LUXE PREMIUM UI PRIMITIVES
-// Luxury dark components — warm gold on infinite black
+// OLED glass components — pure white/silver on infinite black
 // ═══════════════════════════════════════════════════════════════════════
 
 // ─── Premium Card ────────────────────────────────────────────────
