@@ -1,0 +1,1121 @@
+     1→"""
+     2→ReconPro Swarm Architecture
+     3→===========================
+     4→Multi-agent swarm system that orchestrates four specialized sub-agents
+     5→using multiprocessing. Each agent has a defined role in the kill-chain:
+     6→
+     7→    SCOUT   -> Recon, subdomain discovery, port scanning (broad & fast)
+     8→    HACKER  -> Deep vulnerability scanning (oblivion, gorgon, auth, chain)
+     9→    CODER   -> Remediation code generation from HACKER findings
+    10→    GUARDIAN-> Verification / re-scan of applied fixes
+    11→
+    12→Usage:
+    13→    from reconpro.swarm import run_swarm
+    14→    results = run_swarm("example.com", mode="full")
+    15→"""
+    16→
+    17→from __future__ import annotations
+    18→
+    19→import multiprocessing
+    20→import multiprocessing.managers
+    21→import os
+    22→import signal
+    23→import sys
+    24→import time
+    25→import traceback
+    26→from dataclasses import dataclass, field
+    27→from enum import Enum
+    28→from typing import Any, Dict, List, Optional, Tuple
+    29→
+    30→from rich.console import Console
+    31→from rich.live import Live
+    32→from rich.panel import Panel
+    33→from rich.table import Table
+    34→from rich.text import Text
+    35→from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    36→from rich.columns import Columns
+    37→from rich.rule import Rule
+    38→
+    39→# ──────────────────────────────────────────────────────────────────────────────
+    40→# Constants & Configuration
+    41→# ──────────────────────────────────────────────────────────────────────────────
+    42→
+    43→AGENT_COLORS: Dict[str, str] = {
+    44→    "SCOUT": "cyan",
+    45→    "HACKER": "red",
+    46→    "CODER": "green",
+    47→    "GUARDIAN": "yellow",
+    48→}
+    49→
+    50→AGENT_ICONS: Dict[str, str] = {
+    51→    "SCOUT": "[cyan]\U0001F50D[/]",
+    52→    "HACKER": "[red]\U0001F5E1\uFE0F[/]",
+    53→    "CODER": "[green]\U0001F4BB[/]",
+    54→    "GUARDIAN": "[yellow]\U0001F6E1\uFE0F[/]",
+    55→}
+    56→
+    57→VALID_MODES = ("full", "recon", "attack", "fix", "verify")
+    58→
+    59→MODE_AGENT_MAP: Dict[str, List[str]] = {
+    60→    "full": ["SCOUT", "HACKER", "CODER", "GUARDIAN"],
+    61→    "recon": ["SCOUT"],
+    62→    "attack": ["SCOUT", "HACKER"],
+    63→    "fix": ["SCOUT", "HACKER", "CODER"],
+    64→    "verify": ["SCOUT", "HACKER", "CODER", "GUARDIAN"],
+    65→}
+    66→
+    67→# Timeout in seconds for each agent
+    68→AGENT_TIMEOUTS: Dict[str, int] = {
+    69→    "SCOUT": 120,
+    70→    "HACKER": 300,
+    71→    "CODER": 60,
+    72→    "GUARDIAN": 90,
+    73→}
+    74→
+    75→
+    76→# ──────────────────────────────────────────────────────────────────────────────
+    77→# Data Structures
+    78→# ──────────────────────────────────────────────────────────────────────────────
+    79→
+    80→class AgentStatus(str, Enum):
+    81→    IDLE = "idle"
+    82→    RUNNING = "running"
+    83→    WAITING = "waiting"
+    84→    FINISHED = "finished"
+    85→    FAILED = "failed"
+    86→    SKIPPED = "skipped"
+    87→
+    88→
+    89→@dataclass
+    90→class AgentMessage:
+    91→    """Message envelope sent between coordinator and agents via queues."""
+    92→    agent: str
+    93→    status: AgentStatus
+    94→    findings: List[Dict[str, Any]] = field(default_factory=list)
+    95→    message: str = ""
+    96→    error: str = ""
+    97→    timestamp: float = field(default_factory=time.time)
+    98→
+    99→    def to_dict(self) -> Dict[str, Any]:
+   100→        return {
+   101→            "agent": self.agent,
+   102→            "status": self.status.value,
+   103→            "findings": self.findings,
+   104→            "message": self.message,
+   105→            "error": self.error,
+   106→            "timestamp": self.timestamp,
+   107→        }
+   108→
+   109→
+   110→@dataclass
+   111→class SwarmResult:
+   112→    """Aggregated result from a full swarm run."""
+   113→    target: str
+   114→    mode: str
+   115→    agents: Dict[str, AgentMessage] = field(default_factory=dict)
+   116→    total_findings: int = 0
+   117→    duration: float = 0.0
+   118→    success: bool = True
+   119→
+   120→    def summary(self) -> Dict[str, Any]:
+   121→        return {
+   122→            "target": self.target,
+   123→            "mode": self.mode,
+   124→            "total_findings": self.total_findings,
+   125→            "duration": round(self.duration, 2),
+   126→            "success": self.success,
+   127→            "agents": {k: v.to_dict() for k, v in self.agents.items()},
+   128→        }
+   129→
+   130→
+   131→# ──────────────────────────────────────────────────────────────────────────────
+   132→# Agent Worker Functions (run in separate processes)
+   133→# ──────────────────────────────────────────────────────────────────────────────
+   134→
+   135→def _scout_worker(
+   136→    target: str,
+   137→    input_queue: multiprocessing.Queue,
+   138→    output_queue: multiprocessing.Queue,
+   139→    shared_knowledge: Dict[str, Any],
+   140→) -> None:
+   141→    """SCOUT agent: broad recon, subdomain discovery, port scanning."""
+   142→    output_queue.put(AgentMessage(
+   143→        agent="SCOUT", status=AgentStatus.RUNNING, message=f"Starting recon on {target}"
+   144→    ))
+   145→    findings: List[Dict[str, Any]] = []
+   146→
+   147→    try:
+   148→        # Phase 1: Subdomain discovery
+   149→        output_queue.put(AgentMessage(
+   150→            agent="SCOUT", status=AgentStatus.RUNNING,
+   151→            message="Phase 1/3: Subdomain discovery..."
+   152→        ))
+   153→        try:
+   154→            from .subdomains import discover_subdomains
+   155→            subdomain_results = discover_subdomains(target)
+   156→            if subdomain_results:
+   157→                sub_list = [] if isinstance(subdomain_results, dict) else list(subdomain_results)
+   158→                if isinstance(subdomain_results, dict):
+   159→                    sub_list = subdomain_results.get("subdomains", [])
+   160→                findings.append({
+   161→                    "type": "subdomains",
+   162→                    "target": target,
+   163→                    "count": len(sub_list),
+   164→                    "data": sub_list[:200],  # cap for shared memory
+   165→                })
+   166→                shared_knowledge["subdomains"] = sub_list
+   167→            else:
+   168→                findings.append({"type": "subdomains", "target": target, "count": 0, "data": []})
+   169→        except Exception as exc:
+   170→            findings.append({"type": "subdomains", "target": target, "error": str(exc)})
+   171→
+   172→        # Phase 2: Port scanning
+   173→        output_queue.put(AgentMessage(
+   174→            agent="SCOUT", status=AgentStatus.RUNNING,
+   175→            message="Phase 2/3: Port scanning..."
+   176→        ))
+   177→        try:
+   178→            from .modules.host import _check_open_ports
+   179→            port_results = _check_open_ports(target)
+   180→            if port_results:
+   181→                findings.append({
+   182→                    "type": "open_ports",
+   183→                    "target": target,
+   184→                    "data": port_results if isinstance(port_results, list) else [port_results],
+   185→                })
+   186→                shared_knowledge["open_ports"] = port_results
+   187→        except Exception as exc:
+   188→            findings.append({"type": "open_ports", "target": target, "error": str(exc)})
+   189→
+   190→        # Phase 3: Broad scan
+   191→        output_queue.put(AgentMessage(
+   192→            agent="SCOUT", status=AgentStatus.RUNNING,
+   193→            message="Phase 3/3: Broad vulnerability scan..."
+   194→        ))
+   195→        try:
+   196→            from .scanner import scan
+   197→            scan_results = scan(target, modules=["recon", "host"])
+   198→            if scan_results:
+   199→                findings.append({
+   200→                    "type": "scan_results",
+   201→                    "target": target,
+   202→                    "data": scan_results,
+   203→                })
+   204→                shared_knowledge["scan_results"] = scan_results
+   205→        except Exception as exc:
+   206→            findings.append({"type": "scan_results", "target": target, "error": str(exc)})
+   207→
+   208→        shared_knowledge["scout_findings"] = findings
+   209→        output_queue.put(AgentMessage(
+   210→            agent="SCOUT", status=AgentStatus.FINISHED,
+   211→            findings=findings,
+   212→            message=f"Recon complete. {len(findings)} finding groups collected."
+   213→        ))
+   214→
+   215→    except Exception as exc:
+   216→        output_queue.put(AgentMessage(
+   217→            agent="SCOUT", status=AgentStatus.FAILED,
+   218→            error=f"{type(exc).__name__}: {exc}"
+   219→        ))
+   220→
+   221→
+   222→def _hacker_worker(
+   223→    target: str,
+   224→    input_queue: multiprocessing.Queue,
+   225→    output_queue: multiprocessing.Queue,
+   226→    shared_knowledge: Dict[str, Any],
+   227→) -> None:
+   228→    """HACKER agent: deep vulnerability scanning with attack modules."""
+   229→    output_queue.put(AgentMessage(
+   230→        agent="HACKER", status=AgentStatus.RUNNING, message=f"Waiting for SCOUT intelligence on {target}"
+   231→    ))
+   232→    findings: List[Dict[str, Any]] = []
+   233→
+   234→    try:
+   235→        # Poll shared knowledge for scout data
+   236→        waited = 0
+   237→        while "scout_findings" not in shared_knowledge and waited < 30:
+   238→            time.sleep(1)
+   239→            waited += 1
+   240→
+   241→        if "scout_findings" not in shared_knowledge:
+   242→            output_queue.put(AgentMessage(
+   243→                agent="HACKER", status=AgentStatus.RUNNING,
+   244→                message="No SCOUT data received, proceeding with direct target."
+   245→            ))
+   246→        else:
+   247→            scout_count = len(shared_knowledge.get("scout_findings", []))
+   248→            output_queue.put(AgentMessage(
+   249→                agent="HACKER", status=AgentStatus.RUNNING,
+   250→                message=f"SCOUT intel received ({scout_count} groups). Launching deep scan..."
+   251→            ))
+   252→
+   253→        # Also scan discovered subdomains
+   254→        subdomains = shared_knowledge.get("subdomains", [])
+   255→        targets_to_scan = [target] + (subdomains[:10] if subdomains else [])
+   256→
+   257→        # Phase 1: Oblivion scan
+   258→        output_queue.put(AgentMessage(
+   259→            agent="HACKER", status=AgentStatus.RUNNING,
+   260→            message="Phase 1/5: Running oblivion module..."
+   261→        ))
+   262→        try:
+   263→            from .scanner import scan
+   264→            for t in targets_to_scan[:3]:
+   265→                result = scan(t, modules=["oblivion"])
+   266→                if result:
+   267→                    findings.append({"type": "oblivion", "target": t, "data": result})
+   268→        except Exception as exc:
+   269→            findings.append({"type": "oblivion", "target": target, "error": str(exc)})
+   270→
+   271→        # Phase 2: Gorgon scan
+   272→        output_queue.put(AgentMessage(
+   273→            agent="HACKER", status=AgentStatus.RUNNING,
+   274→            message="Phase 2/5: Running gorgon module..."
+   275→        ))
+   276→        try:
+   277→            from .scanner import scan
+   278→            for t in targets_to_scan[:3]:
+   279→                result = scan(t, modules=["gorgon"])
+   280→                if result:
+   281→                    findings.append({"type": "gorgon", "target": t, "data": result})
+   282→        except Exception as exc:
+   283→            findings.append({"type": "gorgon", "target": target, "error": str(exc)})
+   284→
+   285→        # Phase 3: Auth scan
+   286→        output_queue.put(AgentMessage(
+   287→            agent="HACKER", status=AgentStatus.RUNNING,
+   288→            message="Phase 3/5: Running auth module..."
+   289→        ))
+   290→        try:
+   291→            from .scanner import scan
+   292→            for t in targets_to_scan[:3]:
+   293→                result = scan(t, modules=["auth"])
+   294→                if result:
+   295→                    findings.append({"type": "auth", "target": t, "data": result})
+   296→        except Exception as exc:
+   297→            findings.append({"type": "auth", "target": target, "error": str(exc)})
+   298→
+   299→        # Phase 4: Chain scan
+   300→        output_queue.put(AgentMessage(
+   301→            agent="HACKER", status=AgentStatus.RUNNING,
+   302→            message="Phase 4/5: Running chain module..."
+   303→        ))
+   304→        try:
+   305→            from .scanner import scan
+   306→            for t in targets_to_scan[:3]:
+   307→                result = scan(t, modules=["chain"])
+   308→                if result:
+   309→                    findings.append({"type": "chain", "target": t, "data": result})
+   310→        except Exception as exc:
+   311→            findings.append({"type": "chain", "target": target, "error": str(exc)})
+   312→
+   313→        # Phase 5: NHI scan
+   314→        output_queue.put(AgentMessage(
+   315→            agent="HACKER", status=AgentStatus.RUNNING,
+   316→            message="Phase 5/5: Running nhi module..."
+   317→        ))
+   318→        try:
+   319→            from .scanner import scan
+   320→            for t in targets_to_scan[:2]:
+   321→                result = scan(t, modules=["nhi"])
+   322→                if result:
+   323→                    findings.append({"type": "nhi", "target": t, "data": result})
+   324→        except Exception as exc:
+   325→            findings.append({"type": "nhi", "target": target, "error": str(exc)})
+   326→
+   327→        shared_knowledge["hacker_findings"] = findings
+   328→        vuln_count = sum(1 for f in findings if "error" not in f)
+   329→        output_queue.put(AgentMessage(
+   330→            agent="HACKER", status=AgentStatus.FINISHED,
+   331→            findings=findings,
+   332→            message=f"Deep scan complete. {vuln_count} vulnerability groups found."
+   333→        ))
+   334→
+   335→    except Exception as exc:
+   336→        output_queue.put(AgentMessage(
+   337→            agent="HACKER", status=AgentStatus.FAILED,
+   338→            error=f"{type(exc).__name__}: {exc}"
+   339→        ))
+   340→
+   341→
+   342→def _coder_worker(
+   343→    target: str,
+   344→    input_queue: multiprocessing.Queue,
+   345→    output_queue: multiprocessing.Queue,
+   346→    shared_knowledge: Dict[str, Any],
+   347→) -> None:
+   348→    """CODER agent: analyzes HACKER findings, generates remediation code."""
+   349→    output_queue.put(AgentMessage(
+   350→        agent="CODER", status=AgentStatus.RUNNING,
+   351→        message="Waiting for HACKER vulnerability report..."
+   352→    ))
+   353→    findings: List[Dict[str, Any]] = []
+   354→
+   355→    try:
+   356→        # Wait for hacker findings
+   357→        waited = 0
+   358→        while "hacker_findings" not in shared_knowledge and waited < 60:
+   359→            time.sleep(1)
+   360→            waited += 1
+   361→
+   362→        hacker_findings = shared_knowledge.get("hacker_findings", [])
+   363→        if not hacker_findings:
+   364→            output_queue.put(AgentMessage(
+   365→                agent="CODER", status=AgentStatus.FINISHED,
+   366→                findings=findings,
+   367→                message="No HACKER findings to remediate."
+   368→            ))
+   369→            return
+   370→
+   371→        output_queue.put(AgentMessage(
+   372→            agent="CODER", status=AgentStatus.RUNNING,
+   373→            message=f"Analyzing {len(hacker_findings)} vulnerability groups..."
+   374→        ))
+   375→
+   376→        # Generate remediation for each finding
+   377→        for i, finding in enumerate(hacker_findings):
+   378→            if "error" in finding:
+   379→                continue
+   380→
+   381→            finding_type = finding.get("type", "unknown")
+   382→            finding_target = finding.get("target", target)
+   383→            finding_data = finding.get("data", {})
+   384→
+   385→            output_queue.put(AgentMessage(
+   386→                agent="CODER", status=AgentStatus.RUNNING,
+   387→                message=f"Generating fix for {finding_type} on {finding_target} ({i+1}/{len(hacker_findings)})..."
+   388→            ))
+   389→
+   390→            remediation = _generate_remediation(finding_type, finding_target, finding_data)
+   391→            findings.append({
+   392→                "type": f"remediation_{finding_type}",
+   393→                "target": finding_target,
+   394→                "original_type": finding_type,
+   395→                "remediation": remediation,
+   396→            })
+   397→
+   398→        shared_knowledge["coder_findings"] = findings
+   399→        shared_knowledge["remediations"] = [f["remediation"] for f in findings if "remediation" in f]
+   400→        output_queue.put(AgentMessage(
+   401→            agent="CODER", status=AgentStatus.FINISHED,
+   402→            findings=findings,
+   403→            message=f"Remediation complete. {len(findings)} fix scripts generated."
+   404→        ))
+   405→
+   406→    except Exception as exc:
+   407→        output_queue.put(AgentMessage(
+   408→            agent="CODER", status=AgentStatus.FAILED,
+   409→            error=f"{type(exc).__name__}: {exc}"
+   410→        ))
+   411→
+   412→
+   413→def _guardian_worker(
+   414→    target: str,
+   415→    input_queue: multiprocessing.Queue,
+   416→    output_queue: multiprocessing.Queue,
+   417→    shared_knowledge: Dict[str, Any],
+   418→) -> None:
+   419→    """GUARDIAN agent: verifies CODER fixes by re-running checks."""
+   420→    output_queue.put(AgentMessage(
+   421→        agent="GUARDIAN", status=AgentStatus.RUNNING,
+   422→        message="Waiting for CODER remediation scripts..."
+   423→    ))
+   424→    findings: List[Dict[str, Any]] = []
+   425→
+   426→    try:
+   427→        # Wait for coder findings
+   428→        waited = 0
+   429→        while "coder_findings" not in shared_knowledge and waited < 90:
+   430→            time.sleep(1)
+   431→            waited += 1
+   432→
+   433→        coder_findings = shared_knowledge.get("coder_findings", [])
+   434→        hacker_findings = shared_knowledge.get("hacker_findings", [])
+   435→
+   436→        if not coder_findings and not hacker_findings:
+   437→            output_queue.put(AgentMessage(
+   438→                agent="GUARDIAN", status=AgentStatus.FINISHED,
+   439→                findings=findings,
+   440→                message="Nothing to verify."
+   441→            ))
+   442→            return
+   443→
+   444→        output_queue.put(AgentMessage(
+   445→            agent="GUARDIAN", status=AgentStatus.RUNNING,
+   446→            message=f"Verifying {len(hacker_findings)} original findings..."
+   447→        ))
+   448→
+   449→        # Re-scan target to check if issues persist
+   450→        verification_modules = []
+   451→        for hf in hacker_findings:
+   452→            hf_type = hf.get("type", "")
+   453→            if hf_type in ("oblivion", "gorgon", "auth", "chain", "nhi") and hf_type not in verification_modules:
+   454→                verification_modules.append(hf_type)
+   455→
+   456→        if verification_modules:
+   457→            output_queue.put(AgentMessage(
+   458→                agent="GUARDIAN", status=AgentStatus.RUNNING,
+   459→                message=f"Re-running modules: {', '.join(verification_modules)}..."
+   460→            ))
+   461→            try:
+   462→                from .scanner import audit_scan
+   463→                verify_result = audit_scan(target, modules=verification_modules)
+   464→                if verify_result:
+   465→                    is_clean = _assess_verification(verify_result)
+   466→                    findings.append({
+   467→                        "type": "verification",
+   468→                        "target": target,
+   469→                        "passed": is_clean,
+   470→                        "data": verify_result,
+   471→                        "modules_checked": verification_modules,
+   472→                    })
+   473→            except Exception:
+   474→                # Fallback: use regular scan for verification
+   475→                try:
+   476→                    from .scanner import scan
+   477→                    verify_result = scan(target, modules=verification_modules)
+   478→                    is_clean = _assess_verification(verify_result)
+   479→                    findings.append({
+   480→                        "type": "verification",
+   481→                        "target": target,
+   482→                        "passed": is_clean,
+   483→                        "data": verify_result,
+   484→                        "modules_checked": verification_modules,
+   485→                    })
+   486→                except Exception as exc:
+   487→                    findings.append({
+   488→                        "type": "verification",
+   489→                        "target": target,
+   490→                        "passed": False,
+   491→                        "error": str(exc),
+   492→                    })
+   493→
+   494→        # Verify each remediation individually
+   495→        for i, cf in enumerate(coder_findings):
+   496→            if "remediation" not in cf:
+   497→                continue
+   498→            output_queue.put(AgentMessage(
+   499→                agent="GUARDIAN", status=AgentStatus.RUNNING,
+   500→                message=f"Verifying fix {i+1}/{len(coder_findings)}: {cf.get('original_type', '?')}..."
+   501→            ))
+   502→            # Check if the original vulnerability type still appears
+   503→            original_type = cf.get("original_type", "")
+   504→            still_present = False
+   505→            for hf in hacker_findings:
+   506→                if hf.get("type") == original_type and "error" not in hf:
+   507→                    still_present = True
+   508→                    break
+   509→            findings.append({
+   510→                "type": "fix_verification",
+   511→                "target": cf.get("target", target),
+   512→                "vulnerability_type": original_type,
+   513→                "passed": not still_present,
+   514→                "status": "PASS" if not still_present else "STILL VULNERABLE",
+   515→            })
+   516→
+   517→        shared_knowledge["guardian_findings"] = findings
+   518→        passes = sum(1 for f in findings if f.get("passed", False))
+   519→        total = len([f for f in findings if "passed" in f])
+   520→        output_queue.put(AgentMessage(
+   521→            agent="GUARDIAN", status=AgentStatus.FINISHED,
+   522→            findings=findings,
+   523→            message=f"Verification complete. {passes}/{total} checks passed."
+   524→        ))
+   525→
+   526→    except Exception as exc:
+   527→        output_queue.put(AgentMessage(
+   528→            agent="GUARDIAN", status=AgentStatus.FAILED,
+   529→            error=f"{type(exc).__name__}: {exc}"
+   530→        ))
+   531→
+   532→
+   533→# ──────────────────────────────────────────────────────────────────────────────
+   534→# Helper Functions
+   535→# ──────────────────────────────────────────────────────────────────────────────
+   536→
+   537→def _generate_remediation(
+   538→    finding_type: str, target: str, data: Any
+   539→) -> Dict[str, str]:
+   540→    """Generate remediation commands/scripts based on vulnerability type."""
+   541→    remediation_db: Dict[str, Dict[str, str]] = {
+   542→        "oblivion": {
+   543→            "severity": "HIGH",
+   544→            "description": f"Oblivion-class vulnerability detected on {target}",
+   545→            "fix": (
+   546→                f"# Fix for oblivion vulnerability on {target}\n"
+   547→                f"# 1. Update all server-side dependencies:\n"
+   548→                f"apt update && apt upgrade -y\n"
+   549→                f"# 2. Apply security headers:\n"
+   550→                f"# Add to server config: X-Content-Type-Options: nosniff\n"
+   551→                f"# X-Frame-Options: DENY\n"
+   552→                f"# Content-Security-Policy: default-src 'self'\n"
+   553→                f"# 3. Review and patch the identified endpoint\n"
+   554→                f"# 4. Restart services after patching\n"
+   555→            ),
+   556→            "references": "OWASP Top 10, CWE-79, CWE-89",
+   557→        },
+   558→        "gorgon": {
+   559→            "severity": "CRITICAL",
+   560→            "description": f"Gorgon-class deep vulnerability on {target}",
+   561→            "fix": (
+   562→                f"# Fix for gorgon vulnerability on {target}\n"
+   563→                f"# 1. Isolate affected system immediately\n"
+   564→                f"# 2. Apply kernel security patches:\n"
+   565→                f"apt install -y linux-image-generic-lts-$(lsb_release -rs)\n"
+   566→                f"# 3. Restrict network access to affected ports\n"
+   567→                f"iptables -A INPUT -p tcp --dport <affected> -s trusted_ip -j ACCEPT\n"
+   568→                f"iptables -A INPUT -p tcp --dport <affected> -j DROP\n"
+   569→                f"# 4. Audit all running services\n"
+   570→                f"# 5. Rotate all credentials that may be compromised\n"
+   571→            ),
+   572→            "references": "MITRE ATT&CK T1190, CWE-200",
+   573→        },
+   574→        "auth": {
+   575→            "severity": "HIGH",
+   576→            "description": f"Authentication vulnerability on {target}",
+   577→            "fix": (
+   578→                f"# Fix for auth vulnerability on {target}\n"
+   579→                f"# 1. Enforce strong password policy:\n"
+   580→                f"# min 12 chars, upper+lower+digit+special\n"
+   581→                f"# 2. Enable MFA for all accounts:\n"
+   582→                f"# apt install libpam-google-authenticator\n"
+   583→                f"# 3. Implement account lockout after 5 failed attempts\n"
+   584→                f"# 4. Set session timeout to 15 minutes\n"
+   585→                f"# 5. Use HTTPS only - redirect HTTP to HTTPS\n"
+   586→                f"# 6. Disable default credentials\n"
+   587→            ),
+   588→            "references": "OWASP A07:2021, CWE-287, CWE-521",
+   589→        },
+   590→        "chain": {
+   591→            "severity": "CRITICAL",
+   592→            "description": f"Exploit chain vulnerability on {target}",
+   593→            "fix": (
+   594→                f"# Fix for chain exploit on {target}\n"
+   595→                f"# 1. Break the exploit chain by patching the entry point\n"
+   596→                f"# 2. Apply input validation on all user-controlled parameters\n"
+   597→                f"# 3. Implement WAF rules to detect chain patterns\n"
+   598→                f"# 4. Enable detailed logging and monitoring\n"
+   599→                f"# 5. Network segmentation to limit lateral movement\n"
+   600→                f"# 6. Update IDS signatures\n"
+   601→            ),
+   602→            "references": "OWASP API Security Top 10, MITRE ATT&CK",
+   603→        },
+   604→        "nhi": {
+   605→            "severity": "MEDIUM",
+   606→            "description": f"Network host intelligence finding on {target}",
+   607→            "fix": (
+   608→                f"# Fix for NHI finding on {target}\n"
+   609→                f"# 1. Review exposed services and disable unnecessary ones\n"
+   610→                f"# 2. Close non-essential ports\n"
+   611→                f"# 3. Implement network access controls\n"
+   612→                f"# 4. Enable firewall logging\n"
+   613→                f"# 5. Review DNS records for sensitive information exposure\n"
+   614→            ),
+   615→            "references": "CIS Controls, NIST SP 800-53",
+   616→        },
+   617→        "scan_results": {
+   618→            "severity": "INFO",
+   619→            "description": f"General scan finding on {target}",
+   620→            "fix": (
+   621→                f"# General hardening for {target}\n"
+   622→                f"# 1. Review all scan findings\n"
+   623→                f"# 2. Apply OS-level hardening\n"
+   624→                f"# 3. Update TLS certificates\n"
+   625→                f"# 4. Remove informational headers\n"
+   626→            ),
+   627→            "references": "CIS Benchmarks",
+   628→        },
+   629→        "subdomains": {
+   630→            "severity": "LOW",
+   631→            "description": f"Subdomain enumeration results for {target}",
+   632→            "fix": (
+   633→                f"# Subdomain security review for {target}\n"
+   634→                f"# 1. Audit all discovered subdomains\n"
+   635→                f"# 2. Remove stale/dangling DNS records\n"
+   636→                f"# 3. Ensure all subdomains have valid TLS certs\n"
+   637→                f"# 4. Implement certificate monitoring\n"
+   638→            ),
+   639→            "references": "NIST SP 800-53 SC-12",
+   640→        },
+   641→        "open_ports": {
+   642→            "severity": "MEDIUM",
+   643→            "description": f"Open ports detected on {target}",
+   644→            "fix": (
+   645→                f"# Port hardening for {target}\n"
+   646→                f"# 1. Review each open port for necessity\n"
+   647→                f"# 2. Close non-essential ports via firewall\n"
+   648→                f"# 3. Apply service-specific hardening\n"
+   649→                f"# 4. Implement port knocking for sensitive services\n"
+   650→            ),
+   651→            "references": "CIS Control 9, NIST SC-7",
+   652→        },
+   653→    }
+   654→    return remediation_db.get(
+   655→        finding_type,
+   656→        {
+   657→            "severity": "INFO",
+   658→            "description": f"Finding ({finding_type}) on {target}",
+   659→            "fix": f"# Review and remediate {finding_type} on {target}\n# Consult the finding data for specifics.",
+   660→            "references": "General security best practices",
+   661→        },
+   662→    )
+   663→
+   664→
+   665→def _assess_verification(scan_result: Any) -> bool:
+   666→    """Assess whether a re-scan result indicates the target is clean."""
+   667→    if scan_result is None:
+   668→        return True
+   669→    if isinstance(scan_result, dict):
+   670→        # If there are any 'findings' or 'vulnerabilities' keys with non-empty lists, not clean
+   671→        for key in ("findings", "vulnerabilities", "issues", "results"):
+   672→            val = scan_result.get(key)
+   673→            if val and isinstance(val, (list, dict)) and len(val) > 0:
+   674→                return False
+   675→        # If 'status' is explicitly clean/ok
+   676→        status = str(scan_result.get("status", "")).lower()
+   677→        if status in ("clean", "ok", "pass", "safe"):
+   678→            return True
+   679→    if isinstance(scan_result, list):
+   680→        return len(scan_result) == 0
+   681→    return True
+   682→
+   683→
+   684→# ──────────────────────────────────────────────────────────────────────────────
+   685→# Swarm Coordinator
+   686→# ──────────────────────────────────────────────────────────────────────────────
+   687→
+   688→class SwarmCoordinator:
+   689→    """Orchestrates the multi-agent swarm for security assessment.
+   690→
+   691→    Spawns agents as separate processes, manages shared state via
+   692→    multiprocessing.Manager, and provides real-time Rich console output.
+   693→    """
+   694→
+   695→    def __init__(self, target: str, mode: str = "full", console: Optional[Console] = None):
+   696→        if mode not in VALID_MODES:
+   697→            raise ValueError(f"Invalid mode '{mode}'. Must be one of: {VALID_MODES}")
+   698→
+   699→        self.target = target
+   700→        self.mode = mode
+   701→        self.console = console or Console()
+   702→        self.active_agents = MODE_AGENT_MAP[mode]
+   703→        self.agent_statuses: Dict[str, AgentStatus] = {
+   704→            name: AgentStatus.IDLE for name in self.active_agents
+   705→        }
+   706→        self.agent_messages: Dict[str, List[str]] = {
+   707→            name: [] for name in self.active_agents
+   708→        }
+   709→        self.agent_findings_count: Dict[str, int] = {
+   710→            name: 0 for name in self.active_agents
+   711→        }
+   712→        self.agent_errors: Dict[str, str] = {}
+   713→        self.final_messages: Dict[str, AgentMessage] = {}
+   714→        self.processes: List[multiprocessing.Process] = []
+   715→
+   716→    def _build_status_table(self) -> Table:
+   717→        """Build the live status table for Rich display."""
+   718→        table = Table(
+   719→            title="[bold white]\U0001F535 ReconPro Swarm[/]",
+   720→            show_header=True,
+   721→            header_style="bold magenta",
+   722→            border_style="dim",
+   723→            expand=True,
+   724→        )
+   725→        table.add_column("Agent", style="bold", width=12)
+   726→        table.add_column("Status", width=14)
+   727→        table.add_column("Findings", justify="right", width=10)
+   728→        table.add_column("Message", min_width=40)
+   729→
+   730→        for agent_name in self.active_agents:
+   731→            color = AGENT_COLORS.get(agent_name, "white")
+   732→            icon = AGENT_ICONS.get(agent_name, "\u2022")
+   733→            status = self.agent_statuses.get(agent_name, AgentStatus.IDLE)
+   734→            findings = self.agent_findings_count.get(agent_name, 0)
+   735→
+   736→            # Status styling
+   737→            status_text = status.value.upper()
+   738→            if status == AgentStatus.RUNNING:
+   739→                status_style = f"bold {color}"
+   740→            elif status == AgentStatus.FINISHED:
+   741→                status_style = "bold green"
+   742→            elif status == AgentStatus.FAILED:
+   743→                status_style = "bold red"
+   744→            elif status == AgentStatus.WAITING:
+   745→                status_style = f"italic {color}"
+   746→            else:
+   747→                status_style = "dim"
+   748→
+   749→            # Latest message
+   750→            msgs = self.agent_messages.get(agent_name, [])
+   751→            latest_msg = msgs[-1] if msgs else "Queued..."
+   752→            if len(latest_msg) > 60:
+   753→                latest_msg = latest_msg[:57] + "..."
+   754→
+   755→            table.add_row(
+   756→                f"{icon} {agent_name}",
+   757→                Text(status_text, style=status_style),
+   758→                str(findings),
+   759→                Text(latest_msg, style=color),
+   760→            )
+   761→
+   762→        return table
+   763→
+   764→    def _build_pipeline_visual(self) -> Panel:
+   765→        """Build a visual pipeline showing agent flow."""
+   766→        pipeline_parts = []
+   767→        for agent_name in self.active_agents:
+   768→            color = AGENT_COLORS.get(agent_name, "white")
+   769→            status = self.agent_statuses.get(agent_name, AgentStatus.IDLE)
+   770→            if status == AgentStatus.FINISHED:
+   771→                marker = f"\u2714 [{color}]{agent_name}[/]"
+   772→            elif status == AgentStatus.FAILED:
+   773→                marker = f"\u2718 [red]{agent_name}[/]"
+   774→            elif status == AgentStatus.RUNNING:
+   775→                marker = f"\u25B6 [{color}]{agent_name}[/]"
+   776→            else:
+   777→                marker = f"\u25CB [dim]{agent_name}[/]"
+   778→            pipeline_parts.append(marker)
+   779→
+   780→        pipeline_str = " [dim]\u2192[/] ".join(pipeline_parts)
+   781→        return Panel(
+   782→            Text(pipeline_str, justify="center"),
+   783→            title="[bold]Pipeline[/]",
+   784→            border_style="blue",
+   785→            padding=(0, 2),
+   786→        )
+   787→
+   788→    def _consume_messages(self, output_queue: multiprocessing.Queue, timeout: float = 0.3) -> None:
+   789→        """Drain all available messages from the output queue."""
+   790→        while True:
+   791→            try:
+   792→                msg = output_queue.get(timeout=timeout)
+   793→                if not isinstance(msg, AgentMessage):
+   794→                    continue
+   795→                self.agent_statuses[msg.agent] = msg.status
+   796→                if msg.message:
+   797→                    self.agent_messages.setdefault(msg.agent, []).append(msg.message)
+   798→                if msg.findings:
+   799→                    self.agent_findings_count[msg.agent] = len(msg.findings)
+   800→                if msg.error:
+   801→                    self.agent_errors[msg.agent] = msg.error
+   802→                # Store final message for each agent
+   803→                if msg.status in (AgentStatus.FINISHED, AgentStatus.FAILED):
+   804→                    self.final_messages[msg.agent] = msg
+   805→            except Exception:
+   806→                break
+   807→
+   808→    def _check_all_done(self) -> bool:
+   809→        """Check if all active agents have terminated."""
+   810→        for agent_name in self.active_agents:
+   811→            status = self.agent_statuses.get(agent_name, AgentStatus.IDLE)
+   812→            if status not in (AgentStatus.FINISHED, AgentStatus.FAILED):
+   813→                return False
+   814→        return True
+   815→
+   816→    def run(self) -> SwarmResult:
+   817→        """Execute the swarm and return aggregated results."""
+   818→        start_time = time.time()
+   819→        manager = multiprocessing.Manager()
+   820→        shared_knowledge = manager.dict()
+   821→        output_queue = multiprocessing.Queue()
+   822→        input_queue = multiprocessing.Queue()
+   823→
+   824→        # Worker function map
+   825→        worker_map = {
+   826→            "SCOUT": _scout_worker,
+   827→            "HACKER": _hacker_worker,
+   828→            "CODER": _coder_worker,
+   829→            "GUARDIAN": _guardian_worker,
+   830→        }
+   831→
+   832→        # Banner
+   833→        self.console.print()
+   834→        self.console.print(Rule(
+   835→            f"[bold magenta]\U0001F680 RECONPRO SWARM[/] | Target: [bold cyan]{self.target}[/] | Mode: [bold]{self.mode.upper()}[/]",
+   836→            style="magenta"
+   837→        ))
+   838→        self.console.print()
+   839→
+   840→        # Spawn agent processes
+   841→        for agent_name in self.active_agents:
+   842→            worker_fn = worker_map.get(agent_name)
+   843→            if not worker_fn:
+   844→                continue
+   845→            self.agent_statuses[agent_name] = AgentStatus.WAITING
+   846→            proc = multiprocessing.Process(
+   847→                target=worker_fn,
+   848→                args=(self.target, input_queue, output_queue, shared_knowledge),
+   849→                name=f"reconpro-{agent_name.lower()}",
+   850→                daemon=True,
+   851→            )
+   852→            self.processes.append(proc)
+   853→
+   854→        # Start all processes
+   855→        for proc in self.processes:
+   856→            proc.start()
+   857→            self.console.print(
+   858→                f"  {AGENT_ICONS.get(proc.name.split('-')[-1].upper(), '')} "
+   859→                f"Spawned [bold]{proc.name}[/] (PID {proc.pid})"
+   860→            )
+   861→        self.console.print()
+   862→
+   863→        # Live display loop
+   864→        try:
+   865→            with Live(
+   866→                self._build_status_table(),
+   867→                console=self.console,
+   868→                refresh_per_second=4,
+   869→                transient=False,
+   870→            ) as live:
+   871→                while not self._check_all_done():
+   872→                    self._consume_messages(output_queue)
+   873→                    # Update display
+   874→                    layout = Table.grid(expand=True)
+   875→                    layout.add_row(self._build_status_table())
+   876→                    layout.add_row(self._build_pipeline_visual())
+   877→                    live.update(layout)
+   878→                    time.sleep(0.25)
+   879→
+   880→                # Final drain
+   881→                self._consume_messages(output_queue, timeout=2.0)
+   882→                layout = Table.grid(expand=True)
+   883→                layout.add_row(self._build_status_table())
+   884→                layout.add_row(self._build_pipeline_visual())
+   885→                live.update(layout)
+   886→        except KeyboardInterrupt:
+   887→            self.console.print("\n[bold red]\u26A0 Swarm interrupted by user. Terminating...[/]")
+   888→            for proc in self.processes:
+   889→                if proc.is_alive():
+   890→                    proc.terminate()
+   891→                    proc.join(timeout=5)
+   892→
+   893→        # Wait for all processes to finish
+   894→        for proc in self.processes:
+   895→            proc.join(timeout=AGENT_TIMEOUTS.get(proc.name.split("-")[-1].upper(), 120))
+   896→            if proc.is_alive():
+   897→                proc.terminate()
+   898→                proc.join(timeout=5)
+   899→
+   900→        duration = time.time() - start_time
+   901→
+   902→        # Build result
+   903→        total_findings = sum(self.agent_findings_count.values())
+   904→        success = all(
+   905→            self.agent_statuses.get(a) != AgentStatus.FAILED
+   906→            for a in self.active_agents
+   907→        )
+   908→
+   909→        result = SwarmResult(
+   910→            target=self.target,
+   911→            mode=self.mode,
+   912→            agents={
+   913→                name: self.final_messages.get(name, AgentMessage(
+   914→                    agent=name,
+   915→                    status=self.agent_statuses.get(name, AgentStatus.IDLE),
+   916→                ))
+   917→                for name in self.active_agents
+   918→            },
+   919→            total_findings=total_findings,
+   920→            duration=duration,
+   921→            success=success,
+   922→        )
+   923→
+   924→        # Print summary
+   925→        self._print_summary(result)
+   926→
+   927→        return result
+   928→
+   929→    def _print_summary(self, result: SwarmResult) -> None:
+   930→        """Print a formatted summary of the swarm run."""
+   931→        self.console.print()
+   932→        self.console.print(Rule("[bold]SWARM SUMMARY[/]", style="magenta"))
+   933→
+   934→        # Overall stats
+   935→        status_icon = "\u2705" if result.success else "\u274C"
+   936→        self.console.print(
+   937→            f"  {status_icon} [bold]Target:[/] {result.target}"
+   938→        )
+   939→        self.console.print(
+   940→            f"  \U0001F552 [bold]Duration:[/] {result.duration:.1f}s"
+   941→        )
+   942→        self.console.print(
+   943→            f"  \U0001F4CA [bold]Total Findings:[/] {result.total_findings}"
+   944→        )
+   945→        self.console.print(
+   946→            f"  \U0001F3AE [bold]Mode:[/] {result.mode.upper()}"
+   947→        )
+   948→        self.console.print()
+   949→
+   950→        # Per-agent summary
+   951→        summary_table = Table(
+   952→            title="Agent Report",
+   953→            show_header=True,
+   954→            header_style="bold",
+   955→            border_style="dim",
+   956→        )
+   957→        summary_table.add_column("Agent", width=12)
+   958→        summary_table.add_column("Status", width=12)
+   959→        summary_table.add_column("Findings", justify="right", width=10)
+   960→        summary_table.add_column("Message", min_width=50)
+   961→
+   962→        for agent_name, msg in result.agents.items():
+   963→            color = AGENT_COLORS.get(agent_name, "white")
+   964→            status_val = msg.status.value.upper()
+   965→            if msg.status == AgentStatus.FAILED:
+   966→                status_val = f"[red]{status_val}[/]"
+   967→                msg_text = msg.error or "Unknown error"
+   968→            else:
+   969→                status_val = f"[green]{status_val}[/]"
+   970→                msg_text = msg.message or "No message"
+   971→
+   972→            summary_table.add_row(
+   973→                f"[{color}]{agent_name}[/]",
+   974→                status_val,
+   975→                str(len(msg.findings)),
+   976→                Text(msg_text[:80], style=color),
+   977→            )
+   978→
+   979→        self.console.print(summary_table)
+   980→
+   981→        # Print remediations if CODER ran
+   982→        coder_msg = result.agents.get("CODER")
+   983→        if coder_msg and coder_msg.findings:
+   984→            self.console.print()
+   985→            self.console.print(Rule("[bold green]\U0001F4BB REMEDIATION SCRIPTS[/]", style="green"))
+   986→            for finding in coder_msg.findings:
+   987→                rem = finding.get("remediation", {})
+   988→                if not rem:
+   989→                    continue
+   990→                severity = rem.get("severity", "INFO")
+   991→                sev_color = {
+   992→                    "CRITICAL": "bold red",
+   993→                    "HIGH": "red",
+   994→                    "MEDIUM": "yellow",
+   995→                    "LOW": "cyan",
+   996→                    "INFO": "dim",
+   997→                }.get(severity, "white")
+   998→                self.console.print(
+   999→                    Panel(
+  1000→                        Text(rem.get("fix", "No fix available."), style="green"),
+  1001→                        title=f"[{sev_color}][{severity}] {finding.get('target', '?')} - {finding.get('original_type', '?')}[/]",
+  1002→                        border_style="green",
+  1003→                        subtitle=f"Refs: {rem.get('references', 'N/A')}",
+  1004→                    )
+  1005→                )
+  1006→
+  1007→        # Print verification results if GUARDIAN ran
+  1008→        guardian_msg = result.agents.get("GUARDIAN")
+  1009→        if guardian_msg and guardian_msg.findings:
+  1010→            self.console.print()
+  1011→            self.console.print(Rule("[bold yellow]\U0001F6E1\uFE0F VERIFICATION RESULTS[/]", style="yellow"))
+  1012→            for finding in guardian_msg.findings:
+  1013→                if finding.get("type") == "fix_verification":
+  1014→                    passed = finding.get("passed", False)
+  1015→                    icon = "\u2705" if passed else "\u274C"
+  1016→                    color = "green" if passed else "red"
+  1017→                    status = finding.get("status", "UNKNOWN")
+  1018→                    vuln_type = finding.get("vulnerability_type", "?")
+  1019→                    target_str = finding.get("target", "?")
+  1020→                    self.console.print(
+  1021→                        f"  {icon} [{color}]{vuln_type}[/] on {target_str}: [{color}]{status}[/]"
+  1022→                    )
+  1023→
+  1024→        self.console.print()
+  1025→
+  1026→
+  1027→# ──────────────────────────────────────────────────────────────────────────────
+  1028→# Public Entry Point
+  1029→# ──────────────────────────────────────────────────────────────────────────────
+  1030→
+  1031→def run_swarm(
+  1032→    target: str,
+  1033→    mode: str = "full",
+  1034→    console: Optional[Console] = None,
+  1035→) -> SwarmResult:
+  1036→    """Main entry point for the ReconPro swarm system.
+  1037→
+  1038→    Args:
+  1039→        target: The target domain or IP to assess.
+  1040→        mode: Execution mode. One of:
+  1041→            - ``'full'``    — All 4 agents (SCOUT → HACKER → CODER → GUARDIAN)
+  1042→            - ``'recon'``   — SCOUT only
+  1043→            - ``'attack'``  — SCOUT + HACKER
+  1044→            - ``'fix'``     — SCOUT + HACKER + CODER
+  1045→            - ``'verify'``  — All 4 agents (same as 'full')
+  1046→        console: Optional Rich Console instance. If None, a new one is created.
+  1047→
+  1048→    Returns:
+  1049→        SwarmResult with all agent findings, status, and timing info.
+  1050→
+  1051→    Example:
+  1052→        >>> from reconpro.swarm import run_swarm
+  1053→        >>> result = run_swarm("example.com", mode="attack")
+  1054→        >>> print(result.summary())
+  1055→    """
+  1056→    if not target or not isinstance(target, str):
+  1057→        raise ValueError("target must be a non-empty string")
+  1058→
+  1059→    target = target.strip()
+  1060→
+  1061→    if mode not in VALID_MODES:
+  1062→        raise ValueError(
+  1063→            f"Invalid mode '{mode}'. Valid modes: {', '.join(VALID_MODES)}"
+  1064→        )
+  1065→
+  1066→    coordinator = SwarmCoordinator(
+  1067→        target=target,
+  1068→        mode=mode,
+  1069→        console=console,
+  1070→    )
+  1071→    return coordinator.run()
+  1072→
+  1073→
+  1074→def list_modes() -> List[Dict[str, Any]]:
+  1075→    """Return available swarm modes and their agent compositions."""
+  1076→    return [
+  1077→        {"mode": mode, "agents": agents}
+  1078→        for mode, agents in MODE_AGENT_MAP.items()
+  1079→    ]
+  1080→
+  1081→
+  1082→def list_agents() -> List[Dict[str, str]]:
+  1083→    """Return available agent types with descriptions."""
+  1084→    return [
+  1085→        {
+  1086→            "name": "SCOUT",
+  1087→            "color": AGENT_COLORS["SCOUT"],
+  1088→            "description": "Recon + subdomain discovery + port scanning",
+  1089→            "role": "Intelligence gathering (broad & fast)",
+  1090→        },
+  1091→        {
+  1092→            "name": "HACKER",
+  1093→            "color": AGENT_COLORS["HACKER"],
+  1094→            "description": "Deep vulnerability scanning (oblivion, gorgon, auth, chain, nhi)",
+  1095→            "role": "Exploit discovery & vulnerability assessment",
+  1096→        },
+  1097→        {
+  1098→            "name": "CODER",
+  1099→            "color": AGENT_COLORS["CODER"],
+  1100→            "description": "Remediation code generation from findings",
+  1101→            "role": "Fix script & command generation",
+  1102→        },
+  1103→        {
+  1104→            "name": "GUARDIAN",
+  1105→            "color": AGENT_COLORS["GUARDIAN"],
+  1106→            "description": "Verification of applied fixes",
+  1107→            "role": "Re-scan & pass/fail reporting",
+  1108→        },
+  1109→    ]
+  1110→
+  1111→
+  1112→__all__ = [
+  1113→    "SwarmCoordinator",
+  1114→    "SwarmResult",
+  1115→    "AgentMessage",
+  1116→    "AgentStatus",
+  1117→    "run_swarm",
+  1118→    "list_modes",
+  1119→    "list_agents",
+  1120→]
+  1121→
