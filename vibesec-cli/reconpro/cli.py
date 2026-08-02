@@ -197,14 +197,18 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="reconpro",
         description=(
-            "ReconPro Enterprise v4 — Eleven Blades. One Target. One Verdict.\n"
-            "The full-spectrum security reconnaissance platform.\n\n"
-            "Remote:  scan, vibesec (target a URL/domain)\n"
-            "Local:   audit, dev, doctor, ports, secrets (scan your machine)\n"
-            "Interactive: chat (talk to ReconPro), tui (visual dashboard)\n"
-            "Advanced:  blitz, agent, subdomains, schedule, serve, plugins"
+            "ReconPro Nexus v5 — Eleven Blades. Agentic Security Engine.\n"
+            "The full-spectrum security reconnaissance platform with AI agent.\n\n"
+            "Quick Start:  reconpro nexus           (mind-blowing agent TUI)\n"
+            "Remote:       scan, vibesec (target a URL/domain)\n"
+            "Local:        audit, dev, doctor, ports, secrets (scan your machine)\n"
+            "Interactive:  chat (talk to ReconPro), tui (visual dashboard)\n"
+            "Advanced:     blitz, agent, subdomains, schedule, serve, plugins"
         ),
         epilog="""Examples:
+  # NEXUS (recommended)
+  reconpro nexus                # Mind-blowing agent TUI
+
   # Remote
   reconpro scan example.com
   reconpro example.com --all --json -o report.json
@@ -292,6 +296,9 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--local", action="store_true")
     p.add_argument("--all", action="store_true")
 
+    # ── NEXUS ────────────────────────────────────────────────────
+    sub.add_parser("nexus", help="Launch NEXUS — mind-blowing agent TUI (mouse + keyboard + split-screen)")
+
     # ── chat ──────────────────────────────────────────────────────
     sub.add_parser("chat", help="Interactive chat mode — talk to ReconPro")
 
@@ -372,6 +379,12 @@ def main(argv: list[str] | None = None) -> None:
                 d = " (default)" if mid in DEFAULT_MODULES else ""
                 console.print(f"  [cyan]{mid:12}[/] {e['name']:18}{d}")
         console.print(f"\n  [dim]Total: {len(ALL_MODULES)} modules[/]\n")
+        return
+
+    # ── NEXUS ──────────────────────────────────────────────────
+    if cmd == "nexus":
+        from .nexus_tui import run_nexus
+        run_nexus()
         return
 
     # ── CHAT ───────────────────────────────────────────────────────
