@@ -116,7 +116,7 @@ def scan_browser_secrets(url: str, timeout: int = 15000) -> List[Finding]:
 
     patterns = [
         (r'api[_-]?key["\':\s]*=["\']([\w\-]{20,})', "API key in page JS"),
-        (r'firebase[_-]?config\s*=\s*\{[^}]*apiKey["\']:\s*["\']([^"']+)', "Firebase API key"),
+        (r'firebase[_-]?config\s*=\s*\{[^}]*apiKey["\']:\s*["\']([^"\']+)', "Firebase API key"),
         (r'mapbox["\'].*?["\']\s*:\s*["\']([\w\-.]{20,})', "Mapbox token"),
         (r'stripe["\'].*?pk_[\w]+', "Stripe public key"),
         (r'google["\'].*?AIza[\w\-]{30,}', "Google API key"),

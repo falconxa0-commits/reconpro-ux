@@ -18,6 +18,7 @@ from .scanner import (
 )
 from .history import list_scans, get_latest, diff_scans, save_scan, clear_history
 from .reports import generate_html_report
+from .parallel import blitz_scan
 
 console = Console()
 
