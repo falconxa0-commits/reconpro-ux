@@ -69,13 +69,13 @@ interface StampStats {
 // ─── Constants ───────────────────────────────────────────────────
 
 const GRADE_COLORS: Record<string, string> = {
-  'A+': '#34d399',
+  'A+': '#3dd68c',
   'A': '#22c55e',
   'B+': '#3b82f6',
   'B': '#6366f1',
-  'C+': '#facc15',
-  'C': '#fb923c',
-  'D+': '#ef4444',
+  'C+': '#e8b33d',
+  'C': '#e8943d',
+  'D+': '#e84057',
   'D': '#dc2626',
   'F': '#991b1b',
 };
@@ -163,7 +163,7 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-gray-800 hover:bg-gray-700 border border-gray-700 text-xs text-gray-300 hover:text-white transition-colors"
       title={label ?? 'Copy'}
     >
-      {copied ? <Check className="w-3.5 h-3.5 text-[#34d399]" /> : <Copy className="w-3.5 h-3.5" />}
+      {copied ? <Check className="w-3.5 h-3.5 text-[#3dd68c]" /> : <Copy className="w-3.5 h-3.5" />}
       {label && <span>{copied ? 'Copied!' : label}</span>}
     </button>
   );
@@ -356,11 +356,11 @@ export function GenesisStampPanel() {
 
   // ─── Stats Bar ─────────────────────────────────────────────────
   const statCards = [
-    { label: 'Total Issued', value: stats.totalIssued, icon: StampIcon, color: '#34d399' },
+    { label: 'Total Issued', value: stats.totalIssued, icon: StampIcon, color: '#3dd68c' },
     { label: 'Active Stamps', value: stats.activeStamps, icon: ShieldCheck, color: '#3b82f6' },
-    { label: 'Expired This Month', value: stats.expiredThisMonth, icon: Clock, color: '#fb923c' },
-    { label: 'Total Verifications', value: stats.totalVerifications, icon: Eye, color: '#a855f7' },
-    { label: 'Total Embed Views', value: stats.totalEmbedViews, icon: BarChart3, color: '#facc15' },
+    { label: 'Expired This Month', value: stats.expiredThisMonth, icon: Clock, color: '#e8943d' },
+    { label: 'Total Verifications', value: stats.totalVerifications, icon: Eye, color: '#a88a3a' },
+    { label: 'Total Embed Views', value: stats.totalEmbedViews, icon: BarChart3, color: '#e8b33d' },
   ];
 
   // ═══════════════════════════════════════════════════════════════════
@@ -371,8 +371,8 @@ export function GenesisStampPanel() {
     <div className="space-y-6">
       {/* ─── Header ──────────────────────────────────────────────── */}
       <div className="flex items-center gap-3">
-        <div className="p-2.5 rounded-xl bg-[#34d399]/10 border border-[#34d399]/20">
-          <Shield className="w-6 h-6 text-[#34d399]" />
+        <div className="p-2.5 rounded-xl bg-[#3dd68c]/10 border border-[#3dd68c]/20">
+          <Shield className="w-6 h-6 text-[#3dd68c]" />
         </div>
         <div>
           <h2 className="text-xl font-bold text-white">Genesis Stamp</h2>
@@ -431,7 +431,7 @@ export function GenesisStampPanel() {
                 value={filterDomain}
                 onChange={(e) => setFilterDomain(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && loadStamps()}
-                className="flex-1 px-4 py-2.5 rounded-xl bg-gray-900 border border-gray-800 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-[#34d399]/50 focus:ring-1 focus:ring-[#34d399]/20 transition-colors"
+                className="flex-1 px-4 py-2.5 rounded-xl bg-gray-900 border border-gray-800 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-[#3dd68c]/50 focus:ring-1 focus:ring-[#3dd68c]/20 transition-colors"
               />
               <button onClick={loadStamps} className="px-3 py-2.5 rounded-xl bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 transition-colors">
                 <RefreshCw className="w-4 h-4" />
@@ -440,7 +440,7 @@ export function GenesisStampPanel() {
 
             {loading ? (
               <div className="flex items-center justify-center py-16">
-                <Loader2 className="w-8 h-8 text-[#34d399] animate-spin" />
+                <Loader2 className="w-8 h-8 text-[#3dd68c] animate-spin" />
               </div>
             ) : stamps.length === 0 ? (
               <div className="text-center py-16 text-gray-500">
@@ -609,7 +609,7 @@ export function GenesisStampPanel() {
           <motion.div key="issue" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} className="space-y-5">
             <div className="rounded-xl bg-gray-900/80 border border-gray-800 p-6 space-y-5 max-w-2xl">
               <div className="flex items-center gap-2 text-white font-semibold">
-                <Award className="w-5 h-5 text-[#34d399]" />
+                <Award className="w-5 h-5 text-[#3dd68c]" />
                 Issue New Genesis Stamp
               </div>
 
@@ -621,7 +621,7 @@ export function GenesisStampPanel() {
                   placeholder="example.com"
                   value={issueDomain}
                   onChange={(e) => setIssueDomain(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#34d399]/50 focus:ring-1 focus:ring-[#34d399]/20 transition-colors"
+                  className="w-full px-4 py-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#3dd68c]/50 focus:ring-1 focus:ring-[#3dd68c]/20 transition-colors"
                 />
               </div>
 
@@ -636,11 +636,11 @@ export function GenesisStampPanel() {
                       className={cn(
                         'p-3 rounded-xl border text-left transition-all',
                         issueTier === t.id
-                          ? 'bg-[#34d399]/10 border-[#34d399]/40 ring-1 ring-[#34d399]/20'
+                          ? 'bg-[#3dd68c]/10 border-[#3dd68c]/40 ring-1 ring-[#3dd68c]/20'
                           : 'bg-gray-950 border-gray-800 hover:border-gray-700'
                       )}
                     >
-                      <div className={cn('text-sm font-semibold', issueTier === t.id ? 'text-[#34d399]' : 'text-gray-300')}>
+                      <div className={cn('text-sm font-semibold', issueTier === t.id ? 'text-[#3dd68c]' : 'text-gray-300')}>
                         {t.label}
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">{t.desc}</div>
@@ -657,7 +657,7 @@ export function GenesisStampPanel() {
                   placeholder="Auto-detect latest scan if empty"
                   value={issueScanId}
                   onChange={(e) => setIssueScanId(e.target.value)}
-                  className="w-full px-4 py-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#34d399]/50 focus:ring-1 focus:ring-[#34d399]/20 transition-colors font-mono"
+                  className="w-full px-4 py-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#3dd68c]/50 focus:ring-1 focus:ring-[#3dd68c]/20 transition-colors font-mono"
                 />
               </div>
 
@@ -665,7 +665,7 @@ export function GenesisStampPanel() {
               <button
                 onClick={handleIssue}
                 disabled={issuing || !issueDomain.trim()}
-                className="w-full py-3 rounded-xl bg-[#34d399] hover:bg-[#34d399]/90 text-gray-950 font-bold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="w-full py-3 rounded-xl bg-[#3dd68c] hover:bg-[#3dd68c]/90 text-gray-950 font-bold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {issuing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
                 {issuing ? 'Issuing Stamp...' : 'Issue Genesis Stamp'}
@@ -744,7 +744,7 @@ export function GenesisStampPanel() {
           <motion.div key="verify" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} className="space-y-5 max-w-2xl">
             <div className="rounded-xl bg-gray-900/80 border border-gray-800 p-6 space-y-4">
               <div className="flex items-center gap-2 text-white font-semibold">
-                <Fingerprint className="w-5 h-5 text-[#a855f7]" />
+                <Fingerprint className="w-5 h-5 text-[#a88a3a]" />
                 Verify a Genesis Stamp
               </div>
               <p className="text-sm text-gray-400">Enter a stamp ID to cryptographically verify its authenticity, expiry, and revocation status.</p>
@@ -756,12 +756,12 @@ export function GenesisStampPanel() {
                   value={verifyId}
                   onChange={(e) => setVerifyId(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleVerify()}
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#a855f7]/50 focus:ring-1 focus:ring-[#a855f7]/20 transition-colors font-mono"
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#a88a3a]/50 focus:ring-1 focus:ring-[#a88a3a]/20 transition-colors font-mono"
                 />
                 <button
                   onClick={handleVerify}
                   disabled={verifying || !verifyId.trim()}
-                  className="px-5 py-2.5 rounded-xl bg-[#a855f7] hover:bg-[#a855f7]/90 text-white font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                  className="px-5 py-2.5 rounded-xl bg-[#a88a3a] hover:bg-[#a88a3a]/90 text-white font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
                 >
                   {verifying ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
                   Verify
@@ -783,7 +783,7 @@ export function GenesisStampPanel() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
                   className="rounded-xl bg-gray-900/80 border p-6 space-y-4"
-                  style={{ borderColor: verifyResult.valid ? '#34d39940' : '#ef444440' }}
+                  style={{ borderColor: verifyResult.valid ? '#3dd68c40' : '#e8405740' }}
                 >
                   {/* Valid / Invalid header */}
                   <div className="flex items-center gap-3">
@@ -792,13 +792,13 @@ export function GenesisStampPanel() {
                       style={{ backgroundColor: verifyResult.valid ? 'rgba(52,211,153,0.12)' : 'rgba(239,68,68,0.12)' }}
                     >
                       {verifyResult.valid ? (
-                        <ShieldCheck className="w-6 h-6 text-[#34d399]" />
+                        <ShieldCheck className="w-6 h-6 text-[#3dd68c]" />
                       ) : (
-                        <Shield className="w-6 h-6 text-[#ef4444]" />
+                        <Shield className="w-6 h-6 text-[#e84057]" />
                       )}
                     </div>
                     <div>
-                      <div className="text-lg font-bold" style={{ color: verifyResult.valid ? '#34d399' : '#ef4444' }}>
+                      <div className="text-lg font-bold" style={{ color: verifyResult.valid ? '#3dd68c' : '#e84057' }}>
                         {verifyResult.valid ? 'Stamp is Valid' : 'Stamp is Invalid'}
                       </div>
                       <div className="text-sm text-gray-400">
@@ -867,7 +867,7 @@ export function GenesisStampPanel() {
           <motion.div key="embed" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12 }} className="space-y-5 max-w-2xl">
             <div className="rounded-xl bg-gray-900/80 border border-gray-800 p-6 space-y-4">
               <div className="flex items-center gap-2 text-white font-semibold">
-                <Code className="w-5 h-5 text-[#facc15]" />
+                <Code className="w-5 h-5 text-[#e8b33d]" />
                 Embed Badge Preview
               </div>
               <p className="text-sm text-gray-400">Enter a stamp ID to preview the embeddable badge as it would appear on a third-party website.</p>
@@ -879,12 +879,12 @@ export function GenesisStampPanel() {
                   value={embedId}
                   onChange={(e) => setEmbedId(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleLoadEmbed()}
-                  className="flex-1 px-4 py-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#facc15]/50 focus:ring-1 focus:ring-[#facc15]/20 transition-colors font-mono"
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-gray-950 border border-gray-800 text-white placeholder-gray-600 text-sm focus:outline-none focus:border-[#e8b33d]/50 focus:ring-1 focus:ring-[#e8b33d]/20 transition-colors font-mono"
                 />
                 <button
                   onClick={handleLoadEmbed}
                   disabled={embedLoading || !embedId.trim()}
-                  className="px-5 py-2.5 rounded-xl bg-[#facc15] hover:bg-[#facc15]/90 text-gray-950 font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                  className="px-5 py-2.5 rounded-xl bg-[#e8b33d] hover:bg-[#e8b33d]/90 text-gray-950 font-semibold text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
                 >
                   {embedLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
                   Preview
@@ -894,7 +894,7 @@ export function GenesisStampPanel() {
 
             {embedLoading && (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-8 h-8 text-[#facc15] animate-spin" />
+                <Loader2 className="w-8 h-8 text-[#e8b33d] animate-spin" />
               </div>
             )}
 

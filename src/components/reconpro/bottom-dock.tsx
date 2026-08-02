@@ -25,13 +25,13 @@ interface BottomDockProps {
 // ─── Dock Items — Primary Row ──────────────────────────────────────
 
 const PRIMARY_DOCK: DockItem[] = [
-  { id: 'executive', icon: LayoutDashboard, label: 'Command', color: '#c084fc' },
-  { id: 'scan', icon: Radar, label: 'Scan', color: '#22d3ee' },
-  { id: 'surface', icon: Globe, label: 'Attack Surface', color: '#fbbf24' },
-  { id: 'threats', icon: AlertTriangle, label: 'Threats', color: '#fb7185' },
-  { id: 'advisor', icon: Brain, label: 'AI Advisor', color: '#34d399' },
-  { id: 'compliance', icon: Shield, label: 'Compliance', color: '#22d3ee' },
-  { id: 'vulns', icon: Skull, label: 'Arsenal', color: '#fb7185' },
+  { id: 'executive', icon: LayoutDashboard, label: 'Command', color: '#c9a84c' },
+  { id: 'scan', icon: Radar, label: 'Scan', color: '#5ba8d4' },
+  { id: 'surface', icon: Globe, label: 'Attack Surface', color: '#e8b33d' },
+  { id: 'threats', icon: AlertTriangle, label: 'Threats', color: '#e84057' },
+  { id: 'advisor', icon: Brain, label: 'AI Advisor', color: '#3dd68c' },
+  { id: 'compliance', icon: Shield, label: 'Compliance', color: '#5ba8d4' },
+  { id: 'vulns', icon: Skull, label: 'Arsenal', color: '#e84057' },
 ];
 
 const SECONDARY_DOCK: DockItem[] = [
@@ -74,13 +74,13 @@ function ExpandedMenu({
   return (
     <motion.div
       ref={ref}
-      initial={{ opacity: 0, y: 12, scale: 0.95 }}
+      initial={{ opacity: 0, y: 12, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: 8, scale: 0.95 }}
-      transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+      exit={{ opacity: 0, y: 8, scale: 0.96 }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
       className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 glass p-2 min-w-[200px]"
     >
-      <div className="grid grid-cols-2 gap-1">
+      <div className="grid grid-cols-2 gap-0.5">
         {items.map((item) => {
           const Icon = item.icon;
           const isActive = activeView === item.id;
@@ -88,10 +88,10 @@ function ExpandedMenu({
             <button
               key={item.id}
               onClick={() => { onSelect(item.id); onClose(); }}
-              className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[12px] font-medium transition-all duration-200 text-left
+              className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[12px] font-medium transition-all duration-300 text-left
                 ${isActive
-                  ? 'bg-[rgba(192,132,252,0.1)] text-[#c084fc]'
-                  : 'text-[#a1a1aa] hover:bg-[rgba(255,255,255,0.04)] hover:text-[#edf2f7]'
+                  ? 'bg-[rgba(201,168,76,0.08)] text-[#c9a84c]'
+                  : 'text-[#6b6960] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#c8c6c0]'
                 }`}
             >
               <Icon className="w-3.5 h-3.5 flex-shrink-0" style={item.color ? { color: isActive ? item.color : undefined } : undefined} />
@@ -110,7 +110,6 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<string | null>(null);
 
-  // Map all views to primary or secondary
   const isPrimaryView = PRIMARY_DOCK.some(d => d.id === activeView);
 
   return (
@@ -134,8 +133,8 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
-            transition={{ duration: 0.15 }}
-            className="absolute bottom-full mb-2 px-3 py-1.5 rounded-lg bg-[rgba(15,15,24,0.95)] border border-[rgba(255,255,255,0.08)] text-[11px] text-[#a1a1aa] font-medium whitespace-nowrap backdrop-blur-xl"
+            transition={{ duration: 0.2 }}
+            className="absolute bottom-full mb-2 px-3 py-1.5 rounded-lg bg-[rgba(6,6,10,0.97)] border border-[rgba(255,255,255,0.06)] text-[11px] text-[#7a7873] font-medium whitespace-nowrap backdrop-blur-xl"
             style={{ pointerEvents: 'none' }}
           >
             {PRIMARY_DOCK.find(d => d.id === hoveredItem)?.label || SECONDARY_DOCK.find(d => d.id === hoveredItem)?.label}
@@ -149,7 +148,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
         {PRIMARY_DOCK.map((item) => {
           const Icon = item.icon;
           const isActive = activeView === item.id;
-          const color = item.color || '#c084fc';
+          const color = item.color || '#c9a84c';
           return (
             <motion.button
               key={item.id}
@@ -158,9 +157,9 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
               onMouseLeave={() => setHoveredItem(null)}
               whileHover={{ y: -6, scale: 1.18 }}
               whileTap={{ scale: 0.92 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 20 }}
+              transition={{ type: 'spring', stiffness: 400, damping: 22 }}
               className={`dock-item ${isActive ? 'active' : ''}`}
-              style={isActive ? { background: `${color}18`, color } : undefined}
+              style={isActive ? { background: `${color}14`, color } : undefined}
             >
               <Icon className="w-[20px] h-[20px]" strokeWidth={isActive ? 2 : 1.5} />
             </motion.button>
@@ -177,7 +176,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
           onMouseLeave={() => setHoveredItem(null)}
           whileHover={{ y: -6, scale: 1.18 }}
           whileTap={{ scale: 0.92 }}
-          transition={{ type: 'spring', stiffness: 400, damping: 20 }}
+          transition={{ type: 'spring', stiffness: 400, damping: 22 }}
           className={`dock-item ${menuOpen || (!isPrimaryView && !SECONDARY_DOCK.some(d => d.id === activeView)) ? 'active' : ''}`}
         >
           <div className="flex flex-col gap-[3px]">
@@ -187,20 +186,20 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
           </div>
         </motion.button>
 
-        {/* Scan button — special CTA */}
+        {/* Scan button — gold CTA */}
         <div className="ml-1">
           <motion.button
             onClick={() => onViewChange('scan')}
             whileHover={{ y: -6, scale: 1.12 }}
             whileTap={{ scale: 0.92 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 20 }}
-            className="w-[48px] h-[48px] rounded-[16px] flex items-center justify-center transition-all duration-300"
+            transition={{ type: 'spring', stiffness: 400, damping: 22 }}
+            className="w-[48px] h-[48px] rounded-[16px] flex items-center justify-center transition-all duration-400"
             style={{
-              background: 'linear-gradient(135deg, #c084fc, #7c3aed)',
-              boxShadow: '0 0 20px rgba(192,132,252,0.2)',
+              background: 'linear-gradient(135deg, #c9a84c, #a88a3a)',
+              boxShadow: '0 0 24px rgba(201,168,76,0.15), 0 4px 16px rgba(201,168,76,0.08)',
             }}
           >
-            <Zap className="w-[20px] h-[20px] text-black" strokeWidth={2} />
+            <Zap className="w-[20px] h-[20px] text-[#030305]" strokeWidth={2} />
           </motion.button>
         </div>
       </div>

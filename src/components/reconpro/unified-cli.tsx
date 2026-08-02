@@ -5,12 +5,12 @@ import { motion } from 'framer-motion';
 import { Terminal, Play, Download, ExternalLink, Zap, Eye, Brain, Skull, Bot, Crosshair, Loader2 } from 'lucide-react';
 
 const BLADES = [
-  { id: 'recon',    name: 'RECON',         desc: '13-category surface reconnaissance',   icon: Crosshair, color: '#22d3ee' },
-  { id: 'auth',     name: 'AUTH BYPASS',   desc: '15 auth bypass techniques',            icon: Skull,     color: '#facc15' },
-  { id: 'chain',    name: 'CHAIN HUNTER',  desc: 'SSRF + redirect chain hunting',        icon: Zap,       color: '#e879f9' },
-  { id: 'bot',      name: 'BOT HUNTER',    desc: 'C2 / bot infrastructure detection',    icon: Bot,       color: '#ef4444' },
-  { id: 'gorgon',   name: 'GORGON ULTRA',  desc: '15-stage AI red team',                 icon: Brain,     color: '#f87171' },
-  { id: 'oblivion', name: 'OBLIVION',      desc: '23-stage analytical dissolution',       icon: Eye,       color: '#f472b6' },
+  { id: 'recon',    name: 'RECON',         desc: '13-category surface reconnaissance',   icon: Crosshair, color: '#5ba8d4' },
+  { id: 'auth',     name: 'AUTH BYPASS',   desc: '15 auth bypass techniques',            icon: Skull,     color: '#e8b33d' },
+  { id: 'chain',    name: 'CHAIN HUNTER',  desc: 'SSRF + redirect chain hunting',        icon: Zap,       color: '#c9a84c' },
+  { id: 'bot',      name: 'BOT HUNTER',    desc: 'C2 / bot infrastructure detection',    icon: Bot,       color: '#e84057' },
+  { id: 'gorgon',   name: 'GORGON ULTRA',  desc: '15-stage AI red team',                 icon: Brain,     color: '#e84057' },
+  { id: 'oblivion', name: 'OBLIVION',      desc: '23-stage analytical dissolution',       icon: Eye,       color: '#d4a87a' },
 ];
 
 const BANNER = `
@@ -61,10 +61,10 @@ interface Encounter {
 }
 
 function deriveLevel(score: number): { level: string; color: string } {
-  if (score >= 75) return { level: 'CRITICAL', color: '#f87171' };
-  if (score >= 50) return { level: 'SUBSTANTIAL', color: '#f87171' };
-  if (score >= 25) return { level: 'NOTABLE', color: '#facc15' };
-  return { level: 'MUNDANE', color: '#8be9fd' };
+  if (score >= 75) return { level: 'CRITICAL', color: '#e84057' };
+  if (score >= 50) return { level: 'SUBSTANTIAL', color: '#e84057' };
+  if (score >= 25) return { level: 'NOTABLE', color: '#e8b33d' };
+  return { level: 'MUNDANE', color: '#5ba8d4' };
 }
 
 function generateQuote(score: number, domain: string, totalFindings: number): string {
@@ -177,8 +177,8 @@ export function UnifiedCLI() {
   // Empty / loading states
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#050507] text-[#f1f5f9] font-mono flex flex-col items-center justify-center gap-4">
-        <Loader2 className="h-8 w-8 animate-spin text-[#22d3ee]" />
+      <div className="min-h-screen bg-[#050507] text-[#e8e6e1] font-mono flex flex-col items-center justify-center gap-4">
+        <Loader2 className="h-8 w-8 animate-spin text-[#5ba8d4]" />
         <span className="text-[#6272a4] text-sm">Loading encounter data...</span>
       </div>
     );
@@ -186,16 +186,16 @@ export function UnifiedCLI() {
 
   if (fetchError) {
     return (
-      <div className="min-h-screen bg-[#050507] text-[#f1f5f9] font-mono flex flex-col items-center justify-center gap-4">
+      <div className="min-h-screen bg-[#050507] text-[#e8e6e1] font-mono flex flex-col items-center justify-center gap-4">
         <span className="text-[#ff5555] text-sm">Error: {fetchError}</span>
-        <button onClick={() => window.location.reload()} className="px-4 py-2 rounded border border-[#22d3ee]/30 text-[#22d3ee] text-sm hover:bg-[#22d3ee]/5 transition">Retry</button>
+        <button onClick={() => window.location.reload()} className="px-4 py-2 rounded border border-[#5ba8d4]/30 text-[#5ba8d4] text-sm hover:bg-[#5ba8d4]/5 transition">Retry</button>
       </div>
     );
   }
 
   if (encounters.length === 0) {
     return (
-      <div className="min-h-screen bg-[#050507] text-[#f1f5f9] font-mono">
+      <div className="min-h-screen bg-[#050507] text-[#e8e6e1] font-mono">
         <div className="mx-auto max-w-[1400px] px-6 py-8">
           {/* Header */}
           <motion.div
@@ -203,22 +203,22 @@ export function UnifiedCLI() {
             animate={{ opacity: 1, y: 0 }}
             className="mb-6 flex items-center gap-3"
           >
-            <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-[#1f1f2e] bg-[#0a0a0f]">
-              <Terminal className="h-6 w-6 text-[#22d3ee]" />
+            <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-[#1f1f2e] bg-[#08080c]">
+              <Terminal className="h-6 w-6 text-[#5ba8d4]" />
             </div>
             <div>
               <h1 className="text-2xl font-bold tracking-tight text-white">
-                ReconPro UNIFIED <span className="text-[#22d3ee]">CLI</span>
+                ReconPro UNIFIED <span className="text-[#5ba8d4]">CLI</span>
               </h1>
               <p className="text-xs text-[#6272a4]">Six Blades. One Target. One Verdict.</p>
             </div>
           </motion.div>
 
           {/* ASCII Banner */}
-          <div className="mb-6 overflow-x-auto rounded-lg border border-[#1f1f2e] bg-[#0a0a0f] p-5">
-            <pre className="text-[10px] leading-tight text-[#22d3ee] sm:text-[11px]">
+          <div className="mb-6 overflow-x-auto rounded-lg border border-[#1f1f2e] bg-[#08080c] p-5">
+            <pre className="text-[10px] leading-tight text-[#5ba8d4] sm:text-[11px]">
               {typedBanner}
-              <span className="animate-pulse text-[#22d3ee]">▊</span>
+              <span className="animate-pulse text-[#5ba8d4]">▊</span>
             </pre>
           </div>
 
@@ -226,7 +226,7 @@ export function UnifiedCLI() {
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="rounded-lg border border-[#1f1f2e] bg-[#0a0a0f] p-12 text-center"
+            className="rounded-lg border border-[#1f1f2e] bg-[#08080c] p-12 text-center"
           >
             <div className="text-4xl mb-4">📡</div>
             <h2 className="text-xl font-bold text-white mb-2">No Encounters Yet</h2>
@@ -243,7 +243,7 @@ export function UnifiedCLI() {
   const enc = encounters[selectedEncounter] || encounters[0];
 
   return (
-    <div className="min-h-screen bg-[#050507] text-[#f1f5f9] font-mono">
+    <div className="min-h-screen bg-[#050507] text-[#e8e6e1] font-mono">
       <div className="mx-auto max-w-[1400px] px-6 py-8">
         {/* Header */}
         <motion.div
@@ -251,17 +251,17 @@ export function UnifiedCLI() {
           animate={{ opacity: 1, y: 0 }}
           className="mb-6 flex items-center gap-3"
         >
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-[#1f1f2e] bg-[#0a0a0f]">
-            <Terminal className="h-6 w-6 text-[#22d3ee]" />
+          <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-[#1f1f2e] bg-[#08080c]">
+            <Terminal className="h-6 w-6 text-[#5ba8d4]" />
           </div>
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-white">
-              ReconPro UNIFIED <span className="text-[#22d3ee]">CLI</span>
+              ReconPro UNIFIED <span className="text-[#5ba8d4]">CLI</span>
             </h1>
             <p className="text-xs text-[#6272a4]">Six Blades. One Target. One Verdict.</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <span className="rounded-full border border-[#ff79c6]/30 bg-[#ff79c6]/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#ff79c6]">
+            <span className="rounded-full border border-[#c9a84c]/30 bg-[#c9a84c]/5 px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-[#c9a84c]">
               v1.0 · Unified
             </span>
           </div>
@@ -272,16 +272,16 @@ export function UnifiedCLI() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.2 }}
-          className="mb-6 overflow-x-auto rounded-lg border border-[#1f1f2e] bg-[#0a0a0f] p-5"
+          className="mb-6 overflow-x-auto rounded-lg border border-[#1f1f2e] bg-[#08080c] p-5"
         >
-          <pre className="text-[10px] leading-tight text-[#22d3ee] sm:text-[11px]">
+          <pre className="text-[10px] leading-tight text-[#5ba8d4] sm:text-[11px]">
             {typedBanner}
-            <span className="animate-pulse text-[#22d3ee]">▊</span>
+            <span className="animate-pulse text-[#5ba8d4]">▊</span>
           </pre>
           <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-1 text-[11px] text-[#6272a4]">
-            <span><span className="text-[#8be9fd]">Version:</span> reconpro-unified-v1.0</span>
-            <span><span className="text-[#8be9fd]">Signature:</span> <span className="text-[#f472b6]">X-R3c0nPr0-Un1f13d-S1x-Bl4d3s-0n3-T4rg3t-2026</span></span>
-            <span><span className="text-[#8be9fd]">Engines merged:</span> 6 (RECON, AUTH, CHAIN, BOT, GORGON, OBLIVION)</span>
+            <span><span className="text-[#5ba8d4]">Version:</span> reconpro-unified-v1.0</span>
+            <span><span className="text-[#5ba8d4]">Signature:</span> <span className="text-[#d4a87a]">X-R3c0nPr0-Un1f13d-S1x-Bl4d3s-0n3-T4rg3t-2026</span></span>
+            <span><span className="text-[#5ba8d4]">Engines merged:</span> 6 (RECON, AUTH, CHAIN, BOT, GORGON, OBLIVION)</span>
           </div>
         </motion.div>
 
@@ -302,7 +302,7 @@ export function UnifiedCLI() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: 0.3 + i * 0.05 }}
                   whileHover={{ y: -3 }}
-                  className="group relative overflow-hidden rounded-lg border border-[#1f1f2e] bg-[#0a0a0f] p-3"
+                  className="group relative overflow-hidden rounded-lg border border-[#1f1f2e] bg-[#08080c] p-3"
                   style={{ boxShadow: `inset 0 0 0 1px rgba(0,0,0,0)` }}
                 >
                   <div
@@ -340,8 +340,8 @@ export function UnifiedCLI() {
                 transition={{ delay: 0.5 + i * 0.1 }}
                 className={`relative overflow-hidden rounded-lg border p-4 text-left transition-all ${
                   selectedEncounter === i
-                    ? 'border-[#22d3ee]/50 bg-[#0a0a0f]'
-                    : 'border-[#1f1f2e] bg-[#0a0a0f] hover:border-[#22d3ee]/30'
+                    ? 'border-[#5ba8d4]/50 bg-[#08080c]'
+                    : 'border-[#1f1f2e] bg-[#08080c] hover:border-[#5ba8d4]/30'
                 }`}
               >
                 <div className="absolute right-3 top-3 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider"
@@ -375,9 +375,9 @@ export function UnifiedCLI() {
                 {/* Severity pills */}
                 <div className="mt-3 flex flex-wrap gap-1">
                   {e.findings.critical > 0 && <Pill color="#ff5555" label={`${e.findings.critical} CRIT`} />}
-                  {e.findings.high > 0 && <Pill color="#ff79c6" label={`${e.findings.high} HIGH`} />}
-                  {e.findings.medium > 0 && <Pill color="#f1fa8c" label={`${e.findings.medium} MED`} />}
-                  {e.findings.low > 0 && <Pill color="#8be9fd" label={`${e.findings.low} LOW`} />}
+                  {e.findings.high > 0 && <Pill color="#c9a84c" label={`${e.findings.high} HIGH`} />}
+                  {e.findings.medium > 0 && <Pill color="#e8b33d" label={`${e.findings.medium} MED`} />}
+                  {e.findings.low > 0 && <Pill color="#5ba8d4" label={`${e.findings.low} LOW`} />}
                   {e.findings.info > 0 && <Pill color="#6272a4" label={`${e.findings.info} INFO`} />}
                 </div>
               </motion.button>
@@ -390,7 +390,7 @@ export function UnifiedCLI() {
           key={selectedEncounter}
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mb-6 rounded-lg border border-[#1f1f2e] bg-[#0a0a0f] p-5"
+          className="mb-6 rounded-lg border border-[#1f1f2e] bg-[#08080c] p-5"
         >
           <div className="mb-4 flex items-start justify-between">
             <div>
@@ -428,16 +428,16 @@ export function UnifiedCLI() {
           </div>
 
           {/* Verdict banner */}
-          <div className="mt-4 rounded border border-[#1f1f2e] bg-gradient-to-r from-[#0a0a0f] via-[#0a0a0f] to-[#050507] p-4">
+          <div className="mt-4 rounded border border-[#1f1f2e] bg-gradient-to-r from-[#08080c] via-[#08080c] to-[#050507] p-4">
             <div className="mb-2 flex items-center gap-3">
               <div className="text-[10px] uppercase tracking-wider text-[#6272a4]">Wisdom Quote</div>
               <div className="h-px flex-1 bg-[#1f1f2e]" />
             </div>
-            <p className="text-[13px] italic leading-relaxed text-[#f472b6]">"{enc.quote}"</p>
+            <p className="text-[13px] italic leading-relaxed text-[#d4a87a]">"{enc.quote}"</p>
             <div className="mt-3 flex items-center gap-4 text-[11px] text-[#6272a4]">
-              <span><span className="text-[#8be9fd]">Auth bypasses:</span> <span className="font-mono text-[#f1fa8c]">{enc.bypasses}</span></span>
-              <span><span className="text-[#8be9fd]">Duration:</span> <span className="font-mono text-[#8be9fd]">{enc.duration}</span></span>
-              <span><span className="text-[#8be9fd]">Encounter:</span> <span className="font-mono text-[#f8f8f2]">{enc.encounter}</span></span>
+              <span><span className="text-[#5ba8d4]">Auth bypasses:</span> <span className="font-mono text-[#e8b33d]">{enc.bypasses}</span></span>
+              <span><span className="text-[#5ba8d4]">Duration:</span> <span className="font-mono text-[#5ba8d4]">{enc.duration}</span></span>
+              <span><span className="text-[#5ba8d4]">Encounter:</span> <span className="font-mono text-[#e8e6e1]">{enc.encounter}</span></span>
             </div>
           </div>
         </motion.div>
@@ -447,19 +447,19 @@ export function UnifiedCLI() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.8 }}
-          className="overflow-hidden rounded-lg border border-[#1f1f2e] bg-[#0a0a0f]"
+          className="overflow-hidden rounded-lg border border-[#1f1f2e] bg-[#08080c]"
         >
           <div className="flex items-center gap-2 border-b border-[#1f1f2e] px-4 py-2">
             <div className="flex gap-1.5">
               <div className="h-3 w-3 rounded-full bg-[#ff5555]" />
-              <div className="h-3 w-3 rounded-full bg-[#f1fa8c]" />
-              <div className="h-3 w-3 rounded-full bg-[#50fa7b]" />
+              <div className="h-3 w-3 rounded-full bg-[#e8b33d]" />
+              <div className="h-3 w-3 rounded-full bg-[#3dd68c]" />
             </div>
             <span className="ml-2 text-[11px] text-[#6272a4]">reconpro@unified — bash — 120×24</span>
           </div>
           <div className="overflow-x-auto p-5">
             <pre className="text-[12px] leading-relaxed">
-<span className="text-[#50fa7b]">$</span> <span className="text-[#8be9fd]">python3</span> <span className="text-[#f1fa8c]">/home/z/my-project/scripts/reconpro.py</span> <span className="text-[#f8f8f2]">{enc.host}</span> <span className="text-[#ff79c6]">--all</span> <span className="text-[#ff79c6]">-o</span> <span className="text-[#f1fa8c]">report.json</span>
+<span className="text-[#3dd68c]">$</span> <span className="text-[#5ba8d4]">python3</span> <span className="text-[#e8b33d]">/home/z/my-project/scripts/reconpro.py</span> <span className="text-[#e8e6e1]">{enc.host}</span> <span className="text-[#c9a84c]">--all</span> <span className="text-[#c9a84c]">-o</span> <span className="text-[#e8b33d]">report.json</span>
 
 <span className="text-[#6272a4]">  ┌─ RECON          13-category surface reconnaissance</span>
 <span className="text-[#6272a4]">  ├─ AUTH BYPASS    15 auth bypass techniques</span>
@@ -468,31 +468,31 @@ export function UnifiedCLI() {
 <span className="text-[#6272a4]">  ├─ GORGON ULTRA   15-stage AI red team</span>
 <span className="text-[#6272a4]">  └─ OBLIVION       23-stage analytical dissolution</span>
 
-<span className="text-[#22d3ee]">  ⠏ ✓ RECON complete          {enc.duration}</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ AUTH BYPASS complete    {enc.bypasses} bypasses</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ CHAIN HUNTER complete   {enc.modules.chain || 0} SSRF</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ BOT HUNTER complete     {enc.modules.bot || 0} indicators</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ GORGON ULTRA complete   {enc.modules.gorgon}/100 {enc.level}</span>
-<span className="text-[#22d3ee]">  ⠏ ✓ OBLIVION complete       {enc.modules.oblivion}/100 {enc.level}</span>
+<span className="text-[#5ba8d4]">  ⠏ ✓ RECON complete          {enc.duration}</span>
+<span className="text-[#5ba8d4]">  ⠏ ✓ AUTH BYPASS complete    {enc.bypasses} bypasses</span>
+<span className="text-[#5ba8d4]">  ⠏ ✓ CHAIN HUNTER complete   {enc.modules.chain || 0} SSRF</span>
+<span className="text-[#5ba8d4]">  ⠏ ✓ BOT HUNTER complete     {enc.modules.bot || 0} indicators</span>
+<span className="text-[#5ba8d4]">  ⠏ ✓ GORGON ULTRA complete   {enc.modules.gorgon}/100 {enc.level}</span>
+<span className="text-[#5ba8d4]">  ⠏ ✓ OBLIVION complete       {enc.modules.oblivion}/100 {enc.level}</span>
 
-<span className="text-[#f472b6]">  ╭─ FINAL VERDICT ──────────────────────────────────────╮</span>
-<span className="text-[#f472b6]">  │  UNIFIED VERDICT   {enc.score >= 10 ? '█'.repeat(Math.max(1, Math.floor(enc.score / 5))) : '░'}{(20 - Math.max(1, Math.floor(enc.score / 5))) ? '░'.repeat(20 - Math.max(1, Math.floor(enc.score / 5))) : ''} {enc.score}/100      │</span>
-<span className="text-[#f472b6]">  │  Level: {enc.level.padEnd(42)}│</span>
-<span className="text-[#f472b6]">  │  {enc.findings.critical + enc.findings.high + enc.findings.medium + enc.findings.low + enc.findings.info} findings across {enc.host} scan.{' '.repeat(Math.max(0, 33 - enc.host.length))}│</span>
-<span className="text-[#f472b6]">  ╰──────────────────────────────────────────────────────╯</span>
+<span className="text-[#d4a87a]">  ╭─ FINAL VERDICT ──────────────────────────────────────╮</span>
+<span className="text-[#d4a87a]">  │  UNIFIED VERDICT   {enc.score >= 10 ? '█'.repeat(Math.max(1, Math.floor(enc.score / 5))) : '░'}{(20 - Math.max(1, Math.floor(enc.score / 5))) ? '░'.repeat(20 - Math.max(1, Math.floor(enc.score / 5))) : ''} {enc.score}/100      │</span>
+<span className="text-[#d4a87a]">  │  Level: {enc.level.padEnd(42)}│</span>
+<span className="text-[#d4a87a]">  │  {enc.findings.critical + enc.findings.high + enc.findings.medium + enc.findings.low + enc.findings.info} findings across {enc.host} scan.{' '.repeat(Math.max(0, 33 - enc.host.length))}│</span>
+<span className="text-[#d4a87a]">  ╰──────────────────────────────────────────────────────╯</span>
 
-<span className="text-[#50fa7b]">  ✓ Report saved:</span> <span className="text-[#f1fa8c]">/home/z/my-project/download/reconpro_unified_{enc.host.split('.')[0]}.json</span>
+<span className="text-[#3dd68c]">  ✓ Report saved:</span> <span className="text-[#e8b33d]">/home/z/my-project/download/reconpro_unified_{enc.host.split('.')[0]}.json</span>
             </pre>
           </div>
         </motion.div>
 
         {/* Footer note */}
-        <div className="mt-6 rounded-lg border border-[#1f1f2e] bg-[#0a0a0f]/50 p-4 text-[11px] leading-relaxed text-[#6272a4]">
+        <div className="mt-6 rounded-lg border border-[#1f1f2e] bg-[#08080c]/50 p-4 text-[11px] leading-relaxed text-[#6272a4]">
           <p>
-            <span className="text-[#22d3ee] font-bold">ReconPro UNIFIED CLI</span> merges all six offensive engines into a single
-            command-line tool with rich terminal visuals (powered by <span className="text-[#f472b6]">python-rich</span>).
+            <span className="text-[#5ba8d4] font-bold">ReconPro UNIFIED CLI</span> merges all six offensive engines into a single
+            command-line tool with rich terminal visuals (powered by <span className="text-[#d4a87a]">python-rich</span>).
             Each encounter above represents a real completed scan from this ReconPro instance.
-            Run <span className="font-mono text-[#8be9fd]">python3 /home/z/my-project/scripts/reconpro.py &lt;host&gt; --all</span> to launch.
+            Run <span className="font-mono text-[#5ba8d4]">python3 /home/z/my-project/scripts/reconpro.py &lt;host&gt; --all</span> to launch.
           </p>
         </div>
       </div>

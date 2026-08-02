@@ -71,7 +71,7 @@ const plans: Plan[] = [
     id: 'starter',
     name: 'STARTER',
     badge: 'FREE',
-    badgeColor: 'text-[#f1f5f9]',
+    badgeColor: 'text-[#e8e6e1]',
     badgeBg: 'bg-white/10',
     monthlyPrice: 0,
     annualPrice: 0,
@@ -97,7 +97,7 @@ const plans: Plan[] = [
     name: 'PROFESSIONAL',
     badge: 'POPULAR',
     badgeColor: 'text-[#0a0d14]',
-    badgeBg: 'bg-[#34d399]',
+    badgeBg: 'bg-[#3dd68c]',
     monthlyPrice: 299,
     annualPrice: 239,
     annualMonthly: 239,
@@ -153,7 +153,7 @@ const plans: Plan[] = [
     name: 'CUSTOM',
     badge: 'WHITE LABEL',
     badgeColor: 'text-[#0a0d14]',
-    badgeBg: 'bg-gradient-to-r from-[#34d399] to-[#06b6d4]',
+    badgeBg: 'bg-gradient-to-r from-[#3dd68c] to-[#06b6d4]',
     monthlyPrice: null,
     annualPrice: null,
     annualMonthly: null,
@@ -251,9 +251,9 @@ function ComparisonCell({ value }: { value: boolean | string | false }) {
     return <Minus className="w-4 h-4 text-white/20 mx-auto" />;
   }
   if (typeof value === 'string') {
-    return <span className="text-sm text-[#f1f5f9]">{value}</span>;
+    return <span className="text-sm text-[#e8e6e1]">{value}</span>;
   }
-  return <Check className="w-4 h-4 text-[#34d399] mx-auto" />;
+  return <Check className="w-4 h-4 text-[#3dd68c] mx-auto" />;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,8 +266,8 @@ function CTAButton({ style, label, onClick }: { style: Plan['ctaStyle']; label: 
       return (
         <button
           onClick={onClick}
-          className="w-full py-3 px-6 rounded-xl text-sm font-semibold border border-[#34d399]/40 text-[#34d399]
-                     hover:bg-[#34d399]/10 hover:border-[#34d399]/60 transition-all duration-300"
+          className="w-full py-3 px-6 rounded-xl text-sm font-semibold border border-[#3dd68c]/40 text-[#3dd68c]
+                     hover:bg-[#3dd68c]/10 hover:border-[#3dd68c]/60 transition-all duration-300"
         >
           {label}
         </button>
@@ -276,8 +276,8 @@ function CTAButton({ style, label, onClick }: { style: Plan['ctaStyle']; label: 
       return (
         <button
           onClick={onClick}
-          className="w-full py-3 px-6 rounded-xl text-sm font-bold bg-[#34d399] text-[#0a0d14]
-                     hover:bg-[#34d399]/90 hover:shadow-[0_0_30px_rgba(52,211,153,0.4)] transition-all duration-300"
+          className="w-full py-3 px-6 rounded-xl text-sm font-bold bg-[#3dd68c] text-[#0a0d14]
+                     hover:bg-[#3dd68c]/90 hover:shadow-[0_0_30px_rgba(52,211,153,0.4)] transition-all duration-300"
         >
           {label}
           <ArrowRight className="w-4 h-4 inline ml-2" />
@@ -288,7 +288,7 @@ function CTAButton({ style, label, onClick }: { style: Plan['ctaStyle']; label: 
         <button
           onClick={onClick}
           className="w-full py-3 px-6 rounded-xl text-sm font-bold
-                     bg-gradient-to-r from-[#34d399] to-[#06b6d4] text-[#0a0d14]
+                     bg-gradient-to-r from-[#3dd68c] to-[#06b6d4] text-[#0a0d14]
                      hover:shadow-[0_0_30px_rgba(52,211,153,0.3),0_0_30px_rgba(6,182,212,0.3)]
                      transition-all duration-300"
         >
@@ -301,8 +301,8 @@ function CTAButton({ style, label, onClick }: { style: Plan['ctaStyle']; label: 
           onClick={onClick}
           className="w-full py-3 px-6 rounded-xl text-sm font-bold
                      border border-transparent bg-clip-padding
-                     bg-gradient-to-r from-[#34d399] to-[#06b6d4] text-transparent
-                     [background-image:linear-gradient(#0a0d14,#0a0d14),linear-gradient(135deg,#34d399,#06b6d4)]
+                     bg-gradient-to-r from-[#3dd68c] to-[#06b6d4] text-transparent
+                     [background-image:linear-gradient(#0a0d14,#0a0d14),linear-gradient(135deg,#3dd68c,#06b6d4)]
                      [background-origin:border-box]
                      [background-clip:padding-box,border-box]
                      [border:2px_solid_transparent]
@@ -331,7 +331,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
   };
 
   return (
-    <div className="min-h-screen bg-[#050710] text-[#f1f5f9]">
+    <div className="min-h-screen bg-[#050710] text-[#e8e6e1]">
       {/* ──────────────────────── Header Section ──────────────────────── */}
       <section className="relative pt-20 pb-12 px-4 sm:px-6 lg:px-8 overflow-hidden">
         {/* Background grid pattern */}
@@ -351,7 +351,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
         >
           {/* Eyebrow */}
           <motion.div variants={itemVariants} className="mb-4">
-            <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#34d399]/20 bg-[#34d399]/5 text-[#34d399] text-xs font-medium tracking-wider uppercase">
+            <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#3dd68c]/20 bg-[#3dd68c]/5 text-[#3dd68c] text-xs font-medium tracking-wider uppercase">
               <ShieldCheck className="w-3.5 h-3.5" />
               Simple, transparent pricing
             </span>
@@ -362,7 +362,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
             variants={itemVariants}
             className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight mb-6"
           >
-            <span className="bg-clip-text text-transparent bg-gradient-to-r from-[#f1f5f9] via-[#34d399] to-[#06b6d4]">
+            <span className="bg-clip-text text-transparent bg-gradient-to-r from-[#e8e6e1] via-[#3dd68c] to-[#06b6d4]">
               Choose Your Defense Strategy
             </span>
           </motion.h1>
@@ -373,18 +373,18 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
             className="text-lg sm:text-xl text-white/50 max-w-2xl mx-auto mb-10 leading-relaxed"
           >
             Enterprise attack surface management pricing. Start free, scale as you grow.
-            <span className="text-[#34d399]/80 font-medium"> No credit card required.</span>
+            <span className="text-[#3dd68c]/80 font-medium"> No credit card required.</span>
           </motion.p>
 
           {/* Billing Toggle */}
           <motion.div variants={itemVariants} className="flex items-center justify-center gap-4 mb-4">
-            <span className={`text-sm font-medium transition-colors duration-300 ${!isAnnual ? 'text-[#f1f5f9]' : 'text-white/40'}`}>
+            <span className={`text-sm font-medium transition-colors duration-300 ${!isAnnual ? 'text-[#e8e6e1]' : 'text-white/40'}`}>
               Monthly
             </span>
             <button
               onClick={() => setIsAnnual(!isAnnual)}
-              className="relative w-14 h-7 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-[#34d399]/40 focus:ring-offset-2 focus:ring-offset-[#0a0d14]"
-              style={{ backgroundColor: isAnnual ? '#34d399' : 'rgba(255,255,255,0.1)' }}
+              className="relative w-14 h-7 rounded-full transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-[#3dd68c]/40 focus:ring-offset-2 focus:ring-offset-[#0a0d14]"
+              style={{ backgroundColor: isAnnual ? '#3dd68c' : 'rgba(255,255,255,0.1)' }}
               aria-checked={isAnnual}
               role="switch"
             >
@@ -394,7 +394,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                 transition={{ type: 'spring', stiffness: 500, damping: 30 }}
               />
             </button>
-            <span className={`text-sm font-medium transition-colors duration-300 ${isAnnual ? 'text-[#f1f5f9]' : 'text-white/40'}`}>
+            <span className={`text-sm font-medium transition-colors duration-300 ${isAnnual ? 'text-[#e8e6e1]' : 'text-white/40'}`}>
               Annual
             </span>
             <AnimatePresence>
@@ -403,7 +403,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                   initial={{ opacity: 0, scale: 0.8, x: -10 }}
                   animate={{ opacity: 1, scale: 1, x: 0 }}
                   exit={{ opacity: 0, scale: 0.8, x: -10 }}
-                  className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-[#34d399] text-[#0a0d14] text-xs font-bold tracking-wide"
+                  className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-[#3dd68c] text-[#0a0d14] text-xs font-bold tracking-wide"
                 >
                   Save 20%
                 </motion.span>
@@ -435,14 +435,14 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                   plan.highlighted
                     ? 'bg-gradient-to-b from-[#06b6d4]/60 via-[#06b6d4]/20 to-transparent hover:shadow-[0_0_60px_rgba(6,182,212,0.15)]'
                     : plan.recommended
-                    ? 'bg-gradient-to-b from-[#34d399]/50 via-[#34d399]/15 to-transparent'
+                    ? 'bg-gradient-to-b from-[#3dd68c]/50 via-[#3dd68c]/15 to-transparent'
                     : 'bg-white/[0.06] hover:bg-white/10'
                 }`}
               >
                 {/* Recommended ribbon */}
                 {plan.recommended && (
                   <div className="absolute -top-px left-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-                    <div className="px-4 py-1 bg-[#34d399] text-[#0a0d14] text-[10px] font-extrabold tracking-[0.2em] rounded-b-lg">
+                    <div className="px-4 py-1 bg-[#3dd68c] text-[#0a0d14] text-[10px] font-extrabold tracking-[0.2em] rounded-b-lg">
                       RECOMMENDED
                     </div>
                   </div>
@@ -474,7 +474,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                       <div className={`p-1.5 rounded-lg ${plan.badgeBg}`}>
                         {plan.icon}
                       </div>
-                      <h3 className="text-lg font-bold text-[#f1f5f9] tracking-wide">{plan.name}</h3>
+                      <h3 className="text-lg font-bold text-[#e8e6e1] tracking-wide">{plan.name}</h3>
                     </div>
 
                     {/* Price */}
@@ -498,14 +498,14 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                                   <span className="text-xs text-white/30 line-through">
                                     ${plan.monthlyPrice}/mo
                                   </span>
-                                  <span className="text-xs text-[#34d399] ml-1">
+                                  <span className="text-xs text-[#3dd68c] ml-1">
                                     billed annually
                                   </span>
                                 </div>
                               )}
                             </>
                           ) : (
-                            <span className="text-3xl sm:text-4xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-[#34d399] to-[#06b6d4]">
+                            <span className="text-3xl sm:text-4xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-[#3dd68c] to-[#06b6d4]">
                               Custom
                             </span>
                           )}
@@ -524,16 +524,16 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                         <div className={`mt-0.5 flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center ${
                           feature.included === false
                             ? 'bg-white/[0.03]'
-                            : 'bg-[#34d399]/10'
+                            : 'bg-[#3dd68c]/10'
                         }`}>
                           {feature.included === false ? (
                             <Minus className="w-3 h-3 text-white/15" />
                           ) : (
-                            <Check className="w-3 h-3 text-[#34d399]" />
+                            <Check className="w-3 h-3 text-[#3dd68c]" />
                           )}
                         </div>
                         <span className={`text-sm leading-snug ${
-                          feature.included === false ? 'text-white/25' : 'text-[#f1f5f9]/80'
+                          feature.included === false ? 'text-white/25' : 'text-[#e8e6e1]/80'
                         }`}>
                           {feature.text}
                           {typeof feature.included === 'string' && feature.included !== 'true' && (
@@ -567,7 +567,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
           >
             <motion.div variants={itemVariants} className="text-center mb-8">
               <h2 className="text-2xl sm:text-3xl font-bold mb-3">
-                <span className="bg-clip-text text-transparent bg-gradient-to-r from-[#f1f5f9] to-[#34d399]">
+                <span className="bg-clip-text text-transparent bg-gradient-to-r from-[#e8e6e1] to-[#3dd68c]">
                   Compare Plans in Detail
                 </span>
               </h2>
@@ -588,9 +588,9 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                         <div className="text-xs font-semibold text-white/40 uppercase tracking-wider">Starter</div>
                         <div className="text-lg font-bold text-white/60 mt-1">$0</div>
                       </th>
-                      <th className="p-4 text-center bg-[#34d399]/[0.03]">
-                        <div className="text-xs font-semibold text-[#34d399] uppercase tracking-wider">Professional</div>
-                        <div className="text-lg font-bold text-[#34d399] mt-1">
+                      <th className="p-4 text-center bg-[#3dd68c]/[0.03]">
+                        <div className="text-xs font-semibold text-[#3dd68c] uppercase tracking-wider">Professional</div>
+                        <div className="text-lg font-bold text-[#3dd68c] mt-1">
                           ${isAnnual ? '239' : '299'}
                         </div>
                       </th>
@@ -600,9 +600,9 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                           ${isAnnual ? '799' : '999'}
                         </div>
                       </th>
-                      <th className="p-4 text-center bg-gradient-to-r from-[#34d399]/[0.02] to-[#06b6d4]/[0.02]">
+                      <th className="p-4 text-center bg-gradient-to-r from-[#3dd68c]/[0.02] to-[#06b6d4]/[0.02]">
                         <div className="text-xs font-semibold text-white/50 uppercase tracking-wider">Custom</div>
-                        <div className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#34d399] to-[#06b6d4] mt-1">
+                        <div className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#3dd68c] to-[#06b6d4] mt-1">
                           Custom
                         </div>
                       </th>
@@ -618,19 +618,19 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                         viewport={{ once: true }}
                         transition={{ delay: idx * 0.03, duration: 0.3 }}
                       >
-                        <td className="p-4 text-sm text-[#f1f5f9]/80 font-medium group-hover:text-[#34d399] transition-colors duration-200">
+                        <td className="p-4 text-sm text-[#e8e6e1]/80 font-medium group-hover:text-[#3dd68c] transition-colors duration-200">
                           {feature.label}
                         </td>
                         <td className="p-4 text-center">
                           <ComparisonCell value={feature.starter} />
                         </td>
-                        <td className="p-4 text-center bg-[#34d399]/[0.015]">
+                        <td className="p-4 text-center bg-[#3dd68c]/[0.015]">
                           <ComparisonCell value={feature.pro} />
                         </td>
                         <td className="p-4 text-center bg-[#06b6d4]/[0.015]">
                           <ComparisonCell value={feature.enterprise} />
                         </td>
-                        <td className="p-4 text-center bg-gradient-to-r from-[#34d399]/[0.01] to-[#06b6d4]/[0.01]">
+                        <td className="p-4 text-center bg-gradient-to-r from-[#3dd68c]/[0.01] to-[#06b6d4]/[0.01]">
                           <ComparisonCell value={feature.custom} />
                         </td>
                       </motion.tr>
@@ -668,8 +668,8 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                     className="group flex items-center gap-2.5 px-5 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.06]
                                hover:bg-white/[0.06] hover:border-white/[0.1] transition-all duration-300 cursor-default"
                   >
-                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#34d399]/20 to-[#06b6d4]/20 flex items-center justify-center">
-                      <span className="text-[10px] font-bold text-[#34d399] tracking-wider">{logo.initials}</span>
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#3dd68c]/20 to-[#06b6d4]/20 flex items-center justify-center">
+                      <span className="text-[10px] font-bold text-[#3dd68c] tracking-wider">{logo.initials}</span>
                     </div>
                     <span className="text-sm font-semibold text-white/40 group-hover:text-white/60 transition-colors duration-300 hidden sm:inline">
                       {logo.name}
@@ -690,9 +690,9 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                     viewport={{ once: true }}
                     transition={{ delay: idx * 0.1 }}
                     className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.06]
-                               hover:border-[#34d399]/20 hover:bg-[#34d399]/[0.03] transition-all duration-300"
+                               hover:border-[#3dd68c]/20 hover:bg-[#3dd68c]/[0.03] transition-all duration-300"
                   >
-                    <div className="text-[#34d399]/70">{badge.icon}</div>
+                    <div className="text-[#3dd68c]/70">{badge.icon}</div>
                     <span className="text-xs font-medium text-white/50">{badge.label}</span>
                   </motion.div>
                 ))}
@@ -713,23 +713,23 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
             className="relative rounded-3xl overflow-hidden"
           >
             {/* Background */}
-            <div className="absolute inset-0 bg-gradient-to-br from-[#34d399]/10 via-[#06b6d4]/5 to-[#0a0d14]" />
+            <div className="absolute inset-0 bg-gradient-to-br from-[#3dd68c]/10 via-[#06b6d4]/5 to-[#0a0d14]" />
             <div className="absolute inset-0 bg-[#0d1220]/60" />
             <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-[radial-gradient(ellipse_at_top_right,rgba(52,211,153,0.08)_0%,transparent_70%)]" />
             <div className="absolute bottom-0 left-0 w-[300px] h-[300px] bg-[radial-gradient(ellipse_at_bottom_left,rgba(6,182,212,0.08)_0%,transparent_70%)]" />
 
             {/* Border */}
             <div className="absolute inset-0 rounded-3xl border border-white/[0.06]" />
-            <div className="absolute inset-0 rounded-3xl border border-[#34d399]/[0.08]" />
+            <div className="absolute inset-0 rounded-3xl border border-[#3dd68c]/[0.08]" />
 
             <div className="relative p-8 sm:p-12 lg:p-16 text-center">
               {/* Icon */}
               <motion.div
-                className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#34d399]/20 to-[#06b6d4]/20 border border-[#34d399]/20 mb-6"
+                className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#3dd68c]/20 to-[#06b6d4]/20 border border-[#3dd68c]/20 mb-6"
                 whileHover={{ scale: 1.05, rotate: 3 }}
                 transition={{ type: 'spring', stiffness: 300 }}
               >
-                <Building2 className="w-7 h-7 text-[#34d399]" />
+                <Building2 className="w-7 h-7 text-[#3dd68c]" />
               </motion.div>
 
               <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold mb-4 text-white">
@@ -746,7 +746,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                   whileTap={{ scale: 0.98 }}
                   onClick={() => onNavigate?.('dashboard')}
                   className="inline-flex items-center gap-2 px-8 py-4 rounded-xl text-sm font-bold
-                             bg-gradient-to-r from-[#34d399] to-[#06b6d4] text-[#0a0d14]
+                             bg-gradient-to-r from-[#3dd68c] to-[#06b6d4] text-[#0a0d14]
                              hover:shadow-[0_0_40px_rgba(52,211,153,0.3),0_0_40px_rgba(6,182,212,0.2)]
                              transition-shadow duration-300"
                 >
@@ -773,7 +773,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                   { value: '< 5min', label: 'Avg response time' },
                 ].map((stat, idx) => (
                   <div key={idx} className="text-center">
-                    <div className="text-lg font-bold text-[#34d399]">{stat.value}</div>
+                    <div className="text-lg font-bold text-[#3dd68c]">{stat.value}</div>
                     <div className="text-[10px] text-white/30 uppercase tracking-wider mt-0.5">{stat.label}</div>
                   </div>
                 ))}

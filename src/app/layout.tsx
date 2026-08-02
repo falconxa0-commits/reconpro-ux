@@ -24,7 +24,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en" className="dark" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-        style={{ backgroundColor: '#000', color: '#edf2f7' }}
+        style={{ backgroundColor: '#030305', color: '#e8e6e1' }}
       >
         {children}
         <Toaster />

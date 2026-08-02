@@ -55,7 +55,7 @@ type ScanData = {
 
 const STREAM_ID = `reconpro.io/stream/${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2, 14)}`;
 const SEVERITY_COLORS: Record<string, string> = {
-  critical: '#ef4444', high: '#fb923c', medium: '#facc15',
+  critical: '#e84057', high: '#e8943d', medium: '#e8b33d',
   low: '#3b82f6', info: '#6b7280',
 };
 const AMBIENT_MESSAGES = [
@@ -172,7 +172,7 @@ function useParticleSystem(canvasRef: React.RefObject<HTMLCanvasElement | null>)
     const speed = severity === 'critical' ? 8 : severity === 'high' ? 5 : severity === 'medium' ? 3 : 1.5;
     const lifeBase = severity === 'critical' ? 90 : severity === 'high' ? 60 : severity === 'medium' ? 40 : 25;
     const color = SEVERITY_COLORS[severity] || '#3b82f6';
-    const secondColor = severity === 'critical' ? '#fbbf24' : severity === 'high' ? '#fde68a' : '#93c5fd';
+    const secondColor = severity === 'critical' ? '#e8b33d' : severity === 'high' ? '#fde68a' : '#93c5fd';
 
     for (let i = 0; i < count; i++) {
       const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.5;
@@ -246,7 +246,7 @@ function useTopology(topoCanvasRef: React.RefObject<HTMLCanvasElement | null>) {
     if (!canvas) return;
     const exists = nodesRef.current.find(n => n.id === id);
     if (exists) {
-      if (hasVuln) { exists.hasVuln = true; exists.color = '#ef4444'; }
+      if (hasVuln) { exists.hasVuln = true; exists.color = '#e84057'; }
       exists.glowIntensity = 1;
       return;
     }
@@ -257,7 +257,7 @@ function useTopology(topoCanvasRef: React.RefObject<HTMLCanvasElement | null>) {
     nodesRef.current.push({
       id, label, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist,
       vx: 0, vy: 0, radius: 8 + Math.random() * 6,
-      color: hasVuln ? '#ef4444' : '#22c55e', glowIntensity: 1, hasVuln,
+      color: hasVuln ? '#e84057' : '#22c55e', glowIntensity: 1, hasVuln,
     });
   }, [topoCanvasRef]);
 
@@ -763,7 +763,7 @@ export function WarRoomPanel() {
                       evt.severity === 'high' ? 'text-orange-400' :
                       evt.severity === 'medium' ? 'text-yellow-400' :
                       evt.severity === 'low' ? 'text-blue-400' :
-                      '#34d399',
+                      '#3dd68c',
                     )}>
                       {evt.message}
                     </span>

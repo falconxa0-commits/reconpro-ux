@@ -4,12 +4,11 @@ import { motion, type HTMLMotionProps } from 'framer-motion';
 import { type ReactNode } from 'react';
 
 // ═══════════════════════════════════════════════════════════════════════
-// DARKSWEAT PREMIUM UI PRIMITIVES
-// Reusable components for the premium dark-sweat design system
+// ONYX LUXE PREMIUM UI PRIMITIVES
+// Luxury dark components — warm gold on infinite black
 // ═══════════════════════════════════════════════════════════════════════
 
 // ─── Premium Card ────────────────────────────────────────────────
-// Elevated card with subtle glass effect and hover glow
 
 interface PremiumCardProps {
   children: ReactNode;
@@ -22,7 +21,7 @@ interface PremiumCardProps {
 export function PremiumCard({
   children,
   className = '',
-  accentColor = '#34d399',
+  accentColor = '#c9a84c',
   hover = true,
   padding = 'md',
 }: PremiumCardProps) {
@@ -31,9 +30,9 @@ export function PremiumCard({
   return (
     <motion.div
       className={`stat-card ${padClass} ${className}`}
-      style={{ '--accent-line': `${accentColor}35` } as React.CSSProperties}
+      style={{ '--accent-line': `${accentColor}30` } as React.CSSProperties}
       whileHover={hover ? { y: -2 } : undefined}
-      transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+      transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
     >
       {children}
     </motion.div>
@@ -41,7 +40,6 @@ export function PremiumCard({
 }
 
 // ─── Status Badge ───────────────────────────────────────────────
-// Severity/status indicator badge
 
 interface StatusBadgeProps {
   label: string;
@@ -57,11 +55,11 @@ export function StatusBadge({
   pulse = false,
 }: StatusBadgeProps) {
   const variantStyles: Record<string, string> = {
-    pass: 'bg-[rgba(52,211,153,0.08)] text-[#34d399] border-[rgba(52,211,153,0.15)]',
-    warn: 'bg-[rgba(251,191,36,0.08)] text-[#facc15] border-[rgba(251,191,36,0.15)]',
-    fail: 'bg-[rgba(244,63,94,0.08)] text-[#f43f5e] border-[rgba(244,63,94,0.15)]',
-    info: 'bg-[rgba(34,211,238,0.08)] text-[#22d3ee] border-[rgba(34,211,238,0.15)]',
-    neutral: 'bg-[rgba(255,255,255,0.03)] text-[#94a3b8] border-[rgba(255,255,255,0.06)]',
+    pass: 'bg-[rgba(61,214,140,0.06)] text-[#3dd68c] border-[rgba(61,214,140,0.1)]',
+    warn: 'bg-[rgba(232,179,61,0.06)] text-[#e8b33d] border-[rgba(232,179,61,0.1)]',
+    fail: 'bg-[rgba(232,64,87,0.06)] text-[#e84057] border-[rgba(232,64,87,0.1)]',
+    info: 'bg-[rgba(91,168,212,0.06)] text-[#5ba8d4] border-[rgba(91,168,212,0.1)]',
+    neutral: 'bg-[rgba(255,255,255,0.02)] text-[#6b6960] border-[rgba(255,255,255,0.05)]',
   };
 
   const sizeClass = size === 'sm' ? 'text-[9px] px-2 py-0.5 rounded-md' : 'text-[10px] px-2.5 py-1 rounded-lg';
@@ -82,7 +80,6 @@ export function StatusBadge({
 }
 
 // ─── Glow Button ────────────────────────────────────────────────
-// Primary action button with glow effect
 
 interface GlowButtonProps {
   children: ReactNode;
@@ -103,12 +100,12 @@ export function GlowButton({
   disabled = false,
   type = 'button',
 }: GlowButtonProps) {
-  const baseClass = 'inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-300 cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed';
+  const baseClass = 'inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-400 cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed';
 
   const variants: Record<string, string> = {
-    primary: 'bg-gradient-to-r from-[#34d399] to-[#10b981] text-[#030407] hover:shadow-[0_0_24px_rgba(52,211,153,0.25),0_4px_16px_rgba(52,211,153,0.15)] hover:-translate-y-0.5 active:translate-y-0',
-    ghost: 'bg-transparent text-[#94a3b8] border border-[rgba(255,255,255,0.06)] hover:bg-[rgba(255,255,255,0.04)] hover:border-[rgba(255,255,255,0.1)] hover:text-[#f1f5f9]',
-    danger: 'bg-gradient-to-r from-[#f43f5e] to-[#e11d48] text-white hover:shadow-[0_0_24px_rgba(244,63,94,0.25)] hover:-translate-y-0.5',
+    primary: 'bg-gradient-to-r from-[#c9a84c] to-[#a88a3a] text-[#030305] hover:shadow-[0_0_24px_rgba(201,168,76,0.2),0_4px_16px_rgba(201,168,76,0.1)] hover:-translate-y-0.5 active:translate-y-0',
+    ghost: 'bg-transparent text-[#6b6960] border border-[rgba(255,255,255,0.05)] hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.08)] hover:text-[#c8c6c0]',
+    danger: 'bg-gradient-to-r from-[#e84057] to-[#c9364b] text-white hover:shadow-[0_0_24px_rgba(232,64,87,0.2)] hover:-translate-y-0.5',
   };
 
   const sizes: Record<string, string> = {
@@ -131,7 +128,6 @@ export function GlowButton({
 }
 
 // ─── Section Header ─────────────────────────────────────────────
-// View section title with optional action
 
 interface SectionHeaderProps {
   title: string;
@@ -144,8 +140,8 @@ export function SectionHeader({ title, subtitle, action, className = '' }: Secti
   return (
     <div className={`flex items-center justify-between ${className}`}>
       <div>
-        <h2 className="text-[15px] font-semibold text-[#f1f5f9] tracking-tight">{title}</h2>
-        {subtitle && <p className="text-[11px] text-[#475569] mt-0.5">{subtitle}</p>}
+        <h2 className="text-[15px] font-semibold text-[#e8e6e1] tracking-tight">{title}</h2>
+        {subtitle && <p className="text-[11px] text-[#5a5850] mt-0.5">{subtitle}</p>}
       </div>
       {action && <div>{action}</div>}
     </div>
@@ -153,7 +149,6 @@ export function SectionHeader({ title, subtitle, action, className = '' }: Secti
 }
 
 // ─── Metric Card ────────────────────────────────────────────────
-// Single metric display with accent color
 
 interface MetricCardProps {
   label: string;
@@ -163,20 +158,20 @@ interface MetricCardProps {
   subtitle?: string;
 }
 
-export function MetricCard({ label, value, color = '#34d399', icon, subtitle }: MetricCardProps) {
+export function MetricCard({ label, value, color = '#c9a84c', icon, subtitle }: MetricCardProps) {
   return (
     <div
       className="stat-card p-4 flex flex-col justify-between h-full"
-      style={{ '--accent-line': `${color}35` } as React.CSSProperties}
+      style={{ '--accent-line': `${color}30` } as React.CSSProperties}
     >
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[9.5px] font-medium uppercase tracking-[0.15em] text-[#475569]">{label}</span>
-        {icon && <div style={{ color }} className="opacity-60">{icon}</div>}
+        <span className="text-[9.5px] font-medium uppercase tracking-[0.15em] text-[#5a5850]">{label}</span>
+        {icon && <div style={{ color }} className="opacity-40">{icon}</div>}
       </div>
       <div className="flex items-baseline gap-2">
         <span className="text-2xl font-bold font-mono" style={{ color }}>{value}</span>
       </div>
-      {subtitle && <span className="text-[10px] text-[#334155] mt-1">{subtitle}</span>}
+      {subtitle && <span className="text-[10px] text-[#3d3b38] mt-1">{subtitle}</span>}
     </div>
   );
 }
@@ -193,9 +188,9 @@ interface EmptyStateProps {
 export function EmptyState({ title, description, action, icon }: EmptyStateProps) {
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
-      {icon && <div className="mb-4 text-[#1e293b]">{icon}</div>}
-      <h3 className="text-base font-semibold text-[#e2e8f0] mb-1.5">{title}</h3>
-      <p className="text-[13px] text-[#475569] max-w-sm mb-6">{description}</p>
+      {icon && <div className="mb-4 text-[#1a1918]">{icon}</div>}
+      <h3 className="text-base font-semibold text-[#c8c6c0] mb-1.5">{title}</h3>
+      <p className="text-[13px] text-[#5a5850] max-w-sm mb-6">{description}</p>
       {action && <GlowButton onClick={action.onClick}>{action.label}</GlowButton>}
     </div>
   );
@@ -209,7 +204,7 @@ export function Separator({ className = '' }: { className?: string }) {
 
 // ─── Monospace Label ────────────────────────────────────────────
 
-export function MonoLabel({ children, color = '#475569' }: { children: ReactNode; color?: string }) {
+export function MonoLabel({ children, color = '#5a5850' }: { children: ReactNode; color?: string }) {
   return (
     <span className="text-[10px] font-mono tracking-wider" style={{ color }}>
       {children}
@@ -220,7 +215,7 @@ export function MonoLabel({ children, color = '#475569' }: { children: ReactNode
 // ─── Progress Ring (SVG) ────────────────────────────────────────
 
 interface ProgressRingProps {
-  value: number; // 0-100
+  value: number;
   size?: number;
   strokeWidth?: number;
   color?: string;
@@ -232,8 +227,8 @@ export function ProgressRing({
   value,
   size = 80,
   strokeWidth = 5,
-  color = '#34d399',
-  bgColor = 'rgba(255,255,255,0.04)',
+  color = '#c9a84c',
+  bgColor = 'rgba(255,255,255,0.03)',
   label,
 }: ProgressRingProps) {
   const radius = (size - strokeWidth) / 2;
@@ -250,13 +245,13 @@ export function ProgressRing({
           strokeDasharray={circumference}
           strokeDashoffset={offset}
           strokeLinecap="round"
-          className="transition-all duration-1000 ease-out"
-          style={{ filter: `drop-shadow(0 0 4px ${color}40)` }}
+          className="transition-all duration-1200 ease-out"
+          style={{ filter: `drop-shadow(0 0 4px ${color}30)` }}
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-lg font-bold font-mono" style={{ color }}>{value}</span>
-        {label && <span className="text-[8px] text-[#475569] uppercase tracking-wider">{label}</span>}
+        {label && <span className="text-[8px] text-[#5a5850] uppercase tracking-wider">{label}</span>}
       </div>
     </div>
   );

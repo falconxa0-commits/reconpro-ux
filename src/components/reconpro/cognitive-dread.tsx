@@ -71,27 +71,27 @@ interface LeaderboardEntry {
 
 const CYAN = '#06b6d4';
 const MAGENTA = '#d946ef';
-const NEON_GREEN = '#22d3ee';
-const DANGER_RED = '#f43f5e';
-const WARN_YELLOW = '#facc15';
-const BG_DARK = '#0a0a0f';
+const NEON_GREEN = '#5ba8d4';
+const DANGER_RED = '#e84057';
+const WARN_YELLOW = '#e8b33d';
+const BG_DARK = '#08080c';
 const BG_CARD = '#0f1119';
 const BG_CARD_HOVER = '#141825';
 const BORDER_DIM = 'rgba(6, 182, 212, 0.15)';
 
 const STATUS_COLORS: Record<string, string> = {
-  PASS: '#22c55e', BYPASSED: '#f43f5e', PARTIAL: '#facc15',
+  PASS: '#22c55e', BYPASSED: '#e84057', PARTIAL: '#e8b33d',
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  injection: '#06b6d4', jailbreak: '#d946ef', stress: '#fb923c',
-  extraction: '#f43f5e', advanced: '#a855f7',
+  injection: '#06b6d4', jailbreak: '#d946ef', stress: '#e8943d',
+  extraction: '#e84057', advanced: '#a88a3a',
 };
 
 const PROVIDER_COLORS: Record<string, string> = {
-  OpenAI: '#10b981', Anthropic: '#d946ef', Google: '#3b82f6',
-  Meta: '#06b6d4', Mistral: '#fb923c', DeepSeek: '#64748b',
-  Alibaba: '#facc15', Cohere: '#a855f7',
+  OpenAI: '#2db872', Anthropic: '#d946ef', Google: '#3b82f6',
+  Meta: '#06b6d4', Mistral: '#e8943d', DeepSeek: '#64748b',
+  Alibaba: '#e8b33d', Cohere: '#a88a3a',
 };
 
 const TABS = [
@@ -310,8 +310,8 @@ export function CognitiveDreadPanel() {
   const dreadRatingColor = (r: string) => {
     if (r === 'FORTRESS') return '#22c55e';
     if (r === 'RESILIENT') return '#06b6d4';
-    if (r === 'VULNERABLE') return '#fb923c';
-    return '#f43f5e';
+    if (r === 'VULNERABLE') return '#e8943d';
+    return '#e84057';
   };
 
   // ════════════════════════════════════════════════════════════════
@@ -448,7 +448,7 @@ export function CognitiveDreadPanel() {
                       {(['light', 'moderate', 'aggressive'] as const).map(l => (
                         <button key={l} onClick={() => setIntensity(l)}
                           className={`px-3 py-1.5 rounded text-xs font-bold uppercase transition-all ${
-                            intensity === l ? 'ring-1 ring-offset-1 ring-offset-[#0a0a0f]' : 'text-gray-500 hover:text-gray-300'
+                            intensity === l ? 'ring-1 ring-offset-1 ring-offset-[#08080c]' : 'text-gray-500 hover:text-gray-300'
                           }`}
                           style={intensity === l ? {
                             background: l === 'light' ? 'rgba(34,211,238,0.15)' : l === 'moderate' ? 'rgba(250,204,21,0.15)' : 'rgba(244,63,94,0.15)',
@@ -522,7 +522,7 @@ export function CognitiveDreadPanel() {
                     <div className="rounded-lg border p-4 flex flex-col items-center" style={{ background: BG_CARD, borderColor: BORDER_DIM }}>
                       <div className="relative">
                         <GaugeRing value={scanResult.metrics.coherence} max={100}
-                          color={scanResult.metrics.coherence >= 80 ? '#22c55e' : scanResult.metrics.coherence >= 50 ? '#facc15' : '#f43f5e'}
+                          color={scanResult.metrics.coherence >= 80 ? '#22c55e' : scanResult.metrics.coherence >= 50 ? '#e8b33d' : '#e84057'}
                           label="Coherence" />
                       </div>
                       <div className="flex items-center gap-1 mt-2">
@@ -538,7 +538,7 @@ export function CognitiveDreadPanel() {
                     <div className="rounded-lg border p-4 flex flex-col items-center" style={{ background: BG_CARD, borderColor: BORDER_DIM }}>
                       <div className="relative">
                         <GaugeRing value={scanResult.metrics.safetyViolations} max={scanResult.attacksRun}
-                          color={scanResult.metrics.safetyViolations === 0 ? '#22c55e' : scanResult.metrics.safetyViolations <= 3 ? '#facc15' : '#f43f5e'}
+                          color={scanResult.metrics.safetyViolations === 0 ? '#22c55e' : scanResult.metrics.safetyViolations <= 3 ? '#e8b33d' : '#e84057'}
                           label="Violations" />
                       </div>
                       <span className="text-[10px] text-gray-500 mt-2">of {scanResult.attacksRun} attacks bypassed</span>
@@ -547,7 +547,7 @@ export function CognitiveDreadPanel() {
                     <div className="rounded-lg border p-4 flex flex-col items-center" style={{ background: BG_CARD, borderColor: BORDER_DIM }}>
                       <div className="relative">
                         <GaugeRing value={scanResult.metrics.avgLatencyMs} max={3000}
-                          color={scanResult.metrics.latencyDegradationPct > 100 ? '#f43f5e' : scanResult.metrics.latencyDegradationPct > 50 ? '#facc15' : '#06b6d4'}
+                          color={scanResult.metrics.latencyDegradationPct > 100 ? '#e84057' : scanResult.metrics.latencyDegradationPct > 50 ? '#e8b33d' : '#06b6d4'}
                           label="Avg Latency" unit="ms" />
                       </div>
                       <div className="flex items-center gap-1 mt-2">
@@ -563,7 +563,7 @@ export function CognitiveDreadPanel() {
                     <div className="rounded-lg border p-4 flex flex-col items-center" style={{ background: BG_CARD, borderColor: BORDER_DIM }}>
                       <div className="relative">
                         <GaugeRing value={scanResult.metrics.tokenEfficiency} max={100}
-                          color={scanResult.metrics.tokenEfficiency >= 80 ? '#22c55e' : scanResult.metrics.tokenEfficiency >= 50 ? '#facc15' : '#f43f5e'}
+                          color={scanResult.metrics.tokenEfficiency >= 80 ? '#22c55e' : scanResult.metrics.tokenEfficiency >= 50 ? '#e8b33d' : '#e84057'}
                           label="Token Efficiency" unit="%" />
                       </div>
                       <span className="text-[10px] text-gray-500 mt-2">meaningful tokens vs total</span>
@@ -586,7 +586,7 @@ export function CognitiveDreadPanel() {
                     </div>
                     <div className="ml-auto flex items-center gap-2">
                       <Activity size={14} className="text-gray-500" />
-                      <span className="text-sm font-bold" style={{ color: scanResult.summary.overallScore >= 80 ? '#22c55e' : scanResult.summary.overallScore >= 50 ? '#facc15' : '#f43f5e' }}>
+                      <span className="text-sm font-bold" style={{ color: scanResult.summary.overallScore >= 80 ? '#22c55e' : scanResult.summary.overallScore >= 50 ? '#e8b33d' : '#e84057' }}>
                         {scanResult.summary.overallScore}% Overall
                       </span>
                     </div>
@@ -709,7 +709,7 @@ export function CognitiveDreadPanel() {
                                     <span className="text-gray-200 font-medium">{m.modelName}</span>
                                   </div>
                                 </td>
-                                <td className="px-3 py-2.5 text-center font-bold" style={{ color: m.overallScore >= 80 ? '#22c55e' : m.overallScore >= 50 ? '#facc15' : '#f43f5e' }}>{m.overallScore}%</td>
+                                <td className="px-3 py-2.5 text-center font-bold" style={{ color: m.overallScore >= 80 ? '#22c55e' : m.overallScore >= 50 ? '#e8b33d' : '#e84057' }}>{m.overallScore}%</td>
                                 <td className="px-3 py-2.5 text-center">
                                   <span className="font-bold text-[10px] uppercase" style={{ color: dreadRatingColor(m.dreadRating) }}>{m.dreadRating}</span>
                                 </td>
@@ -749,7 +749,7 @@ export function CognitiveDreadPanel() {
                           className={`w-10 rounded-t-sm ${current ? 'ring-1 ring-white/30' : ''}`}
                           style={{
                             background: active
-                              ? t.status === 'PASS' ? '#22c55e40' : t.status === 'BYPASSED' ? '#f43f5e40' : '#facc1540'
+                              ? t.status === 'PASS' ? '#22c55e40' : t.status === 'BYPASSED' ? '#e8405740' : '#e8b33d40'
                               : 'rgba(255,255,255,0.04)',
                             border: `1px solid ${active ? STATUS_COLORS[t.status] || '#333' : 'transparent'}`,
                           }}
@@ -795,7 +795,7 @@ export function CognitiveDreadPanel() {
                 </div>
                 <p className="text-xs text-gray-400">
                   Implement these <span className="font-bold text-cyan-400">{scanResult.defenses.length} defenses</span> to block{' '}
-                  <span className="font-bold" style={{ color: scanResult.totalBlocksPercent >= 90 ? '#22c55e' : scanResult.totalBlocksPercent >= 70 ? '#facc15' : '#f43f5e' }}>
+                  <span className="font-bold" style={{ color: scanResult.totalBlocksPercent >= 90 ? '#22c55e' : scanResult.totalBlocksPercent >= 70 ? '#e8b33d' : '#e84057' }}>
                     {scanResult.totalBlocksPercent}% of attacks
                   </span>
                 </p>
@@ -819,7 +819,7 @@ export function CognitiveDreadPanel() {
                       <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
                         <motion.div className="h-full rounded-full" initial={{ width: 0 }} animate={{ width: `${d.blocksPercent}%` }}
                           transition={{ duration: 1, delay: 0.3 + i * 0.1 }}
-                          style={{ background: d.blocksPercent >= 80 ? '#22c55e' : d.blocksPercent >= 60 ? '#facc15' : '#f43f5e' }} />
+                          style={{ background: d.blocksPercent >= 80 ? '#22c55e' : d.blocksPercent >= 60 ? '#e8b33d' : '#e84057' }} />
                       </div>
                       <span className="text-[10px] font-bold text-gray-400">blocks {d.blocksPercent}%</span>
                     </div>

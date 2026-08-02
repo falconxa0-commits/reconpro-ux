@@ -29,7 +29,7 @@ interface Particle {
   maxLife: number;
 }
 
-const CONFETTI_COLORS = ['#34d399', '#06b6d4', '#ffd93d', '#ff6b6b', '#a78bfa', '#fb923c', '#3fb950', '#79c0ff'];
+const CONFETTI_COLORS = ['#3dd68c', '#06b6d4', '#ffd93d', '#ff6b6b', '#a78bfa', '#e8943d', '#3fb950', '#79c0ff'];
 
 function useConfetti() {
   const [particles, setParticles] = useState<Particle[]>([]);
@@ -209,11 +209,11 @@ function useFloatingXP() {
 function FloatingXPCanvas({ popups }: { popups: FloatingXP[] }) {
   const sevColor = (sev: string) => {
     switch (sev) {
-      case 'critical': return '#f43f5e';
-      case 'high': return '#fb923c';
-      case 'medium': return '#facc15';
+      case 'critical': return '#e84057';
+      case 'high': return '#e8943d';
+      case 'medium': return '#e8b33d';
       case 'low': return '#22c55e';
-      default: return '#34d399';
+      default: return '#3dd68c';
     }
   };
 
@@ -338,13 +338,13 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
 
   const stats = [
     { label: 'Findings', value: data.findings, color: '#06b6d4', icon: <Target className="w-5 h-5" /> },
-    { label: 'Critical', value: data.critical, color: '#f43f5e', icon: <Skull className="w-5 h-5" /> },
-    { label: 'High Risk', value: data.high, color: '#fb923c', icon: <AlertTriangle className="w-5 h-5" /> },
+    { label: 'Critical', value: data.critical, color: '#e84057', icon: <Skull className="w-5 h-5" /> },
+    { label: 'High Risk', value: data.high, color: '#e8943d', icon: <AlertTriangle className="w-5 h-5" /> },
     { label: 'Risk Score', value: data.riskScore, color: '#ffd93d', icon: <Shield className="w-5 h-5" /> },
   ];
 
   const riskLabel = data.riskScore > 70 ? 'CRITICAL' : data.riskScore > 40 ? 'ELEVATED' : 'LOW';
-  const riskColor = data.riskScore > 70 ? '#f43f5e' : data.riskScore > 40 ? '#fb923c' : '#34d399';
+  const riskColor = data.riskScore > 70 ? '#e84057' : data.riskScore > 40 ? '#e8943d' : '#3dd68c';
 
   return (
     <motion.div
@@ -388,7 +388,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
               >
                 <Shield className="w-12 h-12" style={{ color: riskColor }} />
               </motion.div>
-              <h2 className="text-3xl sm:text-4xl font-black text-[#f1f5f9] mb-2">
+              <h2 className="text-3xl sm:text-4xl font-black text-[#e8e6e1] mb-2">
                 SCAN{' '}
                 <span style={{ color: riskColor, textShadow: `0 0 30px ${riskColor}40` }}>
                   COMPLETE
@@ -420,7 +420,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
                 animate={{ scale: 1, opacity: 1 }}
                 className="text-center mb-6"
               >
-                <h3 className="text-2xl font-bold text-[#f1f5f9]">Mission Report</h3>
+                <h3 className="text-2xl font-bold text-[#e8e6e1]">Mission Report</h3>
                 <p className="text-sm text-muted-foreground font-mono">{data.domain}</p>
               </motion.div>
 
@@ -472,9 +472,9 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
                 transition={{ type: 'spring', damping: 12 }}
                 className="inline-flex items-center gap-3 px-6 py-3 rounded-xl bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]"
               >
-                <Zap className="w-6 h-6 text-[#34d399]" />
+                <Zap className="w-6 h-6 text-[#3dd68c]" />
                 <div className="text-left">
-                  <div className="text-2xl font-black font-mono text-[#34d399]">+{data.xpGained} XP</div>
+                  <div className="text-2xl font-black font-mono text-[#3dd68c]">+{data.xpGained} XP</div>
                   <div className="text-xs text-muted-foreground">Mission Reward</div>
                 </div>
               </motion.div>
@@ -600,7 +600,7 @@ function AchievementToasts({ achievements }: { achievements: Achievement[] }) {
                       <Sparkles className="w-3 h-3 text-[#ffd93d] animate-pulse" />
                     )}
                   </div>
-                  <div className="text-sm font-bold text-[#f1f5f9] truncate">{ach.name}</div>
+                  <div className="text-sm font-bold text-[#e8e6e1] truncate">{ach.name}</div>
                   <div className="text-[11px] text-muted-foreground truncate">{ach.description}</div>
                 </div>
               </div>
@@ -643,7 +643,7 @@ function ComboCounter({ combo }: { combo: number }) {
   if (combo < 3) return null;
 
   const size = Math.min(48, 24 + combo * 2);
-  const color = combo >= 10 ? '#ffd93d' : combo >= 7 ? '#a78bfa' : combo >= 5 ? '#06b6d4' : '#34d399';
+  const color = combo >= 10 ? '#ffd93d' : combo >= 7 ? '#a78bfa' : combo >= 5 ? '#06b6d4' : '#3dd68c';
 
   return (
     <motion.div
@@ -691,7 +691,7 @@ function AnimatedRiskDisplay({ score }: { score: number }) {
     return () => clearInterval(interval);
   }, [pulse]);
 
-  const color = score > 70 ? '#f43f5e' : score > 40 ? '#fb923c' : '#34d399';
+  const color = score > 70 ? '#e84057' : score > 40 ? '#e8943d' : '#3dd68c';
   const label = score > 70 ? 'CRITICAL' : score > 40 ? 'ELEVATED' : 'LOW';
 
   return (
@@ -814,7 +814,7 @@ function MilestoneCelebration({ data, onClose }: { data: MilestoneData; onClose:
               }} />
             </motion.div>
             <div className="text-sm font-bold text-[#ffd93d] uppercase tracking-[0.3em] mb-2">Legendary Achievement</div>
-            <div className="text-xl font-bold text-[#f1f5f9]">{data.badgeName}</div>
+            <div className="text-xl font-bold text-[#e8e6e1]">{data.badgeName}</div>
           </>
         )}
       </motion.div>
@@ -886,7 +886,7 @@ function AnticipationProgressBar({ progress }: { progress: number }) {
       <motion.div
         className="h-full rounded-full relative"
         style={{
-          background: 'linear-gradient(90deg, #34d399, #06b6d4, #a78bfa)',
+          background: 'linear-gradient(90deg, #3dd68c, #06b6d4, #a78bfa)',
         }}
         animate={{ width: `${visualProgress}%` }}
         transition={{ duration: 0.5, ease: 'easeOut' }}
@@ -993,7 +993,7 @@ export function useDopamineEngine() {
     // Level up milestone
     if (data.newLevel) {
       const rankName = data.level >= 10 ? 'Apex Predator' : data.level >= 8 ? 'Elite Hunter' : data.level >= 6 ? 'Veteran Operative' : data.level >= 4 ? 'Field Agent' : 'Scout';
-      const rankColor = data.level >= 10 ? '#ff6b6b' : data.level >= 8 ? '#ffd93d' : data.level >= 6 ? '#ff9f43' : '#34d399';
+      const rankColor = data.level >= 10 ? '#ff6b6b' : data.level >= 8 ? '#ffd93d' : data.level >= 6 ? '#ff9f43' : '#3dd68c';
       setMilestone({ show: true, type: 'levelup', level: data.level, rank: rankName, rankColor });
     }
 

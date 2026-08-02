@@ -84,7 +84,7 @@ const ISOLATION_COLORS = {
 
 function HardwareRack({ status }: { status: 'online' | 'offline' }) {
   const isOnline = status === 'online';
-  const ledColor = isOnline ? '#22c55e' : '#ef4444';
+  const ledColor = isOnline ? '#22c55e' : '#e84057';
   const ledGlow = isOnline ? 'shadow-green-500/60' : 'shadow-red-500/60';
 
   return (

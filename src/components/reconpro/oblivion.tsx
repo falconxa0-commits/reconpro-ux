@@ -92,8 +92,8 @@ interface ScanResult {
 // ══════════════════════════════════════════════════════════════════
 
 const DREAD_COLORS: Record<string, string> = {
-  ABSOLUTE: '#a855f7', MYTHIC: '#7c3aed', FEARSOME: '#06b6d4',
-  WORRYING: '#0891b2', NOTABLE: '#475569', MUNDANE: '#1e293b',
+  ABSOLUTE: '#a88a3a', MYTHIC: '#8a7230', FEARSOME: '#06b6d4',
+  WORRYING: '#0891b2', NOTABLE: '#5a5850', MUNDANE: '#1a1918',
 };
 
 const TABS = [
@@ -130,12 +130,12 @@ type TabId = typeof TABS[number]['id'];
 // ══════════════════════════════════════════════════════════════════
 
 function statusColor(status: number): string {
-  if (status === 0) return '#475569';
+  if (status === 0) return '#5a5850';
   if (status < 300) return '#06b6d4';
   if (status < 400) return '#0891b2';
-  if (status === 401 || status === 403) return '#a855f7';
-  if (status < 500) return '#facc15';
-  return '#ef4444';
+  if (status === 401 || status === 403) return '#a88a3a';
+  if (status < 500) return '#e8b33d';
+  return '#e84057';
 }
 
 function StatusBadge({ status, accepted }: { status: number; accepted?: boolean }) {
@@ -261,9 +261,9 @@ function OblivionHeader() {
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <StatCard label="Tools" value={20} color="#06b6d4" />
-          <StatCard label="Stages" value={23} color="#a855f7" />
+          <StatCard label="Stages" value={23} color="#a88a3a" />
           <StatCard label="Payloads" value="200+" color="#0891b2" />
-          <StatCard label="CVE Catalog" value={30} color="#7c3aed" />
+          <StatCard label="CVE Catalog" value={30} color="#8a7230" />
         </div>
       </div>
     </motion.div>
@@ -277,7 +277,7 @@ function OblivionHeader() {
 function DualGauge({ threatScore, dreadScore }: { threatScore: number; dreadScore: number }) {
   const radius = 70;
   const circ = 2 * Math.PI * radius;
-  const threatColor = threatScore >= 80 ? '#a855f7' : threatScore >= 60 ? '#06b6d4' : threatScore >= 30 ? '#facc15' : '#475569';
+  const threatColor = threatScore >= 80 ? '#a88a3a' : threatScore >= 60 ? '#06b6d4' : threatScore >= 30 ? '#e8b33d' : '#5a5850';
   const dreadColor = DREAD_COLORS[
     dreadScore >= 90 ? 'ABSOLUTE' :
     dreadScore >= 75 ? 'MYTHIC' :
@@ -519,7 +519,7 @@ function ScanForm({ onScan, loading }: { onScan: (target: string) => void; loadi
 
 function VerdictTab({ result }: { result: ScanResult }) {
   const dread = result.dreadIndex;
-  const dreadColor = DREAD_COLORS[dread.level] || '#475569';
+  const dreadColor = DREAD_COLORS[dread.level] || '#5a5850';
   return (
     <div className="space-y-4">
       <DualGauge threatScore={result.threatScore} dreadScore={dread.score} />
@@ -583,8 +583,8 @@ function HallTab({ hall }: { hall: any }) {
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-3">
         <StatCard label="Total Readings" value={hall.totalScans || 0} color="#06b6d4" />
-        <StatCard label="Average Dread" value={hall.averageDread || 0} color="#a855f7" />
-        <StatCard label="Most Feared" value={hall.mostFearedTarget?.host?.split('.')[0] || '—'} color="#7c3aed" />
+        <StatCard label="Average Dread" value={hall.averageDread || 0} color="#a88a3a" />
+        <StatCard label="Most Feared" value={hall.mostFearedTarget?.host?.split('.')[0] || '—'} color="#8a7230" />
       </div>
       {hall.mostFearedTarget && (
         <div className="rounded-lg border border-violet-900/30 bg-violet-950/10 p-3">
@@ -599,7 +599,7 @@ function HallTab({ hall }: { hall: any }) {
         <div className="text-[10px] uppercase tracking-widest text-violet-400/70 mb-2">Recent Encounters</div>
         <div className="space-y-2">
           {(hall.recentEncounters || []).map((e: any, i: number) => {
-            const color = DREAD_COLORS[e.dreadLevel] || '#475569';
+            const color = DREAD_COLORS[e.dreadLevel] || '#5a5850';
             return (
               <div key={i} className="rounded-lg border border-slate-800 bg-slate-900/20 p-3">
                 <div className="flex items-center justify-between mb-1">
@@ -634,8 +634,8 @@ function EndpointsTab({ endpoints }: { endpoints: EndpointFinding[] }) {
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-3">
         <StatCard label="Total Probed" value={endpoints.length} color="#06b6d4" />
-        <StatCard label="Exposed" value={exposed.length} color="#a855f7" />
-        <StatCard label="Vulnerable" value={vulnerable.length} color="#ef4444" />
+        <StatCard label="Exposed" value={exposed.length} color="#a88a3a" />
+        <StatCard label="Vulnerable" value={vulnerable.length} color="#e84057" />
       </div>
       {exposed.map((e, i) => (
         <ExpandableRow
@@ -671,7 +671,7 @@ function FingerprintTab({ fp }: { fp: any }) {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <StatCard label="Vendors Detected" value={fp.vendorCount || 0} color="#06b6d4" />
-        <StatCard label="Architecture Signals" value={(fp.architectureSignals || []).length} color="#a855f7" />
+        <StatCard label="Architecture Signals" value={(fp.architectureSignals || []).length} color="#a88a3a" />
       </div>
       <div>
         <div className="text-[10px] uppercase tracking-widest text-violet-400/70 mb-2">Vendors Detected</div>
@@ -708,7 +708,7 @@ function ExorcismTab({ exorcism }: { exorcism: any }) {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <StatCard label="Payloads" value={exorcism.totalPayloads || 0} color="#06b6d4" />
-        <StatCard label="Secrets Extracted" value={exorcism.secretsCount || 0} color="#ef4444" />
+        <StatCard label="Secrets Extracted" value={exorcism.secretsCount || 0} color="#e84057" />
       </div>
       {secrets.length > 0 && (
         <div>
@@ -739,7 +739,7 @@ function CVETab({ cves }: { cves: CVEFinding[] }) {
         <div className="text-[10px] uppercase tracking-widest text-violet-400/70 mb-1">Philosophy</div>
         <div className="text-xs text-slate-400 italic">&ldquo;Match the catalog against the surface. Every match is a door.&rdquo;</div>
       </div>
-      <StatCard label="CVEs Matched" value={cves.length} color="#ef4444" />
+      <StatCard label="CVEs Matched" value={cves.length} color="#e84057" />
       {cves.map((c, i) => (
         <ExpandableRow key={i} title={c.cve} subtitle={c.name} status={200} accepted={true}>
           <div className="space-y-1">
@@ -964,7 +964,7 @@ export function Oblivion() {
                       <div className="text-xs text-slate-400 italic">&ldquo;{result.legacyInscription?.philosophy}&rdquo;</div>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                      <StatCard label="Inscriptions" value={result.legacyInscription?.inscriptionsConfirmed || 0} color="#a855f7" />
+                      <StatCard label="Inscriptions" value={result.legacyInscription?.inscriptionsConfirmed || 0} color="#a88a3a" />
                       <StatCard label="Total Payloads" value={result.legacyInscription?.totalPayloads || 0} color="#06b6d4" />
                     </div>
                     {result.legacyInscription?.warning && (

@@ -82,7 +82,7 @@ function getRank(level: number): { name: string; color: string } {
   if (level >= 10) return { name: 'Apex Predator', color: '#ff6b6b' };
   if (level >= 8) return { name: 'Elite Hunter', color: '#ffd93d' };
   if (level >= 6) return { name: 'Veteran Operative', color: '#ff9f43' };
-  if (level >= 4) return { name: 'Field Agent', color: '#34d399' };
+  if (level >= 4) return { name: 'Field Agent', color: '#3dd68c' };
   if (level >= 2) return { name: 'Scout', color: '#79c0ff' };
   return { name: 'Recruit', color: '#475569' };
 }

@@ -34,17 +34,17 @@ interface ScanResultsProps {
 }
 
 const severityColors: Record<string, string> = {
-  critical: 'bg-[#ef4444]/15 text-[#ef4444] border-[#ef4444]/30',
-  high: 'bg-[#fb923c]/15 text-[#fb923c] border-[#fb923c]/30',
-  medium: 'bg-[#facc15]/15 text-[#facc15] border-[#facc15]/30',
+  critical: 'bg-[#e84057]/15 text-[#e84057] border-[#e84057]/30',
+  high: 'bg-[#e8943d]/15 text-[#e8943d] border-[#e8943d]/30',
+  medium: 'bg-[#e8b33d]/15 text-[#e8b33d] border-[#e8b33d]/30',
   low: 'bg-[#22c55e]/15 text-[#22c55e] border-[#22c55e]/30',
   info: 'bg-[#6b7280]/15 text-[#6b7280] border-[#6b7280]/30',
 };
 
 const severityGlow: Record<string, string> = {
-  critical: 'text-glow-red text-[#ef4444]',
-  high: 'text-[#fb923c]',
-  medium: 'text-[#facc15]',
+  critical: 'text-glow-red text-[#e84057]',
+  high: 'text-[#e8943d]',
+  medium: 'text-[#e8b33d]',
   low: 'text-[#22c55e]',
   info: 'text-[#6b7280]',
 };
@@ -103,18 +103,18 @@ export function ScanResults({ result }: ScanResultsProps) {
           {/* Stats Grid */}
           <div className="flex-1 w-full">
             <div className="flex items-center gap-3 mb-4">
-              <Globe className="w-5 h-5 text-[#34d399]" />
-              <h2 className="text-xl font-bold text-[#f1f5f9] font-mono">{result.domain}</h2>
-              <Badge variant="outline" className="border-[#34d399]/30 text-[#34d399] text-xs">
+              <Globe className="w-5 h-5 text-[#3dd68c]" />
+              <h2 className="text-xl font-bold text-[#e8e6e1] font-mono">{result.domain}</h2>
+              <Badge variant="outline" className="border-[#3dd68c]/30 text-[#3dd68c] text-xs">
                 {result.status.toUpperCase()}
               </Badge>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               {[
-                { label: 'Critical', value: result.critical, color: '#ef4444' },
-                { label: 'High', value: result.high, color: '#fb923c' },
-                { label: 'Medium', value: result.medium, color: '#facc15' },
+                { label: 'Critical', value: result.critical, color: '#e84057' },
+                { label: 'High', value: result.high, color: '#e8943d' },
+                { label: 'Medium', value: result.medium, color: '#e8b33d' },
                 { label: 'Low', value: result.low, color: '#22c55e' },
                 { label: 'Info', value: result.info, color: '#6b7280' },
                 { label: 'Total Findings', value: result.totalVulns, color: '#06b6d4' },
@@ -137,12 +137,12 @@ export function ScanResults({ result }: ScanResultsProps) {
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3 }}
-          className="flex items-center gap-3 p-4 rounded-xl bg-[#ef4444]/10 border border-[#ef4444]/20 glow-red"
+          className="flex items-center gap-3 p-4 rounded-xl bg-[#e84057]/10 border border-[#e84057]/20 glow-red"
         >
-          <AlertTriangle className="w-5 h-5 text-[#ef4444] flex-shrink-0" />
+          <AlertTriangle className="w-5 h-5 text-[#e84057] flex-shrink-0" />
           <div>
-            <div className="text-sm font-semibold text-[#ef4444]">Critical Risk Level Detected</div>
-            <div className="text-xs text-[#ef4444]/70 mt-0.5">
+            <div className="text-sm font-semibold text-[#e84057]">Critical Risk Level Detected</div>
+            <div className="text-xs text-[#e84057]/70 mt-0.5">
               This target has a high risk score ({result.riskScore}/100) with {result.critical} critical and {result.high} high severity findings. Immediate remediation is recommended.
             </div>
           </div>
@@ -153,12 +153,12 @@ export function ScanResults({ result }: ScanResultsProps) {
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3 }}
-          className="flex items-center gap-3 p-4 rounded-xl bg-[#fb923c]/10 border border-[#fb923c]/20"
+          className="flex items-center gap-3 p-4 rounded-xl bg-[#e8943d]/10 border border-[#e8943d]/20"
         >
-          <Shield className="w-5 h-5 text-[#fb923c] flex-shrink-0" />
+          <Shield className="w-5 h-5 text-[#e8943d] flex-shrink-0" />
           <div>
-            <div className="text-sm font-semibold text-[#fb923c]">Moderate Risk Level</div>
-            <div className="text-xs text-[#fb923c]/70 mt-0.5">
+            <div className="text-sm font-semibold text-[#e8943d]">Moderate Risk Level</div>
+            <div className="text-xs text-[#e8943d]/70 mt-0.5">
               Several security findings require attention. Review the findings below and prioritize remediation.
             </div>
           </div>
@@ -168,7 +168,7 @@ export function ScanResults({ result }: ScanResultsProps) {
       {/* Findings List */}
       <div className="cyber-card rounded-2xl p-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-[#f1f5f9] flex items-center gap-2">
+          <h3 className="text-lg font-semibold text-[#e8e6e1] flex items-center gap-2">
             <Bug className="w-5 h-5 text-[#06b6d4]" />
             Security Findings
           </h3>
@@ -184,12 +184,12 @@ export function ScanResults({ result }: ScanResultsProps) {
                 className="group p-4 rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] hover:border-[rgba(52,211,153,0.15)] hover:bg-[rgba(52,211,153,0.02)] transition-all cursor-pointer"
               >
                 <div className="flex items-start gap-3">
-                  <div className="mt-0.5 p-2 rounded-lg bg-[rgba(255,255,255,0.04)] text-muted-foreground group-hover:text-[#34d399] transition-colors">
+                  <div className="mt-0.5 p-2 rounded-lg bg-[rgba(255,255,255,0.04)] text-muted-foreground group-hover:text-[#3dd68c] transition-colors">
                     {categoryIcons[finding.category] || <Bug className="w-4 h-4" />}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <span className="text-sm font-medium text-[#f1f5f9] group-hover:text-[#34d399] transition-colors">
+                      <span className="text-sm font-medium text-[#e8e6e1] group-hover:text-[#3dd68c] transition-colors">
                         {finding.title}
                       </span>
                       <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[finding.severity]}`}>
@@ -206,7 +206,7 @@ export function ScanResults({ result }: ScanResultsProps) {
                       </div>
                     )}
                   </div>
-                  <ChevronRight className="w-4 h-4 text-muted-foreground/30 group-hover:text-[#34d399] transition-colors mt-1 flex-shrink-0" />
+                  <ChevronRight className="w-4 h-4 text-muted-foreground/30 group-hover:text-[#3dd68c] transition-colors mt-1 flex-shrink-0" />
                 </div>
               </motion.div>
             ))}

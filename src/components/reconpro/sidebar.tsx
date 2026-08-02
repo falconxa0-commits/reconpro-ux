@@ -110,21 +110,21 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
       { id: 'unified-cli', label: 'ReconPro UNIFIED CLI', icon: Terminal, badge: '6 BLADES' },
-      { id: 'war-room', label: 'War Room', icon: Radio, badge: 'LIVE', accentColor: '#f43f5e' },
-      { id: 'ai-leaderboard', label: 'Hall of Broken Models', icon: Ghost, badge: 'VIRAL', accentColor: '#f43f5e' },
+      { id: 'war-room', label: 'War Room', icon: Radio, badge: 'LIVE', accentColor: '#e84057' },
+      { id: 'ai-leaderboard', label: 'Hall of Broken Models', icon: Ghost, badge: 'VIRAL', accentColor: '#e84057' },
       { id: 'proof-gallery', label: 'Proof Gallery', icon: Film, badge: 'SHARE' },
     ],
   },
   {
     title: 'Operations',
     items: [
-      { id: 'nhi-kill-switch', label: 'NHI Kill Switch', icon: ShieldAlert, badge: 'ENTERPRISE', accentColor: '#f43f5e' },
-      { id: 'genesis-stamp', label: 'Genesis Stamp', icon: BadgeCheck, badge: 'ENTERPRISE', accentColor: '#34d399' },
-      { id: 'implosion', label: 'Risk Simulator', icon: Skull, badge: 'SALES', accentColor: '#f43f5e' },
-      { id: 'doom-clock', label: 'Doom Clock', icon: Timer, badge: 'PQC', accentColor: '#f43f5e' },
+      { id: 'nhi-kill-switch', label: 'NHI Kill Switch', icon: ShieldAlert, badge: 'ENTERPRISE', accentColor: '#e84057' },
+      { id: 'genesis-stamp', label: 'Genesis Stamp', icon: BadgeCheck, badge: 'ENTERPRISE', accentColor: '#3dd68c' },
+      { id: 'implosion', label: 'Risk Simulator', icon: Skull, badge: 'SALES', accentColor: '#e84057' },
+      { id: 'doom-clock', label: 'Doom Clock', icon: Timer, badge: 'PQC', accentColor: '#e84057' },
       { id: 'pqc-vault', label: 'PQC Sovereign Vault', icon: Crown, badge: 'SOVEREIGN', accentColor: '#FFD700' },
-      { id: 'fear-index', label: 'CISO Fear Index', icon: AlertTriangle, badge: 'LIVE', accentColor: '#fb923c' },
-      { id: 'exposed-asset-map', label: 'Exposed Asset Map', icon: Globe, badge: 'GLOBAL', accentColor: '#22d3ee' },
+      { id: 'fear-index', label: 'CISO Fear Index', icon: AlertTriangle, badge: 'LIVE', accentColor: '#e8943d' },
+      { id: 'exposed-asset-map', label: 'Exposed Asset Map', icon: Globe, badge: 'GLOBAL', accentColor: '#5ba8d4' },
       { id: 'confused-deputy', label: 'Confused Deputy', icon: Cpu, badge: 'PLAY' },
       { id: 'cognitive-dread', label: 'Cognitive Dread', icon: Brain, badge: 'OMNI', accentColor: '#d946ef' },
     ],
@@ -154,7 +154,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'sovereign-control', label: 'Sovereign Control', icon: Crown, badge: 'BOSS', accentColor: '#FFD700' },
       { id: 'broadcast-center', label: 'Broadcast Center', icon: Radio, badge: 'ECHO-SIGN', accentColor: '#f59e0b' },
-      { id: 'wall-of-shame', label: 'Wall of Shame', icon: Eye, badge: 'LIVE', accentColor: '#f43f5e' },
+      { id: 'wall-of-shame', label: 'Wall of Shame', icon: Eye, badge: 'LIVE', accentColor: '#e84057' },
     ],
   },
   {
@@ -187,7 +187,7 @@ function NavItemButton({
   onClick: () => void;
 }) {
   const Icon = item.icon;
-  const badgeColor = item.accentColor || '#34d399';
+  const badgeColor = item.accentColor || '#3dd68c';
 
   const buttonContent = (
     <motion.button
@@ -195,11 +195,11 @@ function NavItemButton({
       className={`
         group relative flex w-full items-center gap-3 rounded-xl px-3 py-2
         text-[12.5px] font-medium tracking-wide transition-all duration-300
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]/30
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3dd68c]/30
         ${collapsed ? 'justify-center' : ''}
         ${
           active
-            ? 'bg-[rgba(52,211,153,0.07)] text-[#34d399]'
+            ? 'bg-[rgba(52,211,153,0.07)] text-[#3dd68c]'
             : 'text-[#64748b] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#cbd5e1]'
         }
       `}
@@ -220,8 +220,8 @@ function NavItemButton({
         <Icon
           className={`h-[16px] w-[16px] flex-shrink-0 transition-all duration-300 ${
             active
-              ? 'text-[#34d399] drop-shadow-[0_0_6px_rgba(52,211,153,0.4)]'
-              : 'text-[#475569] group-hover:text-[#94a3b8]'
+              ? 'text-[#3dd68c] drop-shadow-[0_0_6px_rgba(52,211,153,0.4)]'
+              : 'text-[#5a5850] group-hover:text-[#6b6960]'
           }`}
           strokeWidth={active ? 2 : 1.5}
         />
@@ -266,7 +266,7 @@ function NavItemButton({
         <TooltipContent
           side="right"
           sideOffset={12}
-          className="border-[rgba(52,211,153,0.12)] bg-[#080b14] text-[#f1f5f9] font-medium"
+          className="border-[rgba(52,211,153,0.12)] bg-[#080b14] text-[#e8e6e1] font-medium"
         >
           {item.label}
         </TooltipContent>
@@ -297,7 +297,7 @@ function SectionHeader({ title, collapsed }: { title: string; collapsed: boolean
           transition={{ duration: 0.2, ease: 'easeOut' }}
           className="overflow-hidden"
         >
-          <h3 className="px-3 pb-1 pt-2.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-[#334155]">
+          <h3 className="px-3 pb-1 pt-2.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-[#3d3b38]">
             {title}
           </h3>
         </motion.div>
@@ -321,8 +321,8 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
           animate={{ rotate: 360 }}
           transition={{ duration: 12, repeat: Infinity, ease: 'linear' }}
         />
-        <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#0f1422] to-[#080b14] ring-1 ring-[rgba(52,211,153,0.2)]">
-          <Shield className="h-[18px] w-[18px] text-[#34d399]" strokeWidth={1.8} />
+        <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#0a0a10] to-[#080b14] ring-1 ring-[rgba(52,211,153,0.2)]">
+          <Shield className="h-[18px] w-[18px] text-[#3dd68c]" strokeWidth={1.8} />
         </div>
       </div>
 
@@ -337,14 +337,14 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
             className="flex flex-col gap-0.5 overflow-hidden"
           >
             <div className="flex items-center gap-1">
-              <span className="text-[15px] font-bold tracking-tight text-[#f1f5f9]">
+              <span className="text-[15px] font-bold tracking-tight text-[#e8e6e1]">
                 Recon
               </span>
-              <span className="text-[15px] font-bold tracking-tight text-[#34d399]">
+              <span className="text-[15px] font-bold tracking-tight text-[#3dd68c]">
                 Pro
               </span>
             </div>
-            <span className="text-[9px] font-medium uppercase tracking-[0.25em] text-[#334155]">
+            <span className="text-[9px] font-medium uppercase tracking-[0.25em] text-[#3d3b38]">
               Enterprise
             </span>
           </motion.div>
@@ -366,11 +366,11 @@ function UserSection({ collapsed }: { collapsed: boolean }) {
       whileTap={{ scale: 0.98 }}
     >
       <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center">
-        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[#34d399]/30 to-[#34d399]/5 ring-1 ring-[#34d399]/20" />
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0f1422] text-[10px] font-bold text-[#34d399]">
+        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[#3dd68c]/30 to-[#3dd68c]/5 ring-1 ring-[#3dd68c]/20" />
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0a0a10] text-[10px] font-bold text-[#3dd68c]">
           AC
         </div>
-        <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#050710] bg-[#34d399]" />
+        <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#050710] bg-[#3dd68c]" />
       </div>
 
       <AnimatePresence initial={false}>
@@ -383,10 +383,10 @@ function UserSection({ collapsed }: { collapsed: boolean }) {
             transition={{ duration: 0.15, ease: 'easeOut' }}
             className="flex flex-col overflow-hidden"
           >
-            <span className="truncate text-[12.5px] font-semibold text-[#e2e8f0]">
+            <span className="truncate text-[12.5px] font-semibold text-[#c8c6c0]">
               Alex Chen
             </span>
-            <span className="truncate text-[10.5px] text-[#475569]">
+            <span className="truncate text-[10.5px] text-[#5a5850]">
               Security Lead
             </span>
           </motion.div>
@@ -402,7 +402,7 @@ function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   return (
     <motion.button
       onClick={onToggle}
-      className="group flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-[rgba(255,255,255,0.05)] bg-[rgba(255,255,255,0.02)] text-[#475569] transition-all duration-300 hover:border-[rgba(52,211,153,0.15)] hover:bg-[rgba(52,211,153,0.04)] hover:text-[#34d399] focus-visible:outline-none"
+      className="group flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-[rgba(255,255,255,0.05)] bg-[rgba(255,255,255,0.02)] text-[#5a5850] transition-all duration-300 hover:border-[rgba(52,211,153,0.15)] hover:bg-[rgba(52,211,153,0.04)] hover:text-[#3dd68c] focus-visible:outline-none"
       whileHover={{ scale: 1.05 }}
       whileTap={{ scale: 0.92 }}
       aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}

@@ -219,7 +219,7 @@ function GlobeSphere() {
       {/* Wireframe */}
       <mesh rotation={[0, 0, 0]}>
         <sphereGeometry args={[R, 36, 18]} />
-        <meshBasicMaterial color="#34d399" wireframe transparent opacity={0.06} />
+        <meshBasicMaterial color="#3dd68c" wireframe transparent opacity={0.06} />
       </mesh>
 
       {/* Latitude lines */}
@@ -230,7 +230,7 @@ function GlobeSphere() {
         return (
           <mesh key={lat} position={[0, y, 0]} rotation={[Math.PI / 2, 0, 0]}>
             <ringGeometry args={[ringR - 0.003, ringR + 0.003, 128]} />
-            <meshBasicMaterial color="#34d399" transparent opacity={lat === 0 ? 0.15 : 0.07} side={THREE.DoubleSide} />
+            <meshBasicMaterial color="#3dd68c" transparent opacity={lat === 0 ? 0.15 : 0.07} side={THREE.DoubleSide} />
           </mesh>
         );
       })}
@@ -241,7 +241,7 @@ function GlobeSphere() {
         return (
           <mesh key={lng} rotation={[0, theta, 0]}>
             <ringGeometry args={[R - 0.003, R + 0.003, 128]} />
-            <meshBasicMaterial color="#34d399" transparent opacity={lng === 0 ? 0.15 : 0.05} side={THREE.DoubleSide} />
+            <meshBasicMaterial color="#3dd68c" transparent opacity={lng === 0 ? 0.15 : 0.05} side={THREE.DoubleSide} />
           </mesh>
         );
       })}
@@ -315,7 +315,7 @@ function LandDots() {
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" count={positions.length / 3} array={positions} itemSize={3} />
         </bufferGeometry>
-        <pointsMaterial color="#34d399" size={0.025} transparent opacity={0.5} sizeAttenuation depthWrite={false} />
+        <pointsMaterial color="#3dd68c" size={0.025} transparent opacity={0.5} sizeAttenuation depthWrite={false} />
       </points>
     </group>
   );
@@ -338,7 +338,7 @@ function ThreatPoints({ cities }: { cities: ThreatCity[] }) {
     return cities.map(city => ({
       ...city,
       pos: latLngToVec3(city.lat, city.lng, R + 0.02),
-      color: city.type === 'source' ? '#ef4444' : city.type === 'hotspot' ? '#fb923c' : '#34d399',
+      color: city.type === 'source' ? '#e84057' : city.type === 'hotspot' ? '#e8943d' : '#3dd68c',
     }));
   }, [cities]);
 
@@ -393,7 +393,7 @@ function AttackArcs({ cities, connections }: { cities: ThreatCity[]; connections
         curve: createArcCurve(start, end, 0.6),
         progress: Math.random(),
         speed: 0.08 + Math.random() * 0.12,
-        color: cities[si].type === 'source' ? '#ef4444' : '#fb923c',
+        color: cities[si].type === 'source' ? '#e84057' : '#e8943d',
       };
     });
   }, [cities, connections]);
@@ -439,7 +439,7 @@ function AttackArcs({ cities, connections }: { cities: ThreatCity[]; connections
       }
       return {
         positions,
-        color: cities[si].type === 'source' ? '#ef4444' : '#fb923c',
+        color: cities[si].type === 'source' ? '#e84057' : '#e8943d',
       };
     });
   }, [cities, connections]);
@@ -483,7 +483,7 @@ function TravelingPackets({ cities, connections }: { cities: ThreatCity[]; conne
         curve: createArcCurve(start, end, 0.6),
         progress: Math.random(),
         speed: 0.06 + Math.random() * 0.1,
-        color: new THREE.Color(cities[si].type === 'source' ? '#ef4444' : '#fb923c'),
+        color: new THREE.Color(cities[si].type === 'source' ? '#e84057' : '#e8943d'),
       };
     });
   }, [cities, connections]);
@@ -544,11 +544,11 @@ function OrbitalRing() {
     <group>
       <mesh ref={ringRef}>
         <torusGeometry args={[R + 0.5, 0.003, 8, 128]} />
-        <meshBasicMaterial color="#34d399" transparent opacity={0.15} />
+        <meshBasicMaterial color="#3dd68c" transparent opacity={0.15} />
       </mesh>
       <mesh ref={satRef}>
         <sphereGeometry args={[0.025, 8, 8]} />
-        <meshBasicMaterial color="#34d399" />
+        <meshBasicMaterial color="#3dd68c" />
       </mesh>
     </group>
   );
@@ -567,7 +567,7 @@ function InnerGlow() {
     }
   });
 
-  return <pointLight ref={lightRef} color="#34d399" intensity={1.5} distance={5} decay={2} />;
+  return <pointLight ref={lightRef} color="#3dd68c" intensity={1.5} distance={5} decay={2} />;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -641,26 +641,26 @@ function HUD({ cities, connections, noThreats }: { cities: ThreatCity[]; connect
       {/* Top-left */}
       <div className="absolute top-4 left-4">
         <div className="flex items-center gap-2 mb-2">
-          <div className={`w-2 h-2 rounded-full ${noThreats ? 'bg-[#6272a4]' : 'bg-[#ef4444] animate-pulse'}`} />
-          <span className={`text-[10px] font-mono uppercase tracking-wider ${noThreats ? 'text-[#6272a4]' : 'text-[#ef4444]'}`}>{noThreats ? 'No Active Threats' : 'Live Threat Intelligence'}</span>
+          <div className={`w-2 h-2 rounded-full ${noThreats ? 'bg-[#6272a4]' : 'bg-[#e84057] animate-pulse'}`} />
+          <span className={`text-[10px] font-mono uppercase tracking-wider ${noThreats ? 'text-[#6272a4]' : 'text-[#e84057]'}`}>{noThreats ? 'No Active Threats' : 'Live Threat Intelligence'}</span>
         </div>
         <div className="text-[9px] font-mono text-muted-foreground/60">GLOBAL ATTACK SURFACE MONITORING</div>
       </div>
 
       {/* Top-right */}
       <div className="absolute top-4 right-4 text-right">
-        <div className="text-[10px] font-mono text-[#34d399]">{time}</div>
+        <div className="text-[10px] font-mono text-[#3dd68c]">{time}</div>
         <div className="text-[9px] font-mono text-muted-foreground/60 mt-1">NODES: {cities.length} ACTIVE</div>
       </div>
 
       {/* Bottom-left stats */}
       <div className="absolute bottom-4 left-4 space-y-2">
         <div className="flex items-center gap-3">
-          <div className="px-2 py-1 rounded bg-[#ef4444]/10 border border-[#ef4444]/20">
-            <span className="text-[10px] font-mono text-[#ef4444]">{activeThreats} ACTIVE THREATS</span>
+          <div className="px-2 py-1 rounded bg-[#e84057]/10 border border-[#e84057]/20">
+            <span className="text-[10px] font-mono text-[#e84057]">{activeThreats} ACTIVE THREATS</span>
           </div>
-          <div className="px-2 py-1 rounded bg-[#fb923c]/10 border border-[#fb923c]/20">
-            <span className="text-[10px] font-mono text-[#fb923c]">{connections.length} ATTACK VECTORS</span>
+          <div className="px-2 py-1 rounded bg-[#e8943d]/10 border border-[#e8943d]/20">
+            <span className="text-[10px] font-mono text-[#e8943d]">{connections.length} ATTACK VECTORS</span>
           </div>
         </div>
         <div className="text-[9px] font-mono text-muted-foreground/50">
@@ -671,24 +671,24 @@ function HUD({ cities, connections, noThreats }: { cities: ThreatCity[]; connect
       {/* Bottom-right legend */}
       <div className="absolute bottom-4 right-4 space-y-1.5">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#ef4444] animate-pulse" />
+          <div className="w-2 h-2 rounded-full bg-[#e84057] animate-pulse" />
           <span className="text-[9px] font-mono text-muted-foreground">Threat Source</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#fb923c]" />
+          <div className="w-2 h-2 rounded-full bg-[#e8943d]" />
           <span className="text-[9px] font-mono text-muted-foreground">Hotspot</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#34d399]" />
+          <div className="w-2 h-2 rounded-full bg-[#3dd68c]" />
           <span className="text-[9px] font-mono text-muted-foreground">Target / Defense</span>
         </div>
       </div>
 
       {/* Corner brackets */}
-      <div className="absolute top-2 left-2 w-4 h-4 border-t border-l border-[#34d399]/30" />
-      <div className="absolute top-2 right-2 w-4 h-4 border-t border-r border-[#34d399]/30" />
-      <div className="absolute bottom-2 left-2 w-4 h-4 border-b border-l border-[#34d399]/30" />
-      <div className="absolute bottom-2 right-2 w-4 h-4 border-b border-r border-[#34d399]/30" />
+      <div className="absolute top-2 left-2 w-4 h-4 border-t border-l border-[#3dd68c]/30" />
+      <div className="absolute top-2 right-2 w-4 h-4 border-t border-r border-[#3dd68c]/30" />
+      <div className="absolute bottom-2 left-2 w-4 h-4 border-b border-l border-[#3dd68c]/30" />
+      <div className="absolute bottom-2 right-2 w-4 h-4 border-b border-r border-[#3dd68c]/30" />
 
       {/* Scan line effect */}
       <div className="absolute inset-0 pointer-events-none" style={{
@@ -700,7 +700,7 @@ function HUD({ cities, connections, noThreats }: { cities: ThreatCity[]; connect
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center">
             <div className="text-3xl mb-2">🛡️</div>
-            <div className="text-sm font-mono text-[#34d399]/60">No active threats detected</div>
+            <div className="text-sm font-mono text-[#3dd68c]/60">No active threats detected</div>
             <div className="text-[10px] font-mono text-[#6272a4] mt-1">Run a scan to populate threat intelligence</div>
           </div>
         </div>

@@ -57,9 +57,9 @@ interface ResolutionOption {
 // ═══════════════════════════════════════════════════════════════════════
 
 const SEVERITY_COLORS: Record<string, { bg: string; text: string; border: string; hex: string }> = {
-  critical: { bg: 'bg-red-500/20', text: 'text-red-400', border: 'border-red-500/40', hex: '#ef4444' },
-  high:     { bg: 'bg-orange-500/20', text: 'text-orange-400', border: 'border-orange-500/40', hex: '#fb923c' },
-  medium:   { bg: 'bg-yellow-500/20', text: 'text-yellow-400', border: 'border-yellow-500/40', hex: '#facc15' },
+  critical: { bg: 'bg-red-500/20', text: 'text-red-400', border: 'border-red-500/40', hex: '#e84057' },
+  high:     { bg: 'bg-orange-500/20', text: 'text-orange-400', border: 'border-orange-500/40', hex: '#e8943d' },
+  medium:   { bg: 'bg-yellow-500/20', text: 'text-yellow-400', border: 'border-yellow-500/40', hex: '#e8b33d' },
   low:      { bg: 'bg-blue-500/20', text: 'text-blue-400', border: 'border-blue-500/40', hex: '#3b82f6' },
   info:     { bg: 'bg-gray-500/20', text: 'text-gray-400', border: 'border-gray-500/40', hex: '#6b7280' },
 };
@@ -167,9 +167,9 @@ function renderProof(
   ctx.fillRect(0, 0, w, headerH);
 
   // ── Top-left: ReconPro branding ──
-  drawShieldIcon(ctx, pad + fontSize(10), pad + fontSize(8), fontSize(12), '#34d399');
+  drawShieldIcon(ctx, pad + fontSize(10), pad + fontSize(8), fontSize(12), '#3dd68c');
   ctx.font = `bold ${fontSize(18)}px monospace`;
-  ctx.fillStyle = '#34d399';
+  ctx.fillStyle = '#3dd68c';
   ctx.textBaseline = 'middle';
   ctx.fillText('ReconPro', pad + fontSize(30), pad + fontSize(10));
 
@@ -216,7 +216,7 @@ function renderProof(
   // Terminal dots
   const dotR = fontSize(4);
   const dotY = termY + titleH / 2;
-  ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(termX + pad, dotY, dotR, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#e84057'; ctx.beginPath(); ctx.arc(termX + pad, dotY, dotR, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#f59e0b'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 3, dotY, dotR, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 6, dotY, dotR, 0, Math.PI * 2); ctx.fill();
 
@@ -234,7 +234,7 @@ function renderProof(
   ctx.textBaseline = 'top';
 
   const lines: { text: string; color: string }[] = [];
-  lines.push({ text: `$ reconpro scan --target ${domain} --mode full`, color: '#34d399' });
+  lines.push({ text: `$ reconpro scan --target ${domain} --mode full`, color: '#3dd68c' });
   lines.push({ text: '[*] Initializing recon engine...', color: '#6b7280' });
   lines.push({ text: '[*] Enumerating subdomains, ports, technologies...', color: '#6b7280' });
   lines.push({ text: `[*] Scanning ${finding.category}: ${finding.asset}`, color: '#6b7280' });
@@ -249,10 +249,10 @@ function renderProof(
   lines.push({ text: `  Category:  ${finding.category.toUpperCase()}`, color: '#60a5fa' });
   lines.push({ text: `  Asset:     ${finding.asset}`, color: '#d1d5db' });
   if (finding.cve) {
-    lines.push({ text: `  CVE:       ${finding.cve}`, color: '#fbbf24' });
+    lines.push({ text: `  CVE:       ${finding.cve}`, color: '#e8b33d' });
   }
   if (finding.cvss) {
-    lines.push({ text: `  CVSS:      ${finding.cvss.toFixed(1)}`, color: '#fbbf24' });
+    lines.push({ text: `  CVSS:      ${finding.cvss.toFixed(1)}`, color: '#e8b33d' });
   }
   lines.push({ text: '', color: '#6b7280' });
   lines.push({ text: `  ${finding.title}`, color: '#e5e7eb' });
@@ -336,7 +336,7 @@ function createAnimState(): AnimationState {
 function getTerminalLines(finding: FindingData, domain: string) {
   const sevColor = SEVERITY_COLORS[finding.severity]?.hex || '#6b7280';
   const lines: { text: string; color: string; isProgress?: boolean; isDiscovery?: boolean }[] = [];
-  lines.push({ text: `$ reconpro scan --target ${domain} --mode full`, color: '#34d399' });
+  lines.push({ text: `$ reconpro scan --target ${domain} --mode full`, color: '#3dd68c' });
   lines.push({ text: '[*] Initializing recon engine...', color: '#6b7280' });
   lines.push({ text: '[*] Enumerating subdomains, ports, technologies...', color: '#6b7280' });
   lines.push({ text: `[*] Scanning ${finding.category}: ${finding.asset}`, color: '#6b7280' });
@@ -351,10 +351,10 @@ function getTerminalLines(finding: FindingData, domain: string) {
   lines.push({ text: `  Category:  ${finding.category.toUpperCase()}`, color: '#60a5fa' });
   lines.push({ text: `  Asset:     ${finding.asset}`, color: '#d1d5db' });
   if (finding.cve) {
-    lines.push({ text: `  CVE:       ${finding.cve}`, color: '#fbbf24' });
+    lines.push({ text: `  CVE:       ${finding.cve}`, color: '#e8b33d' });
   }
   if (finding.cvss) {
-    lines.push({ text: `  CVSS:      ${finding.cvss.toFixed(1)}`, color: '#fbbf24' });
+    lines.push({ text: `  CVSS:      ${finding.cvss.toFixed(1)}`, color: '#e8b33d' });
   }
   lines.push({ text: '', color: '#6b7280' });
   lines.push({ text: `  ${finding.title}`, color: '#e5e7eb' });
@@ -393,9 +393,9 @@ function drawAnimFrame(
   ctx.fillRect(0, 0, w, headerH);
 
   // Top-left branding
-  drawShieldIcon(ctx, pad + fs(10), pad + fs(8), fs(12), '#34d399');
+  drawShieldIcon(ctx, pad + fs(10), pad + fs(8), fs(12), '#3dd68c');
   ctx.font = `bold ${fs(18)}px monospace`;
-  ctx.fillStyle = '#34d399';
+  ctx.fillStyle = '#3dd68c';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillText('ReconPro', pad + fs(30), pad + fs(10));
@@ -435,7 +435,7 @@ function drawAnimFrame(
 
   const dotR = fs(4);
   const dotY = termY + titleH / 2;
-  ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.arc(termX + pad, dotY, dotR, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#e84057'; ctx.beginPath(); ctx.arc(termX + pad, dotY, dotR, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#f59e0b'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 3, dotY, dotR, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 6, dotY, dotR, 0, Math.PI * 2); ctx.fill();
   ctx.font = `${fs(11)}px monospace`; ctx.fillStyle = '#4b5563';
@@ -468,7 +468,7 @@ function drawAnimFrame(
     if (i === state.lineIndex && state.phase === 'typing') {
       if (Math.floor(state.frameCount / 15) % 2 === 0) {
         const textW = ctx.measureText(text).width;
-        ctx.fillStyle = '#34d399';
+        ctx.fillStyle = '#3dd68c';
         ctx.fillRect(termX + pad + textW, lineY, fs(8), fs(14));
       }
     }

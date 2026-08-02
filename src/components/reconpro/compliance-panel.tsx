@@ -142,27 +142,27 @@ function mapApiToFramework(api: ApiFramework): ComplianceFramework {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function getScoreColor(score: number): string {
-  if (score >= 90) return '#34d399';
+  if (score >= 90) return '#3dd68c';
   if (score >= 75) return '#d29922';
-  return '#f43f5e';
+  return '#e84057';
 }
 
 function getScoreGradient(score: number): string {
-  if (score >= 90) return 'from-[#34d399]/20 to-[#34d399]/5';
+  if (score >= 90) return 'from-[#3dd68c]/20 to-[#3dd68c]/5';
   if (score >= 75) return 'from-[#d29922]/20 to-[#d29922]/5';
-  return 'from-[#f43f5e]/20 to-[#f43f5e]/5';
+  return 'from-[#e84057]/20 to-[#e84057]/5';
 }
 
 function getStatusConfig(status: string) {
   switch (status) {
     case 'Compliant':
-      return { color: '#34d399', bg: 'rgba(52,211,153,0.15)', border: 'rgba(52,211,153,0.3)', icon: ShieldCheck };
+      return { color: '#3dd68c', bg: 'rgba(52,211,153,0.15)', border: 'rgba(52,211,153,0.3)', icon: ShieldCheck };
     case 'Needs Attention':
       return { color: '#d29922', bg: 'rgba(210,153,34,0.15)', border: 'rgba(210,153,34,0.3)', icon: ShieldAlert };
     case 'Non-Compliant':
-      return { color: '#f43f5e', bg: 'rgba(244,63,94,0.15)', border: 'rgba(244,63,94,0.3)', icon: ShieldX };
+      return { color: '#e84057', bg: 'rgba(244,63,94,0.15)', border: 'rgba(244,63,94,0.3)', icon: ShieldX };
     default:
-      return { color: '#475569', bg: 'rgba(139,148,158,0.15)', border: 'rgba(139,148,158,0.3)', icon: Shield };
+      return { color: '#5a5850', bg: 'rgba(139,148,158,0.15)', border: 'rgba(139,148,158,0.3)', icon: Shield };
   }
 }
 
@@ -199,14 +199,14 @@ function ComplianceGauge({ score }: { score: number }) {
       </svg>
       <div className="absolute flex flex-col items-center justify-center">
         <motion.span
-          className="text-3xl font-black text-[#f1f5f9]"
+          className="text-3xl font-black text-[#e8e6e1]"
           initial={{ opacity: 0, scale: 0.5 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.5, duration: 0.5 }}
         >
           {score}%
         </motion.span>
-        <span className="text-[10px] uppercase tracking-widest text-[#475569] font-medium">Overall</span>
+        <span className="text-[10px] uppercase tracking-widest text-[#5a5850] font-medium">Overall</span>
       </div>
     </div>
   );
@@ -230,8 +230,8 @@ function TrendSparkline() {
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="overflow-visible">
       <defs>
         <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#34d399" stopOpacity="0.3" />
-          <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+          <stop offset="0%" stopColor="#3dd68c" stopOpacity="0.3" />
+          <stop offset="100%" stopColor="#3dd68c" stopOpacity="0" />
         </linearGradient>
       </defs>
       <motion.path
@@ -244,7 +244,7 @@ function TrendSparkline() {
       <motion.path
         d={pathData}
         fill="none"
-        stroke="#34d399"
+        stroke="#3dd68c"
         strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -256,7 +256,7 @@ function TrendSparkline() {
         cx={(points.length - 1) * step}
         cy={h - (points[points.length - 1] / 100) * h}
         r="3"
-        fill="#34d399"
+        fill="#3dd68c"
         initial={{ opacity: 0, scale: 0 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ delay: 1.5, duration: 0.3 }}
@@ -273,29 +273,29 @@ function LoadingSkeleton() {
       {/* Header skeleton */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-[#0f1422]" />
+          <div className="w-9 h-9 rounded-lg bg-[#0a0a10]" />
           <div className="space-y-2">
-            <div className="h-5 w-48 bg-[#0f1422] rounded" />
-            <div className="h-3 w-64 bg-[#0f1422] rounded" />
+            <div className="h-5 w-48 bg-[#0a0a10] rounded" />
+            <div className="h-3 w-64 bg-[#0a0a10] rounded" />
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div className="h-9 w-[180px] bg-[#0f1422] rounded" />
-          <div className="h-9 w-24 bg-[#0f1422] rounded" />
+          <div className="h-9 w-[180px] bg-[#0a0a10] rounded" />
+          <div className="h-9 w-24 bg-[#0a0a10] rounded" />
         </div>
       </div>
 
       {/* Gauge area skeleton */}
       <div className="rounded-xl border border-[#21262d] bg-[#080b14] p-6">
         <div className="flex flex-col lg:flex-row items-center gap-8">
-          <div className="w-[180px] h-[180px] rounded-full bg-[#0f1422]" />
+          <div className="w-[180px] h-[180px] rounded-full bg-[#0a0a10]" />
           <div className="flex-1 w-full space-y-4">
-            <div className="h-4 w-40 bg-[#0f1422] rounded" />
-            <div className="h-10 w-full bg-[#0f1422] rounded" />
+            <div className="h-4 w-40 bg-[#0a0a10] rounded" />
+            <div className="h-10 w-full bg-[#0a0a10] rounded" />
             <div className="grid grid-cols-3 gap-3 mt-4">
-              <div className="h-16 bg-[#0f1422] rounded-lg" />
-              <div className="h-16 bg-[#0f1422] rounded-lg" />
-              <div className="h-16 bg-[#0f1422] rounded-lg" />
+              <div className="h-16 bg-[#0a0a10] rounded-lg" />
+              <div className="h-16 bg-[#0a0a10] rounded-lg" />
+              <div className="h-16 bg-[#0a0a10] rounded-lg" />
             </div>
           </div>
         </div>
@@ -303,21 +303,21 @@ function LoadingSkeleton() {
 
       {/* Framework cards skeleton */}
       <div>
-        <div className="h-4 w-36 bg-[#0f1422] rounded mb-3" />
+        <div className="h-4 w-36 bg-[#0a0a10] rounded mb-3" />
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {[1, 2, 3, 4, 5, 6].map((i) => (
             <div key={i} className="rounded-xl border border-[#21262d] bg-[#080b14] p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 bg-[#0f1422] rounded" />
+                  <div className="w-7 h-7 bg-[#0a0a10] rounded" />
                   <div className="space-y-1.5">
-                    <div className="h-3.5 w-24 bg-[#0f1422] rounded" />
-                    <div className="h-2.5 w-16 bg-[#0f1422] rounded" />
+                    <div className="h-3.5 w-24 bg-[#0a0a10] rounded" />
+                    <div className="h-2.5 w-16 bg-[#0a0a10] rounded" />
                   </div>
                 </div>
-                <div className="h-5 w-20 bg-[#0f1422] rounded-full" />
+                <div className="h-5 w-20 bg-[#0a0a10] rounded-full" />
               </div>
-              <div className="h-2 w-full bg-[#0f1422] rounded-full" />
+              <div className="h-2 w-full bg-[#0a0a10] rounded-full" />
             </div>
           ))}
         </div>
@@ -327,23 +327,23 @@ function LoadingSkeleton() {
       <div className="rounded-xl border border-[#21262d] bg-[#080b14] p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-7 h-7 bg-[#0f1422] rounded-md" />
+            <div className="w-7 h-7 bg-[#0a0a10] rounded-md" />
             <div className="space-y-1.5">
-              <div className="h-3.5 w-40 bg-[#0f1422] rounded" />
-              <div className="h-3 w-56 bg-[#0f1422] rounded" />
+              <div className="h-3.5 w-40 bg-[#0a0a10] rounded" />
+              <div className="h-3 w-56 bg-[#0a0a10] rounded" />
             </div>
           </div>
-          <div className="h-10 w-10 bg-[#0f1422] rounded-full" />
+          <div className="h-10 w-10 bg-[#0a0a10] rounded-full" />
         </div>
         {[1, 2, 3, 4, 5].map((i) => (
           <div key={i} className="flex items-center gap-3 px-4 py-3 border-b border-[#161b22]">
-            <div className="w-4 h-4 bg-[#0f1422] rounded" />
+            <div className="w-4 h-4 bg-[#0a0a10] rounded" />
             <div className="flex-1 space-y-1.5">
-              <div className="h-3 w-12 bg-[#0f1422] rounded" />
-              <div className="h-3 w-64 bg-[#0f1422] rounded" />
+              <div className="h-3 w-12 bg-[#0a0a10] rounded" />
+              <div className="h-3 w-64 bg-[#0a0a10] rounded" />
             </div>
-            <div className="h-5 w-12 bg-[#0f1422] rounded" />
-            <div className="h-5 w-14 bg-[#0f1422] rounded" />
+            <div className="h-5 w-12 bg-[#0a0a10] rounded" />
+            <div className="h-5 w-14 bg-[#0a0a10] rounded" />
           </div>
         ))}
       </div>
@@ -415,10 +415,10 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
   if (frameworks.length === 0) {
     return (
       <div className="w-full flex flex-col items-center justify-center py-20 text-center">
-        <Shield className="w-12 h-12 text-[#334155] mb-4" />
-        <h3 className="text-lg font-semibold text-[#f1f5f9] mb-2">No Compliance Data</h3>
-        <p className="text-sm text-[#475569] mb-4">Run a scan first to generate compliance assessments.</p>
-        <Button variant="outline" size="sm" onClick={handleRegenerate} className="border-[#21262d] text-[#475569] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#34d399] gap-1.5">
+        <Shield className="w-12 h-12 text-[#3d3b38] mb-4" />
+        <h3 className="text-lg font-semibold text-[#e8e6e1] mb-2">No Compliance Data</h3>
+        <p className="text-sm text-[#5a5850] mb-4">Run a scan first to generate compliance assessments.</p>
+        <Button variant="outline" size="sm" onClick={handleRegenerate} className="border-[#21262d] text-[#5a5850] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#3dd68c] gap-1.5">
           <RefreshCw className={`w-3.5 h-3.5 ${regenerating ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
@@ -449,21 +449,21 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
       <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-lg bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]">
-            <Shield className="w-5 h-5 text-[#34d399]" />
+            <Shield className="w-5 h-5 text-[#3dd68c]" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-[#f1f5f9]">Compliance Framework</h2>
-            <p className="text-sm text-[#475569]">Monitor and manage regulatory compliance posture</p>
+            <h2 className="text-xl font-bold text-[#e8e6e1]">Compliance Framework</h2>
+            <p className="text-sm text-[#5a5850]">Monitor and manage regulatory compliance posture</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <Select value={selectedFramework} onValueChange={setSelectedFramework}>
-            <SelectTrigger className="bg-[#080b14] border-[#21262d] text-[#f1f5f9] w-[180px]">
+            <SelectTrigger className="bg-[#080b14] border-[#21262d] text-[#e8e6e1] w-[180px]">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent className="bg-[#0f1422] border-[#21262d] text-[#f1f5f9]">
+            <SelectContent className="bg-[#0a0a10] border-[#21262d] text-[#e8e6e1]">
               {frameworks.map((f) => (
-                <SelectItem key={f.id} value={f.id} className="text-[#f1f5f9] focus:bg-[rgba(52,211,153,0.1)] focus:text-[#34d399]">
+                <SelectItem key={f.id} value={f.id} className="text-[#e8e6e1] focus:bg-[rgba(52,211,153,0.1)] focus:text-[#3dd68c]">
                   <span className="mr-2">{f.icon}</span>
                   {f.name}
                 </SelectItem>
@@ -475,7 +475,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
             size="sm"
             onClick={handleRegenerate}
             disabled={regenerating}
-            className="border-[#21262d] text-[#475569] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#34d399] gap-1.5"
+            className="border-[#21262d] text-[#5a5850] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#3dd68c] gap-1.5"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${regenerating ? 'animate-spin' : ''}`} />
             Regenerate
@@ -488,21 +488,21 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
         <div className="flex flex-col lg:flex-row items-center gap-8">
           <div className="flex flex-col items-center gap-2">
             <ComplianceGauge score={overallScore} />
-            <p className="text-sm font-medium text-[#34d399]">
+            <p className="text-sm font-medium text-[#3dd68c]">
               {overallScore >= 90 ? 'Excellent' : overallScore >= 75 ? 'Good' : 'Needs Improvement'}
             </p>
           </div>
 
           <div className="flex-1 w-full space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-[#f1f5f9]">Compliance Trend</h3>
-              <div className="flex items-center gap-1.5 text-[#34d399]">
+              <h3 className="text-sm font-semibold text-[#e8e6e1]">Compliance Trend</h3>
+              <div className="flex items-center gap-1.5 text-[#3dd68c]">
                 <TrendingUp className="w-3.5 h-3.5" />
                 <span className="text-xs font-medium">+4.2% from last month</span>
               </div>
             </div>
             <TrendSparkline />
-            <div className="flex gap-4 text-xs text-[#475569]">
+            <div className="flex gap-4 text-xs text-[#5a5850]">
               <span>Last 12 assessments</span>
               <span>•</span>
               <span>Updated: Jan 20, 2024</span>
@@ -510,22 +510,22 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
 
             <div className="grid grid-cols-3 gap-3 mt-4">
               <div className="rounded-lg bg-[rgba(52,211,153,0.08)] border border-[rgba(52,211,153,0.15)] p-3 text-center">
-                <p className="text-lg font-bold text-[#34d399]">
+                <p className="text-lg font-bold text-[#3dd68c]">
                   {frameworks.filter((f) => f.status === 'Compliant').length}
                 </p>
-                <p className="text-[10px] uppercase tracking-wider text-[#475569]">Compliant</p>
+                <p className="text-[10px] uppercase tracking-wider text-[#5a5850]">Compliant</p>
               </div>
               <div className="rounded-lg bg-[rgba(210,153,34,0.08)] border border-[rgba(210,153,34,0.15)] p-3 text-center">
                 <p className="text-lg font-bold text-[#d29922]">
                   {frameworks.filter((f) => f.status === 'Needs Attention').length}
                 </p>
-                <p className="text-[10px] uppercase tracking-wider text-[#475569]">Attention</p>
+                <p className="text-[10px] uppercase tracking-wider text-[#5a5850]">Attention</p>
               </div>
               <div className="rounded-lg bg-[rgba(244,63,94,0.08)] border border-[rgba(244,63,94,0.15)] p-3 text-center">
-                <p className="text-lg font-bold text-[#f43f5e]">
+                <p className="text-lg font-bold text-[#e84057]">
                   {frameworks.filter((f) => f.status === 'Non-Compliant').length}
                 </p>
-                <p className="text-[10px] uppercase tracking-wider text-[#475569]">Non-Compliant</p>
+                <p className="text-[10px] uppercase tracking-wider text-[#5a5850]">Non-Compliant</p>
               </div>
             </div>
           </div>
@@ -534,7 +534,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
 
       {/* ── Framework Grid ────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
-        <h3 className="text-sm font-semibold text-[#f1f5f9] mb-3">Frameworks Overview</h3>
+        <h3 className="text-sm font-semibold text-[#e8e6e1] mb-3">Frameworks Overview</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {frameworks.map((fw, idx) => {
             const statusCfg = getStatusConfig(fw.status);
@@ -558,8 +558,8 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                     <div className="flex items-center gap-2">
                       <span className="text-xl">{fw.icon}</span>
                       <div>
-                        <h4 className="text-sm font-bold text-[#f1f5f9]">{fw.name}</h4>
-                        <p className="text-[10px] text-[#334155]">{fw.controlsPassed}/{fw.controlsTotal} controls</p>
+                        <h4 className="text-sm font-bold text-[#e8e6e1]">{fw.name}</h4>
+                        <p className="text-[10px] text-[#3d3b38]">{fw.controlsPassed}/{fw.controlsTotal} controls</p>
                       </div>
                     </div>
                     <div
@@ -578,12 +578,12 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                   {/* Score bar */}
                   <div className="mb-3">
                     <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-xs text-[#475569]">Score</span>
+                      <span className="text-xs text-[#5a5850]">Score</span>
                       <span className="text-sm font-bold" style={{ color: getScoreColor(fw.score) }}>
                         {fw.score}%
                       </span>
                     </div>
-                    <div className="h-2 bg-[#0f1422] rounded-full overflow-hidden">
+                    <div className="h-2 bg-[#0a0a10] rounded-full overflow-hidden">
                       <motion.div
                         className="h-full rounded-full"
                         style={{ backgroundColor: getScoreColor(fw.score) }}
@@ -595,11 +595,11 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                   </div>
 
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1 text-[10px] text-[#334155]">
+                    <div className="flex items-center gap-1 text-[10px] text-[#3d3b38]">
                       <Clock className="w-3 h-3" />
                       <span>Assessed {fw.lastAssessed}</span>
                     </div>
-                    <button className="text-[10px] font-medium text-[#34d399] hover:text-[#00cc6a] transition-colors flex items-center gap-1">
+                    <button className="text-[10px] font-medium text-[#3dd68c] hover:text-[#00cc6a] transition-colors flex items-center gap-1">
                       Review
                       <ExternalLink className="w-3 h-3" />
                     </button>
@@ -616,21 +616,21 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
         <div className="p-4 border-b border-[#21262d] flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-1.5 rounded-md bg-[rgba(52,211,153,0.1)]">
-              <FileText className="w-4 h-4 text-[#34d399]" />
+              <FileText className="w-4 h-4 text-[#3dd68c]" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-[#f1f5f9]">
+              <h3 className="text-sm font-semibold text-[#e8e6e1]">
                 {selected.icon} {selected.name} Controls
               </h3>
-              <p className="text-xs text-[#475569]">
+              <p className="text-xs text-[#5a5850]">
                 {passedCount} passed, {failedCount} failed of {selected.controls.length} controls
               </p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <div className="text-right">
-              <p className="text-lg font-bold text-[#f1f5f9]">{controlPassRate}%</p>
-              <p className="text-[10px] text-[#475569] uppercase tracking-wider">Pass Rate</p>
+              <p className="text-lg font-bold text-[#e8e6e1]">{controlPassRate}%</p>
+              <p className="text-[10px] text-[#5a5850] uppercase tracking-wider">Pass Rate</p>
             </div>
             <div className="w-12 h-12 relative">
               <svg width="48" height="48" viewBox="0 0 48 48" className="transform -rotate-90">
@@ -656,7 +656,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
         <div className="max-h-[400px] overflow-y-auto">
           {selected.controls.length === 0 ? (
             <div className="px-4 py-8 text-center">
-              <p className="text-sm text-[#475569]">No controls to display. Run a scan to generate compliance data.</p>
+              <p className="text-sm text-[#5a5850]">No controls to display. Run a scan to generate compliance data.</p>
             </div>
           ) : (
             selected.controls.map((control, idx) => {
@@ -681,33 +681,33 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                       onCheckedChange={() => toggleControlStatus(control.id)}
                       className={`${
                         toggleValue
-                          ? 'data-[state=checked]:bg-[#34d399] data-[state=checked]:border-[#34d399]'
-                          : 'data-[state=unchecked]:border-[#f43f5e]'
+                          ? 'data-[state=checked]:bg-[#3dd68c] data-[state=checked]:border-[#3dd68c]'
+                          : 'data-[state=unchecked]:border-[#e84057]'
                       }`}
                       onClick={(e) => e.stopPropagation()}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-mono text-[#334155]">{control.id}</span>
-                        <span className="text-xs text-[#f1f5f9] truncate">{control.description}</span>
+                        <span className="text-[10px] font-mono text-[#3d3b38]">{control.id}</span>
+                        <span className="text-xs text-[#e8e6e1] truncate">{control.description}</span>
                       </div>
                     </div>
                     <span
                       className={`px-2 py-0.5 rounded text-[10px] font-medium ${
                         toggleValue
-                          ? 'bg-[rgba(52,211,153,0.1)] text-[#34d399]'
-                          : 'bg-[rgba(244,63,94,0.1)] text-[#f43f5e]'
+                          ? 'bg-[rgba(52,211,153,0.1)] text-[#3dd68c]'
+                          : 'bg-[rgba(244,63,94,0.1)] text-[#e84057]'
                       }`}
                     >
                       {toggleValue ? 'PASS' : 'FAIL'}
                     </span>
-                    <span className="text-[10px] text-[#334155] border border-[#21262d] rounded px-1.5 py-0.5">
+                    <span className="text-[10px] text-[#3d3b38] border border-[#21262d] rounded px-1.5 py-0.5">
                       {control.category}
                     </span>
                     {isExpanded ? (
-                      <ChevronDown className="w-4 h-4 text-[#334155]" />
+                      <ChevronDown className="w-4 h-4 text-[#3d3b38]" />
                     ) : (
-                      <ChevronRight className="w-4 h-4 text-[#334155]" />
+                      <ChevronRight className="w-4 h-4 text-[#3d3b38]" />
                     )}
                   </div>
 
@@ -721,22 +721,22 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                         className="overflow-hidden"
                       >
                         <div className="px-4 pb-3 ml-9 space-y-2">
-                          <p className="text-xs text-[#475569] leading-relaxed">
+                          <p className="text-xs text-[#5a5850] leading-relaxed">
                             Control {control.id} requires proper implementation of {control.description.toLowerCase()}{' '}
                             across all relevant systems and processes.
                           </p>
                           <div className="flex items-center gap-2">
                             {control.evidenceLink ? (
-                              <button className="flex items-center gap-1.5 text-[10px] font-medium text-[#22d3ee] hover:text-[#79c0ff] transition-colors">
+                              <button className="flex items-center gap-1.5 text-[10px] font-medium text-[#5ba8d4] hover:text-[#79c0ff] transition-colors">
                                 <Link2 className="w-3 h-3" />
                                 View Evidence
                               </button>
                             ) : null}
-                            <span className="text-[10px] text-[#334155]">•</span>
-                            <span className="text-[10px] text-[#334155]">Last verified: {selected.lastAssessed}</span>
+                            <span className="text-[10px] text-[#3d3b38]">•</span>
+                            <span className="text-[10px] text-[#3d3b38]">Last verified: {selected.lastAssessed}</span>
                           </div>
                           {control.evidenceLink && (
-                            <p className="text-xs text-[#22d3ee]/80 bg-[#0f1422] rounded p-2 leading-relaxed">
+                            <p className="text-xs text-[#5ba8d4]/80 bg-[#0a0a10] rounded p-2 leading-relaxed">
                               {control.evidenceLink}
                             </p>
                           )}
