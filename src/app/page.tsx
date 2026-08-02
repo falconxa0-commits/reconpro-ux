@@ -12,7 +12,8 @@ import { ThreatGlobe } from '@/components/reconpro/threat-globe';
 import { LiveTerminal } from '@/components/reconpro/live-terminal';
 import { ScanOverlay } from '@/components/reconpro/scan-overlay';
 import { CriticalAlertFeed } from '@/components/reconpro/critical-alerts';
-import { EnterpriseSidebar } from '@/components/reconpro/sidebar';
+import { BottomDock } from '@/components/reconpro/bottom-dock';
+import { BentoDashboard } from '@/components/reconpro/bento-dashboard';
 import { CEODashboard } from '@/components/reconpro/ceo-dashboard';
 import { TeamManagement } from '@/components/reconpro/team-management';
 import { CompliancePanel } from '@/components/reconpro/compliance-panel';
@@ -43,15 +44,16 @@ import { MatrixTerminalPanel } from '@/components/reconpro/matrix-terminal';
 import { PegasusInspectorPanel } from '@/components/reconpro/pegasus-inspector';
 import { TrainingClusterPanel } from '@/components/reconpro/training-cluster';
 import { AirGappedAppliancePanel } from '@/components/reconpro/air-gapped-appliance';
-import { DemoModeProvider, DemoModeToggle, InvestorWalkthrough } from '@/components/reconpro/demo-mode';
+import { DemoModeProvider, DemoModeToggle } from '@/components/reconpro/demo-mode';
 import { WhiteLabelPanel } from '@/components/reconpro/white-label';
 import { useSoundEffects } from '@/hooks/use-sound-effects';
 import { useXPSystem, XPBar, BadgePopup } from '@/hooks/use-xp-system';
 import {
   useDopamineEngine, ConfettiCanvas, FloatingXPCanvas, ScreenEffects,
   CelebrationScreen, AchievementToasts, ComboCounter,
-  MilestoneCelebration, AnticipationProgressBar,
+  MilestoneCelebration,
 } from '@/components/reconpro/dopamine-engine';
+import { X } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -87,48 +89,19 @@ interface RecentScan {
 }
 
 const severityColors: Record<string, string> = {
-  critical: 'bg-[#f43f5e]/10 text-[#f43f5e] border-[#f43f5e]/20',
+  critical: 'bg-[#fb7185]/10 text-[#fb7185] border-[#fb7185]/20',
   high: 'bg-[#fb923c]/10 text-[#fb923c] border-[#fb923c]/20',
-  medium: 'bg-[#facc15]/10 text-[#facc15] border-[#facc15]/20',
+  medium: 'bg-[#fbbf24]/10 text-[#fbbf24] border-[#fbbf24]/20',
   low: 'bg-[#34d399]/10 text-[#34d399] border-[#34d399]/20',
-  info: 'bg-[#6b7280]/10 text-[#6b7280] border-[#6b7280]/20',
+  info: 'bg-[#71717a]/10 text-[#71717a] border-[#71717a]/20',
 };
-
-const SEVERITY_RADAR_COLORS: Record<string, string> = {
-  critical: '#f43f5e', high: '#fb923c', medium: '#facc15',
-  low: '#34d399', info: '#6b7280',
-};
-
-// ─── Mini severity donut (SVG) ──────────────────────────────
-
-function SeverityDonut({ data }: { data: { name: string; value: number; color: string }[] }) {
-  const total = data.reduce((s, d) => s + d.value, 0);
-  const segments = data.map((d, i) => {
-    const pct = total === 0 ? 0 : d.value / total;
-    const off = data.slice(0, i).reduce((s2, prev) => s2 + (total === 0 ? 0 : prev.value / total), 0);
-    return { ...d, pct, dasharray: `${pct * 283} ${283}`, offset: -off * 283 };
-  });
-  if (total === 0) return <div className="text-xs text-muted-foreground text-center py-4">No data yet</div>;
-  return (
-    <svg viewBox="0 0 120 120" className="w-32 h-32 mx-auto">
-      {segments.map((d) => (
-        <circle key={d.name} cx="60" cy="60" r="45" fill="none"
-          stroke={d.color} strokeWidth="18" strokeDasharray={d.dasharray}
-          strokeDashoffset={d.offset} strokeLinecap="round" opacity={0.85} />
-      ))}
-      <text x="60" y="56" textAnchor="middle" fill="#f1f5f9" fontSize="22" fontWeight="bold" fontFamily="Geist Sans, sans-serif">{total}</text>
-      <text x="60" y="72" textAnchor="middle" fill="#475569" fontSize="9" fontFamily="Geist Sans, sans-serif">FINDINGS</text>
-    </svg>
-  );
-}
 
 // ═══════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════
 
 export default function Home() {
-  const [activeView, setActiveView] = useState<View>('executive');
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeView, setActiveView] = useState<View>('dashboard');
   const [isScanning, setIsScanning] = useState(false);
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
@@ -240,70 +213,52 @@ export default function Home() {
     setActiveView(view as View);
   };
 
-  // ─── Dashboard View ─────────────────────────────────────
-  const renderDashboard = () => (
-    <div className="space-y-5">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {[
-          { label: 'Total Scans', value: dashboardStats?.totalScans ?? 0, color: '#34d399' },
-          { label: 'Total Findings', value: dashboardStats?.totalFindings ?? 0, color: '#fb923c' },
-          { label: 'Critical Issues', value: dashboardStats?.criticalFindings ?? 0, color: '#f43f5e' },
-          { label: 'Avg Risk Score', value: dashboardStats?.avgRiskScore ?? 0, color: '#facc15' },
-        ].map((stat) => (
-          <motion.div key={stat.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-            className="stat-card p-4" style={{ '--accent-line': `${stat.color}40` } as React.CSSProperties}>
-            <div className="text-[10px] font-medium uppercase tracking-[0.15em] text-[#475569] mb-3">{stat.label}</div>
-            <AnimatedCounter target={stat.value} color={stat.color} size="lg" />
-          </motion.div>
-        ))}
+  // ─── Back to bento ────────────────────────────────────────
+  const goHome = () => setActiveView('dashboard');
+
+  // ─── Panel views render inside a full-bleed overlay ────────
+  const renderPanelView = (content: React.ReactNode, title: string) => (
+    <div className="min-h-screen pb-28">
+      {/* Minimal top bar for panel views */}
+      <div className="sticky top-0 z-40 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <button
+            onClick={goHome}
+            className="flex items-center gap-2 text-[12px] text-[#52525b] hover:text-[#a1a1aa] transition-colors font-mono"
+          >
+            <span className="text-[#c084fc]">←</span> back
+          </button>
+          <h2 className="text-[13px] font-semibold text-[#edf2f7] tracking-tight">{title}</h2>
+          <div className="w-12" />
+        </div>
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="cyber-card p-5">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-4">Severity Breakdown</h3>
-          <SeverityDonut data={[
-            { name: 'Critical', value: dashboardStats?.criticalFindings ?? 0, color: '#f43f5e' },
-            { name: 'High', value: dashboardStats?.highFindings ?? 0, color: '#fb923c' },
-            { name: 'Medium', value: dashboardStats?.mediumFindings ?? 0, color: '#facc15' },
-            { name: 'Low', value: dashboardStats?.lowFindings ?? 0, color: '#34d399' },
-            { name: 'Info', value: dashboardStats?.infoFindings ?? 0, color: '#6b7280' },
-          ]} />
-        </div>
-        <div className="lg:col-span-2 cyber-card p-5">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-4">Recent Scans</h3>
-          <div className="space-y-2 max-h-[280px] overflow-y-auto scrollbar-none">
-            {recentScans.slice(0, 5).map((scan, i) => (
-              <motion.div key={scan.id} initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
-                className="flex items-center justify-between p-3 rounded-xl bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.03)] hover:border-[rgba(52,211,153,0.1)] cursor-pointer transition-all duration-300"
-                onClick={() => { if (scan.findings.length > 0) { setScanResult({ id: scan.id, domain: scan.target.domain, status: scan.status, riskScore: scan.riskScore, totalVulns: scan.totalVulns, critical: scan.criticalCount, high: scan.highCount, medium: scan.mediumCount, low: scan.lowCount, info: scan.infoCount, findings: scan.findings }); setActiveView('surface'); } }}>
-                <div className="flex items-center gap-3">
-                  <div className="text-[13px] font-mono text-[#e2e8f0]">{scan.target.domain}</div>
-                </div>
-                <div className="text-[13px] font-mono font-bold" style={{ color: scan.riskScore > 70 ? '#f43f5e' : scan.riskScore > 40 ? '#fb923c' : '#34d399' }}>{scan.riskScore}</div>
-              </motion.div>
-            ))}
-          </div>
-        </div>
+      <div className="max-w-[1400px] mx-auto px-4 md:px-6">
+        {content}
       </div>
     </div>
   );
 
-  // ─── Scan View ──────────────────────────────────────────
+  // ─── Scan View ────────────────────────────────────────────
   const renderScan = () => (
-    <div className="space-y-6">
-      <div className="text-center space-y-4 py-8">
-        <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-          className="inline-flex items-center gap-2.5 px-4 py-2 rounded-full bg-[rgba(52,211,153,0.06)] border border-[rgba(52,211,153,0.1)]">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#34d399] animate-pulse-glow" />
-          <span className="text-[10.5px] font-mono text-[#34d399] tracking-[0.2em] uppercase">ASM Engine v3.0 — Enterprise</span>
-        </motion.div>
-        <h1 className="text-3xl sm:text-4xl font-bold text-[#f1f5f9]">
-          Attack Surface <span className="text-glow-green text-[#34d399]">Intelligence</span>
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 pb-28">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+        className="w-full max-w-lg text-center space-y-6"
+      >
+        <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass">
+          <div className="w-1.5 h-1.5 rounded-full bg-[#c084fc] animate-pulse" />
+          <span className="text-[10px] font-mono text-[#a1a1aa] tracking-[0.2em]">ASM ENGINE v3.0</span>
+        </div>
+        <h1 className="text-3xl md:text-4xl font-bold text-[#edf2f7]">
+          Attack Surface <span className="text-gradient-void">Intelligence</span>
         </h1>
-        <p className="text-[#64748b] max-w-xl mx-auto text-sm leading-relaxed">
-          Enterprise-grade reconnaissance across 13 categories. Real-time threat detection, compliance mapping, and continuous monitoring.
+        <p className="text-[13px] text-[#52525b] leading-relaxed max-w-md mx-auto">
+          Enterprise-grade reconnaissance across 13 categories. Real-time threat detection and compliance mapping.
         </p>
         <ScanInput onScan={handleScan} isScanning={isScanning} />
-      </div>
+      </motion.div>
       <XPBar state={xp.state} />
       <ScanOverlay isScanning={isScanning} domain={scanDomain} findingCount={liveFindingCount} onNewFinding={handleLiveFinding} />
       <AnimatePresence>
@@ -317,240 +272,182 @@ export default function Home() {
     </div>
   );
 
-  // ─── Radar View ────────────────────────────────────────
+  // ─── Radar View ───────────────────────────────────────────
   const renderRadar = () => {
     const lastScan = allScans.length > 0 ? allScans[0] : null;
     const radarFindings = scanResult?.findings || (lastScan?.findings ?? []);
     const radarDomain = scanResult?.domain || lastScan?.target?.domain || 'awaiting-target';
-    return (
+    return renderPanelView(
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(52,211,153,0.05)] border border-[rgba(52,211,153,0.1)]">
-              <span className="text-[11px] font-mono text-[#34d399] tracking-wider">RADAR MAPPING</span>
-            </div>
-            <span className="text-[11px] text-[#475569] font-mono">{radarDomain}</span>
-          </div>
-          {radarFindings.length === 0 && (
-            <button onClick={() => setActiveView('scan')}
-              className="btn-primary text-[12px] px-4 py-2">
-              Launch Scan First
-            </button>
-          )}
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-mono text-[#c084fc] tracking-wider">RADAR</span>
+          <span className="text-[11px] text-[#52525b] font-mono">{radarDomain}</span>
         </div>
         <RadarMap findings={radarFindings} domain={radarDomain} isScanning={isScanning} height={520} />
-      </div>
+      </div>,
+      'Radar Map'
     );
   };
 
-  // ─── Attack Surface View ────────────────────────────────
-  const renderSurface = () => (
-    <div className="space-y-6">
-      {scanResult ? (
-        <>
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(52,211,153,0.05)] border border-[rgba(52,211,153,0.1)]">
-              <span className="text-[12px] font-mono text-[#34d399]">{scanResult.domain}</span>
-            </div>
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.05)]">
-              <span className="text-[11px] text-[#64748b]">Risk: <span className="font-bold" style={{ color: scanResult.riskScore > 70 ? '#f43f5e' : scanResult.riskScore > 40 ? '#fb923c' : '#34d399' }}>{scanResult.riskScore}</span>/100</span>
-            </div>
-          </div>
-          <AttackSurface findings={scanResult.findings} domain={scanResult.domain} riskScore={scanResult.riskScore} />
-          <ScanResults result={scanResult} />
-        </>
-      ) : (
-        <div className="flex flex-col items-center justify-center py-24 text-center">
-          <h3 className="text-lg font-semibold text-[#f1f5f9] mb-2">No Scan Data</h3>
-          <p className="text-sm text-[#64748b] max-w-sm mb-6">Run a scan first to visualize the attack surface.</p>
-          <button onClick={() => setActiveView('scan')} className="btn-primary">Launch Scan</button>
-        </div>
-      )}
-    </div>
-  );
-
-  // ─── Threat Intel View ──────────────────────────────────
+  // ─── Threat Intel ──────────────────────────────────────────
   const renderThreats = () => (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold text-[#f1f5f9]">Threat Intelligence Feed</h2>
-        <span className="text-[10px] text-[#475569] font-mono">{threats.length} threats</span>
-      </div>
-      <div className="space-y-2.5">
-        {threats.map((threat, i) => (
-          <motion.div key={threat.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
-            className="cyber-card p-4 hover:border-[rgba(244,63,94,0.12)] group cursor-pointer">
-            <div className="flex items-start gap-4">
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <span className={`text-[9px] px-2 py-0.5 rounded-md border font-medium ${severityColors[threat.severity]}`}>{threat.severity.toUpperCase()}</span>
-                  <span className="text-[9px] px-2 py-0.5 rounded-md border border-[rgba(34,211,238,0.2)] text-[#22d3ee] font-medium">{threat.source}</span>
-                </div>
-                <h3 className="text-[13px] font-semibold text-[#e2e8f0] group-hover:text-[#34d399] transition-colors mb-1">{threat.title}</h3>
-                <p className="text-[12px] text-[#64748b] leading-relaxed">{threat.description}</p>
-                {threat.ioc && (
-                  <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[rgba(34,211,238,0.05)] border border-[rgba(34,211,238,0.1)]">
-                    <span className="text-[9px] text-[#22d3ee] font-medium">IOC:</span>
-                    <span className="text-[11px] font-mono text-[#22d3ee]">{threat.ioc}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </motion.div>
-        ))}
-      </div>
-    </div>
-  );
-
-  // ─── Scan History View ──────────────────────────────────
-  const renderHistory = () => (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-base font-semibold text-[#f1f5f9]">Scan History</h2>
-        <span className="text-[10px] text-[#475569] font-mono">{allScans.length} scans</span>
-      </div>
-      {allScans.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-24 text-center">
-          <h3 className="text-lg font-semibold text-[#f1f5f9] mb-2">No Scan History</h3>
-          <p className="text-sm text-[#64748b] max-w-sm mb-6">Your past scans will appear here.</p>
-          <button onClick={() => setActiveView('scan')} className="btn-primary">Launch Your First Scan</button>
-        </div>
-      ) : (
+    renderPanelView(
+      <div className="space-y-3">
+        <span className="text-[10px] font-mono text-[#52525b] tracking-[0.15em] uppercase">{threats.length} threats</span>
         <div className="space-y-2">
-          {allScans.map((scan, i) => (
-            <motion.div key={scan.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
-              className="cyber-card p-4 hover:border-[rgba(52,211,153,0.1)] cursor-pointer group transition-all duration-300"
-              onClick={() => { if (scan.findings.length > 0) { setScanResult({ id: scan.id, domain: scan.target.domain, status: scan.status, riskScore: scan.riskScore, totalVulns: scan.totalVulns, critical: scan.criticalCount, high: scan.highCount, medium: scan.mediumCount, low: scan.lowCount, info: scan.infoCount, findings: scan.findings }); setActiveView('surface'); } }}>
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-4 min-w-0">
-                  <div className="text-[13px] font-mono text-[#e2e8f0] group-hover:text-[#34d399] transition-colors">{scan.target.domain}</div>
-                  <div className="text-[10.5px] text-[#475569] hidden sm:block">{new Date(scan.startedAt).toLocaleString()}</div>
-                </div>
-                <div className="text-base font-mono font-bold" style={{ color: scan.riskScore > 70 ? '#f43f5e' : scan.riskScore > 40 ? '#fb923c' : '#34d399' }}>{scan.riskScore}</div>
+          {threats.map((t, i) => (
+            <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
+              className="bento-tile p-4 hover:border-[rgba(251,113,133,0.12)] group cursor-pointer">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`text-[9px] px-2 py-0.5 rounded-md border font-medium ${severityColors[t.severity]}`}>{t.severity.toUpperCase()}</span>
+                <span className="text-[9px] px-2 py-0.5 rounded-md border border-[rgba(34,211,238,0.2)] text-[#22d3ee] font-medium">{t.source}</span>
               </div>
+              <h3 className="text-[13px] font-semibold text-[#edf2f7] group-hover:text-[#c084fc] transition-colors mb-1">{t.title}</h3>
+              <p className="text-[12px] text-[#52525b] leading-relaxed">{t.description}</p>
             </motion.div>
           ))}
         </div>
-      )}
-    </div>
+      </div>,
+      'Threat Intelligence'
+    )
   );
 
-  // ─── Render Active View ─────────────────────────────────
+  // ─── Scan History ──────────────────────────────────────────
+  const renderHistory = () => (
+    renderPanelView(
+      <div className="space-y-2">
+        <span className="text-[10px] font-mono text-[#52525b] tracking-[0.15em] uppercase">{allScans.length} scans</span>
+        {allScans.length === 0 ? (
+          <div className="text-center py-20">
+            <p className="text-[#3f3f46] text-sm">No scan history yet</p>
+          </div>
+        ) : (
+          allScans.map((s, i) => (
+            <motion.div key={s.id} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
+              className="bento-tile p-4 cursor-pointer group"
+              onClick={() => { if (s.findings.length > 0) { setScanResult({ id: s.id, domain: s.target.domain, status: s.status, riskScore: s.riskScore, totalVulns: s.totalVulns, critical: s.criticalCount, high: s.highCount, medium: s.mediumCount, low: s.lowCount, info: s.infoCount, findings: s.findings }); setActiveView('surface'); } }}>
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-mono text-[#a1a1aa] group-hover:text-[#c084fc] transition-colors">{s.target.domain}</span>
+                <span className="text-[14px] font-mono font-bold" style={{ color: s.riskScore > 70 ? '#fb7185' : s.riskScore > 40 ? '#fbbf24' : '#34d399' }}>{s.riskScore}</span>
+              </div>
+            </motion.div>
+          ))
+        )}
+      </div>,
+      'Scan History'
+    )
+  );
+
+  // ─── Attack Surface ────────────────────────────────────────
+  const renderSurface = () => {
+    if (!scanResult) {
+      return renderPanelView(
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <p className="text-[#3f3f46] text-sm mb-4">Run a scan first</p>
+          <button onClick={() => setActiveView('scan')} className="btn-void-primary">Launch Scan</button>
+        </div>,
+        'Attack Surface'
+      );
+    }
+    return renderPanelView(
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <span className="text-[12px] font-mono text-[#c084fc]">{scanResult.domain}</span>
+          <span className="text-[11px] px-2.5 py-1 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.05)] text-[#a1a1aa]">
+            Risk: <span className="font-bold" style={{ color: scanResult.riskScore > 70 ? '#fb7185' : scanResult.riskScore > 40 ? '#fbbf24' : '#34d399' }}>{scanResult.riskScore}</span>/100
+          </span>
+        </div>
+        <AttackSurface findings={scanResult.findings} domain={scanResult.domain} riskScore={scanResult.riskScore} />
+        <ScanResults result={scanResult} />
+      </div>,
+      'Attack Surface'
+    );
+  };
+
+  // ─── Render Active View ─────────────────────────────────────
   const renderView = () => {
     switch (activeView) {
-      case 'executive': return <CEODashboard stats={dashboardStats} recentScans={recentScans} onNavigate={handleViewChange} />;
-      case 'dashboard': return renderDashboard();
+      case 'dashboard':
+        return <BentoDashboard stats={dashboardStats} recentScans={recentScans} onNavigate={handleViewChange} />;
+      case 'executive':
+        return renderPanelView(<CEODashboard stats={dashboardStats} recentScans={recentScans} onNavigate={handleViewChange} />, 'Executive Briefing');
       case 'scan': return renderScan();
       case 'radar': return renderRadar();
-      case 'globe': return <ThreatGlobe />;
+      case 'globe':
+        return renderPanelView(<ThreatGlobe />, 'Threat Map');
       case 'advisor': {
         const lastScan = allScans.length > 0 ? allScans[0] : null;
         const advisorFindings = scanResult?.findings || (lastScan ? lastScan.findings : []);
         const advisorDomain = scanResult?.domain || (lastScan ? lastScan.target.domain : 'awaiting-target');
-        return <AIAdvisor findings={advisorFindings} domain={advisorDomain} />;
+        return renderPanelView(<AIAdvisor findings={advisorFindings} domain={advisorDomain} />, 'AI Advisor');
       }
       case 'surface': return renderSurface();
       case 'threats': return renderThreats();
       case 'history': return renderHistory();
-      case 'team': return <TeamManagement members={[]} teams={[]} />;
-      case 'compliance': return <CompliancePanel />;
-      case 'integrations': return <IntegrationHub />;
-      case 'monitoring': return <MonitoringPanel />;
-      case 'proof': return <LiveProofPanel onNavigate={handleViewChange} />;
-      case 'vulns': return <VulnArsenal />;
-      case 'unified-cli': return <UnifiedCLI />;
-      case 'pricing': return <PricingPlans onNavigate={handleViewChange} />;
-      case 'white-label': return <WhiteLabelPanel />;
-      case 'hall-of-fame': return <HallOfFame />;
-      case 'nhi-kill-switch': return <NHIKillSwitch />;
-      case 'genesis-stamp': return <GenesisStampPanel />;
-      case 'implosion': return <ImplosionPanel />;
-      case 'war-room': return <WarRoomPanel />;
-      case 'proof-gallery': return <ProofGallery />;
-      case 'ai-leaderboard': return <AILeaderboard />;
-      case 'doom-clock': return <DoomClockPanel />;
-      case 'fear-index': return <FearIndexPanel />;
-      case 'pqc-vault': return <PQCVaultPanel />;
-      case 'exposed-asset-map': return <ExposedAssetMapPanel />;
-      case 'confused-deputy': return <ConfusedDeputyPanel />;
-      case 'cognitive-dread': return <CognitiveDreadPanel />;
-      case 'wall-of-shame': return <WallOfShamePanel />;
-      case 'sovereign-control': return <SovereignControlPanel />;
-      case 'cni-sentinel': return <CNISentinelPanel />;
-      case 'broadcast-center': return <BroadcastCenterPanel />;
-      case 'matrix-terminal': return <MatrixTerminalPanel />;
-      case 'pegasus-inspector': return <PegasusInspectorPanel />;
-      case 'training-cluster': return <TrainingClusterPanel />;
-      case 'air-gapped-appliance': return <AirGappedAppliancePanel />;
-      default: return renderScan();
+      case 'team': return renderPanelView(<TeamManagement members={[]} teams={[]} />, 'Team');
+      case 'compliance': return renderPanelView(<CompliancePanel />, 'Compliance');
+      case 'integrations': return renderPanelView(<IntegrationHub />, 'Integrations');
+      case 'monitoring': return renderPanelView(<MonitoringPanel />, 'Monitoring');
+      case 'proof': return renderPanelView(<LiveProofPanel onNavigate={handleViewChange} />, 'Live Proof');
+      case 'vulns': return renderPanelView(<VulnArsenal />, 'Vulnerability Arsenal');
+      case 'unified-cli': return renderPanelView(<UnifiedCLI />, 'ReconPro CLI');
+      case 'pricing': return renderPanelView(<PricingPlans onNavigate={handleViewChange} />, 'Pricing');
+      case 'white-label': return renderPanelView(<WhiteLabelPanel />, 'White-Label');
+      case 'hall-of-fame': return renderPanelView(<HallOfFame />, 'Hall of Fame');
+      case 'nhi-kill-switch': return renderPanelView(<NHIKillSwitch />, 'NHI Kill Switch');
+      case 'genesis-stamp': return renderPanelView(<GenesisStampPanel />, 'Genesis Stamp');
+      case 'implosion': return renderPanelView(<ImplosionPanel />, 'Risk Simulator');
+      case 'war-room': return renderPanelView(<WarRoomPanel />, 'War Room');
+      case 'proof-gallery': return renderPanelView(<ProofGallery />, 'Proof Gallery');
+      case 'ai-leaderboard': return renderPanelView(<AILeaderboard />, 'Hall of Broken Models');
+      case 'doom-clock': return renderPanelView(<DoomClockPanel />, 'Doom Clock');
+      case 'fear-index': return renderPanelView(<FearIndexPanel />, 'CISO Fear Index');
+      case 'pqc-vault': return renderPanelView(<PQCVaultPanel />, 'PQC Vault');
+      case 'exposed-asset-map': return renderPanelView(<ExposedAssetMapPanel />, 'Exposed Assets');
+      case 'confused-deputy': return renderPanelView(<ConfusedDeputyPanel />, 'Confused Deputy');
+      case 'cognitive-dread': return renderPanelView(<CognitiveDreadPanel />, 'Cognitive Dread');
+      case 'wall-of-shame': return renderPanelView(<WallOfShamePanel />, 'Wall of Shame');
+      case 'sovereign-control': return renderPanelView(<SovereignControlPanel />, 'Sovereign Control');
+      case 'cni-sentinel': return renderPanelView(<CNISentinelPanel />, 'CNI Sentinel');
+      case 'broadcast-center': return renderPanelView(<BroadcastCenterPanel />, 'Broadcast Center');
+      case 'matrix-terminal': return renderPanelView(<MatrixTerminalPanel />, 'Matrix Terminal');
+      case 'pegasus-inspector': return renderPanelView(<PegasusInspectorPanel />, 'Pegasus Inspector');
+      case 'training-cluster': return renderPanelView(<TrainingClusterPanel />, 'GPU Training');
+      case 'air-gapped-appliance': return renderPanelView(<AirGappedAppliancePanel />, 'Air-Gapped');
+      default: return <BentoDashboard stats={dashboardStats} recentScans={recentScans} onNavigate={handleViewChange} />;
     }
   };
 
-  // ─── Main Layout ────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════
+  // VOID LAYOUT — No sidebar, bottom dock, full-bleed content
+  // ═══════════════════════════════════════════════════════════
   return (
     <DemoModeProvider>
-      <div className="min-h-screen flex bg-[#030407] noise-bg">
-        {/* Enterprise Sidebar */}
-        <EnterpriseSidebar
-          activeView={activeView}
-          onViewChange={handleViewChange}
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
+      <div className="min-h-screen bg-black">
+        {/* Ambient background orbs */}
+        <div className="void-bg" />
+        {/* Noise texture */}
+        <div className="noise-bg" />
 
-      {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* ── Top Bar ── */}
-        <header className="sticky top-0 z-50 bg-[#030407]/70 backdrop-blur-2xl">
-          <div className="h-px bg-gradient-to-r from-transparent via-[rgba(52,211,153,0.08)] to-transparent" />
-          <div className="px-6">
-            <div className="flex items-center justify-between h-12">
-              {/* Breadcrumb */}
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-[#334155] font-medium">ReconPro</span>
-                <span className="text-[11px] text-[#1e293b]">/</span>
-                <span className="text-[11px] text-[#94a3b8] font-medium capitalize">
-                  {activeView.replace(/([A-Z])/g, ' $1').trim()}
-                </span>
-              </div>
-              {/* Right actions */}
-              <div className="flex items-center gap-2.5">
-                {/* System status pill */}
-                <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)]">
-                  <div className="w-1.5 h-1.5 rounded-full bg-[#34d399] animate-pulse" />
-                  <span className="text-[10px] text-[#475569] font-mono tracking-wider">ONLINE</span>
-                </div>
-                {/* Plan badge */}
-                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[rgba(52,211,153,0.04)] border border-[rgba(52,211,153,0.08)]">
-                  <span className="text-[9px] font-mono text-[#34d399] tracking-[0.15em] font-semibold">ENTERPRISE</span>
-                </div>
-                {/* Avatar */}
-                <div className="h-7 w-7 rounded-full bg-gradient-to-br from-[#34d399] to-[#22d3ee] flex items-center justify-center text-[#030407] font-bold text-[10px]">
-                  AC
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
+        {/* Main content — full bleed */}
+        <div className="relative z-10 min-h-screen">
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeView}
+              initial={{ opacity: 0, filter: 'blur(4px)' }}
+              animate={{ opacity: 1, filter: 'blur(0px)' }}
+              exit={{ opacity: 0, filter: 'blur(4px)' }}
+              transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+            >
+              {renderView()}
+            </motion.div>
+          </AnimatePresence>
+        </div>
 
-        {/* ── Main Content ── */}
-        <main className="flex-1 overflow-y-auto">
-          <div className="max-w-[1400px] mx-auto px-6 py-6">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeView}
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-              >
-                {renderView()}
-              </motion.div>
-            </AnimatePresence>
-          </div>
-        </main>
+        {/* Bottom Dock Navigation */}
+        <BottomDock activeView={activeView} onViewChange={handleViewChange} />
 
-        {/* ── Dopamine Effects Layer ── */}
+        {/* Dopamine Effects */}
         <ConfettiCanvas particles={dopamine.confettiParticles} />
         <FloatingXPCanvas popups={dopamine.floatingXPPopups} />
         <ScreenEffects shaking={dopamine.shaking} flashColor={dopamine.flashColor} />
@@ -561,36 +458,9 @@ export default function Home() {
         <criticalFeed.AlertFeedUI alerts={criticalFeed.alerts} onDismiss={criticalFeed.dismiss} />
         <BadgePopup badge={lastNewBadge} onClose={() => setLastNewBadge(null)} />
 
-        {/* ── Footer ── */}
-        <footer className="border-t border-[rgba(255,255,255,0.025)] mt-auto">
-          <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center justify-between">
-            <div className="flex items-center gap-5 text-[10px] text-[#334155]">
-              <span className="flex items-center gap-1.5">
-                <span className="w-1 h-1 rounded-full bg-[#34d399]" />
-                SOC 2 Type II
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-1 h-1 rounded-full bg-[#22d3ee]" />
-                HIPAA
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-1 h-1 rounded-full bg-[#a78bfa]" />
-                ISO 27001
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <DemoModeToggle position="header" />
-              <span className="text-[10px] text-[#1e293b] font-mono">
-                v3.1.0
-              </span>
-            </div>
-          </div>
-        </footer>
+        {/* Floating demo toggle */}
+        <DemoModeToggle position="floating" />
       </div>
-
-      {/* Demo Mode Floating Toggle */}
-      <DemoModeToggle position="floating" />
-    </div>
     </DemoModeProvider>
   );
 }

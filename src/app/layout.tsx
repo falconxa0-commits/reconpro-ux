@@ -14,35 +14,17 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ReconPro — Enterprise Attack Surface Management",
-  description: "Billion-dollar grade attack surface management platform. 13-category reconnaissance, real-time threat intelligence, compliance frameworks, continuous monitoring, and team collaboration for enterprise security operations.",
-  keywords: ["cybersecurity", "attack surface management", "ASM", "reconnaissance", "vulnerability scanner", "enterprise security", "SOC2 compliance", "threat intelligence"],
-  authors: [{ name: "ReconPro Security" }],
-  icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
-  },
-  openGraph: {
-    title: "ReconPro — Enterprise Attack Surface Management",
-    description: "Enterprise-grade ASM with real-time threat intelligence, 13-category scanning, and continuous monitoring.",
-    type: "website",
-  },
+  title: "ReconPro — Void Command Center",
+  description: "Billion-dollar grade attack surface management. Spatial command center with real-time threat intelligence, compliance mapping, and continuous monitoring.",
+  icons: { icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg" },
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-        style={{
-          backgroundColor: '#030407',
-          color: '#f1f5f9',
-          WebkitFontSmoothing: 'antialiased',
-          MozOsxFontSmoothing: 'grayscale',
-        }}
+        style={{ backgroundColor: '#000', color: '#edf2f7' }}
       >
         {children}
         <Toaster />
