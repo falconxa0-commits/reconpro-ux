@@ -421,7 +421,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── NEXUS ──────────────────────────────────────────────────
     if cmd == "nexus":
-        from .nexus_tui import run_nexus
+        from .nexus_tui import start_nexus as run_nexus
         run_nexus()
         return
 
