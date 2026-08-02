@@ -116,6 +116,7 @@ class Finding:
     asset: str
     points_deducted: int = 0
     remediation: str = ""
+    dread_score: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -128,6 +129,7 @@ class Finding:
             "asset": self.asset,
             "points_deducted": self.points_deducted,
             "remediation": self.remediation,
+            "dread_score": self.dread_score,
         }
 
 

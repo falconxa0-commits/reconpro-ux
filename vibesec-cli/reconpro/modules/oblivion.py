@@ -163,7 +163,7 @@ def _analyze_js_secrets(base_url: str, timeout: int = 8,
         (r'api[_-]?key["\':\s]*=["\']([\w-]{20,})', "Hardcoded API key"),
         (r'secret["\':\s]*=["\']([\w-]{20,})', "Hardcoded secret"),
         (r'password["\':\s]*=["\']([^"\']{8,})', "Hardcoded password"),
-        (r'token["\':\s]*=["\']([\w-\.=]{20,})', "Hardcoded token"),
+        (r'token["\':\s]*=["\']([\w\-.=]{20,})', "Hardcoded token"),
         (r'firebase[_-]?config\s*=\s*\{[^}]*apiKey["\']:\s*["\']([^"]+)', "Firebase API key in JS"),
         (r'supabase[_-]?url["\':\s]*=["\']([^"\']+)', "Supabase URL in JS"),
     ]
