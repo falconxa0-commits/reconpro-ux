@@ -28,7 +28,7 @@ import {
   Skull,
   Bot,
   Terminal,
- Trophy,
+  Trophy,
   ShieldAlert,
   Radio,
   Film,
@@ -110,21 +110,21 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
       { id: 'unified-cli', label: 'ReconPro UNIFIED CLI', icon: Terminal, badge: '6 BLADES' },
-      { id: 'war-room', label: 'War Room', icon: Radio, badge: 'LIVE', accentColor: '#ef4444' },
-      { id: 'ai-leaderboard', label: 'Hall of Broken Models', icon: Ghost, badge: 'VIRAL', accentColor: '#ef4444' },
+      { id: 'war-room', label: 'War Room', icon: Radio, badge: 'LIVE', accentColor: '#f43f5e' },
+      { id: 'ai-leaderboard', label: 'Hall of Broken Models', icon: Ghost, badge: 'VIRAL', accentColor: '#f43f5e' },
       { id: 'proof-gallery', label: 'Proof Gallery', icon: Film, badge: 'SHARE' },
     ],
   },
   {
     title: 'Operations',
     items: [
-      { id: 'nhi-kill-switch', label: 'NHI Kill Switch', icon: ShieldAlert, badge: 'ENTERPRISE', accentColor: '#ef4444' },
-      { id: 'genesis-stamp', label: 'Genesis Stamp', icon: BadgeCheck, badge: 'ENTERPRISE', accentColor: '#00ff88' },
-      { id: 'implosion', label: 'Risk Simulator', icon: Skull, badge: 'SALES', accentColor: '#ef4444' },
-      { id: 'doom-clock', label: 'Doom Clock', icon: Timer, badge: 'PQC', accentColor: '#ef4444' },
+      { id: 'nhi-kill-switch', label: 'NHI Kill Switch', icon: ShieldAlert, badge: 'ENTERPRISE', accentColor: '#f43f5e' },
+      { id: 'genesis-stamp', label: 'Genesis Stamp', icon: BadgeCheck, badge: 'ENTERPRISE', accentColor: '#34d399' },
+      { id: 'implosion', label: 'Risk Simulator', icon: Skull, badge: 'SALES', accentColor: '#f43f5e' },
+      { id: 'doom-clock', label: 'Doom Clock', icon: Timer, badge: 'PQC', accentColor: '#f43f5e' },
       { id: 'pqc-vault', label: 'PQC Sovereign Vault', icon: Crown, badge: 'SOVEREIGN', accentColor: '#FFD700' },
-      { id: 'fear-index', label: 'CISO Fear Index', icon: AlertTriangle, badge: 'LIVE', accentColor: '#f97316' },
-      { id: 'exposed-asset-map', label: 'Exposed Asset Map', icon: Globe, badge: 'GLOBAL', accentColor: '#06b6d4' },
+      { id: 'fear-index', label: 'CISO Fear Index', icon: AlertTriangle, badge: 'LIVE', accentColor: '#fb923c' },
+      { id: 'exposed-asset-map', label: 'Exposed Asset Map', icon: Globe, badge: 'GLOBAL', accentColor: '#22d3ee' },
       { id: 'confused-deputy', label: 'Confused Deputy', icon: Cpu, badge: 'PLAY' },
       { id: 'cognitive-dread', label: 'Cognitive Dread', icon: Brain, badge: 'OMNI', accentColor: '#d946ef' },
     ],
@@ -154,7 +154,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'sovereign-control', label: 'Sovereign Control', icon: Crown, badge: 'BOSS', accentColor: '#FFD700' },
       { id: 'broadcast-center', label: 'Broadcast Center', icon: Radio, badge: 'ECHO-SIGN', accentColor: '#f59e0b' },
-      { id: 'wall-of-shame', label: 'Wall of Shame', icon: Eye, badge: 'LIVE', accentColor: '#ef4444' },
+      { id: 'wall-of-shame', label: 'Wall of Shame', icon: Eye, badge: 'LIVE', accentColor: '#f43f5e' },
     ],
   },
   {
@@ -169,18 +169,8 @@ const NAV_SECTIONS: NavSection[] = [
 // ─── Animation Variants ──────────────────────────────────────────────────────
 
 const sidebarVariants = {
-  expanded: { width: 272 },
-  collapsed: { width: 72 },
-};
-
-const labelVariants = {
-  expanded: { opacity: 1, x: 0, display: 'block' },
-  collapsed: { opacity: 0, x: -8, transitionEnd: { display: 'none' } },
-};
-
-const sectionTitleVariants = {
-  expanded: { opacity: 1, height: 'auto', marginBottom: 8 },
-  collapsed: { opacity: 0, height: 0, marginBottom: 0 },
+  expanded: { width: 260 },
+  collapsed: { width: 68 },
 };
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
@@ -197,54 +187,47 @@ function NavItemButton({
   onClick: () => void;
 }) {
   const Icon = item.icon;
+  const badgeColor = item.accentColor || '#34d399';
 
   const buttonContent = (
     <motion.button
       onClick={onClick}
       className={`
-        group relative flex w-full items-center gap-3 rounded-lg px-3 py-2.5
-        text-[13px] font-medium tracking-wide transition-colors duration-200
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00ff88]/40
+        group relative flex w-full items-center gap-3 rounded-xl px-3 py-2
+        text-[12.5px] font-medium tracking-wide transition-all duration-300
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]/30
         ${collapsed ? 'justify-center' : ''}
         ${
           active
-            ? 'bg-[rgba(0,255,136,0.08)] text-[#00ff88]'
-            : 'text-[#8b949e] hover:bg-[rgba(255,255,255,0.04)] hover:text-[#e6edf3]'
+            ? 'bg-[rgba(52,211,153,0.07)] text-[#34d399]'
+            : 'text-[#64748b] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#cbd5e1]'
         }
       `}
       whileHover={{ x: collapsed ? 0 : 2 }}
       whileTap={{ scale: 0.97 }}
     >
-      {/* Active left-border accent */}
+      {/* Active left accent line */}
       <motion.div
-        className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-[#00ff88]"
+        className="absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-r-full"
+        style={{ background: badgeColor }}
         initial={false}
         animate={{ scaleY: active ? 1 : 0, opacity: active ? 1 : 0 }}
         transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-        style={{ transformOrigin: 'center' }}
       />
 
-      {/* Icon container */}
-      <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center">
-        {/* Glow effect on active */}
-        <motion.div
-          className="absolute inset-0 rounded-lg"
-          initial={false}
-          animate={{
-            boxShadow: active
-              ? '0 0 12px rgba(0,255,136,0.15), 0 0 24px rgba(0,255,136,0.05)'
-              : '0 0 0px rgba(0,255,136,0)',
-          }}
-          transition={{ duration: 0.3 }}
-        />
+      {/* Icon */}
+      <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center">
         <Icon
-          className={`h-[18px] w-[18px] flex-shrink-0 transition-colors duration-200 ${
-            active ? 'text-[#00ff88]' : 'text-[#8b949e] group-hover:text-[#e6edf3]'
+          className={`h-[16px] w-[16px] flex-shrink-0 transition-all duration-300 ${
+            active
+              ? 'text-[#34d399] drop-shadow-[0_0_6px_rgba(52,211,153,0.4)]'
+              : 'text-[#475569] group-hover:text-[#94a3b8]'
           }`}
+          strokeWidth={active ? 2 : 1.5}
         />
       </div>
 
-      {/* Label text */}
+      {/* Label */}
       <AnimatePresence initial={false}>
         {!collapsed && (
           <motion.span
@@ -252,7 +235,7 @@ function NavItemButton({
             initial={{ opacity: 0, x: -8 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
+            transition={{ duration: 0.2, ease: 'easeOut' }}
             className="truncate flex-1"
           >
             {item.label}
@@ -262,26 +245,20 @@ function NavItemButton({
 
       {/* Badge */}
       {item.badge && !collapsed && (
-        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-[#00ff8820] text-[#00ff88]">
+        <span
+          className="px-1.5 py-0.5 rounded-md text-[8.5px] font-bold tracking-wider"
+          style={{
+            background: `${badgeColor}10`,
+            color: badgeColor,
+            border: `1px solid ${badgeColor}20`,
+          }}
+        >
           {item.badge}
         </span>
-      )}
-
-      {/* Hover ripple (only when expanded) */}
-      {!collapsed && (
-        <motion.div
-          className="pointer-events-none absolute inset-0 rounded-lg opacity-0 group-hover:opacity-100"
-          style={{
-            background:
-              'radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(0,255,136,0.04) 0%, transparent 70%)',
-          }}
-          transition={{ duration: 0.3 }}
-        />
       )}
     </motion.button>
   );
 
-  // When collapsed, wrap in tooltip
   if (collapsed) {
     return (
       <Tooltip>
@@ -289,7 +266,7 @@ function NavItemButton({
         <TooltipContent
           side="right"
           sideOffset={12}
-          className="border-[rgba(0,255,136,0.15)] bg-[#0d1117] text-[#e6edf3] font-medium"
+          className="border-[rgba(52,211,153,0.12)] bg-[#080b14] text-[#f1f5f9] font-medium"
         >
           {item.label}
         </TooltipContent>
@@ -302,8 +279,8 @@ function NavItemButton({
 
 function SectionSeparator() {
   return (
-    <div className="relative mx-3 my-3 flex items-center">
-      <div className="h-px w-full bg-gradient-to-r from-transparent via-[rgba(255,255,255,0.06)] to-transparent" />
+    <div className="relative mx-3 my-2 flex items-center">
+      <div className="h-px w-full bg-gradient-to-r from-transparent via-[rgba(255,255,255,0.03)] to-transparent" />
     </div>
   );
 }
@@ -320,7 +297,7 @@ function SectionHeader({ title, collapsed }: { title: string; collapsed: boolean
           transition={{ duration: 0.2, ease: 'easeOut' }}
           className="overflow-hidden"
         >
-          <h3 className="px-3 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#484f58]">
+          <h3 className="px-3 pb-1 pt-2.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-[#334155]">
             {title}
           </h3>
         </motion.div>
@@ -334,21 +311,18 @@ function SectionHeader({ title, collapsed }: { title: string; collapsed: boolean
 function LogoSection({ collapsed }: { collapsed: boolean }) {
   return (
     <div className={`flex items-center gap-3 px-4 py-5 ${collapsed ? 'justify-center' : ''}`}>
-      {/* Shield Icon with glow */}
       <div className="relative flex h-9 w-9 flex-shrink-0 items-center justify-center">
+        {/* Pulsing glow ring */}
         <motion.div
-          className="absolute inset-0 rounded-xl"
-          animate={{
-            boxShadow: [
-              '0 0 12px rgba(0,255,136,0.25), 0 0 24px rgba(0,255,136,0.1)',
-              '0 0 16px rgba(0,255,136,0.35), 0 0 32px rgba(0,255,136,0.15)',
-              '0 0 12px rgba(0,255,136,0.25), 0 0 24px rgba(0,255,136,0.1)',
-            ],
+          className="absolute inset-[-3px] rounded-xl"
+          style={{
+            background: 'conic-gradient(from 0deg, transparent 0%, rgba(52,211,153,0.15) 25%, transparent 50%, rgba(34,211,238,0.1) 75%, transparent 100%)',
           }}
-          transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+          animate={{ rotate: 360 }}
+          transition={{ duration: 12, repeat: Infinity, ease: 'linear' }}
         />
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#00ff88]/20 to-[#00ff88]/5 ring-1 ring-[#00ff88]/20">
-          <Shield className="h-5 w-5 text-[#00ff88]" />
+        <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#0f1422] to-[#080b14] ring-1 ring-[rgba(52,211,153,0.2)]">
+          <Shield className="h-[18px] w-[18px] text-[#34d399]" strokeWidth={1.8} />
         </div>
       </div>
 
@@ -362,20 +336,17 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
             transition={{ duration: 0.2, ease: 'easeOut' }}
             className="flex flex-col gap-0.5 overflow-hidden"
           >
-            <div className="flex items-center gap-1.5">
-              <span className="text-base font-bold tracking-tight text-[#e6edf3]">
+            <div className="flex items-center gap-1">
+              <span className="text-[15px] font-bold tracking-tight text-[#f1f5f9]">
                 Recon
               </span>
-              <span className="text-base font-bold tracking-tight text-[#00ff88]">
+              <span className="text-[15px] font-bold tracking-tight text-[#34d399]">
                 Pro
               </span>
             </div>
-            <Badge
-              variant="outline"
-              className="h-[18px] w-fit border-[rgba(0,255,136,0.2)] bg-[rgba(0,255,136,0.06)] px-1.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-[#00ff88] hover:bg-[rgba(0,255,136,0.06)]"
-            >
+            <span className="text-[9px] font-medium uppercase tracking-[0.25em] text-[#334155]">
               Enterprise
-            </Badge>
+            </span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -388,20 +359,18 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
 function UserSection({ collapsed }: { collapsed: boolean }) {
   return (
     <motion.div
-      className={`flex items-center gap-3 rounded-lg border border-[rgba(255,255,255,0.04)] bg-[rgba(255,255,255,0.02)] px-3 py-2.5 transition-colors duration-200 hover:bg-[rgba(255,255,255,0.04)] ${
+      className={`flex items-center gap-3 rounded-xl border border-[rgba(255,255,255,0.04)] bg-[rgba(255,255,255,0.02)] px-3 py-2.5 transition-all duration-300 hover:border-[rgba(255,255,255,0.07)] hover:bg-[rgba(255,255,255,0.03)] ${
         collapsed ? 'justify-center' : ''
       }`}
       whileHover={{ y: -1 }}
       whileTap={{ scale: 0.98 }}
     >
-      {/* Avatar with green ring */}
       <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center">
-        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[#00ff88]/40 to-[#00ff88]/10 ring-1 ring-[#00ff88]/30" />
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#161b22] text-[11px] font-bold text-[#00ff88]">
+        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[#34d399]/30 to-[#34d399]/5 ring-1 ring-[#34d399]/20" />
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0f1422] text-[10px] font-bold text-[#34d399]">
           AC
         </div>
-        {/* Online indicator */}
-        <div className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-[#0a0d14] bg-[#00ff88]" />
+        <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#050710] bg-[#34d399]" />
       </div>
 
       <AnimatePresence initial={false}>
@@ -414,10 +383,10 @@ function UserSection({ collapsed }: { collapsed: boolean }) {
             transition={{ duration: 0.15, ease: 'easeOut' }}
             className="flex flex-col overflow-hidden"
           >
-            <span className="truncate text-[13px] font-semibold text-[#e6edf3]">
+            <span className="truncate text-[12.5px] font-semibold text-[#e2e8f0]">
               Alex Chen
             </span>
-            <span className="truncate text-[11px] text-[#484f58]">
+            <span className="truncate text-[10.5px] text-[#475569]">
               Security Lead
             </span>
           </motion.div>
@@ -433,7 +402,7 @@ function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   return (
     <motion.button
       onClick={onToggle}
-      className="group flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-[rgba(255,255,255,0.06)] bg-[rgba(255,255,255,0.02)] text-[#484f58] transition-all duration-200 hover:border-[rgba(0,255,136,0.2)] hover:bg-[rgba(0,255,136,0.04)] hover:text-[#00ff88] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00ff88]/40"
+      className="group flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-[rgba(255,255,255,0.05)] bg-[rgba(255,255,255,0.02)] text-[#475569] transition-all duration-300 hover:border-[rgba(52,211,153,0.15)] hover:bg-[rgba(52,211,153,0.04)] hover:text-[#34d399] focus-visible:outline-none"
       whileHover={{ scale: 1.05 }}
       whileTap={{ scale: 0.92 }}
       aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
@@ -443,9 +412,9 @@ function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
       >
         {collapsed ? (
-          <ChevronRight className="h-4 w-4" />
+          <ChevronRight className="h-3.5 w-3.5" />
         ) : (
-          <ChevronLeft className="h-4 w-4" />
+          <ChevronLeft className="h-3.5 w-3.5" />
         )}
       </motion.div>
     </motion.button>
@@ -465,22 +434,18 @@ export function EnterpriseSidebar({
       initial={false}
       animate={collapsed ? 'collapsed' : 'expanded'}
       variants={sidebarVariants}
-      transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
-      className="relative flex h-screen flex-col border-r border-[rgba(255,255,255,0.06)] bg-[#0a0d14]"
+      transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+      className="relative flex h-screen flex-col bg-[#050710] overflow-hidden"
       style={{
-        // Glassmorphism subtle backdrop
-        backdropFilter: 'blur(20px)',
-        // Ambient glow on right edge
-        boxShadow:
-          'inset -1px 0 0 rgba(255,255,255,0.04), 4px 0 24px rgba(0,0,0,0.3)',
+        boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.03)',
       }}
     >
-      {/* Top ambient gradient */}
+      {/* Ambient top glow */}
       <div
-        className="pointer-events-none absolute inset-x-0 top-0 h-40"
+        className="pointer-events-none absolute inset-x-0 top-0 h-60"
         style={{
           background:
-            'radial-gradient(ellipse 80% 60% at 50% -20%, rgba(0,255,136,0.03) 0%, transparent 70%)',
+            'radial-gradient(ellipse 70% 50% at 50% -10%, rgba(52,211,153,0.025) 0%, transparent 70%)',
         }}
       />
 
@@ -488,18 +453,15 @@ export function EnterpriseSidebar({
       <LogoSection collapsed={collapsed} />
 
       {/* Divider after logo */}
-      <div className="relative mx-3 flex items-center">
-        <div className="h-px w-full bg-gradient-to-r from-[rgba(0,255,136,0.12)] via-[rgba(255,255,255,0.06)] to-transparent" />
+      <div className="mx-4 flex items-center">
+        <div className="h-px w-full bg-gradient-to-r from-[rgba(52,211,153,0.08)] via-[rgba(255,255,255,0.03)] to-transparent" />
       </div>
 
       {/* ── Navigation Sections ── */}
-      <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2 pt-2 pb-4 scrollbar-none">
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2 pt-1 pb-4 scrollbar-none">
         {NAV_SECTIONS.map((section, sectionIndex) => (
           <div key={section.title}>
-            {/* Section header */}
             <SectionHeader title={section.title} collapsed={collapsed} />
-
-            {/* Nav items */}
             <div className="flex flex-col gap-0.5">
               {section.items.map((item) => (
                 <NavItemButton
@@ -511,26 +473,21 @@ export function EnterpriseSidebar({
                 />
               ))}
             </div>
-
-            {/* Separator between sections (not after the last one) */}
             {sectionIndex < NAV_SECTIONS.length - 1 && <SectionSeparator />}
           </div>
         ))}
       </nav>
 
       {/* ── Bottom Section ── */}
-      <div className="flex flex-col gap-3 border-t border-[rgba(255,255,255,0.06)] px-3 py-4">
-        {/* User info */}
+      <div className="flex flex-col gap-2.5 border-t border-[rgba(255,255,255,0.03)] px-3 py-3.5">
         <UserSection collapsed={collapsed} />
-
-        {/* Collapse toggle */}
         <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-end'}`}>
           <CollapseToggle collapsed={collapsed} onToggle={onToggle} />
         </div>
       </div>
 
-      {/* Right edge accent line */}
-      <div className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-[rgba(0,255,136,0.08)] via-transparent to-[rgba(0,255,136,0.04)]" />
+      {/* Right edge — ultra subtle gradient */}
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-[rgba(52,211,153,0.05)] via-transparent to-[rgba(52,211,153,0.02)]" />
     </motion.aside>
   );
 }

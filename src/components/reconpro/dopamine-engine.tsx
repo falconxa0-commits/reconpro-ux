@@ -29,7 +29,7 @@ interface Particle {
   maxLife: number;
 }
 
-const CONFETTI_COLORS = ['#00ff88', '#06b6d4', '#ffd93d', '#ff6b6b', '#a78bfa', '#f97316', '#3fb950', '#79c0ff'];
+const CONFETTI_COLORS = ['#34d399', '#06b6d4', '#ffd93d', '#ff6b6b', '#a78bfa', '#fb923c', '#3fb950', '#79c0ff'];
 
 function useConfetti() {
   const [particles, setParticles] = useState<Particle[]>([]);
@@ -209,11 +209,11 @@ function useFloatingXP() {
 function FloatingXPCanvas({ popups }: { popups: FloatingXP[] }) {
   const sevColor = (sev: string) => {
     switch (sev) {
-      case 'critical': return '#f85149';
-      case 'high': return '#f97316';
-      case 'medium': return '#eab308';
+      case 'critical': return '#f43f5e';
+      case 'high': return '#fb923c';
+      case 'medium': return '#facc15';
       case 'low': return '#22c55e';
-      default: return '#00ff88';
+      default: return '#34d399';
     }
   };
 
@@ -338,13 +338,13 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
 
   const stats = [
     { label: 'Findings', value: data.findings, color: '#06b6d4', icon: <Target className="w-5 h-5" /> },
-    { label: 'Critical', value: data.critical, color: '#f85149', icon: <Skull className="w-5 h-5" /> },
-    { label: 'High Risk', value: data.high, color: '#f97316', icon: <AlertTriangle className="w-5 h-5" /> },
+    { label: 'Critical', value: data.critical, color: '#f43f5e', icon: <Skull className="w-5 h-5" /> },
+    { label: 'High Risk', value: data.high, color: '#fb923c', icon: <AlertTriangle className="w-5 h-5" /> },
     { label: 'Risk Score', value: data.riskScore, color: '#ffd93d', icon: <Shield className="w-5 h-5" /> },
   ];
 
   const riskLabel = data.riskScore > 70 ? 'CRITICAL' : data.riskScore > 40 ? 'ELEVATED' : 'LOW';
-  const riskColor = data.riskScore > 70 ? '#f85149' : data.riskScore > 40 ? '#f97316' : '#00ff88';
+  const riskColor = data.riskScore > 70 ? '#f43f5e' : data.riskScore > 40 ? '#fb923c' : '#34d399';
 
   return (
     <motion.div
@@ -359,7 +359,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
       <motion.div
         className="absolute inset-0"
         style={{
-          background: 'radial-gradient(ellipse at center, rgba(0,255,136,0.08) 0%, transparent 70%)',
+          background: 'radial-gradient(ellipse at center, rgba(52,211,153,0.08) 0%, transparent 70%)',
         }}
         animate={{ opacity: [0.5, 1, 0.5] }}
         transition={{ duration: 2, repeat: Infinity }}
@@ -388,7 +388,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
               >
                 <Shield className="w-12 h-12" style={{ color: riskColor }} />
               </motion.div>
-              <h2 className="text-3xl sm:text-4xl font-black text-[#e6edf3] mb-2">
+              <h2 className="text-3xl sm:text-4xl font-black text-[#f1f5f9] mb-2">
                 SCAN{' '}
                 <span style={{ color: riskColor, textShadow: `0 0 30px ${riskColor}40` }}>
                   COMPLETE
@@ -420,7 +420,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
                 animate={{ scale: 1, opacity: 1 }}
                 className="text-center mb-6"
               >
-                <h3 className="text-2xl font-bold text-[#e6edf3]">Mission Report</h3>
+                <h3 className="text-2xl font-bold text-[#f1f5f9]">Mission Report</h3>
                 <p className="text-sm text-muted-foreground font-mono">{data.domain}</p>
               </motion.div>
 
@@ -470,11 +470,11 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', damping: 12 }}
-                className="inline-flex items-center gap-3 px-6 py-3 rounded-xl bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)]"
+                className="inline-flex items-center gap-3 px-6 py-3 rounded-xl bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]"
               >
-                <Zap className="w-6 h-6 text-[#00ff88]" />
+                <Zap className="w-6 h-6 text-[#34d399]" />
                 <div className="text-left">
-                  <div className="text-2xl font-black font-mono text-[#00ff88]">+{data.xpGained} XP</div>
+                  <div className="text-2xl font-black font-mono text-[#34d399]">+{data.xpGained} XP</div>
                   <div className="text-xs text-muted-foreground">Mission Reward</div>
                 </div>
               </motion.div>
@@ -600,7 +600,7 @@ function AchievementToasts({ achievements }: { achievements: Achievement[] }) {
                       <Sparkles className="w-3 h-3 text-[#ffd93d] animate-pulse" />
                     )}
                   </div>
-                  <div className="text-sm font-bold text-[#e6edf3] truncate">{ach.name}</div>
+                  <div className="text-sm font-bold text-[#f1f5f9] truncate">{ach.name}</div>
                   <div className="text-[11px] text-muted-foreground truncate">{ach.description}</div>
                 </div>
               </div>
@@ -643,7 +643,7 @@ function ComboCounter({ combo }: { combo: number }) {
   if (combo < 3) return null;
 
   const size = Math.min(48, 24 + combo * 2);
-  const color = combo >= 10 ? '#ffd93d' : combo >= 7 ? '#a78bfa' : combo >= 5 ? '#06b6d4' : '#00ff88';
+  const color = combo >= 10 ? '#ffd93d' : combo >= 7 ? '#a78bfa' : combo >= 5 ? '#06b6d4' : '#34d399';
 
   return (
     <motion.div
@@ -691,7 +691,7 @@ function AnimatedRiskDisplay({ score }: { score: number }) {
     return () => clearInterval(interval);
   }, [pulse]);
 
-  const color = score > 70 ? '#f85149' : score > 40 ? '#f97316' : '#00ff88';
+  const color = score > 70 ? '#f43f5e' : score > 40 ? '#fb923c' : '#34d399';
   const label = score > 70 ? 'CRITICAL' : score > 40 ? 'ELEVATED' : 'LOW';
 
   return (
@@ -814,7 +814,7 @@ function MilestoneCelebration({ data, onClose }: { data: MilestoneData; onClose:
               }} />
             </motion.div>
             <div className="text-sm font-bold text-[#ffd93d] uppercase tracking-[0.3em] mb-2">Legendary Achievement</div>
-            <div className="text-xl font-bold text-[#e6edf3]">{data.badgeName}</div>
+            <div className="text-xl font-bold text-[#f1f5f9]">{data.badgeName}</div>
           </>
         )}
       </motion.div>
@@ -886,7 +886,7 @@ function AnticipationProgressBar({ progress }: { progress: number }) {
       <motion.div
         className="h-full rounded-full relative"
         style={{
-          background: 'linear-gradient(90deg, #00ff88, #06b6d4, #a78bfa)',
+          background: 'linear-gradient(90deg, #34d399, #06b6d4, #a78bfa)',
         }}
         animate={{ width: `${visualProgress}%` }}
         transition={{ duration: 0.5, ease: 'easeOut' }}
@@ -910,7 +910,7 @@ function AnticipationProgressBar({ progress }: { progress: number }) {
         <motion.div
           className="absolute inset-0 rounded-full"
           style={{
-            boxShadow: '0 0 20px rgba(0,255,136,0.3), 0 0 40px rgba(0,255,136,0.1)',
+            boxShadow: '0 0 20px rgba(52,211,153,0.3), 0 0 40px rgba(52,211,153,0.1)',
           }}
           animate={{ opacity: [0.5, 1, 0.5] }}
           transition={{ duration: 0.5, repeat: Infinity }}
@@ -993,7 +993,7 @@ export function useDopamineEngine() {
     // Level up milestone
     if (data.newLevel) {
       const rankName = data.level >= 10 ? 'Apex Predator' : data.level >= 8 ? 'Elite Hunter' : data.level >= 6 ? 'Veteran Operative' : data.level >= 4 ? 'Field Agent' : 'Scout';
-      const rankColor = data.level >= 10 ? '#ff6b6b' : data.level >= 8 ? '#ffd93d' : data.level >= 6 ? '#ff9f43' : '#00ff88';
+      const rankColor = data.level >= 10 ? '#ff6b6b' : data.level >= 8 ? '#ffd93d' : data.level >= 6 ? '#ff9f43' : '#34d399';
       setMilestone({ show: true, type: 'levelup', level: data.level, rank: rankName, rankColor });
     }
 

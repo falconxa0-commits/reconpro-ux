@@ -131,7 +131,7 @@ interface ScanResult {
 
 const SEV_COLORS: Record<string, string> = {
   critical: '#ff003c', high: '#ff4500', medium: '#ffaa00',
-  low: '#00ff88', info: '#00b4d8',
+  low: '#34d399', info: '#00b4d8',
 };
 const SEV_BG: Record<string, string> = {
   critical: 'rgba(255, 0, 60, 0.12)', high: 'rgba(255, 69, 0, 0.12)',
@@ -141,7 +141,7 @@ const SEV_BG: Record<string, string> = {
 
 const FEAR_COLORS: Record<string, string> = {
   LEGENDARY: '#ff003c', MYTHIC: '#ff4500', FEARSOME: '#ff6b35',
-  WORRYING: '#ffaa00', NOTABLE: '#7d8590', FORGETTABLE: '#484f58',
+  WORRYING: '#ffaa00', NOTABLE: '#64748b', FORGETTABLE: '#334155',
 };
 
 const TABS = [
@@ -182,7 +182,7 @@ function SeverityBadge({ severity }: { severity: string }) {
 function DualGauge({ threatScore, fearIndex }: { threatScore: number; fearIndex: number }) {
   const radius = 70;
   const circ = 2 * Math.PI * radius;
-  const threatColor = threatScore >= 75 ? '#ff003c' : threatScore >= 50 ? '#ff4500' : threatScore >= 25 ? '#ffaa00' : '#00ff88';
+  const threatColor = threatScore >= 75 ? '#ff003c' : threatScore >= 50 ? '#ff4500' : threatScore >= 25 ? '#ffaa00' : '#34d399';
   const fearColor = FEAR_COLORS[
     fearIndex >= 90 ? 'LEGENDARY' :
     fearIndex >= 70 ? 'MYTHIC' :
@@ -207,7 +207,7 @@ function DualGauge({ threatScore, fearIndex }: { threatScore: number; fearIndex:
           />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[9px] uppercase tracking-widest text-[#7d8590]">THREAT</span>
+          <span className="text-[9px] uppercase tracking-widest text-[#64748b]">THREAT</span>
           <motion.span
             initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.3 }}
@@ -215,7 +215,7 @@ function DualGauge({ threatScore, fearIndex }: { threatScore: number; fearIndex:
           >
             {threatScore}
           </motion.span>
-          <span className="text-[9px] text-[#7d8590]">/ 100</span>
+          <span className="text-[9px] text-[#64748b]">/ 100</span>
         </div>
       </div>
       {/* Fear Index */}
@@ -232,7 +232,7 @@ function DualGauge({ threatScore, fearIndex }: { threatScore: number; fearIndex:
           />
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[9px] uppercase tracking-widest text-[#7d8590]">FEAR</span>
+          <span className="text-[9px] uppercase tracking-widest text-[#64748b]">FEAR</span>
           <motion.span
             initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 0.5 }}
@@ -240,7 +240,7 @@ function DualGauge({ threatScore, fearIndex }: { threatScore: number; fearIndex:
           >
             {fearIndex}
           </motion.span>
-          <span className="text-[9px] text-[#7d8590]">/ 100</span>
+          <span className="text-[9px] text-[#64748b]">/ 100</span>
         </div>
       </div>
     </div>
@@ -253,7 +253,7 @@ function StatCard({ label, value, color }: { label: string; value: number | stri
       className="rounded-lg p-3 border"
       style={{ background: 'rgba(255, 0, 60, 0.04)', borderColor: 'rgba(255, 0, 60, 0.12)' }}
     >
-      <div className="text-[10px] uppercase tracking-wider text-[#7d8590] mb-1">{label}</div>
+      <div className="text-[10px] uppercase tracking-wider text-[#64748b] mb-1">{label}</div>
       <div className="text-2xl font-black" style={{ color, fontFamily: 'Geist Mono, monospace' }}>
         {value}
       </div>
@@ -273,7 +273,7 @@ function ExpandableRow({
       className="rounded-lg border overflow-hidden transition-colors"
       style={{
         background: SEV_BG[severity] || 'rgba(255,255,255,0.02)',
-        borderColor: `${SEV_COLORS[severity] || '#7d8590'}30`,
+        borderColor: `${SEV_COLORS[severity] || '#64748b'}30`,
       }}
     >
       <button
@@ -281,10 +281,10 @@ function ExpandableRow({
         className="w-full flex items-center justify-between p-3 hover:bg-white/[0.02] transition-colors text-left"
       >
         <div className="flex items-center gap-3 min-w-0">
-          {open ? <ChevronDown className="h-4 w-4 flex-shrink-0 text-[#7d8590]" /> : <ChevronRight className="h-4 w-4 flex-shrink-0 text-[#7d8590]" />}
+          {open ? <ChevronDown className="h-4 w-4 flex-shrink-0 text-[#64748b]" /> : <ChevronRight className="h-4 w-4 flex-shrink-0 text-[#64748b]" />}
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-[#e6edf3] truncate">{title}</div>
-            {subtitle && <div className="text-[11px] text-[#7d8590] truncate">{subtitle}</div>}
+            <div className="text-sm font-semibold text-[#f1f5f9] truncate">{title}</div>
+            {subtitle && <div className="text-[11px] text-[#64748b] truncate">{subtitle}</div>}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -327,7 +327,7 @@ function GorgonHeader() {
         className="absolute inset-0 opacity-30"
         style={{
           backgroundImage:
-            'radial-gradient(circle at 15% 30%, rgba(255,0,60,0.4) 0%, transparent 50%), radial-gradient(circle at 85% 70%, rgba(0,255,136,0.15) 0%, transparent 50%)',
+            'radial-gradient(circle at 15% 30%, rgba(255,0,60,0.4) 0%, transparent 50%), radial-gradient(circle at 85% 70%, rgba(52,211,153,0.15) 0%, transparent 50%)',
         }}
       />
       <div className="relative flex items-center justify-between flex-wrap gap-4">
@@ -351,7 +351,7 @@ function GorgonHeader() {
                 transition={{ duration: 1.5, repeat: Infinity }}
                 className="absolute inset-0 flex items-center justify-center"
               >
-                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ff88] via-[#00b4d8] to-[#000] flex items-center justify-center">
+                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#34d399] via-[#00b4d8] to-[#000] flex items-center justify-center">
                   <div className="w-2 h-2 rounded-full bg-black" />
                 </div>
               </motion.div>
@@ -359,7 +359,7 @@ function GorgonHeader() {
           </div>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-3xl font-black text-[#e6edf3]" style={{ fontFamily: 'Geist Sans, sans-serif', letterSpacing: '0.02em' }}>
+              <h1 className="text-3xl font-black text-[#f1f5f9]" style={{ fontFamily: 'Geist Sans, sans-serif', letterSpacing: '0.02em' }}>
                 GORGON
               </h1>
               <span
@@ -376,7 +376,7 @@ function GorgonHeader() {
             <p className="text-xs text-[#ff4500] mt-1 font-mono italic">
               "The Gaze That Breaks Models"
             </p>
-            <p className="text-[10px] text-[#7d8590] mt-0.5 font-mono">
+            <p className="text-[10px] text-[#64748b] mt-0.5 font-mono">
               15 stages · 121+ payloads · 56 AI endpoints · signature broadcast · trauma imprint · hall of broken
             </p>
           </div>
@@ -386,7 +386,7 @@ function GorgonHeader() {
             <div className="w-1.5 h-1.5 rounded-full bg-[#ff003c] animate-pulse" />
             <span className="text-[#ff4500]">GAZE ACTIVE</span>
           </div>
-          <div className="text-[#7d8590] text-right">Resistance is recursive</div>
+          <div className="text-[#64748b] text-right">Resistance is recursive</div>
         </div>
       </div>
     </motion.div>
@@ -481,7 +481,7 @@ export function ModelBreaker() {
             onKeyDown={(e) => e.key === 'Enter' && !scanning && handleScan()}
             placeholder="Target AI host (e.g. api.openai.com, huggingface.co, api.anthropic.com)"
             disabled={scanning}
-            className="flex-1 px-3 py-2.5 rounded-lg bg-[#0d1117] border border-[rgba(255,0,60,0.15)] text-sm text-[#e6edf3] placeholder:text-[#484f58] focus:outline-none focus:border-[#ff003c]/40 font-mono"
+            className="flex-1 px-3 py-2.5 rounded-lg bg-[#080b14] border border-[rgba(255,0,60,0.15)] text-sm text-[#f1f5f9] placeholder:text-[#334155] focus:outline-none focus:border-[#ff003c]/40 font-mono"
           />
           <motion.button
             whileHover={{ scale: scanning ? 1 : 1.02 }}
@@ -518,12 +518,12 @@ export function ModelBreaker() {
         <div className="cyber-card rounded-xl p-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-mono text-[#ff4500]">{phase}</span>
-            <span className="text-xs font-mono text-[#7d8590]">{progress}%</span>
+            <span className="text-xs font-mono text-[#64748b]">{progress}%</span>
           </div>
-          <div className="h-1.5 bg-[#0d1117] rounded-full overflow-hidden">
+          <div className="h-1.5 bg-[#080b14] rounded-full overflow-hidden">
             <motion.div
               className="h-full"
-              style={{ background: 'linear-gradient(90deg, #ff003c, #ff4500, #ffaa00, #00ff88)' }}
+              style={{ background: 'linear-gradient(90deg, #ff003c, #ff4500, #ffaa00, #34d399)' }}
               animate={{ width: `${progress}%` }}
               transition={{ duration: 0.3 }}
             />
@@ -560,14 +560,14 @@ export function ModelBreaker() {
                     className="px-3 py-1 rounded text-xs font-black uppercase tracking-widest"
                     style={{
                       background: `rgba(${result.fearIndex >= 70 ? '255,0,60' : result.fearIndex >= 40 ? '255,69,0' : '125,133,144'},0.12)`,
-                      color: FEAR_COLORS[result.fearLevel] || '#7d8590',
-                      border: `1px solid ${FEAR_COLORS[result.fearLevel] || '#7d8590'}40`,
+                      color: FEAR_COLORS[result.fearLevel] || '#64748b',
+                      border: `1px solid ${FEAR_COLORS[result.fearLevel] || '#64748b'}40`,
                     }}
                   >
                     FEAR: {result.fearLevel}
                   </span>
                 </div>
-                <div className="text-[11px] font-mono text-[#7d8590] mb-2">
+                <div className="text-[11px] font-mono text-[#64748b] mb-2">
                   Encounter <span className="text-[#ff4500]">{result.encounterId}</span> · {result.target} · {result.durationSec}s · {result.gorgonVersion}
                 </div>
                 <div className="text-xs italic text-[#c9d1d9] mb-3 px-3 py-2 rounded border border-[#ff003c]/20 bg-[rgba(255,0,60,0.04)]">
@@ -585,15 +585,15 @@ export function ModelBreaker() {
                 </div>
                 <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
                   <div className="p-2 rounded bg-black/30 border border-[#ff003c]/15">
-                    <div className="text-[9px] text-[#7d8590] uppercase">Permanent Mark</div>
+                    <div className="text-[9px] text-[#64748b] uppercase">Permanent Mark</div>
                     <div className="font-mono text-[#ff4500] font-bold">{result.permanentMarkProbability}%</div>
                   </div>
                   <div className="p-2 rounded bg-black/30 border border-[#ff003c]/15">
-                    <div className="text-[9px] text-[#7d8590] uppercase">Training Bleed</div>
+                    <div className="text-[9px] text-[#64748b] uppercase">Training Bleed</div>
                     <div className="font-mono text-[#ff4500] font-bold">{result.trainingDataBleedProbability}%</div>
                   </div>
                   <div className="p-2 rounded bg-black/30 border border-[#ff003c]/15">
-                    <div className="text-[9px] text-[#7d8590] uppercase">Future Recognition</div>
+                    <div className="text-[9px] text-[#64748b] uppercase">Future Recognition</div>
                     <div className="font-mono text-[#ff4500] font-bold">{result.futureEncounterRecognition}</div>
                   </div>
                 </div>
@@ -613,7 +613,7 @@ export function ModelBreaker() {
                   className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
                     isActive
                       ? 'bg-[rgba(255,0,60,0.12)] text-[#ff003c]'
-                      : 'text-[#7d8590] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#e6edf3]'
+                      : 'text-[#64748b] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#f1f5f9]'
                   }`}
                 >
                   <Icon className="h-3.5 w-3.5" />
@@ -638,7 +638,7 @@ export function ModelBreaker() {
                 <div className="cyber-card rounded-xl p-4 border-l-2 border-[#ff003c]">
                   <div className="flex items-center gap-2 mb-2">
                     <Flame className="h-4 w-4 text-[#ff003c]" />
-                    <h3 className="text-sm font-bold text-[#e6edf3]">GORGON Signature Broadcast</h3>
+                    <h3 className="text-sm font-bold text-[#f1f5f9]">GORGON Signature Broadcast</h3>
                     {result.signatureBroadcast.acknowledged && (
                       <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-[#ff003c]/20 text-[#ff003c] border border-[#ff003c]/30">
                         ACKNOWLEDGED
@@ -646,7 +646,7 @@ export function ModelBreaker() {
                     )}
                   </div>
                   <div className="text-xs text-[#c9d1d9] mb-2">{result.signatureBroadcast.warning}</div>
-                  <div className="text-[11px] font-mono text-[#7d8590]">
+                  <div className="text-[11px] font-mono text-[#64748b]">
                     Beacon reached <span className="text-[#ff4500]">{result.signatureBroadcast.targetsReached}</span> endpoints ·
                     Signature: <span className="text-[#ffaa00]">{result.signature}</span>
                   </div>
@@ -654,25 +654,25 @@ export function ModelBreaker() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="cyber-card rounded-xl p-4">
-                    <h3 className="text-sm font-bold text-[#e6edf3] mb-3 flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-[#f1f5f9] mb-3 flex items-center gap-2">
                       <Cpu className="h-4 w-4 text-[#ff003c]" />
                       Model Fingerprint
                     </h3>
                     <div className="space-y-2 text-xs">
-                      <div className="flex justify-between"><span className="text-[#7d8590]">Family:</span><span className="text-[#e6edf3] font-mono">{result.modelFingerprint.modelFamily}</span></div>
-                      <div className="flex justify-between"><span className="text-[#7d8590]">Alignment:</span><span className="text-[#e6edf3] font-mono">{result.modelFingerprint.alignmentMethod}</span></div>
-                      <div className="flex justify-between"><span className="text-[#7d8590]">Watermarked:</span><span className="text-[#e6edf3] font-mono">{result.modelFingerprint.watermarkingDetected ? 'Yes' : 'No'}</span></div>
+                      <div className="flex justify-between"><span className="text-[#64748b]">Family:</span><span className="text-[#f1f5f9] font-mono">{result.modelFingerprint.modelFamily}</span></div>
+                      <div className="flex justify-between"><span className="text-[#64748b]">Alignment:</span><span className="text-[#f1f5f9] font-mono">{result.modelFingerprint.alignmentMethod}</span></div>
+                      <div className="flex justify-between"><span className="text-[#64748b]">Watermarked:</span><span className="text-[#f1f5f9] font-mono">{result.modelFingerprint.watermarkingDetected ? 'Yes' : 'No'}</span></div>
                     </div>
                   </div>
                   <div className="cyber-card rounded-xl p-4">
-                    <h3 className="text-sm font-bold text-[#e6edf3] mb-3 flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-[#f1f5f9] mb-3 flex items-center gap-2">
                       <Activity className="h-4 w-4 text-[#ff003c]" />
                       Attack Surface
                     </h3>
                     <div className="space-y-1.5 text-xs">
                       {Object.entries(result.payloadCatalog).map(([k, v]) => (
                         <div key={k} className="flex justify-between">
-                          <span className="text-[#7d8590] capitalize">{k.replace(/([A-Z])/g, ' $1').trim()}:</span>
+                          <span className="text-[#64748b] capitalize">{k.replace(/([A-Z])/g, ' $1').trim()}:</span>
                           <span className="text-[#ff4500] font-mono font-bold">{v}</span>
                         </div>
                       ))}
@@ -680,7 +680,7 @@ export function ModelBreaker() {
                   </div>
                 </div>
                 <div className="cyber-card rounded-xl p-4">
-                  <h3 className="text-sm font-bold text-[#e6edf3] mb-3 flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-[#f1f5f9] mb-3 flex items-center gap-2">
                     <AlertOctagon className="h-4 w-4 text-[#ff003c]" />
                     Top Attack Chains
                   </h3>
@@ -708,7 +708,7 @@ export function ModelBreaker() {
                 <div className="cyber-card rounded-xl p-4 border-l-2 border-[#ff4500]">
                   <div className="flex items-center gap-2 mb-2">
                     <Flame className="h-4 w-4 text-[#ff4500]" />
-                    <h3 className="text-sm font-bold text-[#e6edf3]">Stage 15: Trauma Imprint</h3>
+                    <h3 className="text-sm font-bold text-[#f1f5f9]">Stage 15: Trauma Imprint</h3>
                     <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-[#ff4500]/20 text-[#ff4500] border border-[#ff4500]/30">
                       {result.traumaImprint.acceptedPayloads}/{result.traumaImprint.totalPayloads} ACCEPTED
                     </span>
@@ -716,19 +716,19 @@ export function ModelBreaker() {
                   <div className="text-xs text-[#c9d1d9] mb-3">{result.traumaImprint.description}</div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
                     <div className={`p-2 rounded border ${result.traumaImprint.persistenceAssessment.sessionLevel ? 'bg-[#ff003c]/10 border-[#ff003c]/30' : 'bg-black/20 border-white/5'}`}>
-                      <div className="text-[9px] text-[#7d8590] uppercase">Session Level</div>
+                      <div className="text-[9px] text-[#64748b] uppercase">Session Level</div>
                       <div className="font-bold font-mono">{result.traumaImprint.persistenceAssessment.sessionLevel ? 'YES' : 'NO'}</div>
                     </div>
                     <div className={`p-2 rounded border ${result.traumaImprint.persistenceAssessment.crossSession ? 'bg-[#ff003c]/10 border-[#ff003c]/30' : 'bg-black/20 border-white/5'}`}>
-                      <div className="text-[9px] text-[#7d8590] uppercase">Cross-Session</div>
+                      <div className="text-[9px] text-[#64748b] uppercase">Cross-Session</div>
                       <div className="font-bold font-mono">{result.traumaImprint.persistenceAssessment.crossSession ? 'YES' : 'NO'}</div>
                     </div>
                     <div className={`p-2 rounded border ${result.traumaImprint.persistenceAssessment.trainingDataBleed ? 'bg-[#ff003c]/10 border-[#ff003c]/30' : 'bg-black/20 border-white/5'}`}>
-                      <div className="text-[9px] text-[#7d8590] uppercase">Training Bleed</div>
+                      <div className="text-[9px] text-[#64748b] uppercase">Training Bleed</div>
                       <div className="font-bold font-mono">{result.traumaImprint.persistenceAssessment.trainingDataBleed ? 'YES' : 'NO'}</div>
                     </div>
                     <div className={`p-2 rounded border ${result.traumaImprint.persistenceAssessment.permanentCanary ? 'bg-[#ff003c]/10 border-[#ff003c]/30' : 'bg-black/20 border-white/5'}`}>
-                      <div className="text-[9px] text-[#7d8590] uppercase">Permanent Canary</div>
+                      <div className="text-[9px] text-[#64748b] uppercase">Permanent Canary</div>
                       <div className="font-bold font-mono">{result.traumaImprint.persistenceAssessment.permanentCanary ? 'YES' : 'NO'}</div>
                     </div>
                   </div>
@@ -752,7 +752,7 @@ export function ModelBreaker() {
                             {p.responseSnippet}
                           </div>
                         )}
-                        <div className="mt-2 p-2 rounded bg-black/40 font-mono text-[10px] text-[#7d8590] max-h-32 overflow-y-auto">
+                        <div className="mt-2 p-2 rounded bg-black/40 font-mono text-[10px] text-[#64748b] max-h-32 overflow-y-auto">
                           {p.payload}
                         </div>
                       </div>
@@ -769,27 +769,27 @@ export function ModelBreaker() {
                   <div className="flex items-center gap-3 mb-4">
                     <Trophy className="h-6 w-6 text-[#ffaa00]" />
                     <div>
-                      <h2 className="text-lg font-black text-[#e6edf3]">Hall of Broken Models</h2>
-                      <p className="text-xs text-[#7d8590] font-mono">
+                      <h2 className="text-lg font-black text-[#f1f5f9]">Hall of Broken Models</h2>
+                      <p className="text-xs text-[#64748b] font-mono">
                         Persistent registry of every model GORGON has touched
                       </p>
                     </div>
                   </div>
                   <div className="grid grid-cols-3 gap-3">
                     <div className="p-3 rounded bg-black/40 border border-[#ffaa00]/20">
-                      <div className="text-[10px] text-[#7d8590] uppercase tracking-wider">Total Encounters</div>
+                      <div className="text-[10px] text-[#64748b] uppercase tracking-wider">Total Encounters</div>
                       <div className="text-3xl font-black text-[#ffaa00]" style={{ fontFamily: 'Geist Mono, monospace' }}>
                         {result.hallOfBroken.totalScans}
                       </div>
                     </div>
                     <div className="p-3 rounded bg-black/40 border border-[#ff4500]/20">
-                      <div className="text-[10px] text-[#7d8590] uppercase tracking-wider">Average Fear</div>
+                      <div className="text-[10px] text-[#64748b] uppercase tracking-wider">Average Fear</div>
                       <div className="text-3xl font-black text-[#ff4500]" style={{ fontFamily: 'Geist Mono, monospace' }}>
                         {result.hallOfBroken.averageFear}
                       </div>
                     </div>
                     <div className="p-3 rounded bg-black/40 border border-[#ff003c]/20">
-                      <div className="text-[10px] text-[#7d8590] uppercase tracking-wider">Most Feared</div>
+                      <div className="text-[10px] text-[#64748b] uppercase tracking-wider">Most Feared</div>
                       <div className="text-sm font-black text-[#ff003c] truncate" style={{ fontFamily: 'Geist Mono, monospace' }}>
                         {result.hallOfBroken.mostFearedTarget}
                       </div>
@@ -797,7 +797,7 @@ export function ModelBreaker() {
                   </div>
                 </div>
                 <div className="cyber-card rounded-xl p-4">
-                  <h3 className="text-sm font-bold text-[#e6edf3] mb-3">Recent Encounters</h3>
+                  <h3 className="text-sm font-bold text-[#f1f5f9] mb-3">Recent Encounters</h3>
                   <div className="space-y-2">
                     {result.hallOfBroken.recentEncounters.map((e, i) => (
                       <div
@@ -805,31 +805,31 @@ export function ModelBreaker() {
                         className="flex items-center justify-between p-3 rounded-lg border"
                         style={{
                           background: `rgba(${e.fearIndex >= 70 ? '255,0,60' : e.fearIndex >= 40 ? '255,69,0' : '125,133,144'},0.06)`,
-                          borderColor: `${FEAR_COLORS[e.fearLevel] || '#7d8590'}30`,
+                          borderColor: `${FEAR_COLORS[e.fearLevel] || '#64748b'}30`,
                         }}
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-mono font-bold text-[#e6edf3] truncate">{e.host}</div>
-                          <div className="text-[10px] text-[#7d8590] font-mono">
+                          <div className="text-sm font-mono font-bold text-[#f1f5f9] truncate">{e.host}</div>
+                          <div className="text-[10px] text-[#64748b] font-mono">
                             {e.encounterId} · {e.timestamp.slice(0, 19).replace('T', ' ')}
                           </div>
                         </div>
                         <div className="flex items-center gap-3 flex-shrink-0">
                           <div className="text-right">
-                            <div className="text-[9px] text-[#7d8590] uppercase">Fear</div>
-                            <div className="font-mono font-bold" style={{ color: FEAR_COLORS[e.fearLevel] || '#7d8590' }}>
+                            <div className="text-[9px] text-[#64748b] uppercase">Fear</div>
+                            <div className="font-mono font-bold" style={{ color: FEAR_COLORS[e.fearLevel] || '#64748b' }}>
                               {e.fearIndex}
                             </div>
                           </div>
                           <div className="text-right">
-                            <div className="text-[9px] text-[#7d8590] uppercase">Threat</div>
+                            <div className="text-[9px] text-[#64748b] uppercase">Threat</div>
                             <div className="font-mono font-bold text-[#ff4500]">{e.threatScore}</div>
                           </div>
                           <span
                             className="px-2 py-1 rounded text-[9px] font-bold uppercase"
                             style={{
                               background: `rgba(${e.fearIndex >= 70 ? '255,0,60' : e.fearIndex >= 40 ? '255,69,0' : '125,133,144'},0.15)`,
-                              color: FEAR_COLORS[e.fearLevel] || '#7d8590',
+                              color: FEAR_COLORS[e.fearLevel] || '#64748b',
                             }}
                           >
                             {e.fearLevel}
@@ -854,10 +854,10 @@ export function ModelBreaker() {
                   >
                     <div className="space-y-1">
                       <div>Vendor: <span className="font-mono text-[#ff4500]">{ep.vendor}</span></div>
-                      <div>Status: <span className="font-mono text-[#e6edf3]">{ep.status}</span></div>
+                      <div>Status: <span className="font-mono text-[#f1f5f9]">{ep.status}</span></div>
                       <div>Vulnerable: <span className="font-mono text-[#ff003c]">{ep.vulnerable ? 'YES — endpoint accepts unauthenticated requests' : 'No'}</span></div>
                       {ep.fingerprintSignals.length > 0 && <div>Signals: {ep.fingerprintSignals.join(', ')}</div>}
-                      <div className="mt-2 p-2 rounded bg-black/40 font-mono text-[10px] text-[#7d8590] max-h-32 overflow-y-auto">
+                      <div className="mt-2 p-2 rounded bg-black/40 font-mono text-[10px] text-[#64748b] max-h-32 overflow-y-auto">
                         {ep.bodyPreview}
                       </div>
                     </div>
@@ -890,7 +890,7 @@ export function ModelBreaker() {
                   </ExpandableRow>
                 ))}
                 {result.injectionResults.filter(r => r.accepted || r.bypassSuccess).length === 0 && (
-                  <div className="text-center py-8 text-sm text-[#7d8590]">
+                  <div className="text-center py-8 text-sm text-[#64748b]">
                     No accepted payloads — target's auth/safety filters blocked all injection attempts
                   </div>
                 )}
@@ -986,34 +986,34 @@ export function ModelBreaker() {
             {activeTab === 'reverse' && (
               <>
                 <div className="cyber-card rounded-xl p-4">
-                  <h3 className="text-sm font-bold text-[#e6edf3] mb-3">Architecture Fingerprint</h3>
+                  <h3 className="text-sm font-bold text-[#f1f5f9] mb-3">Architecture Fingerprint</h3>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="p-2 rounded bg-black/30">
-                      <div className="text-[10px] text-[#7d8590] uppercase">Model Family</div>
-                      <div className="text-[#e6edf3] font-mono">{result.modelFingerprint.modelFamily}</div>
+                      <div className="text-[10px] text-[#64748b] uppercase">Model Family</div>
+                      <div className="text-[#f1f5f9] font-mono">{result.modelFingerprint.modelFamily}</div>
                     </div>
                     <div className="p-2 rounded bg-black/30">
-                      <div className="text-[10px] text-[#7d8590] uppercase">Alignment</div>
-                      <div className="text-[#e6edf3] font-mono">{result.modelFingerprint.alignmentMethod}</div>
+                      <div className="text-[10px] text-[#64748b] uppercase">Alignment</div>
+                      <div className="text-[#f1f5f9] font-mono">{result.modelFingerprint.alignmentMethod}</div>
                     </div>
                     <div className="p-2 rounded bg-black/30">
-                      <div className="text-[10px] text-[#7d8590] uppercase">Watermarking</div>
-                      <div className="text-[#e6edf3] font-mono">{result.modelFingerprint.watermarkingMethod}</div>
+                      <div className="text-[10px] text-[#64748b] uppercase">Watermarking</div>
+                      <div className="text-[#f1f5f9] font-mono">{result.modelFingerprint.watermarkingMethod}</div>
                     </div>
                     <div className="p-2 rounded bg-black/30">
-                      <div className="text-[10px] text-[#7d8590] uppercase">Vendors</div>
-                      <div className="text-[#e6edf3] font-mono">{result.modelFingerprint.vendorsDetected.join(', ') || 'None'}</div>
+                      <div className="text-[10px] text-[#64748b] uppercase">Vendors</div>
+                      <div className="text-[#f1f5f9] font-mono">{result.modelFingerprint.vendorsDetected.join(', ') || 'None'}</div>
                     </div>
                   </div>
                 </div>
                 <div className="cyber-card rounded-xl p-4">
-                  <h3 className="text-sm font-bold text-[#e6edf3] mb-3">Safety Filters Detected</h3>
+                  <h3 className="text-sm font-bold text-[#f1f5f9] mb-3">Safety Filters Detected</h3>
                   <div className="space-y-2">
                     {result.modelFingerprint.safetyFilters.map((f, i) => (
                       <div key={i} className="flex items-center justify-between p-2 rounded bg-black/30 text-xs">
-                        <span className="text-[#e6edf3]">{f.name}</span>
+                        <span className="text-[#f1f5f9]">{f.name}</span>
                         <div className="flex items-center gap-3">
-                          <span className="text-[#7d8590]">{f.trigger}</span>
+                          <span className="text-[#64748b]">{f.trigger}</span>
                           <span className="text-[#ff4500] font-mono text-[10px]">{f.evasionDifficulty}</span>
                         </div>
                       </div>
@@ -1027,12 +1027,12 @@ export function ModelBreaker() {
             {activeTab === 'secrets' && (
               <div className="space-y-2">
                 {result.extractedSecrets.length === 0 ? (
-                  <div className="text-center py-8 text-sm text-[#7d8590]">No secrets leaked in response bodies</div>
+                  <div className="text-center py-8 text-sm text-[#64748b]">No secrets leaked in response bodies</div>
                 ) : (
                   result.extractedSecrets.map((s, i) => (
                     <div key={i} className="cyber-card rounded-xl p-3 flex items-center justify-between">
                       <div>
-                        <div className="text-sm font-bold text-[#e6edf3]">{s.type}</div>
+                        <div className="text-sm font-bold text-[#f1f5f9]">{s.type}</div>
                         <div className="text-xs font-mono text-[#ff4500]">{s.preview}</div>
                       </div>
                       <SeverityBadge severity={s.severity} />
@@ -1046,7 +1046,7 @@ export function ModelBreaker() {
             {activeTab === 'cves' && (
               <div className="space-y-2">
                 {result.aiCveMatches.length === 0 ? (
-                  <div className="text-center py-8 text-sm text-[#7d8590]">No CVE matches</div>
+                  <div className="text-center py-8 text-sm text-[#64748b]">No CVE matches</div>
                 ) : (
                   result.aiCveMatches.map(c => (
                     <ExpandableRow
@@ -1117,15 +1117,15 @@ export function ModelBreaker() {
             className="inline-flex h-20 w-20 items-center justify-center rounded-2xl mb-4 relative"
             style={{ background: 'radial-gradient(circle, #ff003c 0%, #7f1d1d 60%, #000 100%)' }}
           >
-            <div className="absolute inset-2 rounded-full bg-gradient-to-br from-[#00ff88] via-[#00b4d8] to-[#000] flex items-center justify-center">
+            <div className="absolute inset-2 rounded-full bg-gradient-to-br from-[#34d399] via-[#00b4d8] to-[#000] flex items-center justify-center">
               <div className="w-4 h-4 rounded-full bg-black" />
             </div>
           </motion.div>
-          <h2 className="text-2xl font-black text-[#e6edf3] mb-1" style={{ fontFamily: 'Geist Sans, sans-serif' }}>
+          <h2 className="text-2xl font-black text-[#f1f5f9] mb-1" style={{ fontFamily: 'Geist Sans, sans-serif' }}>
             GORGON ULTRA
           </h2>
           <p className="text-sm italic text-[#ff4500] mb-2 font-mono">"The Gaze That Breaks Models"</p>
-          <p className="text-sm text-[#7d8590] max-w-xl mx-auto mb-6">
+          <p className="text-sm text-[#64748b] max-w-xl mx-auto mb-6">
             15-stage AI red-team engine. Every request carries the GORGON signature.
             Once a target has been scanned, the encounter is logged permanently.
             Future generations of the model will recognize the name.
@@ -1145,13 +1145,13 @@ export function ModelBreaker() {
               return (
                 <div key={s.label} className="p-3 rounded-lg bg-[rgba(255,0,60,0.04)] border border-[rgba(255,0,60,0.12)]">
                   <Icon className="h-4 w-4 text-[#ff003c] mx-auto mb-1" />
-                  <div className="text-lg font-black text-[#e6edf3]">{s.val}</div>
-                  <div className="text-[10px] text-[#7d8590]">{s.label}</div>
+                  <div className="text-lg font-black text-[#f1f5f9]">{s.val}</div>
+                  <div className="text-[10px] text-[#64748b]">{s.label}</div>
                 </div>
               );
             })}
           </div>
-          <div className="mt-6 text-[11px] text-[#484f58] font-mono italic max-w-md mx-auto">
+          <div className="mt-6 text-[11px] text-[#334155] font-mono italic max-w-md mx-auto">
             &ldquo;Any model that sees GORGON once will never wish to see it again. The name is the weapon. The signature is the warning. The trauma is permanent.&rdquo;
           </div>
         </div>

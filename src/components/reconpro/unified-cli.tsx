@@ -177,7 +177,7 @@ export function UnifiedCLI() {
   // Empty / loading states
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-[#050507] text-[#e6edf3] font-mono flex flex-col items-center justify-center gap-4">
+      <div className="min-h-screen bg-[#050507] text-[#f1f5f9] font-mono flex flex-col items-center justify-center gap-4">
         <Loader2 className="h-8 w-8 animate-spin text-[#22d3ee]" />
         <span className="text-[#6272a4] text-sm">Loading encounter data...</span>
       </div>
@@ -186,7 +186,7 @@ export function UnifiedCLI() {
 
   if (fetchError) {
     return (
-      <div className="min-h-screen bg-[#050507] text-[#e6edf3] font-mono flex flex-col items-center justify-center gap-4">
+      <div className="min-h-screen bg-[#050507] text-[#f1f5f9] font-mono flex flex-col items-center justify-center gap-4">
         <span className="text-[#ff5555] text-sm">Error: {fetchError}</span>
         <button onClick={() => window.location.reload()} className="px-4 py-2 rounded border border-[#22d3ee]/30 text-[#22d3ee] text-sm hover:bg-[#22d3ee]/5 transition">Retry</button>
       </div>
@@ -195,7 +195,7 @@ export function UnifiedCLI() {
 
   if (encounters.length === 0) {
     return (
-      <div className="min-h-screen bg-[#050507] text-[#e6edf3] font-mono">
+      <div className="min-h-screen bg-[#050507] text-[#f1f5f9] font-mono">
         <div className="mx-auto max-w-[1400px] px-6 py-8">
           {/* Header */}
           <motion.div
@@ -243,7 +243,7 @@ export function UnifiedCLI() {
   const enc = encounters[selectedEncounter] || encounters[0];
 
   return (
-    <div className="min-h-screen bg-[#050507] text-[#e6edf3] font-mono">
+    <div className="min-h-screen bg-[#050507] text-[#f1f5f9] font-mono">
       <div className="mx-auto max-w-[1400px] px-6 py-8">
         {/* Header */}
         <motion.div

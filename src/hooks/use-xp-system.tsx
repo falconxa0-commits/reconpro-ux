@@ -82,9 +82,9 @@ function getRank(level: number): { name: string; color: string } {
   if (level >= 10) return { name: 'Apex Predator', color: '#ff6b6b' };
   if (level >= 8) return { name: 'Elite Hunter', color: '#ffd93d' };
   if (level >= 6) return { name: 'Veteran Operative', color: '#ff9f43' };
-  if (level >= 4) return { name: 'Field Agent', color: '#00ff88' };
+  if (level >= 4) return { name: 'Field Agent', color: '#34d399' };
   if (level >= 2) return { name: 'Scout', color: '#79c0ff' };
-  return { name: 'Recruit', color: '#8b949e' };
+  return { name: 'Recruit', color: '#475569' };
 }
 
 export function useXPSystem() {
@@ -216,7 +216,7 @@ export function XPBar({ state }: { state: XPState }) {
   const rank = getRank(state.level);
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[#161b22] border border-[rgba(255,255,255,0.06)]">
+    <div className="flex items-center gap-3 px-3 py-2 rounded-lg bg-[#0f1422] border border-[rgba(255,255,255,0.06)]">
       {/* Level badge with glow */}
       <motion.div
         className="flex items-center justify-center w-10 h-10 rounded-lg font-bold text-sm shrink-0"
@@ -291,14 +291,14 @@ export function BadgePopup({ badge, onClose }: { badge: Badge | null; onClose: (
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -30, scale: 0.9 }}
           transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-          className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-xl bg-[#161b22] border border-[#ffd93d]/30 shadow-2xl"
+          className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-xl bg-[#0f1422] border border-[#ffd93d]/30 shadow-2xl"
         >
           <div className="p-2 rounded-lg bg-[#ffd93d]/10 text-[#ffd93d]">
             <Trophy className="w-6 h-6" />
           </div>
           <div>
             <div className="text-xs text-[#ffd93d] font-bold uppercase tracking-wider">Badge Unlocked!</div>
-            <div className="text-sm font-semibold text-[#e6edf3]">{badge.name}</div>
+            <div className="text-sm font-semibold text-[#f1f5f9]">{badge.name}</div>
             <div className="text-xs text-muted-foreground">{badge.description}</div>
           </div>
           <button onClick={onClose} className="ml-2 text-muted-foreground hover:text-white text-lg leading-none">&times;</button>

@@ -193,7 +193,7 @@ function CircularProgressRing({ score, size = 140, strokeWidth = 8 }: { score: n
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (score / 100) * circumference;
 
-  const color = score >= 80 ? '#f85149' : score >= 60 ? '#f97316' : score >= 40 ? '#eab308' : '#00ff88';
+  const color = score >= 80 ? '#f43f5e' : score >= 60 ? '#fb923c' : score >= 40 ? '#facc15' : '#34d399';
   const glowColor = color + '50';
 
   return (
@@ -232,7 +232,7 @@ function CircularProgressRing({ score, size = 140, strokeWidth = 8 }: { score: n
         >
           {score}
         </motion.span>
-        <span className="text-[10px] font-semibold uppercase tracking-widest text-[#8b949e]">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-[#475569]">
           / 100
         </span>
       </div>
@@ -243,9 +243,9 @@ function CircularProgressRing({ score, size = 140, strokeWidth = 8 }: { score: n
 // --- Status Badge ---
 function StatusBadge({ status }: { status: 'PASS' | 'WARN' | 'FAIL' }) {
   const config = {
-    PASS: { bg: 'rgba(0,255,136,0.12)', border: '#00ff8830', text: '#00ff88', icon: ShieldCheck },
-    WARN: { bg: 'rgba(234,179,8,0.12)', border: '#eab30830', text: '#eab308', icon: AlertTriangle },
-    FAIL: { bg: 'rgba(248,81,73,0.12)', border: '#f8514930', text: '#f85149', icon: ShieldX },
+    PASS: { bg: 'rgba(52,211,153,0.08)', border: 'rgba(52,211,153,0.15)', text: '#34d399', icon: ShieldCheck },
+    WARN: { bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.15)', text: '#facc15', icon: AlertTriangle },
+    FAIL: { bg: 'rgba(244,63,94,0.08)', border: 'rgba(244,63,94,0.15)', text: '#f43f5e', icon: ShieldX },
   };
   const c = config[status];
   const Icon = c.icon;
@@ -264,19 +264,19 @@ function StatusBadge({ status }: { status: 'PASS' | 'WARN' | 'FAIL' }) {
 // --- Severity color helper ---
 function severityColor(severity: string): string {
   switch (severity) {
-    case 'critical': return '#f85149';
-    case 'high': return '#f97316';
-    case 'medium': return '#eab308';
-    case 'low': return '#00ff88';
-    case 'info': return '#58a6ff';
-    case 'success': return '#00ff88';
-    default: return '#8b949e';
+    case 'critical': return '#f43f5e';
+    case 'high': return '#fb923c';
+    case 'medium': return '#facc15';
+    case 'low': return '#34d399';
+    case 'info': return '#22d3ee';
+    case 'success': return '#34d399';
+    default: return '#64748b';
   }
 }
 
 // --- Compliance mini bar ---
 function ComplianceBar({ score, status }: { score: number; status: 'PASS' | 'WARN' | 'FAIL' }) {
-  const color = status === 'PASS' ? '#00ff88' : status === 'WARN' ? '#eab308' : '#f85149';
+  const color = status === 'PASS' ? '#34d399' : status === 'WARN' ? '#facc15' : '#f43f5e';
   return (
     <div className="w-full h-1.5 rounded-full bg-white/5 overflow-hidden">
       <motion.div
@@ -292,10 +292,10 @@ function ComplianceBar({ score, status }: { score: number; status: 'PASS' | 'WAR
 
 // --- Risk Score color for table ---
 function riskScoreColor(score: number): string {
-  if (score >= 85) return '#f85149';
-  if (score >= 70) return '#f97316';
-  if (score >= 50) return '#eab308';
-  return '#00ff88';
+  if (score >= 85) return '#f43f5e';
+  if (score >= 70) return '#fb923c';
+  if (score >= 50) return '#facc15';
+  return '#34d399';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -329,23 +329,23 @@ function KPIHeroRow({ stats, onNavigate, mttd, complianceData }: {
         onClick={() => onNavigate('attack-surface')}
         className="cyber-card relative overflow-hidden cursor-pointer group"
         style={{
-          background: 'linear-gradient(135deg, rgba(0,255,136,0.05) 0%, rgba(10,13,20,0.9) 50%, rgba(0,255,136,0.03) 100%)',
-          border: '1px solid rgba(0,255,136,0.15)',
+          background: 'linear-gradient(135deg, rgba(52,211,153,0.05) 0%, rgba(10,13,20,0.9) 50%, rgba(52,211,153,0.03) 100%)',
+          border: '1px solid rgba(52,211,153,0.15)',
         }}
       >
         {/* Glow border effect */}
         <div className="absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
-          style={{ boxShadow: 'inset 0 0 30px rgba(0,255,136,0.06), 0 0 30px rgba(0,255,136,0.08)' }}
+          style={{ boxShadow: 'inset 0 0 30px rgba(52,211,153,0.06), 0 0 30px rgba(52,211,153,0.08)' }}
         />
         <div className="relative p-6 flex flex-col items-center gap-3">
           <div className="flex items-center gap-2 w-full">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(0,255,136,0.1)' }}>
-              <Radar size={18} style={{ color: '#00ff88' }} />
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(52,211,153,0.1)' }}>
+              <Radar size={18} style={{ color: '#34d399' }} />
             </div>
-            <span className="text-xs font-semibold uppercase tracking-widest text-[#8b949e]">Attack Surface Score</span>
+            <span className="text-xs font-semibold uppercase tracking-widest text-[#475569]">Attack Surface Score</span>
           </div>
           <CircularProgressRing score={attackSurfaceScore} size={130} strokeWidth={7} />
-          <div className="flex items-center gap-1.5 text-xs text-[#00ff88]">
+          <div className="flex items-center gap-1.5 text-xs text-[#34d399]">
             <TrendingUp size={14} />
             <span>↑ 5 from last month</span>
           </div>
@@ -369,15 +369,15 @@ function KPIHeroRow({ stats, onNavigate, mttd, complianceData }: {
         <div className="relative p-6 flex flex-col items-center gap-3">
           <div className="flex items-center gap-2 w-full">
             <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(248,81,73,0.1)' }}>
-              <ShieldAlert size={18} style={{ color: '#f85149' }} />
+              <ShieldAlert size={18} style={{ color: '#f43f5e' }} />
             </div>
-            <span className="text-xs font-semibold uppercase tracking-widest text-[#8b949e]">Critical Threats</span>
+            <span className="text-xs font-semibold uppercase tracking-widest text-[#475569]">Critical Threats</span>
           </div>
           <div className="flex flex-col items-center gap-1 py-2">
-            <AnimatedCounter target={criticalThreats} duration={1800} color="#f85149" size="lg" />
-            <span className="text-xs text-[#8b949e]">Active alerts</span>
+            <AnimatedCounter target={criticalThreats} duration={1800} color="#f43f5e" size="lg" />
+            <span className="text-xs text-[#475569]">Active alerts</span>
           </div>
-          <div className="flex items-center gap-1.5 text-xs" style={{ color: '#f85149' }}>
+          <div className="flex items-center gap-1.5 text-xs" style={{ color: '#f43f5e' }}>
             <ArrowUpRight size={14} />
             <span>↑ 3 this week</span>
           </div>
@@ -403,15 +403,15 @@ function KPIHeroRow({ stats, onNavigate, mttd, complianceData }: {
             <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(88,166,255,0.1)' }}>
               <ShieldCheck size={18} style={{ color: '#58a6ff' }} />
             </div>
-            <span className="text-xs font-semibold uppercase tracking-widest text-[#8b949e]">Compliance Health</span>
+            <span className="text-xs font-semibold uppercase tracking-widest text-[#475569]">Compliance Health</span>
           </div>
           <div className="flex flex-col items-center gap-1 py-2">
             {complianceHealth !== null ? (
               <AnimatedCounter target={complianceHealth} duration={1800} color="#58a6ff" size="lg" suffix="%" />
             ) : (
-              <span className="text-5xl font-bold font-mono" style={{ color: '#8b949e' }}>—</span>
+              <span className="text-5xl font-bold font-mono" style={{ color: '#475569' }}>—</span>
             )}
-            <span className="text-xs text-[#8b949e]">Overall score</span>
+            <span className="text-xs text-[#475569]">Overall score</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-center">
             {(complianceData ? Object.keys(complianceData) : ['SOC2', 'HIPAA', 'PCI']).slice(0, 3).map((key) => (
@@ -437,40 +437,40 @@ function KPIHeroRow({ stats, onNavigate, mttd, complianceData }: {
         whileHover={cardHover}
         className="cyber-card relative overflow-hidden cursor-pointer group"
         style={{
-          background: 'linear-gradient(135deg, rgba(0,255,136,0.05) 0%, rgba(10,13,20,0.9) 50%, rgba(168,85,247,0.04) 100%)',
-          border: '1px solid rgba(0,255,136,0.12)',
+          background: 'linear-gradient(135deg, rgba(52,211,153,0.05) 0%, rgba(10,13,20,0.9) 50%, rgba(168,85,247,0.04) 100%)',
+          border: '1px solid rgba(52,211,153,0.12)',
         }}
       >
         <div className="absolute inset-0 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
-          style={{ boxShadow: 'inset 0 0 30px rgba(0,255,136,0.06), 0 0 30px rgba(168,85,247,0.06)' }}
+          style={{ boxShadow: 'inset 0 0 30px rgba(52,211,153,0.06), 0 0 30px rgba(168,85,247,0.06)' }}
         />
         <div className="relative p-6 flex flex-col items-center gap-3">
           <div className="flex items-center gap-2 w-full">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(0,255,136,0.1)' }}>
-              <Zap size={18} style={{ color: '#00ff88' }} />
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'rgba(52,211,153,0.1)' }}>
+              <Zap size={18} style={{ color: '#34d399' }} />
             </div>
-            <span className="text-xs font-semibold uppercase tracking-widest text-[#8b949e]">Mean Time to Detect</span>
+            <span className="text-xs font-semibold uppercase tracking-widest text-[#475569]">Mean Time to Detect</span>
           </div>
           <div className="flex flex-col items-center gap-1 py-2">
             <div className="flex items-baseline gap-1">
               {mttd ? (
                 <>
-                  <span className="text-5xl font-bold font-mono" style={{ color: '#00ff88' }}>
+                  <span className="text-5xl font-bold font-mono" style={{ color: '#34d399' }}>
                     {mttd.split(' ')[0]}
                   </span>
-                  <span className="text-lg font-semibold text-[#8b949e]">{mttd.split(' ').slice(1).join(' ')}</span>
+                  <span className="text-lg font-semibold text-[#475569]">{mttd.split(' ').slice(1).join(' ')}</span>
                 </>
               ) : (
-                <span className="text-5xl font-bold font-mono" style={{ color: '#8b949e' }}>—</span>
+                <span className="text-5xl font-bold font-mono" style={{ color: '#475569' }}>—</span>
               )}
             </div>
-            <span className="text-xs text-[#8b949e]">Detection latency</span>
+            <span className="text-xs text-[#475569]">Detection latency</span>
           </div>
-          <div className="flex items-center gap-1.5 text-xs text-[#8b949e]">
+          <div className="flex items-center gap-1.5 text-xs text-[#475569]">
             {mttd ? (
               <>
-                <TrendingUp size={14} style={{ color: '#00ff88' }} />
-                <span style={{ color: '#00ff88' }}>Real scan data</span>
+                <TrendingUp size={14} style={{ color: '#34d399' }} />
+                <span style={{ color: '#34d399' }}>Real scan data</span>
               </>
             ) : (
               <span>Pending scan data</span>
@@ -494,19 +494,19 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
         variants={itemVariants}
         className="cyber-card overflow-hidden"
         style={{
-          background: 'linear-gradient(135deg, rgba(0,255,136,0.03) 0%, rgba(10,13,20,0.95) 100%)',
-          border: '1px solid rgba(0,255,136,0.1)',
+          background: 'linear-gradient(135deg, rgba(52,211,153,0.03) 0%, rgba(10,13,20,0.95) 100%)',
+          border: '1px solid rgba(52,211,153,0.1)',
         }}
       >
         <div className="p-6">
           <div className="flex items-center gap-2 mb-4">
-            <Activity size={18} style={{ color: '#00ff88' }} />
-            <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Risk Score Trend</h3>
+            <Activity size={18} style={{ color: '#34d399' }} />
+            <h3 className="text-sm font-bold uppercase tracking-widest text-[#f1f5f9]">Risk Score Trend</h3>
           </div>
           <div className="flex flex-col items-center justify-center py-16 gap-3">
-            <Activity size={40} style={{ color: 'rgba(0,255,136,0.2)' }} />
-            <p className="text-sm text-[#8b949e] font-medium">No scan data yet</p>
-            <p className="text-xs text-[#8b949e]/60">Run a scan to see your risk score trend over time.</p>
+            <Activity size={40} style={{ color: 'rgba(52,211,153,0.2)' }} />
+            <p className="text-sm text-[#475569] font-medium">No scan data yet</p>
+            <p className="text-xs text-[#475569]/60">Run a scan to see your risk score trend over time.</p>
           </div>
         </div>
       </motion.div>
@@ -558,23 +558,23 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
       variants={itemVariants}
       className="cyber-card overflow-hidden"
       style={{
-        background: 'linear-gradient(135deg, rgba(0,255,136,0.03) 0%, rgba(10,13,20,0.95) 100%)',
-        border: '1px solid rgba(0,255,136,0.1)',
+        background: 'linear-gradient(135deg, rgba(52,211,153,0.03) 0%, rgba(10,13,20,0.95) 100%)',
+        border: '1px solid rgba(52,211,153,0.1)',
       }}
     >
       <div className="p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <Activity size={18} style={{ color: '#00ff88' }} />
-            <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Risk Score Trend</h3>
+            <Activity size={18} style={{ color: '#34d399' }} />
+            <h3 className="text-sm font-bold uppercase tracking-widest text-[#f1f5f9]">Risk Score Trend</h3>
           </div>
-          <div className="flex items-center gap-4 text-xs text-[#8b949e]">
+          <div className="flex items-center gap-4 text-xs text-[#475569]">
             <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full" style={{ background: '#00ff88' }} />
+              <div className="w-2 h-2 rounded-full" style={{ background: '#34d399' }} />
               <span>Risk Score</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-[#8b949e]">{data.length} data point{data.length !== 1 ? 's' : ''}</span>
+              <span className="text-[#475569]">{data.length} data point{data.length !== 1 ? 's' : ''}</span>
             </div>
           </div>
         </div>
@@ -582,13 +582,13 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
         <svg viewBox={`0 0 ${width} ${height}`} className="w-full" preserveAspectRatio="xMidYMid meet">
           <defs>
             <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#00ff88" stopOpacity="0.3" />
-              <stop offset="100%" stopColor="#00ff88" stopOpacity="0.02" />
+              <stop offset="0%" stopColor="#34d399" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#34d399" stopOpacity="0.02" />
             </linearGradient>
             <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-              <stop offset="0" stopColor="#00ff88" stopOpacity="0.4" />
-              <stop offset="50%" stopColor="#00ff88" stopOpacity="1" />
-              <stop offset="100%" stopColor="#00ff88" stopOpacity="0.8" />
+              <stop offset="0" stopColor="#34d399" stopOpacity="0.4" />
+              <stop offset="50%" stopColor="#34d399" stopOpacity="1" />
+              <stop offset="100%" stopColor="#34d399" stopOpacity="0.8" />
             </linearGradient>
             <filter id="glow">
               <feGaussianBlur stdDeviation="3" result="blur" />
@@ -614,7 +614,7 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
                 x={padding.left - 8}
                 y={g.y + 4}
                 textAnchor="end"
-                fill="#8b949e"
+                fill="#475569"
                 fontSize="10"
                 fontFamily="monospace"
               >
@@ -630,7 +630,7 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
               x={xl.x}
               y={height - 10}
               textAnchor="middle"
-              fill="#8b949e"
+              fill="#475569"
               fontSize="10"
               fontFamily="monospace"
             >
@@ -666,7 +666,7 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
             cx={points[points.length - 1].x}
             cy={points[points.length - 1].y}
             r="4"
-            fill="#00ff88"
+            fill="#34d399"
             initial={{ opacity: 0, scale: 0 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ delay: 2.5, type: 'spring' }}
@@ -676,7 +676,7 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
             cy={points[points.length - 1].y}
             r="8"
             fill="none"
-            stroke="#00ff88"
+            stroke="#34d399"
             strokeWidth="1.5"
             opacity="0.4"
             initial={{ opacity: 0, scale: 0 }}
@@ -717,7 +717,7 @@ function SecurityPostureMatrix({ compliance }: { compliance: Record<string, Exec
       <div className="p-6">
         <div className="flex items-center gap-2 mb-5">
           <Lock size={18} style={{ color: '#58a6ff' }} />
-          <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Security Posture Matrix</h3>
+          <h3 className="text-sm font-bold uppercase tracking-widest text-[#f1f5f9]">Security Posture Matrix</h3>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {items.map((item, idx) => (
@@ -737,12 +737,12 @@ function SecurityPostureMatrix({ compliance }: { compliance: Record<string, Exec
               }}
             >
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-semibold text-[#e6edf3]">{item.framework}</span>
+                <span className="text-sm font-semibold text-[#f1f5f9]">{item.framework}</span>
                 {item.status ? (
                   <StatusBadge status={item.status} />
                 ) : (
                   <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider border"
-                    style={{ backgroundColor: 'rgba(139,148,158,0.1)', borderColor: 'rgba(139,148,158,0.2)', color: '#8b949e' }}
+                    style={{ backgroundColor: 'rgba(139,148,158,0.1)', borderColor: 'rgba(139,148,158,0.2)', color: '#475569' }}
                   >
                     Pending
                   </span>
@@ -752,12 +752,12 @@ function SecurityPostureMatrix({ compliance }: { compliance: Record<string, Exec
                 {item.score !== null ? (
                   <span
                     className="text-2xl font-bold font-mono"
-                    style={{ color: item.status === 'PASS' ? '#00ff88' : item.status === 'FAIL' ? '#f85149' : '#eab308' }}
+                    style={{ color: item.status === 'PASS' ? '#34d399' : item.status === 'FAIL' ? '#f43f5e' : '#facc15' }}
                   >
                     {item.score}%
                   </span>
                 ) : (
-                  <span className="text-2xl font-bold font-mono" style={{ color: '#8b949e' }}>—</span>
+                  <span className="text-2xl font-bold font-mono" style={{ color: '#475569' }}>—</span>
                 )}
               </div>
               {item.score !== null && item.status ? (
@@ -791,7 +791,7 @@ function RecentActivityFeed() {
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-2">
             <Clock size={18} style={{ color: '#a855f7' }} />
-            <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Recent Activity</h3>
+            <h3 className="text-sm font-bold uppercase tracking-widest text-[#f1f5f9]">Recent Activity</h3>
           </div>
           <motion.span
             className="text-xs font-semibold px-2 py-0.5 rounded-full"
@@ -837,10 +837,10 @@ function RecentActivityFeed() {
 
                 {/* Content */}
                 <div className="flex-1 min-w-0 pt-1">
-                  <p className="text-sm text-[#e6edf3] leading-relaxed group-hover:text-white transition-colors">
+                  <p className="text-sm text-[#f1f5f9] leading-relaxed group-hover:text-white transition-colors">
                     {event.description}
                   </p>
-                  <span className="text-xs text-[#8b949e] mt-1 block">{event.timestamp}</span>
+                  <span className="text-xs text-[#475569] mt-1 block">{event.timestamp}</span>
                 </div>
 
                 {/* Severity indicator */}
@@ -876,13 +876,13 @@ function TopRiskAssets({ onNavigate }: { onNavigate: (view: string) => void }) {
       <div className="p-6">
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-2">
-            <Target size={18} style={{ color: '#f97316' }} />
-            <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Top Risk Assets</h3>
+            <Target size={18} style={{ color: '#fb923c' }} />
+            <h3 className="text-sm font-bold uppercase tracking-widest text-[#f1f5f9]">Top Risk Assets</h3>
           </div>
           <button
             onClick={() => onNavigate('findings')}
-            className="flex items-center gap-1 text-xs font-semibold transition-colors hover:text-[#f97316]"
-            style={{ color: '#8b949e' }}
+            className="flex items-center gap-1 text-xs font-semibold transition-colors hover:text-[#fb923c]"
+            style={{ color: '#475569' }}
           >
             View All <ArrowUpRight size={14} />
           </button>
@@ -890,7 +890,7 @@ function TopRiskAssets({ onNavigate }: { onNavigate: (view: string) => void }) {
 
         <div className="space-y-2">
           {/* Header */}
-          <div className="grid grid-cols-12 gap-2 px-3 pb-2 text-[10px] font-bold uppercase tracking-widest text-[#8b949e] border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+          <div className="grid grid-cols-12 gap-2 px-3 pb-2 text-[10px] font-bold uppercase tracking-widest text-[#475569] border-b" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
             <div className="col-span-4">Domain</div>
             <div className="col-span-2 text-center">Risk Score</div>
             <div className="col-span-2 text-center">Findings</div>
@@ -919,10 +919,10 @@ function TopRiskAssets({ onNavigate }: { onNavigate: (view: string) => void }) {
               >
                 {/* Domain */}
                 <div className="col-span-4 min-w-0">
-                  <p className="text-sm font-semibold text-[#e6edf3] truncate group-hover:text-white transition-colors">
+                  <p className="text-sm font-semibold text-[#f1f5f9] truncate group-hover:text-white transition-colors">
                     {asset.domain}
                   </p>
-                  <p className="text-[10px] text-[#8b949e] mt-0.5">{asset.category}</p>
+                  <p className="text-[10px] text-[#475569] mt-0.5">{asset.category}</p>
                 </div>
 
                 {/* Risk Score */}
@@ -941,12 +941,12 @@ function TopRiskAssets({ onNavigate }: { onNavigate: (view: string) => void }) {
 
                 {/* Findings */}
                 <div className="col-span-2 text-center">
-                  <span className="text-sm font-mono text-[#e6edf3]">{asset.findings}</span>
+                  <span className="text-sm font-mono text-[#f1f5f9]">{asset.findings}</span>
                 </div>
 
                 {/* Last Scan */}
                 <div className="col-span-3 text-right">
-                  <span className="text-xs text-[#8b949e]">{asset.lastScan}</span>
+                  <span className="text-xs text-[#475569]">{asset.lastScan}</span>
                 </div>
 
                 {/* Action */}
@@ -955,7 +955,7 @@ function TopRiskAssets({ onNavigate }: { onNavigate: (view: string) => void }) {
                     className="opacity-0 group-hover:opacity-100 transition-opacity"
                     whileHover={{ scale: 1.2 }}
                   >
-                    <ExternalLink size={14} style={{ color: '#8b949e' }} />
+                    <ExternalLink size={14} style={{ color: '#475569' }} />
                   </motion.div>
                 </div>
               </motion.div>
@@ -1004,21 +1004,21 @@ function GlobalThreatMapMini() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
-            <Globe size={18} style={{ color: '#f85149' }} />
-            <h3 className="text-sm font-bold uppercase tracking-widest text-[#e6edf3]">Global Threat Map</h3>
+            <Globe size={18} style={{ color: '#f43f5e' }} />
+            <h3 className="text-sm font-bold uppercase tracking-widest text-[#f1f5f9]">Global Threat Map</h3>
           </div>
           <div className="flex items-center gap-3 text-[10px]">
             <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-[#f85149]" />
-              <span className="text-[#8b949e]">Critical</span>
+              <div className="w-2 h-2 rounded-full bg-[#f43f5e]" />
+              <span className="text-[#475569]">Critical</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-[#f97316]" />
-              <span className="text-[#8b949e]">High</span>
+              <div className="w-2 h-2 rounded-full bg-[#fb923c]" />
+              <span className="text-[#475569]">High</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <div className="w-2 h-2 rounded-full bg-[#eab308]" />
-              <span className="text-[#8b949e]">Medium</span>
+              <div className="w-2 h-2 rounded-full bg-[#facc15]" />
+              <span className="text-[#475569]">Medium</span>
             </div>
           </div>
         </div>
@@ -1160,14 +1160,14 @@ function GlobalThreatMapMini() {
           <div className="absolute bottom-3 left-3 flex items-center gap-3">
             <div className="px-2.5 py-1 rounded-md text-[10px] font-bold font-mono" style={{
               background: 'rgba(248,81,73,0.15)',
-              color: '#f85149',
+              color: '#f43f5e',
               border: '1px solid rgba(248,81,73,0.25)',
             }}>
               {THREAT_MAP_POINTS.filter(p => p.severity === 'critical').length} CRITICAL
             </div>
             <div className="px-2.5 py-1 rounded-md text-[10px] font-bold font-mono" style={{
               background: 'rgba(249,115,22,0.15)',
-              color: '#f97316',
+              color: '#fb923c',
               border: '1px solid rgba(249,115,22,0.25)',
             }}>
               {THREAT_MAP_POINTS.filter(p => p.severity === 'high').length} HIGH
@@ -1178,14 +1178,14 @@ function GlobalThreatMapMini() {
           <motion.div
             className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-1 rounded-md"
             style={{
-              background: 'rgba(0,255,136,0.1)',
-              border: '1px solid rgba(0,255,136,0.2)',
+              background: 'rgba(52,211,153,0.1)',
+              border: '1px solid rgba(52,211,153,0.2)',
             }}
             animate={{ opacity: [0.7, 1, 0.7] }}
             transition={{ duration: 2, repeat: Infinity }}
           >
-            <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88]" />
-            <span className="text-[10px] font-bold text-[#00ff88]">SCANNING</span>
+            <div className="w-1.5 h-1.5 rounded-full bg-[#34d399]" />
+            <span className="text-[10px] font-bold text-[#34d399]">SCANNING</span>
           </motion.div>
         </div>
       </div>
@@ -1233,8 +1233,8 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
         className="fixed inset-0 pointer-events-none opacity-[0.015]"
         style={{
           backgroundImage: `
-            linear-gradient(rgba(0,255,136,1) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(0,255,136,1) 1px, transparent 1px)
+            linear-gradient(rgba(52,211,153,1) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(52,211,153,1) 1px, transparent 1px)
           `,
           backgroundSize: '60px 60px',
         }}
@@ -1242,7 +1242,7 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
 
       {/* Ambient gradient blobs */}
       <div className="fixed top-0 left-1/4 w-[600px] h-[600px] rounded-full pointer-events-none opacity-[0.03]"
-        style={{ background: 'radial-gradient(circle, #00ff88, transparent 70%)' }}
+        style={{ background: 'radial-gradient(circle, #34d399, transparent 70%)' }}
       />
       <div className="fixed bottom-0 right-1/4 w-[500px] h-[500px] rounded-full pointer-events-none opacity-[0.02]"
         style={{ background: 'radial-gradient(circle, #a855f7, transparent 70%)' }}
@@ -1258,16 +1258,16 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
         <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{
-              background: 'linear-gradient(135deg, rgba(0,255,136,0.15), rgba(0,255,136,0.05))',
-              border: '1px solid rgba(0,255,136,0.2)',
+              background: 'linear-gradient(135deg, rgba(52,211,153,0.15), rgba(52,211,153,0.05))',
+              border: '1px solid rgba(52,211,153,0.2)',
             }}>
-              <Eye size={24} style={{ color: '#00ff88' }} />
+              <Eye size={24} style={{ color: '#34d399' }} />
             </div>
             <div>
-              <h1 className="text-2xl sm:text-3xl font-bold text-[#e6edf3] tracking-tight">
+              <h1 className="text-2xl sm:text-3xl font-bold text-[#f1f5f9] tracking-tight">
                 Executive Dashboard
               </h1>
-              <p className="text-sm text-[#8b949e] mt-0.5">
+              <p className="text-sm text-[#475569] mt-0.5">
                 Attack surface intelligence · Real-time threat overview
               </p>
             </div>
@@ -1276,13 +1276,13 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
             <motion.div
               className="flex items-center gap-2 px-4 py-2 rounded-lg"
               style={{
-                background: 'rgba(0,255,136,0.08)',
-                border: '1px solid rgba(0,255,136,0.15)',
+                background: 'rgba(52,211,153,0.08)',
+                border: '1px solid rgba(52,211,153,0.15)',
               }}
               whileHover={{ scale: 1.03 }}
             >
-              <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse" />
-              <span className="text-xs font-semibold text-[#00ff88]">System Online</span>
+              <div className="w-2 h-2 rounded-full bg-[#34d399] animate-pulse" />
+              <span className="text-xs font-semibold text-[#34d399]">System Online</span>
             </motion.div>
             <motion.button
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-colors"
@@ -1304,9 +1304,9 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
         {/* Quick Stats Bar */}
         <motion.div variants={itemVariants} className="flex flex-wrap items-center gap-3">
           {[
-            { label: 'Total Scans', value: stats?.totalScans ?? 0, color: '#00ff88' },
-            { label: 'Findings', value: stats?.totalFindings ?? 0, color: '#f97316' },
-            { label: 'Risk Avg', value: `${stats?.avgRiskScore ?? 0}`, color: '#eab308' },
+            { label: 'Total Scans', value: stats?.totalScans ?? 0, color: '#34d399' },
+            { label: 'Findings', value: stats?.totalFindings ?? 0, color: '#fb923c' },
+            { label: 'Risk Avg', value: `${stats?.avgRiskScore ?? 0}`, color: '#facc15' },
           ].map((item) => (
             <div
               key={item.label}
@@ -1316,7 +1316,7 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
                 border: '1px solid rgba(255,255,255,0.06)',
               }}
             >
-              <span className="text-xs text-[#8b949e]">{item.label}</span>
+              <span className="text-xs text-[#475569]">{item.label}</span>
               <span className="text-sm font-bold font-mono" style={{ color: item.color }}>
                 {item.value}
               </span>
@@ -1347,7 +1347,7 @@ export function CEODashboard({ stats, recentScans, onNavigate }: CEODashboardPro
           variants={itemVariants}
           className="text-center py-4"
         >
-          <p className="text-xs text-[#8b949e]/50">
+          <p className="text-xs text-[#475569]/50">
             ReconPro Attack Surface Management · Executive Overview · Data refreshed in real-time
           </p>
         </motion.div>

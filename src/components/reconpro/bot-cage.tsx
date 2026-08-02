@@ -31,8 +31,8 @@ interface DNSIndicator { type: string; severity: string; description: string; ev
 interface AttackVector { id: string; type: string; severity: string; description: string; proof: string; }
 interface CageStatus { quarantined: boolean; monitored: boolean; threats: string[]; quarantineReason: string | null; responsePlaybook: string[]; }
 
-const severityColors: Record<string, string> = { critical: '#ff0040', high: '#ff6b35', medium: '#ffc107', low: '#00ff88', info: '#00b4d8' };
-const severityBg: Record<string, string> = { critical: 'rgba(255,0,64,0.12)', high: 'rgba(255,107,53,0.12)', medium: 'rgba(255,193,7,0.12)', low: 'rgba(0,255,136,0.12)', info: 'rgba(0,180,216,0.12)' };
+const severityColors: Record<string, string> = { critical: '#ff0040', high: '#ff6b35', medium: '#ffc107', low: '#34d399', info: '#00b4d8' };
+const severityBg: Record<string, string> = { critical: 'rgba(255,0,64,0.12)', high: 'rgba(255,107,53,0.12)', medium: 'rgba(255,193,7,0.12)', low: 'rgba(52,211,153,0.12)', info: 'rgba(0,180,216,0.12)' };
 
 // ══════════════════════════════════════════════════════════════════
 // MAXIMUM POWER SWEEP — 50 targets, 1200 probes, ALL REAL
@@ -293,7 +293,7 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-mono transition-all ${
                     activeSection === s.id
                       ? 'bg-[#a78bfa20] text-[#a78bfa] border border-[#a78bfa44]'
-                      : 'bg-[#0d1117] text-gray-400 border border-[#ffffff10] hover:border-[#ffffff30]'
+                      : 'bg-[#080b14] text-gray-400 border border-[#ffffff10] hover:border-[#ffffff30]'
                   }`}
                 >
                   <span>{s.icon}</span>
@@ -306,12 +306,12 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
             {!result && activeSection === 'proof' && (
               <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
                 {/* Proof Header */}
-                <div className="relative overflow-hidden rounded-2xl border border-[#00ff8833] bg-gradient-to-br from-[#00ff8808] to-[#0d1117] p-6">
-                  <div className="absolute top-4 right-4 px-3 py-1 rounded-full bg-[#00ff8820] text-[#00ff88] text-xs font-mono font-bold animate-pulse">
+                <div className="relative overflow-hidden rounded-2xl border border-[#34d39933] bg-gradient-to-br from-[#34d39908] to-[#0d1117] p-6">
+                  <div className="absolute top-4 right-4 px-3 py-1 rounded-full bg-[#34d39920] text-[#34d399] text-xs font-mono font-bold animate-pulse">
                     ✅ VERIFIED REAL
                   </div>
                   <h2 className="text-2xl font-bold mb-2">
-                    <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#00ff88] to-[#00b4d8]">
+                    <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#34d399] to-[#00b4d8]">
                       Live Bot Hunt — Real Results
                     </span>
                   </h2>
@@ -319,7 +319,7 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
                     Every result below is 100% real. IPs from blocklist.de and Spamhaus DROP,
                     scanned with actual TCP socket connections, verified with real DNS blacklist lookups.
                     <br />
-                    <span className="text-[#00ff88] font-mono">Verify yourself: <code className="bg-[#0a0e1a] px-2 py-0.5 rounded">nc -v &lt;ip&gt; &lt;port&gt;</code></span>
+                    <span className="text-[#34d399] font-mono">Verify yourself: <code className="bg-[#0a0e1a] px-2 py-0.5 rounded">nc -v &lt;ip&gt; &lt;port&gt;</code></span>
                   </p>
 
                   {/* Method Chain */}
@@ -352,12 +352,12 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
                   <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
                     <span className="text-[#ff0040]">💀</span>
                     Verified Infrastructure — Real TCP Banner Grabs
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#00ff8820] text-[#00ff88] ml-auto">REAL SOCKETS</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#34d39920] text-[#34d399] ml-auto">REAL SOCKETS</span>
                   </h3>
                   <div className="space-y-3">
                     {REAL_PROOF.verifiedHits.map((hit, i) => (
                       <motion.div key={i} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
-                        className={`border p-4 rounded-lg ${hit.sev === 'HIGH' ? 'bg-[#1a0a0e] border-[#ff004033]' : 'bg-[#0d1117] border-[#ffffff08]'}`}>
+                        className={`border p-4 rounded-lg ${hit.sev === 'HIGH' ? 'bg-[#1a0a0e] border-[#ff004033]' : 'bg-[#080b14] border-[#ffffff08]'}`}>
                         <div className="flex items-center gap-2 mb-2 flex-wrap">
                           <span className="font-mono font-bold text-white">{hit.ip}</span>
                           <span className="px-2 py-0.5 rounded text-xs font-bold" style={{ color: severityColors[(hit.sev || 'low').toLowerCase()], background: severityBg[(hit.sev || 'low').toLowerCase()] }}>{hit.type}</span>
@@ -384,7 +384,7 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
                   <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
                     <span>🚫</span>
                     Real Blacklist Evidence — DNS Lookup Results
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#00ff8820] text-[#00ff88] ml-auto">REAL DNS QUERIES</span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#34d39920] text-[#34d399] ml-auto">REAL DNS QUERIES</span>
                   </h3>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -421,7 +421,7 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
                     {REAL_PROOF.sources.map((s, i) => (
                       <div key={i} className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-[#00ff88]" />
+                        <span className="w-2 h-2 rounded-full bg-[#34d399]" />
                         <span className="text-gray-300">{s}</span>
                       </div>
                     ))}
@@ -474,7 +474,7 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(result.botIntel.ipReputation.flags).map(([key, val]) => (
                       <span key={key} className={`px-3 py-1.5 rounded-lg text-xs font-bold ${
-                        val ? 'bg-[#ff004020] text-[#ff4060]' : 'bg-[#00ff8810] text-[#00ff8880]'
+                        val ? 'bg-[#ff004020] text-[#ff4060]' : 'bg-[#34d39910] text-[#34d39980]'
                       }`}>
                         {key.toUpperCase()}: {val ? 'YES' : 'NO'}
                       </span>
@@ -486,7 +486,7 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
                 <div className="cyber-card p-4">
                   <h3 className="text-sm font-bold mb-3 text-gray-400">BLACKLIST DATABASES</h3>
                   <div className="text-sm">
-                    <span className="text-2xl font-bold" style={{ color: result.botIntel.ipReputation.reputation.blacklistHits > 0 ? '#ff0040' : '#00ff88' }}>
+                    <span className="text-2xl font-bold" style={{ color: result.botIntel.ipReputation.reputation.blacklistHits > 0 ? '#ff0040' : '#34d399' }}>
                       {result.botIntel.ipReputation.reputation.blacklistHits}/{result.botIntel.ipReputation.reputation.totalBlacklists}
                     </span>
                     <span className="text-gray-400 ml-2">lists flag this IP</span>
@@ -622,7 +622,7 @@ export function BotCage({ onHunt }: { onHunt?: (target: string) => void }) {
                         </span>
                         <span className="text-sm">{action}</span>
                         <span className={`ml-auto text-[10px] px-2 py-0.5 rounded ${
-                          i === 0 ? 'bg-[#ff004020] text-[#ff4060]' : 'bg-[#00ff8810] text-[#00ff8880]'
+                          i === 0 ? 'bg-[#ff004020] text-[#ff4060]' : 'bg-[#34d39910] text-[#34d39980]'
                         }`}>
                           {i === 0 ? 'AUTO-EXECUTED' : 'READY'}
                         </span>

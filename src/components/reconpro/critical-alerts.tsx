@@ -48,35 +48,35 @@ function AlertFeedUI({ alerts, onDismiss }: { alerts: CriticalAlert[]; onDismiss
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
             className={`pointer-events-auto rounded-xl border p-3 shadow-2xl backdrop-blur-sm ${
               alert.severity === 'critical'
-                ? 'bg-[rgba(248,81,73,0.15)] border-[rgba(248,81,73,0.4)]'
-                : 'bg-[rgba(249,115,22,0.15)] border-[rgba(249,115,22,0.4)]'
+                ? 'bg-[rgba(244,63,94,0.15)] border-[rgba(244,63,94,0.4)]'
+                : 'bg-[rgba(251,191,36,0.15)] border-[rgba(251,191,36,0.4)]'
             }`}
             style={{
               boxShadow: alert.severity === 'critical'
-                ? '0 0 30px rgba(248,81,73,0.3), 0 0 60px rgba(248,81,73,0.1)'
-                : '0 0 20px rgba(249,115,22,0.2)',
+                ? '0 0 30px rgba(244,63,94,0.3), 0 0 60px rgba(244,63,94,0.1)'
+                : '0 0 20px rgba(251,191,36,0.2)',
             }}
           >
             <div className="flex items-start gap-2">
               <div className={`p-1.5 rounded-lg shrink-0 ${
-                alert.severity === 'critical' ? 'bg-[rgba(248,81,73,0.2)]' : 'bg-[rgba(249,115,22,0.2)]'
+                alert.severity === 'critical' ? 'bg-[rgba(244,63,94,0.2)]' : 'bg-[rgba(251,191,36,0.2)]'
               }`}>
                 {alert.severity === 'critical' ? (
-                  <ShieldAlert className="w-4 h-4 text-[#f85149]" />
+                  <ShieldAlert className="w-4 h-4 text-[#f43f5e]" />
                 ) : (
-                  <AlertTriangle className="w-4 h-4 text-[#f97316]" />
+                  <AlertTriangle className="w-4 h-4 text-[#fb923c]" />
                 )}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                    alert.severity === 'critical' ? 'text-[#f85149]' : 'text-[#f97316]'
+                    alert.severity === 'critical' ? 'text-[#f43f5e]' : 'text-[#fb923c]'
                   }`}>
                     {alert.severity === 'critical' ? 'CRITICAL' : 'HIGH'}
                   </span>
-                  <Zap className={`w-3 h-3 ${alert.severity === 'critical' ? 'text-[#f85149]' : 'text-[#f97316]'} animate-pulse`} />
+                  <Zap className={`w-3 h-3 ${alert.severity === 'critical' ? 'text-[#f43f5e]' : 'text-[#fb923c]'} animate-pulse`} />
                 </div>
-                <p className="text-xs font-semibold text-[#e6edf3] mt-0.5 truncate">{alert.title}</p>
+                <p className="text-xs font-semibold text-[#f1f5f9] mt-0.5 truncate">{alert.title}</p>
                 <p className="text-[10px] text-muted-foreground truncate font-mono mt-0.5">{alert.evidence}</p>
               </div>
               <button

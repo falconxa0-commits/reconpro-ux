@@ -88,7 +88,7 @@ interface WhiteLabelPanelProps {
 const DEFAULT_CONFIG: BrandConfig = {
   companyName: 'Acme Security',
   productName: 'ReconPro',
-  primaryColor: '#00ff88',
+  primaryColor: '#34d399',
   accentColor: '#0a0d14',
   logoText: 'RP',
   faviconUrl: '',
@@ -111,11 +111,11 @@ interface ColorPalette {
 }
 
 const PRESET_PALETTES: ColorPalette[] = [
-  { name: 'Midnight', primary: '#00ff88', accent: '#0a0d14' },
+  { name: 'Midnight', primary: '#34d399', accent: '#0a0d14' },
   { name: 'Ocean', primary: '#06b6d4', accent: '#0c1222' },
   { name: 'Crimson', primary: '#ef4444', accent: '#1a0a0a' },
   { name: 'Royal', primary: '#a78bfa', accent: '#0f0a1e' },
-  { name: 'Solar', primary: '#f97316', accent: '#1a1008' },
+  { name: 'Solar', primary: '#fb923c', accent: '#1a1008' },
   { name: 'Forest', primary: '#22c55e', accent: '#0a1a0a' },
 ];
 
@@ -175,7 +175,7 @@ function GlassCard({
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay, ease: 'easeOut' }}
-      className={`rounded-2xl border border-white/[0.06] bg-[#0d1117]/80 backdrop-blur-xl ${className}`}
+      className={`rounded-2xl border border-white/[0.06] bg-[#080b14]/80 backdrop-blur-xl ${className}`}
     >
       {children}
     </motion.div>
@@ -195,14 +195,14 @@ function SectionHeader({
     <div className="flex items-start gap-3 mb-6">
       <div
         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-        style={{ backgroundColor: 'rgba(0,255,136,0.1)', color: '#00ff88' }}
+        style={{ backgroundColor: 'rgba(52,211,153,0.1)', color: '#34d399' }}
       >
         {icon}
       </div>
       <div>
-        <h3 className="text-[15px] font-semibold text-[#e6edf3]">{title}</h3>
+        <h3 className="text-[15px] font-semibold text-[#f1f5f9]">{title}</h3>
         {description && (
-          <p className="text-[13px] text-[#8b949e] mt-0.5">{description}</p>
+          <p className="text-[13px] text-[#475569] mt-0.5">{description}</p>
         )}
       </div>
     </div>
@@ -262,7 +262,7 @@ function ColorPickerField({
   };
   return (
     <div className="space-y-2.5">
-      <Label className="text-[13px] font-medium text-[#8b949e]">{label}</Label>
+      <Label className="text-[13px] font-medium text-[#475569]">{label}</Label>
       <div className="flex items-center gap-3">
         <div className="relative">
           <div
@@ -276,14 +276,14 @@ function ColorPickerField({
             onChange={(e) => setHexInput(e.target.value)}
             onBlur={() => setHexInput(value)}
             onKeyDown={(e) => e.key === 'Enter' && handleHexSubmit()}
-            className="h-10 bg-[#161b22] border-white/[0.08] text-[#e6edf3] font-mono text-sm placeholder:text-[#484f58]"
-            placeholder="#00ff88"
+            className="h-10 bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] font-mono text-sm placeholder:text-[#334155]"
+            placeholder="#34d399"
           />
           <Button
             type="button"
             variant="outline"
             size="sm"
-            className="h-10 border-white/[0.08] text-[#8b949e] hover:text-[#e6edf3] hover:bg-white/[0.04] shrink-0"
+            className="h-10 border-white/[0.08] text-[#475569] hover:text-[#f1f5f9] hover:bg-white/[0.04] shrink-0"
             onClick={handleHexSubmit}
           >
             Apply
@@ -317,24 +317,24 @@ function DnsRecordRow({ record }: { record: DnsRecord }) {
     setTimeout(() => setCopied(false), 2000);
   };
   return (
-    <div className="flex items-center gap-3 rounded-xl bg-[#080a10]/60 border border-white/[0.04] p-3">
+    <div className="flex items-center gap-3 rounded-xl bg-[#030407]/60 border border-white/[0.04] p-3">
       <Badge
         variant="outline"
-        className="shrink-0 font-mono text-xs px-2 py-0.5 border-[#00ff88]/30 text-[#00ff88] bg-[#00ff88]/5"
+        className="shrink-0 font-mono text-xs px-2 py-0.5 border-[#34d399]/30 text-[#34d399] bg-[#34d399]/5"
       >
         {record.type}
       </Badge>
       <div className="flex-1 min-w-0">
-        <p className="text-[13px] font-medium text-[#e6edf3] truncate">
+        <p className="text-[13px] font-medium text-[#f1f5f9] truncate">
           {record.name}
         </p>
-        <p className="text-xs text-[#8b949e] font-mono truncate">
+        <p className="text-xs text-[#475569] font-mono truncate">
           {record.value}
         </p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {record.status === 'verified' ? (
-          <Badge className="bg-[#00ff88]/10 text-[#00ff88] border-[#00ff88]/20 text-xs px-2 py-0.5">
+          <Badge className="bg-[#34d399]/10 text-[#34d399] border-[#34d399]/20 text-xs px-2 py-0.5">
             <CheckCircle2 className="h-3 w-3 mr-1" />
             Verified
           </Badge>
@@ -347,11 +347,11 @@ function DnsRecordRow({ record }: { record: DnsRecord }) {
         <Button
           variant="ghost"
           size="sm"
-          className="h-8 w-8 p-0 text-[#8b949e] hover:text-[#e6edf3] hover:bg-white/[0.06]"
+          className="h-8 w-8 p-0 text-[#475569] hover:text-[#f1f5f9] hover:bg-white/[0.06]"
           onClick={handleCopy}
         >
           {copied ? (
-            <Check className="h-3.5 w-3.5 text-[#00ff88]" />
+            <Check className="h-3.5 w-3.5 text-[#34d399]" />
           ) : (
             <Copy className="h-3.5 w-3.5" />
           )}
@@ -387,7 +387,7 @@ function LivePreview({ config }: { config: BrandConfig }) {
           {['Dashboard', 'Scans', 'Reports'].map((item) => (
             <span
               key={item}
-              className="text-[11px] text-[#8b949e] hover:text-[#e6edf3] transition-colors cursor-default"
+              className="text-[11px] text-[#475569] hover:text-[#f1f5f9] transition-colors cursor-default"
             >
               {item}
             </span>
@@ -401,7 +401,7 @@ function LivePreview({ config }: { config: BrandConfig }) {
             className="h-1.5 w-1.5 rounded-full animate-pulse"
             style={{ backgroundColor: config.primaryColor }}
           />
-          <span className="text-[11px] text-[#8b949e]">Live Preview</span>
+          <span className="text-[11px] text-[#475569]">Live Preview</span>
         </div>
         {/* Mock stat cards */}
         <div className="grid grid-cols-3 gap-2">
@@ -416,7 +416,7 @@ function LivePreview({ config }: { config: BrandConfig }) {
               >
                 {label.split(' ')[0]}
               </div>
-              <div className="text-[10px] text-[#484f58]">
+              <div className="text-[10px] text-[#334155]">
                 {label.split(' ').slice(1).join(' ')}
               </div>
             </div>
@@ -424,12 +424,12 @@ function LivePreview({ config }: { config: BrandConfig }) {
         </div>
         {/* Report header sample */}
         <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-2.5">
-          <p className="text-[10px] text-[#484f58] mb-1">Report Header</p>
-          <p className="text-[11px] font-medium text-[#e6edf3]">
+          <p className="text-[10px] text-[#334155] mb-1">Report Header</p>
+          <p className="text-[11px] font-medium text-[#f1f5f9]">
             {config.reportHeader || 'Confidential — Attack Surface Report'}
           </p>
           {!config.hidePoweredBy && (
-            <p className="text-[9px] text-[#484f58] mt-1">
+            <p className="text-[9px] text-[#334155] mt-1">
               Powered by ReconPro
             </p>
           )}
@@ -477,7 +477,7 @@ function FullPreviewModal({ config }: { config: BrandConfig }) {
               className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] cursor-default ${
                 item.active
                   ? 'text-white'
-                  : 'text-[#8b949e] hover:text-[#e6edf3]'
+                  : 'text-[#475569] hover:text-[#f1f5f9]'
               }`}
               style={
                 item.active
@@ -495,8 +495,8 @@ function FullPreviewModal({ config }: { config: BrandConfig }) {
           {/* Title bar */}
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-[#e6edf3]">Dashboard</h2>
-              <p className="text-[11px] text-[#8b949e]">Welcome back to {config.companyName}</p>
+              <h2 className="text-sm font-semibold text-[#f1f5f9]">Dashboard</h2>
+              <p className="text-[11px] text-[#475569]">Welcome back to {config.companyName}</p>
             </div>
             <div
               className="h-7 rounded-lg px-3 flex items-center text-[11px] font-medium text-[#080a10]"
@@ -516,7 +516,7 @@ function FullPreviewModal({ config }: { config: BrandConfig }) {
                 key={s.label}
                 className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3"
               >
-                <p className="text-[10px] text-[#8b949e]">{s.label}</p>
+                <p className="text-[10px] text-[#475569]">{s.label}</p>
                 <p
                   className="text-lg font-bold mt-0.5"
                   style={{ color: config.primaryColor }}
@@ -528,7 +528,7 @@ function FullPreviewModal({ config }: { config: BrandConfig }) {
           </div>
           {/* Activity area */}
           <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3">
-            <p className="text-[11px] font-medium text-[#e6edf3] mb-2">Recent Activity</p>
+            <p className="text-[11px] font-medium text-[#f1f5f9] mb-2">Recent Activity</p>
             {[
               'Scan completed for acme-corp.com',
               'New subdomain discovered: staging.acme-corp.com',
@@ -542,10 +542,10 @@ function FullPreviewModal({ config }: { config: BrandConfig }) {
                   className="h-1.5 w-1.5 rounded-full shrink-0"
                   style={{
                     backgroundColor:
-                      i === 0 ? '#00ff88' : i === 1 ? config.primaryColor : '#f97316',
+                      i === 0 ? '#34d399' : i === 1 ? config.primaryColor : '#fb923c',
                   }}
                 />
-                <span className="text-[11px] text-[#8b949e]">{line}</span>
+                <span className="text-[11px] text-[#475569]">{line}</span>
               </div>
             ))}
           </div>
@@ -577,12 +577,12 @@ function LoginStyleCard({
       onClick={onClick}
       className={`relative flex flex-col items-center gap-2 rounded-xl border-2 p-3 transition-all cursor-pointer ${
         selected
-          ? 'border-[#00ff88]/40 bg-[#00ff88]/5'
+          ? 'border-[#34d399]/40 bg-[#34d399]/5'
           : 'border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12]'
       }`}
     >
       {children}
-      <span className="text-xs font-medium text-[#e6edf3]">{name}</span>
+      <span className="text-xs font-medium text-[#f1f5f9]">{name}</span>
       {selected && (
         <motion.div
           initial={{ scale: 0 }}
@@ -674,21 +674,21 @@ export function WhiteLabelPanel({
   };
 
   return (
-    <div className="min-h-screen bg-[#080a10] text-[#e6edf3]">
+    <div className="min-h-screen bg-[#030407] text-[#f1f5f9]">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 pb-24">
         {/* ── 1. Header ─────────────────────────────────────────────────── */}
         <motion.div {...fadeInUp} className="mb-8">
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
             <div>
               <div className="flex items-center gap-2.5 mb-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#00ff88]/10">
-                  <Sparkles className="h-4 w-4 text-[#00ff88]" />
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#34d399]/10">
+                  <Sparkles className="h-4 w-4 text-[#34d399]" />
                 </div>
-                <h1 className="text-2xl font-bold tracking-tight text-[#e6edf3]">
+                <h1 className="text-2xl font-bold tracking-tight text-[#f1f5f9]">
                   White-Label Branding
                 </h1>
               </div>
-              <p className="text-sm text-[#8b949e] max-w-xl">
+              <p className="text-sm text-[#475569] max-w-xl">
                 Customize every aspect of ReconPro to match your brand identity. Changes will be
                 reflected across login pages, reports, emails, and the full application interface.
               </p>
@@ -698,16 +698,16 @@ export function WhiteLabelPanel({
                 <DialogTrigger asChild>
                   <Button
                     variant="outline"
-                    className="border-[#00ff88]/20 text-[#00ff88] hover:bg-[#00ff88]/10 hover:text-[#00ff88] gap-1.5"
+                    className="border-[#34d399]/20 text-[#34d399] hover:bg-[#34d399]/10 hover:text-[#34d399] gap-1.5"
                   >
                     <Eye className="h-3.5 w-3.5" />
                     Preview Changes
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="bg-[#0d1117] border-white/[0.08] text-[#e6edf3] sm:max-w-4xl max-h-[85vh] overflow-y-auto">
+                <DialogContent className="bg-[#080b14] border-white/[0.08] text-[#f1f5f9] sm:max-w-4xl max-h-[85vh] overflow-y-auto">
                   <DialogHeader>
-                    <DialogTitle className="text-[#e6edf3] flex items-center gap-2">
-                      <Monitor className="h-4 w-4 text-[#00ff88]" />
+                    <DialogTitle className="text-[#f1f5f9] flex items-center gap-2">
+                      <Monitor className="h-4 w-4 text-[#34d399]" />
                       Full Preview
                     </DialogTitle>
                   </DialogHeader>
@@ -716,14 +716,14 @@ export function WhiteLabelPanel({
               </Dialog>
               <Button
                 variant="outline"
-                className="border-white/[0.08] text-[#8b949e] hover:text-[#e6edf3] hover:bg-white/[0.04] gap-1.5"
+                className="border-white/[0.08] text-[#475569] hover:text-[#f1f5f9] hover:bg-white/[0.04] gap-1.5"
                 onClick={handleReset}
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 Reset to Default
               </Button>
               <Button
-                className="bg-[#00ff88] text-[#080a10] hover:bg-[#00ff88]/90 font-semibold gap-1.5"
+                className="bg-[#34d399] text-[#080a10] hover:bg-[#34d399]/90 font-semibold gap-1.5"
                 onClick={handleSave}
               >
                 <Save className="h-3.5 w-3.5" />
@@ -748,9 +748,9 @@ export function WhiteLabelPanel({
               <GlassCard className="p-5" delay={0.02}>
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
-                    <Monitor className="h-4 w-4 text-[#00ff88]" />
-                    <h3 className="text-sm font-semibold text-[#e6edf3]">Live Preview</h3>
-                    <Badge className="bg-[#00ff88]/10 text-[#00ff88] border-[#00ff88]/20 text-[10px] px-1.5 py-0">
+                    <Monitor className="h-4 w-4 text-[#34d399]" />
+                    <h3 className="text-sm font-semibold text-[#f1f5f9]">Live Preview</h3>
+                    <Badge className="bg-[#34d399]/10 text-[#34d399] border-[#34d399]/20 text-[10px] px-1.5 py-0">
                       REAL-TIME
                     </Badge>
                   </div>
@@ -759,16 +759,16 @@ export function WhiteLabelPanel({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 text-[11px] text-[#8b949e] hover:text-[#00ff88] gap-1"
+                        className="h-7 text-[11px] text-[#475569] hover:text-[#34d399] gap-1"
                       >
                         <ExternalLink className="h-3 w-3" />
                         Full Preview
                       </Button>
                     </DialogTrigger>
-                    <DialogContent className="bg-[#0d1117] border-white/[0.08] text-[#e6edf3] sm:max-w-4xl max-h-[85vh] overflow-y-auto">
+                    <DialogContent className="bg-[#080b14] border-white/[0.08] text-[#f1f5f9] sm:max-w-4xl max-h-[85vh] overflow-y-auto">
                       <DialogHeader>
-                        <DialogTitle className="text-[#e6edf3] flex items-center gap-2">
-                          <Monitor className="h-4 w-4 text-[#00ff88]" />
+                        <DialogTitle className="text-[#f1f5f9] flex items-center gap-2">
+                          <Monitor className="h-4 w-4 text-[#34d399]" />
                           Full Preview
                         </DialogTitle>
                       </DialogHeader>
@@ -790,40 +790,40 @@ export function WhiteLabelPanel({
               <div className="space-y-5">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label className="text-[13px] font-medium text-[#8b949e]">
+                    <Label className="text-[13px] font-medium text-[#475569]">
                       Company Name
                     </Label>
                     <Input
                       value={config.companyName}
                       onChange={(e) => update('companyName', e.target.value)}
-                      className="h-10 bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58]"
+                      className="h-10 bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155]"
                       placeholder="Acme Security"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-[13px] font-medium text-[#8b949e]">
+                    <Label className="text-[13px] font-medium text-[#475569]">
                       Product Name
                     </Label>
                     <Input
                       value={config.productName}
                       onChange={(e) => update('productName', e.target.value)}
-                      className="h-10 bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58]"
+                      className="h-10 bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155]"
                       placeholder="ReconPro"
                     />
                   </div>
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-[13px] font-medium text-[#8b949e]">
+                  <Label className="text-[13px] font-medium text-[#475569]">
                     Logo Text (shown in sidebar)
                   </Label>
                   <Input
                     value={config.logoText}
                     onChange={(e) => update('logoText', e.target.value)}
-                    className="h-10 bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58] max-w-xs"
+                    className="h-10 bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155] max-w-xs"
                     placeholder="RP"
                   />
-                  <p className="text-[11px] text-[#484f58]">
+                  <p className="text-[11px] text-[#334155]">
                     Short text or initials displayed in the navigation sidebar
                   </p>
                 </div>
@@ -836,7 +836,7 @@ export function WhiteLabelPanel({
                     label="Primary Color"
                     value={config.primaryColor}
                     onChange={(v) => update('primaryColor', v)}
-                    presets={['#00ff88', '#06b6d4', '#ef4444', '#a78bfa', '#f97316', '#22c55e', '#ec4899', '#14b8a6']}
+                    presets={['#34d399', '#06b6d4', '#ef4444', '#a78bfa', '#fb923c', '#22c55e', '#ec4899', '#14b8a6']}
                   />
                   <ColorPickerField
                     label="Accent Color"
@@ -848,7 +848,7 @@ export function WhiteLabelPanel({
 
                 {/* Preset Palettes */}
                 <div className="space-y-2.5">
-                  <Label className="text-[13px] font-medium text-[#8b949e]">
+                  <Label className="text-[13px] font-medium text-[#475569]">
                     Preset Palettes
                   </Label>
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
@@ -861,7 +861,7 @@ export function WhiteLabelPanel({
                         className={`relative flex flex-col items-center gap-2 rounded-xl border-2 p-3 transition-all cursor-pointer ${
                           config.primaryColor.toLowerCase() === palette.primary.toLowerCase() &&
                           config.accentColor.toLowerCase() === palette.accent.toLowerCase()
-                            ? 'border-[#00ff88]/40 bg-[#00ff88]/5'
+                            ? 'border-[#34d399]/40 bg-[#34d399]/5'
                             : 'border-white/[0.06] bg-white/[0.02] hover:border-white/[0.12]'
                         }`}
                       >
@@ -875,12 +875,12 @@ export function WhiteLabelPanel({
                             style={{ backgroundColor: palette.accent }}
                           />
                         </div>
-                        <span className="text-[11px] font-medium text-[#8b949e]">
+                        <span className="text-[11px] font-medium text-[#475569]">
                           {palette.name}
                         </span>
                         {config.primaryColor.toLowerCase() === palette.primary.toLowerCase() &&
                           config.accentColor.toLowerCase() === palette.accent.toLowerCase() && (
-                            <Check className="absolute top-1.5 right-1.5 h-3 w-3 text-[#00ff88]" />
+                            <Check className="absolute top-1.5 right-1.5 h-3 w-3 text-[#34d399]" />
                           )}
                       </motion.button>
                     ))}
@@ -898,40 +898,40 @@ export function WhiteLabelPanel({
               />
               <div className="space-y-5">
                 <div className="space-y-2">
-                  <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                  <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                     <Server className="h-3 w-3" />
                     Custom Domain
                   </Label>
                   <Input
                     value={config.customDomain}
                     onChange={(e) => update('customDomain', e.target.value)}
-                    className="h-10 bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58]"
+                    className="h-10 bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155]"
                     placeholder="portal.yourcompany.com"
                   />
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                    <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                       <Mail className="h-3 w-3" />
                       Email From Name
                     </Label>
                     <Input
                       value={config.emailFromName}
                       onChange={(e) => update('emailFromName', e.target.value)}
-                      className="h-10 bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58]"
+                      className="h-10 bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155]"
                       placeholder="Acme Security"
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                    <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                       <Mail className="h-3 w-3" />
                       Email From Address
                     </Label>
                     <Input
                       value={config.emailFromAddress}
                       onChange={(e) => update('emailFromAddress', e.target.value)}
-                      className="h-10 bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58]"
+                      className="h-10 bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155]"
                       placeholder="noreply@acme-security.com"
                     />
                   </div>
@@ -940,7 +940,7 @@ export function WhiteLabelPanel({
                 {/* DNS Config helper */}
                 <Collapsible open={dnsOpen} onOpenChange={setDnsOpen}>
                   <CollapsibleTrigger asChild>
-                    <button className="flex items-center gap-2 text-[13px] font-medium text-[#00ff88] hover:text-[#00ff88]/80 transition-colors cursor-pointer w-full">
+                    <button className="flex items-center gap-2 text-[13px] font-medium text-[#34d399] hover:text-[#34d399]/80 transition-colors cursor-pointer w-full">
                       <Zap className="h-3.5 w-3.5" />
                       DNS Configuration Helper
                       {dnsOpen ? (
@@ -960,16 +960,16 @@ export function WhiteLabelPanel({
                         className="overflow-hidden"
                       >
                         <div className="mt-3 space-y-2">
-                          <p className="text-[11px] text-[#8b949e]">
+                          <p className="text-[11px] text-[#475569]">
                             Add the following DNS records to your domain registrar to configure your
                             custom domain:
                           </p>
                           {DNS_RECORDS.map((record) => (
                             <DnsRecordRow key={record.type + record.name} record={record} />
                           ))}
-                          <div className="flex items-center gap-2 rounded-lg bg-[#00ff88]/5 border border-[#00ff88]/10 p-2.5">
-                            <AlertTriangle className="h-3.5 w-3.5 text-[#00ff88] shrink-0" />
-                            <p className="text-[11px] text-[#00ff88]/80">
+                          <div className="flex items-center gap-2 rounded-lg bg-[#34d399]/5 border border-[#34d399]/10 p-2.5">
+                            <AlertTriangle className="h-3.5 w-3.5 text-[#34d399] shrink-0" />
+                            <p className="text-[11px] text-[#34d399]/80">
                               DNS changes may take up to 48 hours to propagate globally.
                             </p>
                           </div>
@@ -990,30 +990,30 @@ export function WhiteLabelPanel({
               />
               <div className="space-y-5">
                 <div className="space-y-2">
-                  <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                  <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                     <Type className="h-3 w-3" />
                     Report Header Text
                   </Label>
                   <Textarea
                     value={config.reportHeader}
                     onChange={(e) => update('reportHeader', e.target.value)}
-                    className="bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58] min-h-[80px] resize-y"
+                    className="bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155] min-h-[80px] resize-y"
                     placeholder="Confidential — Attack Surface Report"
                   />
-                  <p className="text-[11px] text-[#484f58]">
+                  <p className="text-[11px] text-[#334155]">
                     This text appears at the top of every generated PDF report
                   </p>
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                  <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                     <Type className="h-3 w-3" />
                     Report Footer Text
                   </Label>
                   <Textarea
                     value={config.reportFooter}
                     onChange={(e) => update('reportFooter', e.target.value)}
-                    className="bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58] min-h-[80px] resize-y"
+                    className="bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155] min-h-[80px] resize-y"
                     placeholder="Generated by Acme Security ReconPro"
                   />
                 </div>
@@ -1023,29 +1023,29 @@ export function WhiteLabelPanel({
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
-                      <ImageIcon className="h-4 w-4 text-[#8b949e]" />
+                      <ImageIcon className="h-4 w-4 text-[#475569]" />
                       <div>
-                        <p className="text-[13px] font-medium text-[#e6edf3]">
+                        <p className="text-[13px] font-medium text-[#f1f5f9]">
                           Include Company Logo
                         </p>
-                        <p className="text-[11px] text-[#484f58]">
+                        <p className="text-[11px] text-[#334155]">
                           Show the logo image in report headers
                         </p>
                       </div>
                     </div>
                     <Switch
                       checked
-                      className="data-[state=checked]:bg-[#00ff88] data-[state=unchecked]:bg-[#21262d]"
+                      className="data-[state=checked]:bg-[#34d399] data-[state=unchecked]:bg-[#21262d]"
                     />
                   </div>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
-                      <Eye className="h-4 w-4 text-[#8b949e]" />
+                      <Eye className="h-4 w-4 text-[#475569]" />
                       <div>
-                        <p className="text-[13px] font-medium text-[#e6edf3]">
+                        <p className="text-[13px] font-medium text-[#f1f5f9]">
                           Hide &quot;Powered by ReconPro&quot;
                         </p>
-                        <p className="text-[11px] text-[#484f58]">
+                        <p className="text-[11px] text-[#334155]">
                           Remove ReconPro branding from reports and UI
                         </p>
                       </div>
@@ -1053,7 +1053,7 @@ export function WhiteLabelPanel({
                     <Switch
                       checked={config.hidePoweredBy}
                       onCheckedChange={(v) => update('hidePoweredBy', v)}
-                      className="data-[state=checked]:bg-[#00ff88] data-[state=unchecked]:bg-[#21262d]"
+                      className="data-[state=checked]:bg-[#34d399] data-[state=unchecked]:bg-[#21262d]"
                     />
                   </div>
                 </div>
@@ -1069,29 +1069,29 @@ export function WhiteLabelPanel({
               />
               <div className="space-y-5">
                 <div className="space-y-2">
-                  <Label className="text-[13px] font-medium text-[#8b949e]">
+                  <Label className="text-[13px] font-medium text-[#475569]">
                     Custom Login Message
                   </Label>
                   <Textarea
                     value={config.loginPageMessage}
                     onChange={(e) => update('loginPageMessage', e.target.value)}
-                    className="bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58] min-h-[80px] resize-y"
+                    className="bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155] min-h-[80px] resize-y"
                     placeholder="Welcome to the Attack Surface Management Platform."
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                  <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                     <ImageIcon className="h-3 w-3" />
                     Background Image URL
                   </Label>
                   <Input
                     value={config.faviconUrl}
                     onChange={(e) => update('faviconUrl', e.target.value)}
-                    className="h-10 bg-[#161b22] border-white/[0.08] text-[#e6edf3] placeholder:text-[#484f58]"
+                    className="h-10 bg-[#0f1422] border-white/[0.08] text-[#f1f5f9] placeholder:text-[#334155]"
                     placeholder="https://yourcompany.com/login-bg.jpg"
                   />
-                  <p className="text-[11px] text-[#484f58]">
+                  <p className="text-[11px] text-[#334155]">
                     Optional — overrides the default dark background on the login page
                   </p>
                 </div>
@@ -1099,7 +1099,7 @@ export function WhiteLabelPanel({
                 <Separator className="bg-white/[0.06]" />
 
                 <div className="space-y-2.5">
-                  <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                  <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                     <Layout className="h-3 w-3" />
                     Login Page Style
                   </Label>
@@ -1205,7 +1205,7 @@ export function WhiteLabelPanel({
                       transition={{ duration: 0.2 }}
                       className="ml-auto shrink-0 mt-1"
                     >
-                      <ChevronDown className="h-4 w-4 text-[#8b949e] group-hover:text-[#e6edf3] transition-colors" />
+                      <ChevronDown className="h-4 w-4 text-[#475569] group-hover:text-[#f1f5f9] transition-colors" />
                     </motion.div>
                   </button>
                 </CollapsibleTrigger>
@@ -1221,29 +1221,29 @@ export function WhiteLabelPanel({
                       <div className="mt-2 space-y-6">
                         {/* Custom CSS */}
                         <div className="space-y-2.5">
-                          <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                          <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                             <Code2 className="h-3 w-3" />
                             Custom CSS
                           </Label>
                           <div className="relative rounded-xl border border-white/[0.08] overflow-hidden">
-                            <div className="flex items-center gap-2 px-3 py-1.5 bg-[#080a10] border-b border-white/[0.06]">
+                            <div className="flex items-center gap-2 px-3 py-1.5 bg-[#030407] border-b border-white/[0.06]">
                               <div className="flex gap-1.5">
-                                <div className="h-2.5 w-2.5 rounded-full bg-[#f97316]" />
-                                <div className="h-2.5 w-2.5 rounded-full bg-[#eab308]" />
+                                <div className="h-2.5 w-2.5 rounded-full bg-[#fb923c]" />
+                                <div className="h-2.5 w-2.5 rounded-full bg-[#facc15]" />
                                 <div className="h-2.5 w-2.5 rounded-full bg-[#22c55e]" />
                               </div>
-                              <span className="text-[10px] text-[#484f58] font-mono ml-1">
+                              <span className="text-[10px] text-[#334155] font-mono ml-1">
                                 custom-styles.css
                               </span>
                             </div>
                             <textarea
                               value={config.customCss}
                               onChange={(e) => update('customCss', e.target.value)}
-                              className="w-full min-h-[160px] bg-[#080a10] text-[#8b949e] font-mono text-xs p-4 resize-y focus:outline-none placeholder:text-[#30363d] leading-relaxed"
+                              className="w-full min-h-[160px] bg-[#030407] text-[#475569] font-mono text-xs p-4 resize-y focus:outline-none placeholder:text-[#30363d] leading-relaxed"
                               placeholder={`/* Custom CSS overrides */\n:root {\n  --brand-primary: ${config.primaryColor};\n}\n\n.sidebar-brand {\n  font-weight: 800;\n}`}
                             />
                           </div>
-                          <p className="text-[11px] text-[#484f58]">
+                          <p className="text-[11px] text-[#334155]">
                             CSS is injected into the application&apos;s head. Use sparingly.
                           </p>
                         </div>
@@ -1254,12 +1254,12 @@ export function WhiteLabelPanel({
                         <div className="space-y-4">
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2.5">
-                              <Moon className="h-4 w-4 text-[#8b949e]" />
+                              <Moon className="h-4 w-4 text-[#475569]" />
                               <div>
-                                <p className="text-[13px] font-medium text-[#e6edf3]">
+                                <p className="text-[13px] font-medium text-[#f1f5f9]">
                                   Dark Mode
                                 </p>
-                                <p className="text-[11px] text-[#484f58]">
+                                <p className="text-[11px] text-[#334155]">
                                   Enable dark interface by default
                                 </p>
                               </div>
@@ -1267,12 +1267,12 @@ export function WhiteLabelPanel({
                             <Switch
                               checked={config.darkMode}
                               onCheckedChange={(v) => update('darkMode', v)}
-                              className="data-[state=checked]:bg-[#00ff88] data-[state=unchecked]:bg-[#21262d]"
+                              className="data-[state=checked]:bg-[#34d399] data-[state=unchecked]:bg-[#21262d]"
                             />
                           </div>
 
                           <div className="space-y-2.5">
-                            <Label className="text-[13px] font-medium text-[#8b949e] flex items-center gap-1.5">
+                            <Label className="text-[13px] font-medium text-[#475569] flex items-center gap-1.5">
                               <Sun className="h-3 w-3" />
                               Default Theme
                             </Label>
@@ -1285,8 +1285,8 @@ export function WhiteLabelPanel({
                                   onClick={() => update('theme', t)}
                                   className={`flex items-center gap-1.5 rounded-lg px-4 py-2 text-[13px] font-medium border transition-all cursor-pointer ${
                                     config.theme === t
-                                      ? 'border-[#00ff88]/40 bg-[#00ff88]/10 text-[#00ff88]'
-                                      : 'border-white/[0.06] bg-white/[0.02] text-[#8b949e] hover:text-[#e6edf3] hover:border-white/[0.12]'
+                                      ? 'border-[#34d399]/40 bg-[#34d399]/10 text-[#34d399]'
+                                      : 'border-white/[0.06] bg-white/[0.02] text-[#475569] hover:text-[#f1f5f9] hover:border-white/[0.12]'
                                   }`}
                                 >
                                   {t === 'dark' && <Moon className="h-3.5 w-3.5" />}
@@ -1305,7 +1305,7 @@ export function WhiteLabelPanel({
                         <div className="flex items-center gap-3">
                           <Button
                             variant="outline"
-                            className="border-white/[0.08] text-[#8b949e] hover:text-[#e6edf3] hover:bg-white/[0.04] gap-1.5"
+                            className="border-white/[0.08] text-[#475569] hover:text-[#f1f5f9] hover:bg-white/[0.04] gap-1.5"
                             onClick={handleExport}
                           >
                             <Download className="h-3.5 w-3.5" />
@@ -1313,7 +1313,7 @@ export function WhiteLabelPanel({
                           </Button>
                           <Button
                             variant="outline"
-                            className="border-white/[0.08] text-[#8b949e] hover:text-[#e6edf3] hover:bg-white/[0.04] gap-1.5"
+                            className="border-white/[0.08] text-[#475569] hover:text-[#f1f5f9] hover:bg-white/[0.04] gap-1.5"
                             onClick={() => fileInputRef.current?.click()}
                           >
                             <Upload className="h-3.5 w-3.5" />
@@ -1339,15 +1339,15 @@ export function WhiteLabelPanel({
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-4 flex-wrap">
                   <div className="flex items-center gap-2">
-                    <Clock className="h-3.5 w-3.5 text-[#8b949e]" />
-                    <span className="text-[12px] text-[#8b949e]">
+                    <Clock className="h-3.5 w-3.5 text-[#475569]" />
+                    <span className="text-[12px] text-[#475569]">
                       Configuration last saved 2 hours ago
                     </span>
                   </div>
                   <Separator orientation="vertical" className="h-4 bg-white/[0.06] hidden sm:block" />
                   <div className="flex items-center gap-2">
                     <AlertTriangle className="h-3.5 w-3.5 text-yellow-400" />
-                    <span className="text-[12px] text-[#8b949e]">
+                    <span className="text-[12px] text-[#475569]">
                       All changes require redeployment — estimated 5 minutes
                     </span>
                   </div>
@@ -1356,12 +1356,12 @@ export function WhiteLabelPanel({
                   <div className="flex items-center gap-1.5">
                     <div
                       className={`h-2 w-2 rounded-full animate-pulse ${
-                        hasChanges ? 'bg-yellow-400' : 'bg-[#00ff88]'
+                        hasChanges ? 'bg-yellow-400' : 'bg-[#34d399]'
                       }`}
                     />
                     <span
                       className={`text-[12px] font-medium ${
-                        hasChanges ? 'text-yellow-400' : 'text-[#00ff88]'
+                        hasChanges ? 'text-yellow-400' : 'text-[#34d399]'
                       }`}
                     >
                       {hasChanges ? 'Unsaved Changes' : 'Deployment Active'}
@@ -1378,9 +1378,9 @@ export function WhiteLabelPanel({
               <GlassCard className="p-5" delay={0.05}>
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
-                    <Monitor className="h-4 w-4 text-[#00ff88]" />
-                    <h3 className="text-sm font-semibold text-[#e6edf3]">Live Preview</h3>
-                    <Badge className="bg-[#00ff88]/10 text-[#00ff88] border-[#00ff88]/20 text-[10px] px-1.5 py-0">
+                    <Monitor className="h-4 w-4 text-[#34d399]" />
+                    <h3 className="text-sm font-semibold text-[#f1f5f9]">Live Preview</h3>
+                    <Badge className="bg-[#34d399]/10 text-[#34d399] border-[#34d399]/20 text-[10px] px-1.5 py-0">
                       REAL-TIME
                     </Badge>
                   </div>
@@ -1391,7 +1391,7 @@ export function WhiteLabelPanel({
 
                 {/* Color summary */}
                 <div className="space-y-2.5">
-                  <p className="text-[11px] font-medium text-[#8b949e] uppercase tracking-wider">
+                  <p className="text-[11px] font-medium text-[#475569] uppercase tracking-wider">
                     Active Colors
                   </p>
                   <div className="grid grid-cols-2 gap-2">
@@ -1401,8 +1401,8 @@ export function WhiteLabelPanel({
                         style={{ backgroundColor: config.primaryColor }}
                       />
                       <div>
-                        <p className="text-[10px] text-[#484f58]">Primary</p>
-                        <p className="text-[11px] font-mono text-[#e6edf3]">
+                        <p className="text-[10px] text-[#334155]">Primary</p>
+                        <p className="text-[11px] font-mono text-[#f1f5f9]">
                           {config.primaryColor}
                         </p>
                       </div>
@@ -1413,8 +1413,8 @@ export function WhiteLabelPanel({
                         style={{ backgroundColor: config.accentColor }}
                       />
                       <div>
-                        <p className="text-[10px] text-[#484f58]">Accent</p>
-                        <p className="text-[11px] font-mono text-[#e6edf3]">
+                        <p className="text-[10px] text-[#334155]">Accent</p>
+                        <p className="text-[11px] font-mono text-[#f1f5f9]">
                           {config.accentColor}
                         </p>
                       </div>
@@ -1427,16 +1427,16 @@ export function WhiteLabelPanel({
                 <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
                   <DialogTrigger asChild>
                     <Button
-                      className="w-full bg-[#00ff88] text-[#080a10] hover:bg-[#00ff88]/90 font-semibold gap-1.5"
+                      className="w-full bg-[#34d399] text-[#080a10] hover:bg-[#34d399]/90 font-semibold gap-1.5"
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
                       Full Preview
                     </Button>
                   </DialogTrigger>
-                  <DialogContent className="bg-[#0d1117] border-white/[0.08] text-[#e6edf3] sm:max-w-4xl max-h-[85vh] overflow-y-auto">
+                  <DialogContent className="bg-[#080b14] border-white/[0.08] text-[#f1f5f9] sm:max-w-4xl max-h-[85vh] overflow-y-auto">
                     <DialogHeader>
-                      <DialogTitle className="text-[#e6edf3] flex items-center gap-2">
-                        <Monitor className="h-4 w-4 text-[#00ff88]" />
+                      <DialogTitle className="text-[#f1f5f9] flex items-center gap-2">
+                        <Monitor className="h-4 w-4 text-[#34d399]" />
                         Full Preview
                       </DialogTitle>
                     </DialogHeader>
@@ -1447,7 +1447,7 @@ export function WhiteLabelPanel({
 
               {/* Quick Stats */}
               <GlassCard className="p-4" delay={0.07}>
-                <p className="text-[11px] font-medium text-[#8b949e] uppercase tracking-wider mb-3">
+                <p className="text-[11px] font-medium text-[#475569] uppercase tracking-wider mb-3">
                   Brand Summary
                 </p>
                 <div className="space-y-2">
@@ -1462,12 +1462,12 @@ export function WhiteLabelPanel({
                       key={item.label}
                       className="flex items-center justify-between text-[12px]"
                     >
-                      <span className="text-[#484f58]">{item.label}</span>
+                      <span className="text-[#334155]">{item.label}</span>
                       <span
                         className={`font-medium ${
                           item.label === 'White-Label' && config.hidePoweredBy
-                            ? 'text-[#00ff88]'
-                            : 'text-[#e6edf3]'
+                            ? 'text-[#34d399]'
+                            : 'text-[#f1f5f9]'
                         }`}
                       >
                         {item.value}

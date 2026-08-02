@@ -38,7 +38,7 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
             <button
               type="button"
               onClick={() => setShowTypeDropdown(!showTypeDropdown)}
-              className="flex items-center gap-2 px-4 py-3 rounded-xl bg-[#1c2333] border border-[rgba(0,255,136,0.12)] text-sm text-[#e6edf3] hover:border-[rgba(0,255,136,0.3)] transition-all h-12 whitespace-nowrap"
+              className="flex items-center gap-2 px-4 py-3 rounded-xl bg-[#151c2e] border border-[rgba(52,211,153,0.12)] text-sm text-[#f1f5f9] hover:border-[rgba(52,211,153,0.3)] transition-all h-12 whitespace-nowrap"
             >
               {selectedType.icon}
               <span className="hidden sm:inline">{selectedType.label}</span>
@@ -51,7 +51,7 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -10, scale: 0.95 }}
                   transition={{ duration: 0.15 }}
-                  className="absolute top-full mt-2 left-0 z-50 w-64 p-2 rounded-xl bg-[#161b22] border border-[rgba(0,255,136,0.15)] shadow-2xl"
+                  className="absolute top-full mt-2 left-0 z-50 w-64 p-2 rounded-xl bg-[#0f1422] border border-[rgba(52,211,153,0.15)] shadow-2xl"
                 >
                   {scanTypes.map((type) => (
                     <button
@@ -60,15 +60,15 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
                       onClick={() => { setScanType(type.id); setShowTypeDropdown(false); }}
                       className={`w-full flex items-center gap-3 p-3 rounded-lg text-left transition-all ${
                         scanType === type.id
-                          ? 'bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)]'
+                          ? 'bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]'
                           : 'hover:bg-[rgba(255,255,255,0.04)] border border-transparent'
                       }`}
                     >
-                      <div className={`p-2 rounded-lg ${scanType === type.id ? 'bg-[rgba(0,255,136,0.15)] text-[#00ff88]' : 'bg-[rgba(255,255,255,0.06)] text-muted-foreground'}`}>
+                      <div className={`p-2 rounded-lg ${scanType === type.id ? 'bg-[rgba(52,211,153,0.15)] text-[#34d399]' : 'bg-[rgba(255,255,255,0.06)] text-muted-foreground'}`}>
                         {type.icon}
                       </div>
                       <div>
-                        <div className="text-sm font-medium text-[#e6edf3]">{type.label}</div>
+                        <div className="text-sm font-medium text-[#f1f5f9]">{type.label}</div>
                         <div className="text-xs text-muted-foreground">{type.desc}</div>
                       </div>
                     </button>
@@ -85,7 +85,7 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
               value={domain}
               onChange={(e) => setDomain(e.target.value)}
               placeholder="Enter target domain (e.g., github.com)"
-              className="h-12 pl-12 pr-4 rounded-xl bg-[#1c2333] border-[rgba(0,255,136,0.12)] text-[#e6edf3] placeholder:text-muted-foreground focus:border-[#00ff88] focus:ring-1 focus:ring-[#00ff88] transition-all font-mono text-sm"
+              className="h-12 pl-12 pr-4 rounded-xl bg-[#151c2e] border-[rgba(52,211,153,0.12)] text-[#f1f5f9] placeholder:text-muted-foreground focus:border-[#34d399] focus:ring-1 focus:ring-[#34d399] transition-all font-mono text-sm"
               disabled={isScanning}
             />
           </div>
@@ -94,7 +94,7 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
           <Button
             type="submit"
             disabled={!domain.trim() || isScanning}
-            className="h-12 px-8 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all disabled:opacity-50 relative overflow-hidden"
+            className="h-12 px-8 rounded-xl bg-[#34d399] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all disabled:opacity-50 relative overflow-hidden"
           >
             {isScanning ? (
               <div className="flex items-center gap-2">
@@ -126,7 +126,7 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
             type="button"
             onClick={() => { setDomain(d); }}
             disabled={isScanning}
-            className="px-3 py-1.5 rounded-lg text-xs font-mono text-muted-foreground bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)] hover:border-[rgba(0,255,136,0.2)] hover:text-[#00ff88] transition-all disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg text-xs font-mono text-muted-foreground bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)] hover:border-[rgba(52,211,153,0.2)] hover:text-[#34d399] transition-all disabled:opacity-50"
           >
             {d}
           </button>

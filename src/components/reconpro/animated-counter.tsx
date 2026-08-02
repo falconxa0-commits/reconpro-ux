@@ -13,7 +13,7 @@ interface AnimatedCounterProps {
   glow?: boolean;
 }
 
-export function AnimatedCounter({ target, duration = 2000, color = '#00ff88', size = 'lg', suffix = '', label, glow = false }: AnimatedCounterProps) {
+export function AnimatedCounter({ target, duration = 2000, color = '#34d399', size = 'lg', suffix = '', label, glow = false }: AnimatedCounterProps) {
   const [display, setDisplay] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
 
@@ -76,11 +76,11 @@ export function RiskScoreGauge({ score, size = 120 }: { score: number; size?: nu
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (score / 100) * circumference;
 
-  let color = '#00ff88';
+  let color = '#34d399';
   let label = 'LOW';
-  if (score >= 80) { color = '#f85149'; label = 'CRITICAL'; }
-  else if (score >= 60) { color = '#f97316'; label = 'HIGH'; }
-  else if (score >= 40) { color = '#eab308'; label = 'MEDIUM'; }
+  if (score >= 80) { color = '#f43f5e'; label = 'CRITICAL'; }
+  else if (score >= 60) { color = '#fb923c'; label = 'HIGH'; }
+  else if (score >= 40) { color = '#facc15'; label = 'MEDIUM'; }
 
   return (
     <div className="relative" style={{ width: size, height: size }}>

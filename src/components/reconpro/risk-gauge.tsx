@@ -40,8 +40,8 @@ export function RiskGauge({ value, size = 180, label }: RiskGaugeProps) {
     // Gradient arc
     const gradient = ctx.createLinearGradient(cx - radius, cy, cx + radius, cy);
     gradient.addColorStop(0, '#22c55e');
-    gradient.addColorStop(0.3, '#eab308');
-    gradient.addColorStop(0.6, '#f97316');
+    gradient.addColorStop(0.3, '#facc15');
+    gradient.addColorStop(0.6, '#fb923c');
     gradient.addColorStop(1, '#ef4444');
 
     const valueAngle = startAngle + (value / 100) * range;
@@ -56,7 +56,7 @@ export function RiskGauge({ value, size = 180, label }: RiskGaugeProps) {
     ctx.beginPath();
     ctx.arc(cx, cy, radius, startAngle, valueAngle);
     ctx.lineWidth = 14;
-    const glowColor = value > 70 ? 'rgba(239,68,68,0.3)' : value > 40 ? 'rgba(249,115,22,0.3)' : 'rgba(0,255,136,0.3)';
+    const glowColor = value > 70 ? 'rgba(239,68,68,0.3)' : value > 40 ? 'rgba(251,191,36,0.3)' : 'rgba(52,211,153,0.3)';
     ctx.strokeStyle = glowColor;
     ctx.lineCap = 'round';
     ctx.shadowColor = glowColor;
@@ -78,11 +78,11 @@ export function RiskGauge({ value, size = 180, label }: RiskGaugeProps) {
     }
 
     // Center value
-    ctx.fillStyle = value > 70 ? '#ef4444' : value > 40 ? '#f97316' : '#00ff88';
+    ctx.fillStyle = value > 70 ? '#ef4444' : value > 40 ? '#fb923c' : '#34d399';
     ctx.font = `bold ${size * 0.22}px "Geist Sans", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.shadowColor = value > 70 ? 'rgba(239,68,68,0.5)' : value > 40 ? 'rgba(249,115,22,0.5)' : 'rgba(0,255,136,0.5)';
+    ctx.shadowColor = value > 70 ? 'rgba(239,68,68,0.5)' : value > 40 ? 'rgba(251,191,36,0.5)' : 'rgba(52,211,153,0.5)';
     ctx.shadowBlur = 15;
     ctx.fillText(value.toString(), cx, cy - 5);
     ctx.shadowBlur = 0;

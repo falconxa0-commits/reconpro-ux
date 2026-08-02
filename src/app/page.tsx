@@ -87,16 +87,16 @@ interface RecentScan {
 }
 
 const severityColors: Record<string, string> = {
-  critical: 'bg-[#ef4444]/15 text-[#ef4444] border-[#ef4444]/30',
-  high: 'bg-[#f97316]/15 text-[#f97316] border-[#f97316]/30',
-  medium: 'bg-[#eab308]/15 text-[#eab308] border-[#eab308]/30',
-  low: 'bg-[#22c55e]/15 text-[#22c55e] border-[#22c55e]/30',
-  info: 'bg-[#6b7280]/15 text-[#6b7280] border-[#6b7280]/30',
+  critical: 'bg-[#f43f5e]/10 text-[#f43f5e] border-[#f43f5e]/20',
+  high: 'bg-[#fb923c]/10 text-[#fb923c] border-[#fb923c]/20',
+  medium: 'bg-[#facc15]/10 text-[#facc15] border-[#facc15]/20',
+  low: 'bg-[#34d399]/10 text-[#34d399] border-[#34d399]/20',
+  info: 'bg-[#6b7280]/10 text-[#6b7280] border-[#6b7280]/20',
 };
 
 const SEVERITY_RADAR_COLORS: Record<string, string> = {
-  critical: '#ef4444', high: '#f97316', medium: '#eab308',
-  low: '#22c55e', info: '#6b7280',
+  critical: '#f43f5e', high: '#fb923c', medium: '#facc15',
+  low: '#34d399', info: '#6b7280',
 };
 
 // ─── Mini severity donut (SVG) ──────────────────────────────
@@ -116,8 +116,8 @@ function SeverityDonut({ data }: { data: { name: string; value: number; color: s
           stroke={d.color} strokeWidth="18" strokeDasharray={d.dasharray}
           strokeDashoffset={d.offset} strokeLinecap="round" opacity={0.85} />
       ))}
-      <text x="60" y="56" textAnchor="middle" fill="#e6edf3" fontSize="22" fontWeight="bold" fontFamily="Geist Sans, sans-serif">{total}</text>
-      <text x="60" y="72" textAnchor="middle" fill="#7d8590" fontSize="9" fontFamily="Geist Sans, sans-serif">FINDINGS</text>
+      <text x="60" y="56" textAnchor="middle" fill="#f1f5f9" fontSize="22" fontWeight="bold" fontFamily="Geist Sans, sans-serif">{total}</text>
+      <text x="60" y="72" textAnchor="middle" fill="#475569" fontSize="9" fontFamily="Geist Sans, sans-serif">FINDINGS</text>
     </svg>
   );
 }
@@ -236,51 +236,49 @@ export default function Home() {
     dopamine.onFindingDiscovered(finding.severity, finding.title, finding.category);
   }, [dopamine]);
 
-  // ─── View Handlers ───────────────────────────────────────
-
   const handleViewChange = (view: string) => {
     setActiveView(view as View);
   };
 
   // ─── Dashboard View ─────────────────────────────────────
   const renderDashboard = () => (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { label: 'Total Scans', value: dashboardStats?.totalScans ?? 0, color: '#00ff88' },
-          { label: 'Total Findings', value: dashboardStats?.totalFindings ?? 0, color: '#f97316' },
-          { label: 'Critical Issues', value: dashboardStats?.criticalFindings ?? 0, color: '#ef4444' },
-          { label: 'Avg Risk Score', value: dashboardStats?.avgRiskScore ?? 0, color: '#eab308' },
+          { label: 'Total Scans', value: dashboardStats?.totalScans ?? 0, color: '#34d399' },
+          { label: 'Total Findings', value: dashboardStats?.totalFindings ?? 0, color: '#fb923c' },
+          { label: 'Critical Issues', value: dashboardStats?.criticalFindings ?? 0, color: '#f43f5e' },
+          { label: 'Avg Risk Score', value: dashboardStats?.avgRiskScore ?? 0, color: '#facc15' },
         ].map((stat) => (
           <motion.div key={stat.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-            className="cyber-card rounded-xl p-4 hover:border-[rgba(0,255,136,0.2)] transition-all">
-            <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">{stat.label}</div>
+            className="stat-card p-4" style={{ '--accent-line': `${stat.color}40` } as React.CSSProperties}>
+            <div className="text-[10px] font-medium uppercase tracking-[0.15em] text-[#475569] mb-3">{stat.label}</div>
             <AnimatedCounter target={stat.value} color={stat.color} size="lg" />
           </motion.div>
         ))}
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="cyber-card rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-[#e6edf3] mb-4">Severity Breakdown</h3>
+        <div className="cyber-card p-5">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-4">Severity Breakdown</h3>
           <SeverityDonut data={[
-            { name: 'Critical', value: dashboardStats?.criticalFindings ?? 0, color: '#ef4444' },
-            { name: 'High', value: dashboardStats?.highFindings ?? 0, color: '#f97316' },
-            { name: 'Medium', value: dashboardStats?.mediumFindings ?? 0, color: '#eab308' },
-            { name: 'Low', value: dashboardStats?.lowFindings ?? 0, color: '#22c55e' },
+            { name: 'Critical', value: dashboardStats?.criticalFindings ?? 0, color: '#f43f5e' },
+            { name: 'High', value: dashboardStats?.highFindings ?? 0, color: '#fb923c' },
+            { name: 'Medium', value: dashboardStats?.mediumFindings ?? 0, color: '#facc15' },
+            { name: 'Low', value: dashboardStats?.lowFindings ?? 0, color: '#34d399' },
             { name: 'Info', value: dashboardStats?.infoFindings ?? 0, color: '#6b7280' },
           ]} />
         </div>
-        <div className="lg:col-span-2 cyber-card rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-[#e6edf3] mb-4">Recent Scans</h3>
-          <div className="space-y-2 max-h-[280px] overflow-y-auto">
+        <div className="lg:col-span-2 cyber-card p-5">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#94a3b8] mb-4">Recent Scans</h3>
+          <div className="space-y-2 max-h-[280px] overflow-y-auto scrollbar-none">
             {recentScans.slice(0, 5).map((scan, i) => (
-              <motion.div key={scan.id} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.05 }}
-                className="flex items-center justify-between p-3 rounded-lg bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] hover:border-[rgba(0,255,136,0.15)] cursor-pointer"
+              <motion.div key={scan.id} initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.04 }}
+                className="flex items-center justify-between p-3 rounded-xl bg-[rgba(255,255,255,0.015)] border border-[rgba(255,255,255,0.03)] hover:border-[rgba(52,211,153,0.1)] cursor-pointer transition-all duration-300"
                 onClick={() => { if (scan.findings.length > 0) { setScanResult({ id: scan.id, domain: scan.target.domain, status: scan.status, riskScore: scan.riskScore, totalVulns: scan.totalVulns, critical: scan.criticalCount, high: scan.highCount, medium: scan.mediumCount, low: scan.lowCount, info: scan.infoCount, findings: scan.findings }); setActiveView('surface'); } }}>
                 <div className="flex items-center gap-3">
-                  <div className="text-sm font-mono text-[#e6edf3]">{scan.target.domain}</div>
+                  <div className="text-[13px] font-mono text-[#e2e8f0]">{scan.target.domain}</div>
                 </div>
-                <div className="text-sm font-mono font-bold" style={{ color: scan.riskScore > 70 ? '#ef4444' : scan.riskScore > 40 ? '#f97316' : '#00ff88' }}>{scan.riskScore}</div>
+                <div className="text-[13px] font-mono font-bold" style={{ color: scan.riskScore > 70 ? '#f43f5e' : scan.riskScore > 40 ? '#fb923c' : '#34d399' }}>{scan.riskScore}</div>
               </motion.div>
             ))}
           </div>
@@ -292,17 +290,17 @@ export default function Home() {
   // ─── Scan View ──────────────────────────────────────────
   const renderScan = () => (
     <div className="space-y-6">
-      <div className="text-center space-y-4 py-6">
+      <div className="text-center space-y-4 py-8">
         <motion.div initial={{ scale: 0.8, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[rgba(0,255,136,0.08)] border border-[rgba(0,255,136,0.15)]">
-          <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse-glow" />
-          <span className="text-xs font-mono text-[#00ff88] tracking-wider">RECONPRO ASM ENGINE v3.0.0 — ENTERPRISE</span>
+          className="inline-flex items-center gap-2.5 px-4 py-2 rounded-full bg-[rgba(52,211,153,0.06)] border border-[rgba(52,211,153,0.1)]">
+          <div className="w-1.5 h-1.5 rounded-full bg-[#34d399] animate-pulse-glow" />
+          <span className="text-[10.5px] font-mono text-[#34d399] tracking-[0.2em] uppercase">ASM Engine v3.0 — Enterprise</span>
         </motion.div>
-        <h1 className="text-3xl sm:text-4xl font-bold text-[#e6edf3]">
-          Attack Surface <span className="text-glow-green text-[#00ff88]">Intelligence</span>
+        <h1 className="text-3xl sm:text-4xl font-bold text-[#f1f5f9]">
+          Attack Surface <span className="text-glow-green text-[#34d399]">Intelligence</span>
         </h1>
-        <p className="text-muted-foreground max-w-xl mx-auto text-sm leading-relaxed">
-          Enterprise-grade reconnaissance across 13 categories. Real-time threat detection, compliance mapping, and continuous monitoring for your entire digital footprint.
+        <p className="text-[#64748b] max-w-xl mx-auto text-sm leading-relaxed">
+          Enterprise-grade reconnaissance across 13 categories. Real-time threat detection, compliance mapping, and continuous monitoring.
         </p>
         <ScanInput onScan={handleScan} isScanning={isScanning} />
       </div>
@@ -328,14 +326,14 @@ export default function Home() {
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(0,255,136,0.06)] border border-[rgba(0,255,136,0.12)]">
-              <span className="text-sm font-mono text-[#00ff88]">RADAR MAPPING</span>
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(52,211,153,0.05)] border border-[rgba(52,211,153,0.1)]">
+              <span className="text-[11px] font-mono text-[#34d399] tracking-wider">RADAR MAPPING</span>
             </div>
-            <span className="text-xs text-muted-foreground font-mono">{radarDomain}</span>
+            <span className="text-[11px] text-[#475569] font-mono">{radarDomain}</span>
           </div>
           {radarFindings.length === 0 && (
             <button onClick={() => setActiveView('scan')}
-              className="px-4 py-2 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all flex items-center gap-2 text-sm">
+              className="btn-primary text-[12px] px-4 py-2">
               Launch Scan First
             </button>
           )}
@@ -351,21 +349,21 @@ export default function Home() {
       {scanResult ? (
         <>
           <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(0,255,136,0.06)] border border-[rgba(0,255,136,0.12)]">
-              <span className="text-sm font-mono text-[#00ff88]">{scanResult.domain}</span>
+            <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[rgba(52,211,153,0.05)] border border-[rgba(52,211,153,0.1)]">
+              <span className="text-[12px] font-mono text-[#34d399]">{scanResult.domain}</span>
             </div>
-            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
-              <span className="text-xs text-muted-foreground">Risk: <span className="font-bold" style={{ color: scanResult.riskScore > 70 ? '#ef4444' : scanResult.riskScore > 40 ? '#f97316' : '#00ff88' }}>{scanResult.riskScore}</span>/100</span>
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.05)]">
+              <span className="text-[11px] text-[#64748b]">Risk: <span className="font-bold" style={{ color: scanResult.riskScore > 70 ? '#f43f5e' : scanResult.riskScore > 40 ? '#fb923c' : '#34d399' }}>{scanResult.riskScore}</span>/100</span>
             </div>
           </div>
           <AttackSurface findings={scanResult.findings} domain={scanResult.domain} riskScore={scanResult.riskScore} />
           <ScanResults result={scanResult} />
         </>
       ) : (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <h3 className="text-lg font-semibold text-[#e6edf3] mb-2">No Scan Data</h3>
-          <p className="text-sm text-muted-foreground max-w-sm mb-6">Run a scan first to visualize the attack surface.</p>
-          <button onClick={() => setActiveView('scan')} className="px-6 py-3 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all">Launch Scan</button>
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <h3 className="text-lg font-semibold text-[#f1f5f9] mb-2">No Scan Data</h3>
+          <p className="text-sm text-[#64748b] max-w-sm mb-6">Run a scan first to visualize the attack surface.</p>
+          <button onClick={() => setActiveView('scan')} className="btn-primary">Launch Scan</button>
         </div>
       )}
     </div>
@@ -375,25 +373,25 @@ export default function Home() {
   const renderThreats = () => (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-[#e6edf3]">Threat Intelligence Feed</h2>
-        <span className="text-xs text-muted-foreground font-mono">{threats.length} threats</span>
+        <h2 className="text-base font-semibold text-[#f1f5f9]">Threat Intelligence Feed</h2>
+        <span className="text-[10px] text-[#475569] font-mono">{threats.length} threats</span>
       </div>
-      <div className="space-y-3">
+      <div className="space-y-2.5">
         {threats.map((threat, i) => (
-          <motion.div key={threat.id} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
-            className="cyber-card rounded-xl p-5 hover:border-[rgba(239,68,68,0.2)] transition-all group cursor-pointer">
+          <motion.div key={threat.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
+            className="cyber-card p-4 hover:border-[rgba(244,63,94,0.12)] group cursor-pointer">
             <div className="flex items-start gap-4">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap mb-2">
-                  <span className={`text-[10px] px-2 py-0 rounded-full border ${severityColors[threat.severity]}`}>{threat.severity.toUpperCase()}</span>
-                  <span className="text-[10px] px-2 py-0 rounded-full border border-[rgba(6,182,212,0.3)] text-[#06b6d4]">{threat.source}</span>
+                  <span className={`text-[9px] px-2 py-0.5 rounded-md border font-medium ${severityColors[threat.severity]}`}>{threat.severity.toUpperCase()}</span>
+                  <span className="text-[9px] px-2 py-0.5 rounded-md border border-[rgba(34,211,238,0.2)] text-[#22d3ee] font-medium">{threat.source}</span>
                 </div>
-                <h3 className="text-sm font-semibold text-[#e6edf3] group-hover:text-[#00ff88] transition-colors mb-1">{threat.title}</h3>
-                <p className="text-xs text-muted-foreground leading-relaxed">{threat.description}</p>
+                <h3 className="text-[13px] font-semibold text-[#e2e8f0] group-hover:text-[#34d399] transition-colors mb-1">{threat.title}</h3>
+                <p className="text-[12px] text-[#64748b] leading-relaxed">{threat.description}</p>
                 {threat.ioc && (
-                  <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[rgba(6,182,212,0.08)] border border-[rgba(6,182,212,0.15)]">
-                    <span className="text-[10px] text-[#06b6d4]">IOC:</span>
-                    <span className="text-[11px] font-mono text-[#06b6d4]">{threat.ioc}</span>
+                  <div className="mt-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[rgba(34,211,238,0.05)] border border-[rgba(34,211,238,0.1)]">
+                    <span className="text-[9px] text-[#22d3ee] font-medium">IOC:</span>
+                    <span className="text-[11px] font-mono text-[#22d3ee]">{threat.ioc}</span>
                   </div>
                 )}
               </div>
@@ -408,29 +406,27 @@ export default function Home() {
   const renderHistory = () => (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-[#e6edf3]">Scan History</h2>
-        <span className="text-xs text-muted-foreground font-mono">{allScans.length} scans</span>
+        <h2 className="text-base font-semibold text-[#f1f5f9]">Scan History</h2>
+        <span className="text-[10px] text-[#475569] font-mono">{allScans.length} scans</span>
       </div>
       {allScans.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
-          <h3 className="text-lg font-semibold text-[#e6edf3] mb-2">No Scan History</h3>
-          <p className="text-sm text-muted-foreground max-w-sm mb-6">Your past scans will appear here.</p>
-          <button onClick={() => setActiveView('scan')} className="px-6 py-3 rounded-xl bg-[#00ff88] text-[#080a10] font-semibold hover:bg-[#00cc6e] transition-all">Launch Your First Scan</button>
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <h3 className="text-lg font-semibold text-[#f1f5f9] mb-2">No Scan History</h3>
+          <p className="text-sm text-[#64748b] max-w-sm mb-6">Your past scans will appear here.</p>
+          <button onClick={() => setActiveView('scan')} className="btn-primary">Launch Your First Scan</button>
         </div>
       ) : (
         <div className="space-y-2">
           {allScans.map((scan, i) => (
-            <motion.div key={scan.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
-              className="cyber-card rounded-xl p-4 hover:border-[rgba(0,255,136,0.2)] transition-all cursor-pointer group"
+            <motion.div key={scan.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
+              className="cyber-card p-4 hover:border-[rgba(52,211,153,0.1)] cursor-pointer group transition-all duration-300"
               onClick={() => { if (scan.findings.length > 0) { setScanResult({ id: scan.id, domain: scan.target.domain, status: scan.status, riskScore: scan.riskScore, totalVulns: scan.totalVulns, critical: scan.criticalCount, high: scan.highCount, medium: scan.mediumCount, low: scan.lowCount, info: scan.infoCount, findings: scan.findings }); setActiveView('surface'); } }}>
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-4 min-w-0">
-                  <div className="text-sm font-mono text-[#e6edf3] group-hover:text-[#00ff88] transition-colors">{scan.target.domain}</div>
-                  <div className="text-[11px] text-muted-foreground">{new Date(scan.startedAt).toLocaleString()}</div>
+                  <div className="text-[13px] font-mono text-[#e2e8f0] group-hover:text-[#34d399] transition-colors">{scan.target.domain}</div>
+                  <div className="text-[10.5px] text-[#475569] hidden sm:block">{new Date(scan.startedAt).toLocaleString()}</div>
                 </div>
-                <div className="flex items-center gap-6 flex-shrink-0">
-                  <div className="text-lg font-mono font-bold" style={{ color: scan.riskScore > 70 ? '#ef4444' : scan.riskScore > 40 ? '#f97316' : '#00ff88' }}>{scan.riskScore}</div>
-                </div>
+                <div className="text-base font-mono font-bold" style={{ color: scan.riskScore > 70 ? '#f43f5e' : scan.riskScore > 40 ? '#fb923c' : '#34d399' }}>{scan.riskScore}</div>
               </div>
             </motion.div>
           ))}
@@ -449,7 +445,9 @@ export default function Home() {
       case 'globe': return <ThreatGlobe />;
       case 'advisor': {
         const lastScan = allScans.length > 0 ? allScans[0] : null;
-        return <AIAdvisor findings={scanResult?.findings || (lastScan?.findings ?? [])} domain={scanResult?.domain || lastScan?.target?.domain || 'awaiting-target'} />;
+        const advisorFindings = scanResult?.findings || (lastScan ? lastScan.findings : []);
+        const advisorDomain = scanResult?.domain || (lastScan ? lastScan.target.domain : 'awaiting-target');
+        return <AIAdvisor findings={advisorFindings} domain={advisorDomain} />;
       }
       case 'surface': return renderSurface();
       case 'threats': return renderThreats();
@@ -491,7 +489,7 @@ export default function Home() {
   // ─── Main Layout ────────────────────────────────────────
   return (
     <DemoModeProvider>
-      <div className="min-h-screen flex flex-col bg-[#080a10] cyber-grid">
+      <div className="min-h-screen flex bg-[#030407] noise-bg">
         {/* Enterprise Sidebar */}
         <EnterpriseSidebar
           activeView={activeView}
@@ -502,26 +500,32 @@ export default function Home() {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Top Bar */}
-        <header className="sticky top-0 z-50 border-b border-[rgba(0,255,136,0.06)] bg-[#080a10]/80 backdrop-blur-xl">
+        {/* ── Top Bar ── */}
+        <header className="sticky top-0 z-50 bg-[#030407]/70 backdrop-blur-2xl">
+          <div className="h-px bg-gradient-to-r from-transparent via-[rgba(52,211,153,0.08)] to-transparent" />
           <div className="px-6">
-            <div className="flex items-center justify-between h-14">
+            <div className="flex items-center justify-between h-12">
               {/* Breadcrumb */}
               <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">ReconPro</span>
-                <span className="text-xs text-muted-foreground/40">/</span>
-                <span className="text-xs text-[#e6edf3] font-medium capitalize">{activeView.replace(/([A-Z])/g, ' $1').trim()}</span>
+                <span className="text-[11px] text-[#334155] font-medium">ReconPro</span>
+                <span className="text-[11px] text-[#1e293b]">/</span>
+                <span className="text-[11px] text-[#94a3b8] font-medium capitalize">
+                  {activeView.replace(/([A-Z])/g, ' $1').trim()}
+                </span>
               </div>
               {/* Right actions */}
-              <div className="flex items-center gap-3">
-                <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)]">
-                  <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse" />
-                  <span className="text-[11px] text-muted-foreground font-mono">SYSTEM ONLINE</span>
+              <div className="flex items-center gap-2.5">
+                {/* System status pill */}
+                <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)]">
+                  <div className="w-1.5 h-1.5 rounded-full bg-[#34d399] animate-pulse" />
+                  <span className="text-[10px] text-[#475569] font-mono tracking-wider">ONLINE</span>
                 </div>
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[rgba(0,255,136,0.06)] border border-[rgba(0,255,136,0.12)]">
-                  <span className="text-[10px] font-mono text-[#00ff88]">ENTERPRISE PLAN</span>
+                {/* Plan badge */}
+                <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[rgba(52,211,153,0.04)] border border-[rgba(52,211,153,0.08)]">
+                  <span className="text-[9px] font-mono text-[#34d399] tracking-[0.15em] font-semibold">ENTERPRISE</span>
                 </div>
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#00ff88] to-[#06b6d4] flex items-center justify-center text-[#080a10] font-bold text-xs">
+                {/* Avatar */}
+                <div className="h-7 w-7 rounded-full bg-gradient-to-br from-[#34d399] to-[#22d3ee] flex items-center justify-center text-[#030407] font-bold text-[10px]">
                   AC
                 </div>
               </div>
@@ -529,16 +533,16 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Main Content */}
+        {/* ── Main Content ── */}
         <main className="flex-1 overflow-y-auto">
           <div className="max-w-[1400px] mx-auto px-6 py-6">
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeView}
-                initial={{ opacity: 0, y: 8 }}
+                initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.2 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
               >
                 {renderView()}
               </motion.div>
@@ -546,7 +550,7 @@ export default function Home() {
           </div>
         </main>
 
-        {/* Dopamine Effects Layer */}
+        {/* ── Dopamine Effects Layer ── */}
         <ConfettiCanvas particles={dopamine.confettiParticles} />
         <FloatingXPCanvas popups={dopamine.floatingXPPopups} />
         <ScreenEffects shaking={dopamine.shaking} flashColor={dopamine.flashColor} />
@@ -557,28 +561,28 @@ export default function Home() {
         <criticalFeed.AlertFeedUI alerts={criticalFeed.alerts} onDismiss={criticalFeed.dismiss} />
         <BadgePopup badge={lastNewBadge} onClose={() => setLastNewBadge(null)} />
 
-        {/* Footer */}
-        <footer className="border-t border-[rgba(255,255,255,0.04)] py-3">
-          <div className="max-w-[1400px] mx-auto px-6 flex items-center justify-between">
-            <div className="flex items-center gap-4 text-[11px] text-muted-foreground">
+        {/* ── Footer ── */}
+        <footer className="border-t border-[rgba(255,255,255,0.025)] mt-auto">
+          <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center justify-between">
+            <div className="flex items-center gap-5 text-[10px] text-[#334155]">
               <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#00ff88]" />
-                SOC 2 Type II Certified
+                <span className="w-1 h-1 rounded-full bg-[#34d399]" />
+                SOC 2 Type II
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#06b6d4]" />
-                HIPAA Compliant
+                <span className="w-1 h-1 rounded-full bg-[#22d3ee]" />
+                HIPAA
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#a78bfa]" />
+                <span className="w-1 h-1 rounded-full bg-[#a78bfa]" />
                 ISO 27001
               </span>
             </div>
             <div className="flex items-center gap-3">
               <DemoModeToggle position="header" />
-              <div className="text-[11px] text-muted-foreground/50">
-                ReconPro Enterprise v3.1.0
-              </div>
+              <span className="text-[10px] text-[#1e293b] font-mono">
+                v3.1.0
+              </span>
             </div>
           </div>
         </footer>
@@ -590,4 +594,3 @@ export default function Home() {
     </DemoModeProvider>
   );
 }
-

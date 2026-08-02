@@ -219,7 +219,7 @@ function GlobeSphere() {
       {/* Wireframe */}
       <mesh rotation={[0, 0, 0]}>
         <sphereGeometry args={[R, 36, 18]} />
-        <meshBasicMaterial color="#00ff88" wireframe transparent opacity={0.06} />
+        <meshBasicMaterial color="#34d399" wireframe transparent opacity={0.06} />
       </mesh>
 
       {/* Latitude lines */}
@@ -230,7 +230,7 @@ function GlobeSphere() {
         return (
           <mesh key={lat} position={[0, y, 0]} rotation={[Math.PI / 2, 0, 0]}>
             <ringGeometry args={[ringR - 0.003, ringR + 0.003, 128]} />
-            <meshBasicMaterial color="#00ff88" transparent opacity={lat === 0 ? 0.15 : 0.07} side={THREE.DoubleSide} />
+            <meshBasicMaterial color="#34d399" transparent opacity={lat === 0 ? 0.15 : 0.07} side={THREE.DoubleSide} />
           </mesh>
         );
       })}
@@ -241,7 +241,7 @@ function GlobeSphere() {
         return (
           <mesh key={lng} rotation={[0, theta, 0]}>
             <ringGeometry args={[R - 0.003, R + 0.003, 128]} />
-            <meshBasicMaterial color="#00ff88" transparent opacity={lng === 0 ? 0.15 : 0.05} side={THREE.DoubleSide} />
+            <meshBasicMaterial color="#34d399" transparent opacity={lng === 0 ? 0.15 : 0.05} side={THREE.DoubleSide} />
           </mesh>
         );
       })}
@@ -315,7 +315,7 @@ function LandDots() {
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" count={positions.length / 3} array={positions} itemSize={3} />
         </bufferGeometry>
-        <pointsMaterial color="#00ff88" size={0.025} transparent opacity={0.5} sizeAttenuation depthWrite={false} />
+        <pointsMaterial color="#34d399" size={0.025} transparent opacity={0.5} sizeAttenuation depthWrite={false} />
       </points>
     </group>
   );
@@ -338,7 +338,7 @@ function ThreatPoints({ cities }: { cities: ThreatCity[] }) {
     return cities.map(city => ({
       ...city,
       pos: latLngToVec3(city.lat, city.lng, R + 0.02),
-      color: city.type === 'source' ? '#ef4444' : city.type === 'hotspot' ? '#f97316' : '#00ff88',
+      color: city.type === 'source' ? '#ef4444' : city.type === 'hotspot' ? '#fb923c' : '#34d399',
     }));
   }, [cities]);
 
@@ -393,7 +393,7 @@ function AttackArcs({ cities, connections }: { cities: ThreatCity[]; connections
         curve: createArcCurve(start, end, 0.6),
         progress: Math.random(),
         speed: 0.08 + Math.random() * 0.12,
-        color: cities[si].type === 'source' ? '#ef4444' : '#f97316',
+        color: cities[si].type === 'source' ? '#ef4444' : '#fb923c',
       };
     });
   }, [cities, connections]);
@@ -439,7 +439,7 @@ function AttackArcs({ cities, connections }: { cities: ThreatCity[]; connections
       }
       return {
         positions,
-        color: cities[si].type === 'source' ? '#ef4444' : '#f97316',
+        color: cities[si].type === 'source' ? '#ef4444' : '#fb923c',
       };
     });
   }, [cities, connections]);
@@ -483,7 +483,7 @@ function TravelingPackets({ cities, connections }: { cities: ThreatCity[]; conne
         curve: createArcCurve(start, end, 0.6),
         progress: Math.random(),
         speed: 0.06 + Math.random() * 0.1,
-        color: new THREE.Color(cities[si].type === 'source' ? '#ef4444' : '#f97316'),
+        color: new THREE.Color(cities[si].type === 'source' ? '#ef4444' : '#fb923c'),
       };
     });
   }, [cities, connections]);
@@ -544,11 +544,11 @@ function OrbitalRing() {
     <group>
       <mesh ref={ringRef}>
         <torusGeometry args={[R + 0.5, 0.003, 8, 128]} />
-        <meshBasicMaterial color="#00ff88" transparent opacity={0.15} />
+        <meshBasicMaterial color="#34d399" transparent opacity={0.15} />
       </mesh>
       <mesh ref={satRef}>
         <sphereGeometry args={[0.025, 8, 8]} />
-        <meshBasicMaterial color="#00ff88" />
+        <meshBasicMaterial color="#34d399" />
       </mesh>
     </group>
   );
@@ -567,7 +567,7 @@ function InnerGlow() {
     }
   });
 
-  return <pointLight ref={lightRef} color="#00ff88" intensity={1.5} distance={5} decay={2} />;
+  return <pointLight ref={lightRef} color="#34d399" intensity={1.5} distance={5} decay={2} />;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -649,7 +649,7 @@ function HUD({ cities, connections, noThreats }: { cities: ThreatCity[]; connect
 
       {/* Top-right */}
       <div className="absolute top-4 right-4 text-right">
-        <div className="text-[10px] font-mono text-[#00ff88]">{time}</div>
+        <div className="text-[10px] font-mono text-[#34d399]">{time}</div>
         <div className="text-[9px] font-mono text-muted-foreground/60 mt-1">NODES: {cities.length} ACTIVE</div>
       </div>
 
@@ -659,8 +659,8 @@ function HUD({ cities, connections, noThreats }: { cities: ThreatCity[]; connect
           <div className="px-2 py-1 rounded bg-[#ef4444]/10 border border-[#ef4444]/20">
             <span className="text-[10px] font-mono text-[#ef4444]">{activeThreats} ACTIVE THREATS</span>
           </div>
-          <div className="px-2 py-1 rounded bg-[#f97316]/10 border border-[#f97316]/20">
-            <span className="text-[10px] font-mono text-[#f97316]">{connections.length} ATTACK VECTORS</span>
+          <div className="px-2 py-1 rounded bg-[#fb923c]/10 border border-[#fb923c]/20">
+            <span className="text-[10px] font-mono text-[#fb923c]">{connections.length} ATTACK VECTORS</span>
           </div>
         </div>
         <div className="text-[9px] font-mono text-muted-foreground/50">
@@ -675,24 +675,24 @@ function HUD({ cities, connections, noThreats }: { cities: ThreatCity[]; connect
           <span className="text-[9px] font-mono text-muted-foreground">Threat Source</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#f97316]" />
+          <div className="w-2 h-2 rounded-full bg-[#fb923c]" />
           <span className="text-[9px] font-mono text-muted-foreground">Hotspot</span>
         </div>
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#00ff88]" />
+          <div className="w-2 h-2 rounded-full bg-[#34d399]" />
           <span className="text-[9px] font-mono text-muted-foreground">Target / Defense</span>
         </div>
       </div>
 
       {/* Corner brackets */}
-      <div className="absolute top-2 left-2 w-4 h-4 border-t border-l border-[#00ff88]/30" />
-      <div className="absolute top-2 right-2 w-4 h-4 border-t border-r border-[#00ff88]/30" />
-      <div className="absolute bottom-2 left-2 w-4 h-4 border-b border-l border-[#00ff88]/30" />
-      <div className="absolute bottom-2 right-2 w-4 h-4 border-b border-r border-[#00ff88]/30" />
+      <div className="absolute top-2 left-2 w-4 h-4 border-t border-l border-[#34d399]/30" />
+      <div className="absolute top-2 right-2 w-4 h-4 border-t border-r border-[#34d399]/30" />
+      <div className="absolute bottom-2 left-2 w-4 h-4 border-b border-l border-[#34d399]/30" />
+      <div className="absolute bottom-2 right-2 w-4 h-4 border-b border-r border-[#34d399]/30" />
 
       {/* Scan line effect */}
       <div className="absolute inset-0 pointer-events-none" style={{
-        background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,255,136,0.015) 2px, rgba(0,255,136,0.015) 4px)',
+        background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(52,211,153,0.015) 2px, rgba(52,211,153,0.015) 4px)',
       }} />
 
       {/* No active threats overlay */}
@@ -700,7 +700,7 @@ function HUD({ cities, connections, noThreats }: { cities: ThreatCity[]; connect
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="text-center">
             <div className="text-3xl mb-2">🛡️</div>
-            <div className="text-sm font-mono text-[#00ff88]/60">No active threats detected</div>
+            <div className="text-sm font-mono text-[#34d399]/60">No active threats detected</div>
             <div className="text-[10px] font-mono text-[#6272a4] mt-1">Run a scan to populate threat intelligence</div>
           </div>
         </div>

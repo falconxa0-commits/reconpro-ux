@@ -228,8 +228,8 @@ function TrendChart({ data }: { data: HistoricalDataPoint[] }) {
   // Level zone backgrounds
   const zones = [
     { from: 0, to: 20, color: '#22c55e08' },
-    { from: 20, to: 40, color: '#eab30808' },
-    { from: 40, to: 60, color: '#f9731608' },
+    { from: 20, to: 40, color: '#facc1508' },
+    { from: 40, to: 60, color: '#fb923c08' },
     { from: 60, to: 80, color: '#ef444408' },
     { from: 80, to: 100, color: '#7f1d1d08' },
   ];
@@ -448,7 +448,7 @@ function ThreatFeed({ threats }: { threats: string[] }) {
   }, [threats.length]);
 
   const severityIcons = [AlertTriangle, Zap, Shield, Activity, Radio];
-  const severityColors = ['#ef4444', '#f97316', '#eab308', '#60a5fa', '#a78bfa'];
+  const severityColors = ['#ef4444', '#fb923c', '#facc15', '#60a5fa', '#a78bfa'];
 
   return (
     <div className="space-y-2">

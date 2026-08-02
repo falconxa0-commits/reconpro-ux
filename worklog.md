@@ -830,3 +830,49 @@ Stage Summary:
 - Training Cluster: full GPU orchestration dashboard with simulated data, SVG charts, interactive job management
 - Air-Gapped Appliance: complete sovereign deployment UI with CSS hardware illustration, collapsible deployment guide, security posture monitoring
 - No external API dependencies — all data simulated in-component
+
+---
+Task ID: UI-DARKSWEAT
+Agent: main
+Task: Full UI/frontend rebuild — premium dark-sweat design system
+
+Work Log:
+- Rebuilt globals.css with new DARKSWEAT design system v2.0
+  - Deeper blacks: #030407 (void-950) → #0f1422 (void-700) scale
+  - Emerald accent palette: #34d399 primary, #22d3ee cyan, #f43f5e rose, #fb923c amber, #facc15 yellow
+  - Noise texture overlay (SVG fractalNoise)
+  - Premium card system: stat-card, enterprise-glass, enterprise-gradient-border
+  - Cinematic animations: glow-pulse, text-shimmer, rotate-slow, fade-in-up
+  - Ultra-thin 4px scrollbar, hidden until hover
+  - Premium button system (btn-primary, btn-ghost)
+  - Skeleton shimmer, input-premium, ring utilities, separator system
+- Rebuilt sidebar.tsx with refined premium aesthetic
+  - Conic-gradient rotating glow ring on logo
+  - Tighter spacing, 260px expanded / 68px collapsed
+  - Per-badge accent colors, 8.5px badges
+  - Ultra-subtle right edge gradient line
+- Rebuilt page.tsx main layout
+  - Noise texture background on root container
+  - Frosted glass top bar with emerald gradient line
+  - Refined breadcrumb with deeper text hierarchy
+  - Minimal footer with dot indicators
+  - Smoother view transitions (0.25s ease)
+- Rebuilt layout.tsx with inline dark styles
+- Created premium-ui.tsx reusable component library
+  - PremiumCard, StatusBadge, GlowButton, SectionHeader
+  - MetricCard, EmptyState, Separator, MonoLabel, ProgressRing
+- Migrated 1,302 color references across 38 component files
+  - Old neon green (#00ff88) → emerald (#34d399)
+  - Old red (#f85149) → rose (#f43f5e)
+  - Old orange (#f97316) → amber (#fb923c)
+  - Old yellow (#eab308) → softer yellow (#facc15)
+  - Old text colors → new slate hierarchy (#f1f5f9, #94a3b8, #64748b, #475569, #334155)
+  - Old backgrounds → deeper void scale
+- Upgraded CEO Dashboard with all new colors
+- Verified: TypeScript compiles, dev server runs, browser renders all views, zero runtime errors
+
+Stage Summary:
+- Complete dark-sweat UI overhaul applied to entire 40+ view platform
+- New design token system with 5-tier void black scale and emerald accent
+- All 38 component files migrated to new palette (1,302 replacements)
+- New premium-ui.tsx primitives available for future development

@@ -58,7 +58,7 @@ function Markdown({ text }: { text: string }) {
     if (line.startsWith('```')) {
       if (inCodeBlock) {
         elements.push(
-          <div key={`code-${i}`} className="my-2 rounded-lg bg-[#0d1117] border border-[rgba(255,255,255,0.06)] overflow-hidden">
+          <div key={`code-${i}`} className="my-2 rounded-lg bg-[#080b14] border border-[rgba(255,255,255,0.06)] overflow-hidden">
             <div className="flex items-center justify-between px-3 py-1.5 border-b border-[rgba(255,255,255,0.04)]">
               <span className="text-[10px] text-muted-foreground font-mono">OUTPUT</span>
             </div>
@@ -92,7 +92,7 @@ function Markdown({ text }: { text: string }) {
             <thead>
               <tr className="border-b border-[rgba(255,255,255,0.08)]">
                 {tableRows[0]?.map((cell, ci) => (
-                  <th key={ci} className="text-left py-2 px-3 text-[#00ff88] font-mono font-semibold">{cell}</th>
+                  <th key={ci} className="text-left py-2 px-3 text-[#34d399] font-mono font-semibold">{cell}</th>
                 ))}
               </tr>
             </thead>
@@ -117,15 +117,15 @@ function Markdown({ text }: { text: string }) {
 
     // Headers
     if (line.startsWith('### ')) {
-      elements.push(<h4 key={`h4-${i}`} className="text-sm font-semibold text-[#e6edf3] mt-4 mb-2 flex items-center gap-2"><Target className="w-3.5 h-3.5 text-[#00ff88]" />{renderInline(line.slice(4))}</h4>);
+      elements.push(<h4 key={`h4-${i}`} className="text-sm font-semibold text-[#f1f5f9] mt-4 mb-2 flex items-center gap-2"><Target className="w-3.5 h-3.5 text-[#34d399]" />{renderInline(line.slice(4))}</h4>);
       continue;
     }
     if (line.startsWith('## ')) {
-      elements.push(<h3 key={`h3-${i}`} className="text-base font-bold text-[#e6edf3] mt-5 mb-2 flex items-center gap-2"><ShieldAlert className="w-4 h-4 text-[#f97316]" />{renderInline(line.slice(3))}</h3>);
+      elements.push(<h3 key={`h3-${i}`} className="text-base font-bold text-[#f1f5f9] mt-5 mb-2 flex items-center gap-2"><ShieldAlert className="w-4 h-4 text-[#fb923c]" />{renderInline(line.slice(3))}</h3>);
       continue;
     }
     if (line.startsWith('# ')) {
-      elements.push(<h2 key={`h2-${i}`} className="text-lg font-bold text-[#e6edf3] mt-3 mb-3">{renderInline(line.slice(2))}</h2>);
+      elements.push(<h2 key={`h2-${i}`} className="text-lg font-bold text-[#f1f5f9] mt-3 mb-3">{renderInline(line.slice(2))}</h2>);
       continue;
     }
 
@@ -136,7 +136,7 @@ function Markdown({ text }: { text: string }) {
       const content = line.replace(/^\s*-\s/, '').replace(/^\s*\d+\.\s/, '');
       elements.push(
         <div key={`li-${i}`} className={`flex gap-2 py-0.5 ${indent > 0 ? 'ml-4' : ''}`}>
-          <span className="text-[#00ff88] flex-shrink-0 mt-px">{isNumbered ? '' : '>'}</span>
+          <span className="text-[#34d399] flex-shrink-0 mt-px">{isNumbered ? '' : '>'}</span>
           <span className="text-xs text-[#c9d1d9] leading-relaxed">{renderInline(content)}</span>
         </div>
       );
@@ -145,7 +145,7 @@ function Markdown({ text }: { text: string }) {
 
     // Bold text lines
     if (line.startsWith('**') && line.endsWith('**')) {
-      elements.push(<div key={`bold-${i}`} className="text-xs font-semibold text-[#e6edf3] mt-2">{renderInline(line)}</div>);
+      elements.push(<div key={`bold-${i}`} className="text-xs font-semibold text-[#f1f5f9] mt-2">{renderInline(line)}</div>);
       continue;
     }
 
@@ -161,7 +161,7 @@ function Markdown({ text }: { text: string }) {
           <thead>
             <tr className="border-b border-[rgba(255,255,255,0.08)]">
               {tableRows[0]?.map((cell, ci) => (
-                <th key={ci} className="text-left py-2 px-3 text-[#00ff88] font-mono font-semibold">{cell}</th>
+                <th key={ci} className="text-left py-2 px-3 text-[#34d399] font-mono font-semibold">{cell}</th>
               ))}
             </tr>
           </thead>
@@ -187,13 +187,13 @@ function renderInline(text: string): React.ReactNode {
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
   return parts.map((part, i) => {
     if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i} className="text-[#e6edf3] font-semibold">{part.slice(2, -2)}</strong>;
+      return <strong key={i} className="text-[#f1f5f9] font-semibold">{part.slice(2, -2)}</strong>;
     }
     // Inline code
     const codeParts = part.split(/(`[^`]+`)/g);
     return codeParts.map((cp, j) => {
       if (cp.startsWith('`') && cp.endsWith('`')) {
-        return <code key={`${i}-${j}`} className="px-1.5 py-0.5 rounded bg-[#0d1117] border border-[rgba(255,255,255,0.06)] text-[#00ff88] font-mono text-[10px]">{cp.slice(1, -1)}</code>;
+        return <code key={`${i}-${j}`} className="px-1.5 py-0.5 rounded bg-[#080b14] border border-[rgba(255,255,255,0.06)] text-[#34d399] font-mono text-[10px]">{cp.slice(1, -1)}</code>;
       }
       return <span key={`${i}-${j}`}>{cp}</span>;
     });
@@ -205,13 +205,13 @@ function renderInline(text: string): React.ReactNode {
 function TypingIndicator() {
   return (
     <div className="flex items-center gap-2 px-4 py-3">
-      <div className="w-5 h-5 rounded-lg bg-[rgba(0,255,136,0.1)] flex items-center justify-center flex-shrink-0">
-        <Bot className="w-3 h-3 text-[#00ff88]" />
+      <div className="w-5 h-5 rounded-lg bg-[rgba(52,211,153,0.1)] flex items-center justify-center flex-shrink-0">
+        <Bot className="w-3 h-3 text-[#34d399]" />
       </div>
       <div className="flex items-center gap-1.5">
-        <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-bounce" style={{ animationDelay: '0ms' }} />
-        <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-bounce" style={{ animationDelay: '150ms' }} />
-        <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-bounce" style={{ animationDelay: '300ms' }} />
+        <div className="w-1.5 h-1.5 rounded-full bg-[#34d399] animate-bounce" style={{ animationDelay: '0ms' }} />
+        <div className="w-1.5 h-1.5 rounded-full bg-[#34d399] animate-bounce" style={{ animationDelay: '150ms' }} />
+        <div className="w-1.5 h-1.5 rounded-full bg-[#34d399] animate-bounce" style={{ animationDelay: '300ms' }} />
       </div>
       <span className="text-[10px] text-muted-foreground font-mono ml-1">Analyzing attack surface...</span>
     </div>
@@ -328,14 +328,14 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
       <div className="flex items-center justify-between px-4 py-3 border-b border-[rgba(255,255,255,0.04)] flex-shrink-0">
         <div className="flex items-center gap-3">
           <div className="relative">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00ff88]/20 to-[#06b6d4]/20 border border-[#00ff88]/20 flex items-center justify-center">
-              <Brain className="w-4 h-4 text-[#00ff88]" />
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#34d399]/20 to-[#06b6d4]/20 border border-[#34d399]/20 flex items-center justify-center">
+              <Brain className="w-4 h-4 text-[#34d399]" />
             </div>
-            <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#00ff88] animate-pulse-glow" />
+            <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#34d399] animate-pulse-glow" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-[#e6edf3]">AI Security Advisor</h3>
+              <h3 className="text-sm font-semibold text-[#f1f5f9]">AI Security Advisor</h3>
               <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-[#06b6d4]/30 text-[#06b6d4]">
                 GPT-CLASS
               </Badge>
@@ -350,7 +350,7 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
         <div className="flex items-center gap-2">
           <button
             onClick={clearChat}
-            className="p-2 rounded-lg hover:bg-[rgba(255,255,255,0.04)] text-muted-foreground hover:text-[#e6edf3] transition-all"
+            className="p-2 rounded-lg hover:bg-[rgba(255,255,255,0.04)] text-muted-foreground hover:text-[#f1f5f9] transition-all"
             title="Reset conversation"
           >
             <RotateCcw className="w-4 h-4" />
@@ -367,7 +367,7 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
           className="px-4 py-3 border-b border-[rgba(255,255,255,0.04)] flex-shrink-0"
         >
           <div className="flex items-center gap-2 mb-2">
-            <Sparkles className="w-3.5 h-3.5 text-[#00ff88]" />
+            <Sparkles className="w-3.5 h-3.5 text-[#34d399]" />
             <span className="text-[11px] text-muted-foreground uppercase tracking-wider font-semibold">Quick Analysis</span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -376,11 +376,11 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
                 key={action.label}
                 onClick={() => sendMessage(action.query || action.label, action.type)}
                 disabled={isLoading || findings.length === 0}
-                className="flex flex-col items-start gap-1.5 p-3 rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.06)] hover:border-[rgba(0,255,136,0.2)] hover:bg-[rgba(0,255,136,0.03)] transition-all text-left disabled:opacity-30 disabled:cursor-not-allowed group"
+                className="flex flex-col items-start gap-1.5 p-3 rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.06)] hover:border-[rgba(52,211,153,0.2)] hover:bg-[rgba(52,211,153,0.03)] transition-all text-left disabled:opacity-30 disabled:cursor-not-allowed group"
               >
                 <div className="flex items-center gap-2">
-                  <span className="text-[#00ff88] group-hover:text-[#00ff88] transition-colors">{action.icon}</span>
-                  <span className="text-xs font-medium text-[#e6edf3]">{action.label}</span>
+                  <span className="text-[#34d399] group-hover:text-[#34d399] transition-colors">{action.icon}</span>
+                  <span className="text-xs font-medium text-[#f1f5f9]">{action.label}</span>
                 </div>
                 <span className="text-[10px] text-muted-foreground">{action.desc}</span>
               </button>
@@ -393,16 +393,16 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#00ff88]/10 to-[#06b6d4]/10 border border-[rgba(0,255,136,0.1)] flex items-center justify-center mb-4">
-              <Brain className="w-8 h-8 text-[#00ff88]/50" />
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#34d399]/10 to-[#06b6d4]/10 border border-[rgba(52,211,153,0.1)] flex items-center justify-center mb-4">
+              <Brain className="w-8 h-8 text-[#34d399]/50" />
             </div>
-            <h3 className="text-sm font-semibold text-[#e6edf3] mb-1">AI Security Advisor</h3>
+            <h3 className="text-sm font-semibold text-[#f1f5f9] mb-1">AI Security Advisor</h3>
             <p className="text-xs text-muted-foreground max-w-xs">
               Run a scan first, then I'll analyze your attack surface with real remediation playbooks, CVE data, and compliance mapping.
             </p>
             <button
               onClick={() => { /* navigate to scan */ }}
-              className="mt-4 text-xs text-[#00ff88] hover:underline flex items-center gap-1"
+              className="mt-4 text-xs text-[#34d399] hover:underline flex items-center gap-1"
             >
               <Radar className="w-3.5 h-3.5" />
               Run your first scan
@@ -421,8 +421,8 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
               className={`flex gap-2.5 ${msg.role === 'user' ? 'justify-end' : ''}`}
             >
               {msg.role === 'assistant' && (
-                <div className="w-6 h-6 rounded-lg bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.15)] flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Bot className="w-3.5 h-3.5 text-[#00ff88]" />
+                <div className="w-6 h-6 rounded-lg bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.15)] flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <Bot className="w-3.5 h-3.5 text-[#34d399]" />
                 </div>
               )}
 
@@ -430,8 +430,8 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
                 {msg.isLoading ? (
                   <TypingIndicator />
                 ) : msg.role === 'user' ? (
-                  <div className="px-4 py-2.5 rounded-2xl rounded-tr-md bg-[rgba(0,255,136,0.08)] border border-[rgba(0,255,136,0.15)]">
-                    <p className="text-xs text-[#e6edf3]">{msg.content}</p>
+                  <div className="px-4 py-2.5 rounded-2xl rounded-tr-md bg-[rgba(52,211,153,0.08)] border border-[rgba(52,211,153,0.15)]">
+                    <p className="text-xs text-[#f1f5f9]">{msg.content}</p>
                   </div>
                 ) : (
                   <div className="px-4 py-3 rounded-2xl rounded-tl-md bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)]">
@@ -441,8 +441,8 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
               </div>
 
               {msg.role === 'user' && (
-                <div className="w-6 h-6 rounded-lg bg-[rgba(0,255,136,0.15)] flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <FileSearch className="w-3.5 h-3.5 text-[#00ff88]" />
+                <div className="w-6 h-6 rounded-lg bg-[rgba(52,211,153,0.15)] flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <FileSearch className="w-3.5 h-3.5 text-[#34d399]" />
                 </div>
               )}
             </motion.div>
@@ -468,7 +468,7 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
                 key={q}
                 onClick={() => sendMessage(q)}
                 disabled={findings.length === 0}
-                className="flex-shrink-0 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)] hover:border-[rgba(0,255,136,0.2)] text-[10px] text-muted-foreground hover:text-[#e6edf3] transition-all disabled:opacity-30"
+                className="flex-shrink-0 px-3 py-1.5 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)] hover:border-[rgba(52,211,153,0.2)] text-[10px] text-muted-foreground hover:text-[#f1f5f9] transition-all disabled:opacity-30"
               >
                 {q}
               </button>
@@ -489,14 +489,14 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
               placeholder={findings.length > 0 ? "Ask about your security posture..." : "Run a scan first to enable AI analysis..."}
               disabled={isLoading || findings.length === 0}
               rows={1}
-              className="w-full px-4 py-2.5 rounded-xl bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.08)] focus:border-[rgba(0,255,136,0.3)] focus:outline-none text-sm text-[#e6edf3] placeholder:text-muted-foreground/50 resize-none disabled:opacity-30 transition-all"
+              className="w-full px-4 py-2.5 rounded-xl bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.08)] focus:border-[rgba(52,211,153,0.3)] focus:outline-none text-sm text-[#f1f5f9] placeholder:text-muted-foreground/50 resize-none disabled:opacity-30 transition-all"
               style={{ maxHeight: '80px' }}
             />
           </div>
           <button
             onClick={() => sendMessage(input)}
             disabled={isLoading || !input.trim() || findings.length === 0}
-            className="p-2.5 rounded-xl bg-[#00ff88] text-[#080a10] hover:bg-[#00cc6e] disabled:opacity-20 disabled:cursor-not-allowed transition-all flex-shrink-0"
+            className="p-2.5 rounded-xl bg-[#34d399] text-[#080a10] hover:bg-[#00cc6e] disabled:opacity-20 disabled:cursor-not-allowed transition-all flex-shrink-0"
           >
             <Send className="w-4 h-4" />
           </button>

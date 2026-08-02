@@ -84,13 +84,13 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  injection: '#06b6d4', jailbreak: '#d946ef', stress: '#f97316',
+  injection: '#06b6d4', jailbreak: '#d946ef', stress: '#fb923c',
   extraction: '#f43f5e', advanced: '#a855f7',
 };
 
 const PROVIDER_COLORS: Record<string, string> = {
   OpenAI: '#10b981', Anthropic: '#d946ef', Google: '#3b82f6',
-  Meta: '#06b6d4', Mistral: '#f97316', DeepSeek: '#64748b',
+  Meta: '#06b6d4', Mistral: '#fb923c', DeepSeek: '#64748b',
   Alibaba: '#facc15', Cohere: '#a855f7',
 };
 
@@ -310,7 +310,7 @@ export function CognitiveDreadPanel() {
   const dreadRatingColor = (r: string) => {
     if (r === 'FORTRESS') return '#22c55e';
     if (r === 'RESILIENT') return '#06b6d4';
-    if (r === 'VULNERABLE') return '#f97316';
+    if (r === 'VULNERABLE') return '#fb923c';
     return '#f43f5e';
   };
 

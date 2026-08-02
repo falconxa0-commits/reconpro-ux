@@ -136,7 +136,7 @@ export function MatrixTerminalPanel() {
   const focusInput = useCallback(() => inputRef.current?.focus(), []);
 
   /* ─── helpers ─── */
-  const push = useCallback((html: string, cls = 'text-[#00ff88]') => {
+  const push = useCallback((html: string, cls = 'text-[#34d399]') => {
     setLines(prev => [...prev, { id: lineIdRef.current++, html, cls }]);
   }, []);
 
@@ -495,8 +495,8 @@ export function MatrixTerminalPanel() {
       {/* ─── TOP BAR ─── */}
       <div className="flex items-center justify-between px-3 py-2 bg-[#0d1320] border-b border-green-900/30 shrink-0">
         <div className="flex items-center gap-2">
-          <Terminal className="w-4 h-4 text-[#00ff88]" />
-          <span className="text-[#00ff88] font-bold text-xs tracking-wide">RECONPRO MATRIX TERMINAL</span>
+          <Terminal className="w-4 h-4 text-[#34d399]" />
+          <span className="text-[#34d399] font-bold text-xs tracking-wide">RECONPRO MATRIX TERMINAL</span>
           <span className="text-gray-600 text-[10px]">v2.0.0-beta</span>
         </div>
         <div className="flex items-center gap-3">
@@ -506,29 +506,29 @@ export function MatrixTerminalPanel() {
 
           <button
             onClick={handleShare}
-            className="text-gray-500 hover:text-[#00ff88] transition-colors"
+            className="text-gray-500 hover:text-[#34d399] transition-colors"
             title="Share session"
           >
             <Share2 className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={handleCopy}
-            className="text-gray-500 hover:text-[#00ff88] transition-colors"
+            className="text-gray-500 hover:text-[#34d399] transition-colors"
             title="Copy all output"
           >
             <Copy className="w-3.5 h-3.5" />
-            {copied && <span className="text-[10px] text-[#00ff88] ml-1">Copied!</span>}
+            {copied && <span className="text-[10px] text-[#34d399] ml-1">Copied!</span>}
           </button>
           <button
             onClick={handleDownload}
-            className="text-gray-500 hover:text-[#00ff88] transition-colors"
+            className="text-gray-500 hover:text-[#34d399] transition-colors"
             title="Download session"
           >
             <Download className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setIsFullscreen(f => !f)}
-            className="text-gray-500 hover:text-[#00ff88] transition-colors"
+            className="text-gray-500 hover:text-[#34d399] transition-colors"
             title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
           >
             {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
@@ -570,14 +570,14 @@ export function MatrixTerminalPanel() {
               <span className="text-gray-400 text-xs">
                 Liked this? Get the full CLI with real scans:
               </span>
-              <code className="text-[#00ff88] text-xs bg-black/40 px-2 py-1 rounded">
+              <code className="text-[#34d399] text-xs bg-black/40 px-2 py-1 rounded">
                 pip install reconpro
               </code>
               <a
                 href="https://github.com/reconpro/reconpro"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-gray-500 hover:text-[#00ff88] text-xs flex items-center gap-1 transition-colors"
+                className="text-gray-500 hover:text-[#34d399] text-xs flex items-center gap-1 transition-colors"
               >
                 GitHub <ExternalLink className="w-3 h-3" />
               </a>
@@ -594,7 +594,7 @@ export function MatrixTerminalPanel() {
 
       {/* ─── INPUT LINE ─── */}
       <div className="flex items-center px-3 py-2 bg-[#060a12] border-t border-green-900/20 shrink-0">
-        <span className="text-[#00ff88] text-xs font-bold shrink-0 select-none">{PROMPT}</span>
+        <span className="text-[#34d399] text-xs font-bold shrink-0 select-none">{PROMPT}</span>
         <input
           ref={inputRef}
           type="text"
@@ -603,7 +603,7 @@ export function MatrixTerminalPanel() {
           onKeyDown={onKeyDown}
           disabled={isScanning}
           placeholder={isScanning ? 'scanning...' : 'type a command...'}
-          className="flex-1 bg-transparent text-[#00ff88] outline-none placeholder-gray-700 text-[13px] font-mono caret-[#00ff88]"
+          className="flex-1 bg-transparent text-[#34d399] outline-none placeholder-gray-700 text-[13px] font-mono caret-[#34d399]"
           spellCheck={false}
           autoComplete="off"
           autoCorrect="off"

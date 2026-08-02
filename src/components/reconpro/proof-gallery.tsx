@@ -58,8 +58,8 @@ interface ResolutionOption {
 
 const SEVERITY_COLORS: Record<string, { bg: string; text: string; border: string; hex: string }> = {
   critical: { bg: 'bg-red-500/20', text: 'text-red-400', border: 'border-red-500/40', hex: '#ef4444' },
-  high:     { bg: 'bg-orange-500/20', text: 'text-orange-400', border: 'border-orange-500/40', hex: '#f97316' },
-  medium:   { bg: 'bg-yellow-500/20', text: 'text-yellow-400', border: 'border-yellow-500/40', hex: '#eab308' },
+  high:     { bg: 'bg-orange-500/20', text: 'text-orange-400', border: 'border-orange-500/40', hex: '#fb923c' },
+  medium:   { bg: 'bg-yellow-500/20', text: 'text-yellow-400', border: 'border-yellow-500/40', hex: '#facc15' },
   low:      { bg: 'bg-blue-500/20', text: 'text-blue-400', border: 'border-blue-500/40', hex: '#3b82f6' },
   info:     { bg: 'bg-gray-500/20', text: 'text-gray-400', border: 'border-gray-500/40', hex: '#6b7280' },
 };
@@ -167,9 +167,9 @@ function renderProof(
   ctx.fillRect(0, 0, w, headerH);
 
   // ── Top-left: ReconPro branding ──
-  drawShieldIcon(ctx, pad + fontSize(10), pad + fontSize(8), fontSize(12), '#00ff88');
+  drawShieldIcon(ctx, pad + fontSize(10), pad + fontSize(8), fontSize(12), '#34d399');
   ctx.font = `bold ${fontSize(18)}px monospace`;
-  ctx.fillStyle = '#00ff88';
+  ctx.fillStyle = '#34d399';
   ctx.textBaseline = 'middle';
   ctx.fillText('ReconPro', pad + fontSize(30), pad + fontSize(10));
 
@@ -234,7 +234,7 @@ function renderProof(
   ctx.textBaseline = 'top';
 
   const lines: { text: string; color: string }[] = [];
-  lines.push({ text: `$ reconpro scan --target ${domain} --mode full`, color: '#00ff88' });
+  lines.push({ text: `$ reconpro scan --target ${domain} --mode full`, color: '#34d399' });
   lines.push({ text: '[*] Initializing recon engine...', color: '#6b7280' });
   lines.push({ text: '[*] Enumerating subdomains, ports, technologies...', color: '#6b7280' });
   lines.push({ text: `[*] Scanning ${finding.category}: ${finding.asset}`, color: '#6b7280' });
@@ -336,7 +336,7 @@ function createAnimState(): AnimationState {
 function getTerminalLines(finding: FindingData, domain: string) {
   const sevColor = SEVERITY_COLORS[finding.severity]?.hex || '#6b7280';
   const lines: { text: string; color: string; isProgress?: boolean; isDiscovery?: boolean }[] = [];
-  lines.push({ text: `$ reconpro scan --target ${domain} --mode full`, color: '#00ff88' });
+  lines.push({ text: `$ reconpro scan --target ${domain} --mode full`, color: '#34d399' });
   lines.push({ text: '[*] Initializing recon engine...', color: '#6b7280' });
   lines.push({ text: '[*] Enumerating subdomains, ports, technologies...', color: '#6b7280' });
   lines.push({ text: `[*] Scanning ${finding.category}: ${finding.asset}`, color: '#6b7280' });
@@ -393,9 +393,9 @@ function drawAnimFrame(
   ctx.fillRect(0, 0, w, headerH);
 
   // Top-left branding
-  drawShieldIcon(ctx, pad + fs(10), pad + fs(8), fs(12), '#00ff88');
+  drawShieldIcon(ctx, pad + fs(10), pad + fs(8), fs(12), '#34d399');
   ctx.font = `bold ${fs(18)}px monospace`;
-  ctx.fillStyle = '#00ff88';
+  ctx.fillStyle = '#34d399';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillText('ReconPro', pad + fs(30), pad + fs(10));
@@ -468,7 +468,7 @@ function drawAnimFrame(
     if (i === state.lineIndex && state.phase === 'typing') {
       if (Math.floor(state.frameCount / 15) % 2 === 0) {
         const textW = ctx.measureText(text).width;
-        ctx.fillStyle = '#00ff88';
+        ctx.fillStyle = '#34d399';
         ctx.fillRect(termX + pad + textW, lineY, fs(8), fs(14));
       }
     }

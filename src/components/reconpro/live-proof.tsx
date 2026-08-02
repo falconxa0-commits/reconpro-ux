@@ -166,7 +166,7 @@ const severityColors: Record<string, string> = {
   critical: '#ff0040',
   high: '#ff6b35',
   medium: '#ffc107',
-  low: '#00ff88',
+  low: '#34d399',
   info: '#00b4d8',
 };
 
@@ -174,7 +174,7 @@ const severityBg: Record<string, string> = {
   critical: 'rgba(255,0,64,0.15)',
   high: 'rgba(255,107,53,0.15)',
   medium: 'rgba(255,193,7,0.15)',
-  low: 'rgba(0,255,136,0.15)',
+  low: 'rgba(52,211,153,0.15)',
   info: 'rgba(0,180,216,0.15)',
 };
 
@@ -242,7 +242,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#0a0e1a] text-white flex flex-col items-center justify-center gap-4">
-        <Loader2 className="h-8 w-8 animate-spin text-[#00ff88]" />
+        <Loader2 className="h-8 w-8 animate-spin text-[#34d399]" />
         <span className="text-gray-400 font-mono text-sm">Loading scan data...</span>
       </div>
     );
@@ -252,7 +252,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
     return (
       <div className="min-h-screen bg-[#0a0e1a] text-white flex flex-col items-center justify-center gap-4">
         <span className="text-[#ff0040] font-mono text-sm">Error: {fetchError}</span>
-        <button onClick={() => window.location.reload()} className="px-4 py-2 rounded-lg border border-[#00ff8844] text-[#00ff88] hover:bg-[#00ff8815] transition-all text-sm">
+        <button onClick={() => window.location.reload()} className="px-4 py-2 rounded-lg border border-[#34d39944] text-[#34d399] hover:bg-[#34d39915] transition-all text-sm">
           Retry
         </button>
       </div>
@@ -269,7 +269,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
         </div>
         <button
           onClick={() => onNavigate('scan')}
-          className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#00ff88] to-[#00b4d8] text-black font-bold hover:scale-105 transition-transform"
+          className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#34d399] to-[#00b4d8] text-black font-bold hover:scale-105 transition-transform"
         >
           🚀 Run Your First Scan
         </button>
@@ -285,13 +285,13 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="relative overflow-hidden rounded-2xl border border-[#00ff8833] bg-gradient-to-br from-[#0d1117] to-[#161b22] p-8 mb-8"
+        className="relative overflow-hidden rounded-2xl border border-[#34d39933] bg-gradient-to-br from-[#0d1117] to-[#161b22] p-8 mb-8"
       >
-        <div className="absolute inset-0 bg-gradient-to-r from-[#00ff8808] to-[#00b4d808]" />
+        <div className="absolute inset-0 bg-gradient-to-r from-[#34d39908] to-[#00b4d808]" />
         <div className="relative z-10">
           <div className="flex items-center gap-3 mb-2">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#00ff8820] text-[#00ff88] text-xs font-mono font-bold">
-              <span className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse" />
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#34d39920] text-[#34d399] text-xs font-mono font-bold">
+              <span className="w-2 h-2 rounded-full bg-[#34d399] animate-pulse" />
               VERIFIED LIVE SCAN
             </span>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#ff004020] text-[#ff4060] text-xs font-mono">
@@ -302,7 +302,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
             <span className="text-gradient-premium">ReconPro</span> — Live Scan Proof
           </h1>
           <p className="text-gray-400 text-lg max-w-3xl">
-            Every finding below came from actual <code className="text-[#00ff88] bg-[#00ff8815] px-1.5 py-0.5 rounded text-sm">dig</code>, <code className="text-[#00ff88] bg-[#00ff8815] px-1.5 py-0.5 rounded text-sm">curl</code>, <code className="text-[#00ff88] bg-[#00ff8815] px-1.5 py-0.5 rounded text-sm">openssl</code>, and <code className="text-[#00ff88] bg-[#00ff8815] px-1.5 py-0.5 rounded text-sm">socket</code> calls.
+            Every finding below came from actual <code className="text-[#34d399] bg-[#34d39915] px-1.5 py-0.5 rounded text-sm">dig</code>, <code className="text-[#34d399] bg-[#34d39915] px-1.5 py-0.5 rounded text-sm">curl</code>, <code className="text-[#34d399] bg-[#34d39915] px-1.5 py-0.5 rounded text-sm">openssl</code>, and <code className="text-[#34d399] bg-[#34d39915] px-1.5 py-0.5 rounded text-sm">socket</code> calls.
             Zero fabrication. All data verified against raw tool output.
           </p>
 
@@ -310,13 +310,13 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
             <button
               onClick={handleRunScan}
               disabled={isScanning}
-              className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#00ff88] to-[#00b4d8] text-black font-bold hover:scale-105 transition-transform disabled:opacity-50"
+              className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#34d399] to-[#00b4d8] text-black font-bold hover:scale-105 transition-transform disabled:opacity-50"
             >
               {isScanning ? `Scanning... ${scanProgress}%` : '🚀 Run Your Own Live Scan'}
             </button>
             <button
               onClick={() => onNavigate('scan')}
-              className="px-6 py-3 rounded-xl border border-[#00ff8844] text-[#00ff88] hover:bg-[#00ff8815] transition-all"
+              className="px-6 py-3 rounded-xl border border-[#34d39944] text-[#34d399] hover:bg-[#34d39915] transition-all"
             >
               Open Scanner →
             </button>
@@ -332,7 +332,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
                 className="mt-4 overflow-hidden rounded-full bg-[#1a2332] h-1.5"
               >
                 <motion.div
-                  className="h-full bg-gradient-to-r from-[#00ff88] to-[#00b4d8] rounded-full"
+                  className="h-full bg-gradient-to-r from-[#34d399] to-[#00b4d8] rounded-full"
                   style={{ width: `${scanProgress}%` }}
                 />
               </motion.div>
@@ -349,8 +349,8 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
             onClick={() => setSelectedIdx(i)}
             className={`flex-1 min-w-[200px] p-4 rounded-xl border transition-all ${
               selectedIdx === i
-                ? 'border-[#00ff88] bg-[#00ff8810] shadow-lg shadow-[#00ff8820]'
-                : 'border-[#ffffff15] bg-[#0d1117] hover:border-[#ffffff30]'
+                ? 'border-[#34d399] bg-[#34d39910] shadow-lg shadow-[#34d39920]'
+                : 'border-[#ffffff15] bg-[#080b14] hover:border-[#ffffff30]'
             }`}
           >
             <div className="font-bold text-lg">{d.domain}</div>
@@ -413,7 +413,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
         {/* Severity Bars */}
         <div className="cyber-card p-6 lg:col-span-2">
           <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-[#00ff88]" />
+            <span className="w-3 h-3 rounded-full bg-[#34d399]" />
             Severity Distribution — {data.domain}
           </h3>
           <div className="space-y-4">
@@ -421,7 +421,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
               { label: 'CRITICAL', count: data.critical, color: '#ff0040', max: 10 },
               { label: 'HIGH', count: data.high, color: '#ff6b35', max: 10 },
               { label: 'MEDIUM', count: data.medium, color: '#ffc107', max: 10 },
-              { label: 'LOW', count: data.low, color: '#00ff88', max: 10 },
+              { label: 'LOW', count: data.low, color: '#34d399', max: 10 },
               { label: 'INFO', count: data.info, color: '#00b4d8', max: 40 },
             ].map(sev => (
               <div key={sev.label} className="flex items-center gap-3">
@@ -443,8 +443,8 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
           </div>
 
           {/* Verification badge */}
-          <div className="mt-6 p-3 rounded-lg border border-[#00ff8833] bg-[#00ff8808]">
-            <div className="flex items-center gap-2 text-[#00ff88] text-sm font-mono">
+          <div className="mt-6 p-3 rounded-lg border border-[#34d39933] bg-[#34d39908]">
+            <div className="flex items-center gap-2 text-[#34d399] text-sm font-mono">
               <span>✓</span>
               <span>Verified: {data.totalFindings} findings from {data.scannedAt ? new Date(data.scannedAt).toLocaleString() : 'live scan'}</span>
             </div>
@@ -495,7 +495,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
                     exit={{ height: 0, opacity: 0 }}
                     className="mt-3 pt-3 border-t border-[#ffffff10] overflow-hidden"
                   >
-                    <div className="text-xs text-[#00ff88] font-mono bg-[#0a0e1a] p-2 rounded-lg">
+                    <div className="text-xs text-[#34d399] font-mono bg-[#0a0e1a] p-2 rounded-lg">
                       <div className="text-gray-500 mb-1">$ raw evidence</div>
                       {cat.evidence}
                     </div>
@@ -516,7 +516,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
         <div className="overflow-hidden rounded-xl border border-[#ffffff10]">
           <table className="w-full">
             <thead>
-              <tr className="bg-[#0d1117]">
+              <tr className="bg-[#080b14]">
                 <th className="text-left p-4 text-xs font-mono text-gray-400">SEVERITY</th>
                 <th className="text-left p-4 text-xs font-mono text-gray-400">FINDING</th>
                 <th className="text-left p-4 text-xs font-mono text-gray-400 hidden lg:table-cell">CATEGORY</th>
@@ -553,7 +553,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
                     </span>
                   </td>
                   <td className="p-4 hidden xl:table-cell">
-                    <div className="text-xs font-mono text-[#00ff88] bg-[#0a0e1a] p-2 rounded-lg max-w-xs">
+                    <div className="text-xs font-mono text-[#34d399] bg-[#0a0e1a] p-2 rounded-lg max-w-xs">
                       {f.evidence}
                     </div>
                   </td>
@@ -581,13 +581,13 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
         <div className="flex justify-center gap-4">
           <button
             onClick={() => onNavigate('scan')}
-            className="px-8 py-3 rounded-xl bg-gradient-to-r from-[#00ff88] to-[#00b4d8] text-black font-bold hover:scale-105 transition-transform"
+            className="px-8 py-3 rounded-xl bg-gradient-to-r from-[#34d399] to-[#00b4d8] text-black font-bold hover:scale-105 transition-transform"
           >
             Launch Scanner →
           </button>
           <button
             onClick={() => onNavigate('pricing')}
-            className="px-8 py-3 rounded-xl border border-[#00ff8844] text-[#00ff88] hover:bg-[#00ff8815] transition-all"
+            className="px-8 py-3 rounded-xl border border-[#34d39944] text-[#34d399] hover:bg-[#34d39915] transition-all"
           >
             View Pricing
           </button>

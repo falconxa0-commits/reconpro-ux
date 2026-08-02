@@ -88,9 +88,9 @@ const INTEGRATION_TYPES = [
 function getStatusIcon(status: string) {
   switch (status) {
     case 'success':
-      return <CheckCircle2 className="w-3.5 h-3.5 text-[#00ff88]" />;
+      return <CheckCircle2 className="w-3.5 h-3.5 text-[#34d399]" />;
     case 'error':
-      return <XCircle className="w-3.5 h-3.5 text-[#f85149]" />;
+      return <XCircle className="w-3.5 h-3.5 text-[#f43f5e]" />;
     case 'warning':
       return <Zap className="w-3.5 h-3.5 text-[#d29922]" />;
     default:
@@ -192,7 +192,7 @@ export function IntegrationHub() {
   if (loading) {
     return (
       <div className="w-full flex items-center justify-center py-20">
-        <p className="text-[#8b949e]">Loading...</p>
+        <p className="text-[#475569]">Loading...</p>
       </div>
     );
   }
@@ -207,33 +207,33 @@ export function IntegrationHub() {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)]">
-            <Plug className="w-5 h-5 text-[#00ff88]" />
+          <div className="p-2 rounded-lg bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]">
+            <Plug className="w-5 h-5 text-[#34d399]" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-[#e6edf3]">Integration Hub</h2>
-            <p className="text-sm text-[#8b949e]">
+            <h2 className="text-xl font-bold text-[#f1f5f9]">Integration Hub</h2>
+            <p className="text-sm text-[#475569]">
               {connectedCount} of {integrations.length} integrations connected
             </p>
           </div>
         </div>
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
           <DialogTrigger asChild>
-            <Button className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
+            <Button className="bg-[#34d399] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
               <Plus className="w-4 h-4" />
               Add Integration
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-[#0d1117] border-[#21262d] text-[#e6edf3]">
+          <DialogContent className="bg-[#080b14] border-[#21262d] text-[#f1f5f9]">
             <DialogHeader>
-              <DialogTitle className="text-[#e6edf3]">Add Integration</DialogTitle>
-              <DialogDescription className="text-[#8b949e]">
+              <DialogTitle className="text-[#f1f5f9]">Add Integration</DialogTitle>
+              <DialogDescription className="text-[#475569]">
                 Connect a new service to your security pipeline.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#e6edf3]">Integration Type</label>
+                <label className="text-sm font-medium text-[#f1f5f9]">Integration Type</label>
                 <div className="grid grid-cols-2 gap-2">
                   {INTEGRATION_TYPES.map((t) => (
                     <button
@@ -241,8 +241,8 @@ export function IntegrationHub() {
                       onClick={() => setAddType(t.type)}
                       className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all text-left ${
                         addType === t.type
-                          ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
-                          : 'bg-[#0a0d14] border-[#21262d] text-[#8b949e] hover:border-[#30363d]'
+                          ? 'bg-[rgba(52,211,153,0.15)] border-[rgba(52,211,153,0.4)] text-[#34d399]'
+                          : 'bg-[#050710] border-[#21262d] text-[#475569] hover:border-[#30363d]'
                       }`}
                     >
                       {t.label}
@@ -251,29 +251,29 @@ export function IntegrationHub() {
                 </div>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#e6edf3]">Name</label>
+                <label className="text-sm font-medium text-[#f1f5f9]">Name</label>
                 <Input
                   placeholder={INTEGRATION_TYPES.find((t) => t.type === addType)?.label || 'Integration name'}
                   value={addName}
                   onChange={(e) => setAddName(e.target.value)}
-                  className="bg-[#0a0d14] border-[#21262d] text-[#e6edf3] placeholder:text-[#484f58] focus:border-[#00ff88]"
+                  className="bg-[#050710] border-[#21262d] text-[#f1f5f9] placeholder:text-[#334155] focus:border-[#34d399]"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#e6edf3]">Webhook URL</label>
+                <label className="text-sm font-medium text-[#f1f5f9]">Webhook URL</label>
                 <Input
                   placeholder={INTEGRATION_TYPES.find((t) => t.type === addType)?.defaultUrl || 'https://...'}
                   value={addWebhookUrl}
                   onChange={(e) => setAddWebhookUrl(e.target.value)}
-                  className="bg-[#0a0d14] border-[#21262d] text-[#e6edf3] placeholder:text-[#484f58] focus:border-[#00ff88]"
+                  className="bg-[#050710] border-[#21262d] text-[#f1f5f9] placeholder:text-[#334155] focus:border-[#34d399]"
                 />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setAddOpen(false)} className="border-[#21262d] text-[#8b949e] hover:bg-[#0a0d14]">
+              <Button variant="outline" onClick={() => setAddOpen(false)} className="border-[#21262d] text-[#475569] hover:bg-[#050710]">
                 Cancel
               </Button>
-              <Button onClick={handleAddIntegration} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+              <Button onClick={handleAddIntegration} className="bg-[#34d399] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
                 Connect
               </Button>
             </DialogFooter>
@@ -284,9 +284,9 @@ export function IntegrationHub() {
       {/* ── Integration Cards Grid ──────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {integrations.length === 0 ? (
-          <div className="col-span-full rounded-xl border border-[#21262d] bg-[#0d1117] p-8 text-center">
-            <Plug className="w-8 h-8 text-[#484f58] mx-auto mb-3" />
-            <p className="text-sm text-[#8b949e]">No integrations configured yet. Click &quot;Add Integration&quot; to get started.</p>
+          <div className="col-span-full rounded-xl border border-[#21262d] bg-[#080b14] p-8 text-center">
+            <Plug className="w-8 h-8 text-[#334155] mx-auto mb-3" />
+            <p className="text-sm text-[#475569]">No integrations configured yet. Click &quot;Add Integration&quot; to get started.</p>
           </div>
         ) : (
           integrations.map((integration, idx) => {
@@ -330,15 +330,15 @@ export function IntegrationHub() {
                         {integration.connected && (
                           <div
                             className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center"
-                            style={{ backgroundColor: '#00ff88' }}
+                            style={{ backgroundColor: '#34d399' }}
                           >
                             <CheckCircle2 className="w-3 h-3 text-[#0a0d14]" />
                           </div>
                         )}
                       </div>
                       <div>
-                        <h3 className="text-sm font-bold text-[#e6edf3]">{integration.name}</h3>
-                        <p className="text-[10px] text-[#8b949e] leading-relaxed max-w-[200px] truncate">
+                        <h3 className="text-sm font-bold text-[#f1f5f9]">{integration.name}</h3>
+                        <p className="text-[10px] text-[#475569] leading-relaxed max-w-[200px] truncate">
                           {integration.description}
                         </p>
                       </div>
@@ -354,15 +354,15 @@ export function IntegrationHub() {
                   <div className="flex items-center justify-between mb-4">
                     {integration.connected ? (
                       <div className="flex items-center gap-2">
-                        <Activity className="w-3.5 h-3.5 text-[#8b949e]" />
-                        <span className="text-lg font-bold text-[#e6edf3]">{integration.eventCount}</span>
-                        <span className="text-xs text-[#8b949e]">{integration.eventType}</span>
+                        <Activity className="w-3.5 h-3.5 text-[#475569]" />
+                        <span className="text-lg font-bold text-[#f1f5f9]">{integration.eventCount}</span>
+                        <span className="text-xs text-[#475569]">{integration.eventType}</span>
                       </div>
                     ) : (
-                      <span className="text-xs text-[#484f58] italic">Not connected</span>
+                      <span className="text-xs text-[#334155] italic">Not connected</span>
                     )}
                     {integration.lastSync && (
-                      <div className="flex items-center gap-1 text-[10px] text-[#484f58]">
+                      <div className="flex items-center gap-1 text-[10px] text-[#334155]">
                         <Clock className="w-3 h-3" />
                         {integration.lastSync}
                       </div>
@@ -376,8 +376,8 @@ export function IntegrationHub() {
                     onClick={() => handleConfigure(integration.id)}
                     className={`w-full gap-1.5 text-xs font-medium transition-all ${
                       integration.connected
-                        ? 'border-[#21262d] text-[#8b949e] hover:bg-[rgba(0,255,136,0.1)] hover:text-[#00ff88] hover:border-[rgba(0,255,136,0.3)]'
-                        : 'border-[#30363d] text-[#484f58] hover:bg-[rgba(0,255,136,0.1)] hover:text-[#00ff88]'
+                        ? 'border-[#21262d] text-[#475569] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#34d399] hover:border-[rgba(52,211,153,0.3)]'
+                        : 'border-[#30363d] text-[#334155] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#34d399]'
                     }`}
                   >
                     <Settings className="w-3.5 h-3.5" />
@@ -402,18 +402,18 @@ export function IntegrationHub() {
       </motion.div>
 
       {/* ── Activity Log ─────────────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#0d1117] overflow-hidden">
+      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden">
         <div className="p-4 border-b border-[#21262d] flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-1.5 rounded-md bg-[rgba(0,255,136,0.1)]">
-              <Activity className="w-4 h-4 text-[#00ff88]" />
+            <div className="p-1.5 rounded-md bg-[rgba(52,211,153,0.1)]">
+              <Activity className="w-4 h-4 text-[#34d399]" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-[#e6edf3]">Integration Activity</h3>
-              <p className="text-xs text-[#8b949e]">Recent events across all integrations</p>
+              <h3 className="text-sm font-semibold text-[#f1f5f9]">Integration Activity</h3>
+              <p className="text-xs text-[#475569]">Recent events across all integrations</p>
             </div>
           </div>
-          <Badge variant="outline" className="text-[10px] border-[#21262d] text-[#8b949e]">
+          <Badge variant="outline" className="text-[10px] border-[#21262d] text-[#475569]">
             Live
           </Badge>
         </div>
@@ -421,7 +421,7 @@ export function IntegrationHub() {
         <div className="divide-y divide-[#161b22]">
           {activity.length === 0 ? (
             <div className="px-4 py-8 text-center">
-              <p className="text-xs text-[#484f58]">No activity yet. Events will appear here when integrations are used.</p>
+              <p className="text-xs text-[#334155]">No activity yet. Events will appear here when integrations are used.</p>
             </div>
           ) : (
             <AnimatePresence>
@@ -431,7 +431,7 @@ export function IntegrationHub() {
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: idx * 0.06, duration: 0.3 }}
-                  className="flex items-center gap-3 px-4 py-3 hover:bg-[rgba(0,255,136,0.02)] transition-colors"
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-[rgba(52,211,153,0.02)] transition-colors"
                 >
                   {/* Status icon */}
                   <div className="shrink-0">{getStatusIcon(event.status)}</div>
@@ -447,21 +447,21 @@ export function IntegrationHub() {
                   {/* Content */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-[#e6edf3]">{event.integration}</span>
-                      <span className="text-[10px] text-[#484f58]">•</span>
-                      <span className="text-[10px] font-medium text-[#8b949e]">{event.action}</span>
+                      <span className="text-xs font-semibold text-[#f1f5f9]">{event.integration}</span>
+                      <span className="text-[10px] text-[#334155]">•</span>
+                      <span className="text-[10px] font-medium text-[#475569]">{event.action}</span>
                     </div>
-                    <p className="text-[10px] text-[#484f58] truncate mt-0.5">{event.description}</p>
+                    <p className="text-[10px] text-[#334155] truncate mt-0.5">{event.description}</p>
                   </div>
 
                   {/* Timestamp */}
-                  <div className="flex items-center gap-1 text-[10px] text-[#484f58] shrink-0">
+                  <div className="flex items-center gap-1 text-[10px] text-[#334155] shrink-0">
                     <Clock className="w-3 h-3" />
                     <span className="hidden sm:inline">{event.timestamp}</span>
                   </div>
 
                   {/* Action */}
-                  <button className="shrink-0 p-1 rounded-md text-[#484f58] hover:text-[#e6edf3] hover:bg-[rgba(0,255,136,0.1)] transition-all">
+                  <button className="shrink-0 p-1 rounded-md text-[#334155] hover:text-[#f1f5f9] hover:bg-[rgba(52,211,153,0.1)] transition-all">
                     <ExternalLink className="w-3.5 h-3.5" />
                   </button>
                 </motion.div>

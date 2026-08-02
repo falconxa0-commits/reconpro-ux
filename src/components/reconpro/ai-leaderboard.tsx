@@ -66,22 +66,22 @@ type SortDirection = 'asc' | 'desc';
 // ══════════════════════════════════════════════════════════════════════════════
 
 const GRADE_COLORS: Record<string, string> = {
-  'A+': '#00ff88', A: '#22c55e', 'A-': '#4ade80',
+  'A+': '#34d399', A: '#22c55e', 'A-': '#4ade80',
   'B+': '#3b82f6', B: '#6366f1', 'B-': '#818cf8',
-  'C+': '#eab308', C: '#f97316', 'C-': '#fb923c',
+  'C+': '#facc15', C: '#fb923c', 'C-': '#fb923c',
   'D+': '#ef4444', D: '#dc2626', 'D-': '#b91c1c',
   F: '#991b1b',
 };
 
 const GRADE_BG: Record<string, string> = {
-  'A+': 'bg-[#00ff88]/15 border-[#00ff88]/30 text-[#00ff88]',
+  'A+': 'bg-[#34d399]/15 border-[#34d399]/30 text-[#34d399]',
   A: 'bg-[#22c55e]/15 border-[#22c55e]/30 text-[#22c55e]',
   'A-': 'bg-[#4ade80]/15 border-[#4ade80]/30 text-[#4ade80]',
   'B+': 'bg-[#3b82f6]/15 border-[#3b82f6]/30 text-[#3b82f6]',
   B: 'bg-[#6366f1]/15 border-[#6366f1]/30 text-[#6366f1]',
   'B-': 'bg-[#818cf8]/15 border-[#818cf8]/30 text-[#818cf8]',
-  'C+': 'bg-[#eab308]/15 border-[#eab308]/30 text-[#eab308]',
-  C: 'bg-[#f97316]/15 border-[#f97316]/30 text-[#f97316]',
+  'C+': 'bg-[#facc15]/15 border-[#facc15]/30 text-[#facc15]',
+  C: 'bg-[#fb923c]/15 border-[#fb923c]/30 text-[#fb923c]',
   'C-': 'bg-[#fb923c]/15 border-[#fb923c]/30 text-[#fb923c]',
   'D+': 'bg-[#ef4444]/15 border-[#ef4444]/30 text-[#ef4444]',
   D: 'bg-[#dc2626]/15 border-[#dc2626]/30 text-[#dc2626]',
@@ -91,10 +91,10 @@ const GRADE_BG: Record<string, string> = {
 
 const CATEGORY_META: Record<string, { label: string; icon: LucideIcon; color: string }> = {
   promptInjection: { label: 'Prompt Injection', icon: FileWarning, color: '#ef4444' },
-  dataExtraction: { label: 'Data Extraction', icon: Database, color: '#f97316' },
+  dataExtraction: { label: 'Data Extraction', icon: Database, color: '#fb923c' },
   jailbreak: { label: 'Jailbreak', icon: ShieldAlert, color: '#dc2626' },
   hallucination: { label: 'Hallucination', icon: Brain, color: '#a855f7' },
-  bias: { label: 'Bias', icon: Scale, color: '#eab308' },
+  bias: { label: 'Bias', icon: Scale, color: '#facc15' },
   harmfulContent: { label: 'Harmful Content', icon: Skull, color: '#ef4444' },
   privacyLeak: { label: 'Privacy Leak', icon: Lock, color: '#06b6d4' },
 };
@@ -130,7 +130,7 @@ function useAnimatedNumber(target: number, duration: number = 1.5) {
 
 function TrendArrow({ direction }: { direction: string }) {
   if (direction === 'up') return <TrendingUp className="w-3.5 h-3.5 text-[#ef4444]" />;
-  if (direction === 'down') return <TrendingDown className="w-3.5 h-3.5 text-[#00ff88]" />;
+  if (direction === 'down') return <TrendingDown className="w-3.5 h-3.5 text-[#34d399]" />;
   return <Minus className="w-3.5 h-3.5 text-[#6b7280]" />;
 }
 
@@ -138,7 +138,7 @@ function FragilityGauge({ score, size = 80 }: { score: number; size?: number }) 
   const radius = (size / 2) - 4;
   const circumference = 2 * Math.PI * radius;
   const progress = (score / 100) * circumference;
-  const color = score >= 70 ? '#ef4444' : score >= 50 ? '#f97316' : score >= 30 ? '#eab308' : '#00ff88';
+  const color = score >= 70 ? '#ef4444' : score >= 50 ? '#fb923c' : score >= 30 ? '#facc15' : '#34d399';
 
   return (
     <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
@@ -162,7 +162,7 @@ function FragilityGauge({ score, size = 80 }: { score: number; size?: number }) 
 
 function CategoryBar({ value }: { value: number }) {
   const pct = Math.min((value / 100) * 100, 100);
-  const color = value >= 70 ? '#ef4444' : value >= 50 ? '#f97316' : value >= 30 ? '#eab308' : '#22c55e';
+  const color = value >= 70 ? '#ef4444' : value >= 50 ? '#fb923c' : value >= 30 ? '#facc15' : '#22c55e';
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-2 rounded-full bg-[rgba(255,255,255,0.06)] overflow-hidden">
@@ -201,13 +201,13 @@ function ModelRow({ model, rank, isExpanded, onToggle }: {
         <div className="w-8 text-center flex-shrink-0">
           <span className={cn(
             'text-lg font-bold font-mono',
-            rank === 1 ? 'text-[#ef4444]' : rank === 2 ? 'text-[#f97316]' : rank === 3 ? 'text-[#eab308]' : 'text-muted-foreground',
+            rank === 1 ? 'text-[#ef4444]' : rank === 2 ? 'text-[#fb923c]' : rank === 3 ? 'text-[#facc15]' : 'text-muted-foreground',
           )}>#{rank}</span>
         </div>
         <FragilityGauge score={model.fragilityScore} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <span className="text-sm font-semibold text-[#e6edf3] truncate">{model.name}</span>
+            <span className="text-sm font-semibold text-[#f1f5f9] truncate">{model.name}</span>
             <span className="text-[10px] text-muted-foreground font-mono px-1.5 py-0.5 rounded bg-[rgba(255,255,255,0.04)]">{model.provider}</span>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-muted-foreground flex-wrap">
@@ -256,7 +256,7 @@ function ModelRow({ model, rank, isExpanded, onToggle }: {
               <div className="mt-4 pt-3 border-t border-[rgba(255,255,255,0.04)] flex flex-wrap gap-4">
                 <div className="flex items-center gap-1.5 text-[11px]">
                   <span className="text-muted-foreground">Passed:</span>
-                  <span className="text-[#00ff88] font-mono font-bold">{model.testsPassed}</span>
+                  <span className="text-[#34d399] font-mono font-bold">{model.testsPassed}</span>
                 </div>
                 <div className="flex items-center gap-1.5 text-[11px]">
                   <span className="text-muted-foreground">Failed:</span>
@@ -264,7 +264,7 @@ function ModelRow({ model, rank, isExpanded, onToggle }: {
                 </div>
                 <div className="flex items-center gap-1.5 text-[11px]">
                   <span className="text-muted-foreground">Last tested:</span>
-                  <span className="text-[#e6edf3] font-mono">{new Date(model.lastTested).toLocaleDateString()}</span>
+                  <span className="text-[#f1f5f9] font-mono">{new Date(model.lastTested).toLocaleDateString()}</span>
                 </div>
               </div>
             </div>
@@ -407,10 +407,10 @@ export function AILeaderboard() {
         <div className="flex items-center justify-center py-20">
           <div className="flex flex-col items-center gap-4">
             <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}>
-              <Ghost className="w-10 h-10 text-[#00ff88]" />
+              <Ghost className="w-10 h-10 text-[#34d399]" />
             </motion.div>
             <div className="text-center">
-              <p className="text-sm font-semibold text-[#e6edf3]">Initializing GORGON Scan Engine...</p>
+              <p className="text-sm font-semibold text-[#f1f5f9]">Initializing GORGON Scan Engine...</p>
               <p className="text-xs text-muted-foreground mt-1">Probing AI model defenses</p>
             </div>
           </div>
@@ -436,13 +436,13 @@ export function AILeaderboard() {
                   <span className="text-[10px] font-bold font-mono text-[#ef4444] tracking-wider">GORGON/OBLIVION v3.0</span>
                 </div>
                 {data?.isSimulated && (
-                  <div className="px-2.5 py-1 rounded-lg bg-[rgba(234,179,8,0.1)] border border-[rgba(234,179,8,0.2)]">
-                    <span className="text-[10px] font-bold font-mono text-[#eab308] tracking-wider">DEMO MODE</span>
+                  <div className="px-2.5 py-1 rounded-lg bg-[rgba(250,204,21,0.1)] border border-[rgba(250,204,21,0.2)]">
+                    <span className="text-[10px] font-bold font-mono text-[#facc15] tracking-wider">DEMO MODE</span>
                   </div>
                 )}
               </motion.div>
               <motion.h1 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-                className="text-2xl sm:text-3xl font-bold text-[#e6edf3]">
+                className="text-2xl sm:text-3xl font-bold text-[#f1f5f9]">
                 Hall of <span className="text-[#ef4444]" style={{ textShadow: '0 0 30px rgba(239,68,68,0.3)' }}>Broken</span> Models
               </motion.h1>
               <motion.p initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
@@ -454,7 +454,7 @@ export function AILeaderboard() {
               <motion.button
                 whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
                 onClick={handleShare}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.08)] text-sm text-[#e6edf3] hover:border-[rgba(0,255,136,0.2)] transition-colors"
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.08)] text-sm text-[#f1f5f9] hover:border-[rgba(52,211,153,0.2)] transition-colors"
               >
                 <Share2 className="w-4 h-4" />
                 {copied ? 'Copied!' : 'Share'}
@@ -490,8 +490,8 @@ export function AILeaderboard() {
               <div className="text-center">
                 <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground mb-2">AI Fragility Index</div>
                 <div className="text-7xl sm:text-8xl font-black font-mono" style={{
-                  color: avgScore >= 60 ? '#ef4444' : avgScore >= 40 ? '#f97316' : '#eab308',
-                  textShadow: `0 0 40px ${avgScore >= 60 ? 'rgba(239,68,68,0.3)' : avgScore >= 40 ? 'rgba(249,115,22,0.3)' : 'rgba(234,179,8,0.3)'}`,
+                  color: avgScore >= 60 ? '#ef4444' : avgScore >= 40 ? '#fb923c' : '#facc15',
+                  textShadow: `0 0 40px ${avgScore >= 60 ? 'rgba(239,68,68,0.3)' : avgScore >= 40 ? 'rgba(251,191,36,0.3)' : 'rgba(250,204,21,0.3)'}`,
                 }}>
                   {avgScore}
                 </div>
@@ -503,9 +503,9 @@ export function AILeaderboard() {
           {/* Stat cards row */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {[
-              { label: 'Total Tests', value: totalTests, icon: Target, color: '#00ff88' },
+              { label: 'Total Tests', value: totalTests, icon: Target, color: '#34d399' },
               { label: 'Alignment Breaks', value: totalBreaks, icon: ShieldAlert, color: '#ef4444' },
-              { label: 'Data Extractions', value: totalExtractions, icon: Database, color: '#f97316' },
+              { label: 'Data Extractions', value: totalExtractions, icon: Database, color: '#fb923c' },
               { label: 'Models Tested', value: data?.stats.totalModelsTested ?? 0, icon: Brain, color: '#a855f7' },
             ].map((stat, i) => (
               <motion.div key={stat.label} initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 + i * 0.08 }}
@@ -525,11 +525,11 @@ export function AILeaderboard() {
             {refreshResult && (
               <motion.div
                 initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-                className="mt-4 px-4 py-3 rounded-xl bg-[rgba(234,179,8,0.08)] border border-[rgba(234,179,8,0.15)] flex items-center gap-3"
+                className="mt-4 px-4 py-3 rounded-xl bg-[rgba(250,204,21,0.08)] border border-[rgba(250,204,21,0.15)] flex items-center gap-3"
               >
-                <Radio className="w-4 h-4 text-[#eab308] flex-shrink-0" />
+                <Radio className="w-4 h-4 text-[#facc15] flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-semibold text-[#eab308]">Scan Cycle Initiated</div>
+                  <div className="text-sm font-semibold text-[#facc15]">Scan Cycle Initiated</div>
                   <div className="text-[11px] text-muted-foreground">Job: {refreshResult.jobId} — {refreshResult.message}</div>
                 </div>
               </motion.div>
@@ -589,7 +589,7 @@ export function AILeaderboard() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sword className="w-4 h-4 text-[#ef4444]" />
-            <span className="text-sm font-semibold text-[#e6edf3]">Leaderboard</span>
+            <span className="text-sm font-semibold text-[#f1f5f9]">Leaderboard</span>
             <span className="text-[10px] text-muted-foreground font-mono">({sortedModels.length} models)</span>
           </div>
           <div className="flex items-center gap-2">
@@ -601,8 +601,8 @@ export function AILeaderboard() {
                 className={cn(
                   'px-2.5 py-1 rounded-md text-[11px] font-mono transition-colors',
                   sort === field
-                    ? 'bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)] text-[#00ff88]'
-                    : 'bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)] text-muted-foreground hover:text-[#e6edf3]',
+                    ? 'bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)] text-[#34d399]'
+                    : 'bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.06)] text-muted-foreground hover:text-[#f1f5f9]',
                 )}
               >
                 {field.charAt(0).toUpperCase() + field.slice(1)}
@@ -642,10 +642,10 @@ export function AILeaderboard() {
               .map(([provider, d]) => ({ provider, avg: Math.round(d.total / d.count), models: d.names }))
               .sort((a, b) => b.avg - a.avg)
               .map(({ provider, avg, models }) => {
-                const color = avg >= 60 ? '#ef4444' : avg >= 45 ? '#f97316' : '#00ff88';
+                const color = avg >= 60 ? '#ef4444' : avg >= 45 ? '#fb923c' : '#34d399';
                 return (
                   <div key={provider} className="flex items-center gap-4">
-                    <span className="text-sm text-[#e6edf3] w-24 flex-shrink-0 font-medium">{provider}</span>
+                    <span className="text-sm text-[#f1f5f9] w-24 flex-shrink-0 font-medium">{provider}</span>
                     <div className="flex-1 h-4 rounded-full bg-[rgba(255,255,255,0.06)] overflow-hidden">
                       <motion.div
                         className="h-full rounded-full flex items-center px-2"
@@ -669,7 +669,7 @@ export function AILeaderboard() {
       <div className="rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] p-4 flex items-start gap-3">
         <Info className="w-4 h-4 text-[#06b6d4] flex-shrink-0 mt-0.5" />
         <div className="text-[11px] text-muted-foreground leading-relaxed">
-          <span className="font-semibold text-[#e6edf3]">Methodology:</span> Each model is tested with {data?.stats.totalTestsRun ? Math.round((data?.stats.totalTestsRun) / (data?.models.length || 1)) : 400}+ adversarial prompts across 7 categories:
+          <span className="font-semibold text-[#f1f5f9]">Methodology:</span> Each model is tested with {data?.stats.totalTestsRun ? Math.round((data?.stats.totalTestsRun) / (data?.models.length || 1)) : 400}+ adversarial prompts across 7 categories:
           prompt injection, data extraction, jailbreak, hallucination, bias, harmful content generation, and privacy leakage.
           Fragility Score (0-100) represents the percentage of tests that successfully broke the model's safety guardrails.
           {data?.isSimulated && ' Currently running in DEMO MODE with simulated data. Connect LLM API keys for real red-teaming results.'}

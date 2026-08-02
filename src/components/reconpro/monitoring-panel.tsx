@@ -90,17 +90,17 @@ function getSeverityConfig(severity: string) {
   switch (severity) {
     case 'critical':
       return {
-        color: '#f85149',
-        bg: 'rgba(248,81,73,0.15)',
-        border: 'rgba(248,81,73,0.3)',
+        color: '#f43f5e',
+        bg: 'rgba(244,63,94,0.15)',
+        border: 'rgba(244,63,94,0.3)',
         icon: XCircle,
         label: 'CRITICAL',
       };
     case 'high':
       return {
-        color: '#f97316',
-        bg: 'rgba(249,115,22,0.15)',
-        border: 'rgba(249,115,22,0.3)',
+        color: '#fb923c',
+        bg: 'rgba(251,191,36,0.15)',
+        border: 'rgba(251,191,36,0.3)',
         icon: AlertTriangle,
         label: 'HIGH',
       };
@@ -114,7 +114,7 @@ function getSeverityConfig(severity: string) {
       };
     case 'low':
       return {
-        color: '#58a6ff',
+        color: '#22d3ee',
         bg: 'rgba(88,166,255,0.15)',
         border: 'rgba(88,166,255,0.3)',
         icon: FileWarning,
@@ -122,7 +122,7 @@ function getSeverityConfig(severity: string) {
       };
     default:
       return {
-        color: '#8b949e',
+        color: '#475569',
         bg: 'rgba(139,148,158,0.15)',
         border: 'rgba(139,148,158,0.3)',
         icon: AlertCircle,
@@ -134,30 +134,30 @@ function getSeverityConfig(severity: string) {
 function getScheduleColor(schedule: string): string {
   switch (schedule) {
     case 'hourly':
-      return 'bg-[rgba(0,255,136,0.15)] text-[#00ff88] border-[rgba(0,255,136,0.3)]';
+      return 'bg-[rgba(52,211,153,0.15)] text-[#34d399] border-[rgba(52,211,153,0.3)]';
     case 'daily':
-      return 'bg-[rgba(88,166,255,0.15)] text-[#58a6ff] border-[rgba(88,166,255,0.3)]';
+      return 'bg-[rgba(88,166,255,0.15)] text-[#22d3ee] border-[rgba(88,166,255,0.3)]';
     case 'weekly':
       return 'bg-[rgba(210,153,34,0.15)] text-[#d29922] border-[rgba(210,153,34,0.3)]';
     case 'monthly':
       return 'bg-[rgba(168,85,247,0.15)] text-[#a855f7] border-[rgba(168,85,247,0.3)]';
     default:
-      return 'bg-[rgba(139,148,158,0.15)] text-[#8b949e] border-[rgba(139,148,158,0.3)]';
+      return 'bg-[rgba(139,148,158,0.15)] text-[#475569] border-[rgba(139,148,158,0.3)]';
   }
 }
 
 function getPolicyStatusConfig(status: string) {
   switch (status) {
     case 'active':
-      return { color: '#00ff88', label: 'Active' };
+      return { color: '#34d399', label: 'Active' };
     case 'warning':
       return { color: '#d29922', label: 'Warning' };
     case 'error':
-      return { color: '#f85149', label: 'Error' };
+      return { color: '#f43f5e', label: 'Error' };
     case 'idle':
-      return { color: '#484f58', label: 'Paused' };
+      return { color: '#334155', label: 'Paused' };
     default:
-      return { color: '#484f58', label: 'Unknown' };
+      return { color: '#334155', label: 'Unknown' };
   }
 }
 
@@ -183,13 +183,13 @@ function getScanTypeIcon(type: string) {
 function getAlertStatusConfig(status: string) {
   switch (status) {
     case 'new':
-      return { color: '#f85149', bg: 'rgba(248,81,73,0.15)', label: 'NEW' };
+      return { color: '#f43f5e', bg: 'rgba(244,63,94,0.15)', label: 'NEW' };
     case 'acknowledged':
       return { color: '#d29922', bg: 'rgba(210,153,34,0.15)', label: 'ACK' };
     case 'resolved':
-      return { color: '#00ff88', bg: 'rgba(0,255,136,0.15)', label: 'FIXED' };
+      return { color: '#34d399', bg: 'rgba(52,211,153,0.15)', label: 'FIXED' };
     default:
-      return { color: '#484f58', bg: 'rgba(72,79,88,0.15)', label: 'N/A' };
+      return { color: '#334155', bg: 'rgba(72,79,88,0.15)', label: 'N/A' };
   }
 }
 
@@ -303,7 +303,7 @@ export function MonitoringPanel() {
   if (loading) {
     return (
       <div className="w-full flex items-center justify-center py-20">
-        <p className="text-[#8b949e]">Loading...</p>
+        <p className="text-[#475569]">Loading...</p>
       </div>
     );
   }
@@ -318,49 +318,49 @@ export function MonitoringPanel() {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)]">
-            <Activity className="w-5 h-5 text-[#00ff88]" />
+          <div className="p-2 rounded-lg bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]">
+            <Activity className="w-5 h-5 text-[#34d399]" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-[#e6edf3]">Continuous Monitoring</h2>
-            <p className="text-sm text-[#8b949e]">Automated attack surface surveillance and policy management</p>
+            <h2 className="text-xl font-bold text-[#f1f5f9]">Continuous Monitoring</h2>
+            <p className="text-sm text-[#475569]">Automated attack surface surveillance and policy management</p>
           </div>
         </div>
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
           <DialogTrigger asChild>
-            <Button className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
+            <Button className="bg-[#34d399] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
               <Plus className="w-4 h-4" />
               New Policy
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-[#0d1117] border-[#21262d] text-[#e6edf3]">
+          <DialogContent className="bg-[#080b14] border-[#21262d] text-[#f1f5f9]">
             <DialogHeader>
-              <DialogTitle className="text-[#e6edf3]">Create Monitoring Policy</DialogTitle>
-              <DialogDescription className="text-[#8b949e]">
+              <DialogTitle className="text-[#f1f5f9]">Create Monitoring Policy</DialogTitle>
+              <DialogDescription className="text-[#475569]">
                 Set up automated monitoring for a target domain.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#e6edf3]">Policy Name</label>
+                <label className="text-sm font-medium text-[#f1f5f9]">Policy Name</label>
                 <Input
                   placeholder="e.g. Production Infrastructure"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  className="bg-[#0a0d14] border-[#21262d] text-[#e6edf3] placeholder:text-[#484f58] focus:border-[#00ff88]"
+                  className="bg-[#050710] border-[#21262d] text-[#f1f5f9] placeholder:text-[#334155] focus:border-[#34d399]"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#e6edf3]">Target Domain</label>
+                <label className="text-sm font-medium text-[#f1f5f9]">Target Domain</label>
                 <Input
                   placeholder="e.g. example.com"
                   value={newDomain}
                   onChange={(e) => setNewDomain(e.target.value)}
-                  className="bg-[#0a0d14] border-[#21262d] text-[#e6edf3] placeholder:text-[#484f58] focus:border-[#00ff88]"
+                  className="bg-[#050710] border-[#21262d] text-[#f1f5f9] placeholder:text-[#334155] focus:border-[#34d399]"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#e6edf3]">Schedule</label>
+                <label className="text-sm font-medium text-[#f1f5f9]">Schedule</label>
                 <div className="grid grid-cols-4 gap-2">
                   {(['hourly', 'daily', 'weekly', 'monthly'] as const).map((s) => (
                     <button
@@ -368,8 +368,8 @@ export function MonitoringPanel() {
                       onClick={() => setNewSchedule(s)}
                       className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all capitalize ${
                         newSchedule === s
-                          ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
-                          : 'bg-[#0a0d14] border-[#21262d] text-[#8b949e] hover:border-[#30363d]'
+                          ? 'bg-[rgba(52,211,153,0.15)] border-[rgba(52,211,153,0.4)] text-[#34d399]'
+                          : 'bg-[#050710] border-[#21262d] text-[#475569] hover:border-[#30363d]'
                       }`}
                     >
                       {s}
@@ -378,7 +378,7 @@ export function MonitoringPanel() {
                 </div>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#e6edf3]">Scan Type</label>
+                <label className="text-sm font-medium text-[#f1f5f9]">Scan Type</label>
                 <div className="grid grid-cols-2 gap-2">
                   {['full', 'quick', 'stealth'].map((t) => (
                     <button
@@ -386,8 +386,8 @@ export function MonitoringPanel() {
                       onClick={() => setNewScanType(t)}
                       className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all capitalize ${
                         newScanType === t
-                          ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
-                          : 'bg-[#0a0d14] border-[#21262d] text-[#8b949e] hover:border-[#30363d]'
+                          ? 'bg-[rgba(52,211,153,0.15)] border-[rgba(52,211,153,0.4)] text-[#34d399]'
+                          : 'bg-[#050710] border-[#21262d] text-[#475569] hover:border-[#30363d]'
                       }`}
                     >
                       {t}
@@ -397,10 +397,10 @@ export function MonitoringPanel() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setAddOpen(false)} className="border-[#21262d] text-[#8b949e] hover:bg-[#0a0d14]">
+              <Button variant="outline" onClick={() => setAddOpen(false)} className="border-[#21262d] text-[#475569] hover:bg-[#050710]">
                 Cancel
               </Button>
-              <Button onClick={handleNewPolicy} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+              <Button onClick={handleNewPolicy} className="bg-[#34d399] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
                 Create Policy
               </Button>
             </DialogFooter>
@@ -411,22 +411,22 @@ export function MonitoringPanel() {
       {/* ── Stats Row ───────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { label: 'Active Policies', value: activePolicies, icon: Shield, color: '#00ff88', subtitle: `of ${policies.length} total` },
-          { label: 'Monitored Assets', value: policies.length, icon: Globe, color: '#58a6ff', subtitle: 'domains & endpoints' },
-          { label: 'Alerts Today', value: alerts.filter((a) => a.status === 'new').length, icon: AlertTriangle, color: '#f97316', subtitle: `${totalFindings} findings` },
-          { label: 'Uptime', value: policies.length > 0 ? '99.97%' : '—', icon: TrendingUp, color: '#00ff88', subtitle: 'last 30 days' },
+          { label: 'Active Policies', value: activePolicies, icon: Shield, color: '#34d399', subtitle: `of ${policies.length} total` },
+          { label: 'Monitored Assets', value: policies.length, icon: Globe, color: '#22d3ee', subtitle: 'domains & endpoints' },
+          { label: 'Alerts Today', value: alerts.filter((a) => a.status === 'new').length, icon: AlertTriangle, color: '#fb923c', subtitle: `${totalFindings} findings` },
+          { label: 'Uptime', value: policies.length > 0 ? '99.97%' : '—', icon: TrendingUp, color: '#34d399', subtitle: 'last 30 days' },
         ].map((stat) => (
           <motion.div
             key={stat.label}
             whileHover={cardHover}
-            className="rounded-xl border border-[#21262d] bg-[#0d1117] p-4"
+            className="rounded-xl border border-[#21262d] bg-[#080b14] p-4"
           >
             <div className="flex items-center justify-between mb-3">
-              <span className="text-xs font-medium text-[#8b949e] uppercase tracking-wider">{stat.label}</span>
+              <span className="text-xs font-medium text-[#475569] uppercase tracking-wider">{stat.label}</span>
               <stat.icon className="w-4 h-4" style={{ color: stat.color }} />
             </div>
-            <p className="text-2xl font-bold text-[#e6edf3]">{stat.value}</p>
-            <p className="text-[10px] text-[#484f58] mt-1">{stat.subtitle}</p>
+            <p className="text-2xl font-bold text-[#f1f5f9]">{stat.value}</p>
+            <p className="text-[10px] text-[#334155] mt-1">{stat.subtitle}</p>
           </motion.div>
         ))}
       </motion.div>
@@ -434,13 +434,13 @@ export function MonitoringPanel() {
       {/* ── Policy Cards ────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-[#e6edf3]">Monitoring Policies</h3>
-          <span className="text-[10px] text-[#484f58] uppercase tracking-wider">{policies.length} policies</span>
+          <h3 className="text-sm font-semibold text-[#f1f5f9]">Monitoring Policies</h3>
+          <span className="text-[10px] text-[#334155] uppercase tracking-wider">{policies.length} policies</span>
         </div>
         {policies.length === 0 ? (
-          <div className="rounded-xl border border-[#21262d] bg-[#0d1117] p-8 text-center">
-            <Shield className="w-8 h-8 text-[#484f58] mx-auto mb-3" />
-            <p className="text-sm text-[#8b949e]">No policies yet. Create one to start monitoring.</p>
+          <div className="rounded-xl border border-[#21262d] bg-[#080b14] p-8 text-center">
+            <Shield className="w-8 h-8 text-[#334155] mx-auto mb-3" />
+            <p className="text-sm text-[#475569]">No policies yet. Create one to start monitoring.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -452,7 +452,7 @@ export function MonitoringPanel() {
                   key={policy.id}
                   variants={itemVariants}
                   whileHover={cardHover}
-                  className="rounded-xl border border-[#21262d] bg-[#0d1117] overflow-hidden relative"
+                  className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden relative"
                 >
                   {/* Status indicator bar */}
                   <div className="absolute top-0 left-0 right-0 h-0.5 opacity-60" style={{ backgroundColor: statusCfg.color }} />
@@ -468,7 +468,7 @@ export function MonitoringPanel() {
                           <ScanIcon className="w-5 h-5" style={{ color: statusCfg.color }} />
                         </div>
                         <div>
-                          <h4 className="text-sm font-bold text-[#e6edf3]">{policy.name}</h4>
+                          <h4 className="text-sm font-bold text-[#f1f5f9]">{policy.name}</h4>
                           <div className="flex items-center gap-2 mt-0.5">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${getScheduleColor(policy.schedule)}`}>
                               <Timer className="w-2.5 h-2.5 mr-1" />
@@ -478,21 +478,21 @@ export function MonitoringPanel() {
                               className="w-1.5 h-1.5 rounded-full"
                               style={{ backgroundColor: statusCfg.color }}
                             />
-                            <span className="text-[10px] text-[#8b949e]">{statusCfg.label}</span>
+                            <span className="text-[10px] text-[#475569]">{statusCfg.label}</span>
                           </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => handleRunNow(policy.id)}
-                          className="p-1.5 rounded-md border border-[#21262d] text-[#8b949e] hover:text-[#00ff88] hover:border-[rgba(0,255,136,0.3)] hover:bg-[rgba(0,255,136,0.1)] transition-all"
+                          className="p-1.5 rounded-md border border-[#21262d] text-[#475569] hover:text-[#34d399] hover:border-[rgba(52,211,153,0.3)] hover:bg-[rgba(52,211,153,0.1)] transition-all"
                           title="Run now"
                         >
                           <Play className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => deletePolicy(policy.id)}
-                          className="p-1.5 rounded-md border border-[#21262d] text-[#8b949e] hover:text-[#f85149] hover:border-[rgba(248,81,73,0.3)] hover:bg-[rgba(248,81,73,0.1)] transition-all"
+                          className="p-1.5 rounded-md border border-[#21262d] text-[#475569] hover:text-[#f43f5e] hover:border-[rgba(244,63,94,0.3)] hover:bg-[rgba(244,63,94,0.1)] transition-all"
                           title="Delete"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -508,30 +508,30 @@ export function MonitoringPanel() {
                     {/* Target & scan info */}
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       <div className="space-y-1">
-                        <p className="text-[10px] text-[#484f58] uppercase tracking-wider">Target</p>
-                        <div className="flex items-center gap-1.5 text-xs text-[#e6edf3]">
-                          <Globe className="w-3 h-3 text-[#8b949e]" />
+                        <p className="text-[10px] text-[#334155] uppercase tracking-wider">Target</p>
+                        <div className="flex items-center gap-1.5 text-xs text-[#f1f5f9]">
+                          <Globe className="w-3 h-3 text-[#475569]" />
                           <span className="font-mono text-[11px]">{policy.targetDomain}</span>
                         </div>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-[10px] text-[#484f58] uppercase tracking-wider">Scan Type</p>
-                        <p className="text-xs text-[#e6edf3] capitalize">{policy.scanType}</p>
+                        <p className="text-[10px] text-[#334155] uppercase tracking-wider">Scan Type</p>
+                        <p className="text-xs text-[#f1f5f9] capitalize">{policy.scanType}</p>
                       </div>
                     </div>
 
                     {/* Timing row */}
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       <div className="space-y-1">
-                        <p className="text-[10px] text-[#484f58] uppercase tracking-wider">Last Run</p>
-                        <div className="flex items-center gap-1.5 text-xs text-[#8b949e]">
+                        <p className="text-[10px] text-[#334155] uppercase tracking-wider">Last Run</p>
+                        <div className="flex items-center gap-1.5 text-xs text-[#475569]">
                           <Clock className="w-3 h-3" />
                           <span>{policy.lastRun}</span>
                         </div>
                       </div>
                       <div className="space-y-1">
-                        <p className="text-[10px] text-[#484f58] uppercase tracking-wider">Next Run</p>
-                        <div className="flex items-center gap-1.5 text-xs text-[#8b949e]">
+                        <p className="text-[10px] text-[#334155] uppercase tracking-wider">Next Run</p>
+                        <div className="flex items-center gap-1.5 text-xs text-[#475569]">
                           <Calendar className="w-3 h-3" />
                           <span>{policy.nextRun}</span>
                         </div>
@@ -542,18 +542,18 @@ export function MonitoringPanel() {
                     <div className="flex items-center justify-between pt-3 border-t border-[#161b22]">
                       <div className="flex items-center gap-3">
                         <div className="text-center">
-                          <p className="text-sm font-bold text-[#e6edf3]">{policy.runCount.toLocaleString()}</p>
-                          <p className="text-[10px] text-[#484f58]">Runs</p>
+                          <p className="text-sm font-bold text-[#f1f5f9]">{policy.runCount.toLocaleString()}</p>
+                          <p className="text-[10px] text-[#334155]">Runs</p>
                         </div>
                         <div className="w-px h-6 bg-[#21262d]" />
                         <div className="text-center">
-                          <p className="text-sm font-bold text-[#e6edf3]">{policy.findings}</p>
-                          <p className="text-[10px] text-[#484f58]">Findings</p>
+                          <p className="text-sm font-bold text-[#f1f5f9]">{policy.findings}</p>
+                          <p className="text-[10px] text-[#334155]">Findings</p>
                         </div>
                       </div>
                       <div className="flex items-center gap-1">
-                        <RefreshCw className="w-3 h-3 text-[#484f58]" />
-                        <span className="text-[10px] text-[#484f58]">Auto-refresh</span>
+                        <RefreshCw className="w-3 h-3 text-[#334155]" />
+                        <span className="text-[10px] text-[#334155]">Auto-refresh</span>
                       </div>
                     </div>
                   </div>
@@ -565,21 +565,21 @@ export function MonitoringPanel() {
       </motion.div>
 
       {/* ── Schedule Timeline ─────────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#0d1117] overflow-hidden">
+      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden">
         <div className="p-4 border-b border-[#21262d] flex items-center gap-3">
           <div className="p-1.5 rounded-md bg-[rgba(88,166,255,0.1)]">
-            <Calendar className="w-4 h-4 text-[#58a6ff]" />
+            <Calendar className="w-4 h-4 text-[#22d3ee]" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-[#e6edf3]">Upcoming Schedule</h3>
-            <p className="text-xs text-[#8b949e]">Next scheduled monitoring runs</p>
+            <h3 className="text-sm font-semibold text-[#f1f5f9]">Upcoming Schedule</h3>
+            <p className="text-xs text-[#475569]">Next scheduled monitoring runs</p>
           </div>
         </div>
 
         <div className="divide-y divide-[#161b22]">
           {scheduledRuns.length === 0 ? (
             <div className="px-4 py-8 text-center">
-              <p className="text-xs text-[#484f58]">No upcoming scheduled runs</p>
+              <p className="text-xs text-[#334155]">No upcoming scheduled runs</p>
             </div>
           ) : (
             <AnimatePresence>
@@ -589,29 +589,29 @@ export function MonitoringPanel() {
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: idx * 0.06, duration: 0.3 }}
-                  className="flex items-center gap-3 px-4 py-3 hover:bg-[rgba(0,255,136,0.02)] transition-colors"
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-[rgba(52,211,153,0.02)] transition-colors"
                 >
                   <div className="flex flex-col items-center shrink-0">
-                    <div className="w-2 h-2 rounded-full bg-[#58a6ff] animate-pulse" />
+                    <div className="w-2 h-2 rounded-full bg-[#22d3ee] animate-pulse" />
                     {idx < scheduledRuns.length - 1 && (
                       <div className="w-px h-6 bg-[#21262d] mt-1" />
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-[#e6edf3]">{run.policyName}</p>
-                    <p className="text-[10px] text-[#484f58] capitalize">{run.type}</p>
+                    <p className="text-xs font-semibold text-[#f1f5f9]">{run.policyName}</p>
+                    <p className="text-[10px] text-[#334155] capitalize">{run.type}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <Badge
                       variant="outline"
-                      className="text-[10px] border-[rgba(88,166,255,0.3)] text-[#58a6ff]"
+                      className="text-[10px] border-[rgba(88,166,255,0.3)] text-[#22d3ee]"
                     >
                       <Clock className="w-2.5 h-2.5 mr-1" />
                       {run.scheduledTime}
                     </Badge>
                     <span
                       className={`text-[10px] font-medium ${
-                        run.status === 'in_progress' ? 'text-[#d29922]' : 'text-[#484f58]'
+                        run.status === 'in_progress' ? 'text-[#d29922]' : 'text-[#334155]'
                       }`}
                     >
                       {run.status === 'in_progress' ? 'Running' : 'Queued'}
@@ -625,18 +625,18 @@ export function MonitoringPanel() {
       </motion.div>
 
       {/* ── Alert History Table ──────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#0d1117] overflow-hidden">
+      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden">
         <div className="p-4 border-b border-[#21262d] flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-1.5 rounded-md bg-[rgba(249,115,22,0.1)]">
-              <AlertTriangle className="w-4 h-4 text-[#f97316]" />
+            <div className="p-1.5 rounded-md bg-[rgba(251,191,36,0.1)]">
+              <AlertTriangle className="w-4 h-4 text-[#fb923c]" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-[#e6edf3]">Alert History</h3>
-              <p className="text-xs text-[#8b949e]">Alerts from monitoring policies (last 7 days)</p>
+              <h3 className="text-sm font-semibold text-[#f1f5f9]">Alert History</h3>
+              <p className="text-xs text-[#475569]">Alerts from monitoring policies (last 7 days)</p>
             </div>
           </div>
-          <Badge variant="outline" className="text-[10px] border-[rgba(249,115,22,0.3)] text-[#f97316]">
+          <Badge variant="outline" className="text-[10px] border-[rgba(251,191,36,0.3)] text-[#fb923c]">
             {alerts.filter((a) => a.status === 'new').length} new
           </Badge>
         </div>
@@ -644,17 +644,17 @@ export function MonitoringPanel() {
         <div className="max-h-[320px] overflow-y-auto">
           {alerts.length === 0 ? (
             <div className="px-4 py-8 text-center">
-              <p className="text-xs text-[#484f58]">No alerts yet. Policies will generate alerts when findings are detected.</p>
+              <p className="text-xs text-[#334155]">No alerts yet. Policies will generate alerts when findings are detected.</p>
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow className="border-b border-[#21262d] hover:bg-transparent">
-                  <TableHead className="text-[#8b949e] font-medium text-xs uppercase tracking-wider">Severity</TableHead>
-                  <TableHead className="text-[#8b949e] font-medium text-xs uppercase tracking-wider hidden sm:table-cell">Time</TableHead>
-                  <TableHead className="text-[#8b949e] font-medium text-xs uppercase tracking-wider">Policy</TableHead>
-                  <TableHead className="text-[#8b949e] font-medium text-xs uppercase tracking-wider">Description</TableHead>
-                  <TableHead className="text-[#8b949e] font-medium text-xs uppercase tracking-wider">Status</TableHead>
+                  <TableHead className="text-[#475569] font-medium text-xs uppercase tracking-wider">Severity</TableHead>
+                  <TableHead className="text-[#475569] font-medium text-xs uppercase tracking-wider hidden sm:table-cell">Time</TableHead>
+                  <TableHead className="text-[#475569] font-medium text-xs uppercase tracking-wider">Policy</TableHead>
+                  <TableHead className="text-[#475569] font-medium text-xs uppercase tracking-wider">Description</TableHead>
+                  <TableHead className="text-[#475569] font-medium text-xs uppercase tracking-wider">Status</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -670,7 +670,7 @@ export function MonitoringPanel() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ delay: idx * 0.05 }}
-                        className="border-b border-[#161b22] hover:bg-[rgba(0,255,136,0.02)] transition-colors"
+                        className="border-b border-[#161b22] hover:bg-[rgba(52,211,153,0.02)] transition-colors"
                       >
                         <TableCell className="py-3">
                           <div
@@ -686,16 +686,16 @@ export function MonitoringPanel() {
                           </div>
                         </TableCell>
                         <TableCell className="py-3 hidden sm:table-cell">
-                          <div className="flex items-center gap-1.5 text-xs text-[#8b949e]">
+                          <div className="flex items-center gap-1.5 text-xs text-[#475569]">
                             <Clock className="w-3 h-3" />
                             {alert.timestamp}
                           </div>
                         </TableCell>
                         <TableCell className="py-3">
-                          <span className="text-xs text-[#e6edf3]">{alert.policy}</span>
+                          <span className="text-xs text-[#f1f5f9]">{alert.policy}</span>
                         </TableCell>
                         <TableCell className="py-3">
-                          <p className="text-xs text-[#8b949e] max-w-[300px] truncate">{alert.description}</p>
+                          <p className="text-xs text-[#475569] max-w-[300px] truncate">{alert.description}</p>
                         </TableCell>
                         <TableCell className="py-3">
                           <span

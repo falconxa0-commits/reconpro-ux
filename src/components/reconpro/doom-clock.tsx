@@ -107,7 +107,7 @@ const INDUSTRIES = [
 const URGENCY_COLORS: Record<string, { bg: string; text: string; glow: string; border: string; gradient: string }> = {
   CRITICAL: { bg: 'bg-red-950/40', text: 'text-red-400', glow: '0 0 60px rgba(239,68,68,0.5), 0 0 120px rgba(239,68,68,0.2)', border: 'border-red-500/50', gradient: 'from-red-600 to-red-800' },
   HIGH: { bg: 'bg-orange-950/40', text: 'text-orange-400', glow: '0 0 60px rgba(251,146,60,0.4), 0 0 120px rgba(251,146,60,0.15)', border: 'border-orange-500/50', gradient: 'from-orange-500 to-orange-700' },
-  MODERATE: { bg: 'bg-yellow-950/40', text: 'text-yellow-400', glow: '0 0 40px rgba(234,179,8,0.3)', border: 'border-yellow-500/50', gradient: 'from-yellow-500 to-yellow-700' },
+  MODERATE: { bg: 'bg-yellow-950/40', text: 'text-yellow-400', glow: '0 0 40px rgba(250,204,21,0.3)', border: 'border-yellow-500/50', gradient: 'from-yellow-500 to-yellow-700' },
   LOW: { bg: 'bg-green-950/40', text: 'text-green-400', glow: '0 0 30px rgba(34,197,94,0.2)', border: 'border-green-500/50', gradient: 'from-green-500 to-green-700' },
   SECURE: { bg: 'bg-emerald-950/40', text: 'text-emerald-400', glow: '0 0 30px rgba(52,211,153,0.2)', border: 'border-emerald-500/50', gradient: 'from-emerald-500 to-emerald-700' },
 };
@@ -257,7 +257,7 @@ function DoomCountdown({ doomDate, doomScore, urgencyLevel }: { doomDate: string
           />
           <defs>
             <linearGradient id="doomGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor={doomScore >= 70 ? '#ef4444' : doomScore >= 50 ? '#f97316' : '#22c55e'} />
+              <stop offset="0%" stopColor={doomScore >= 70 ? '#ef4444' : doomScore >= 50 ? '#fb923c' : '#22c55e'} />
               <stop offset="100%" stopColor={doomScore >= 70 ? '#dc2626' : doomScore >= 50 ? '#ea580c' : '#16a34a'} />
             </linearGradient>
           </defs>
@@ -396,7 +396,7 @@ function AssetBreakdown({ assets, sortBy, onSortChange }: {
             onClick={() => onSortChange(s)}
             className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
               sortBy === s
-                ? 'bg-[#00ff88]/10 text-[#00ff88] border border-[#00ff88]/20'
+                ? 'bg-[#34d399]/10 text-[#34d399] border border-[#34d399]/20'
                 : 'text-gray-500 hover:text-gray-300 border border-transparent'
             }`}
           >
@@ -507,12 +507,12 @@ function MigrationRoadmap({ steps }: { steps: MigrationStep[] }) {
   return (
     <div className="space-y-4">
       {/* Total cost header */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[#00ff88]/10 bg-[#00ff88]/5">
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[#34d399]/10 bg-[#34d399]/5">
         <div>
           <div className="text-xs text-gray-500">Estimated Total Migration Cost</div>
-          <div className="text-2xl font-black text-[#00ff88] font-mono">{totalCost}</div>
+          <div className="text-2xl font-black text-[#34d399] font-mono">{totalCost}</div>
         </div>
-        <button className="px-4 py-2 rounded-lg bg-[#00ff88] text-black font-bold text-sm hover:bg-[#00ff88]/90 transition-colors">
+        <button className="px-4 py-2 rounded-lg bg-[#34d399] text-black font-bold text-sm hover:bg-[#34d399]/90 transition-colors">
           Request Quote
         </button>
       </div>
@@ -558,8 +558,8 @@ function MigrationRoadmap({ steps }: { steps: MigrationStep[] }) {
                 <div className="flex items-center gap-2">
                   <Lock className="w-3 h-3 text-red-400" />
                   <span className="text-gray-400">{step.currentCrypto}</span>
-                  <ArrowDown className="w-3 h-3 text-[#00ff88]" />
-                  <Unlock className="w-3 h-3 text-[#00ff88]" />
+                  <ArrowDown className="w-3 h-3 text-[#34d399]" />
+                  <Unlock className="w-3 h-3 text-[#34d399]" />
                   <span className="text-emerald-400 font-semibold">{step.recommendedCrypto}</span>
                 </div>
                 <div className="flex items-center gap-3 text-gray-500">

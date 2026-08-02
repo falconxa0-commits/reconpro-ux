@@ -55,7 +55,7 @@ type ScanData = {
 
 const STREAM_ID = `reconpro.io/stream/${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2, 14)}`;
 const SEVERITY_COLORS: Record<string, string> = {
-  critical: '#ef4444', high: '#f97316', medium: '#eab308',
+  critical: '#ef4444', high: '#fb923c', medium: '#facc15',
   low: '#3b82f6', info: '#6b7280',
 };
 const AMBIENT_MESSAGES = [
@@ -318,7 +318,7 @@ function useTopology(topoCanvasRef: React.RefObject<HTMLCanvasElement | null>) {
         const b = nodes.find(n => n.id === e.to);
         if (!a || !b) continue;
         e.progress = Math.min(1, e.progress + 0.03);
-        ctx!.strokeStyle = e.active ? 'rgba(0,255,136,0.3)' : 'rgba(100,100,100,0.15)';
+        ctx!.strokeStyle = e.active ? 'rgba(52,211,153,0.3)' : 'rgba(100,100,100,0.15)';
         ctx!.lineWidth = 1;
         ctx!.beginPath(); ctx!.moveTo(a.x, a.y);
         const ex = a.x + (b.x - a.x) * e.progress;
@@ -659,7 +659,7 @@ export function WarRoomPanel() {
 
       {/* ── CRT Scan Lines Overlay ── */}
       <div className="pointer-events-none absolute inset-0 z-30 opacity-[0.03]"
-        style={{ background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,255,136,0.15) 2px, rgba(0,255,136,0.15) 4px)' }} />
+        style={{ background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(52,211,153,0.15) 2px, rgba(52,211,153,0.15) 4px)' }} />
 
       {/* ── Top Bar ── */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-gray-950/90 border-b border-gray-800 z-20">
@@ -763,7 +763,7 @@ export function WarRoomPanel() {
                       evt.severity === 'high' ? 'text-orange-400' :
                       evt.severity === 'medium' ? 'text-yellow-400' :
                       evt.severity === 'low' ? 'text-blue-400' :
-                      '#00ff88',
+                      '#34d399',
                     )}>
                       {evt.message}
                     </span>

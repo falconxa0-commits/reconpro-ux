@@ -82,24 +82,24 @@ const CLOUD_ICONS: Record<string, typeof Cloud> = {
 
 const RISK_COLORS: Record<string, { bg: string; text: string; border: string }> = {
   critical: { bg: 'bg-[#ef4444]/15', text: 'text-[#ef4444]', border: 'border-[#ef4444]/30' },
-  high: { bg: 'bg-[#f97316]/15', text: 'text-[#f97316]', border: 'border-[#f97316]/30' },
-  normal: { bg: 'bg-[#00ff88]/15', text: 'text-[#00ff88]', border: 'border-[#00ff88]/30' },
+  high: { bg: 'bg-[#fb923c]/15', text: 'text-[#fb923c]', border: 'border-[#fb923c]/30' },
+  normal: { bg: 'bg-[#34d399]/15', text: 'text-[#34d399]', border: 'border-[#34d399]/30' },
   low: { bg: 'bg-[#6b7280]/15', text: 'text-[#6b7280]', border: 'border-[#6b7280]/30' },
 };
 
 const STATUS_COLORS: Record<string, { bg: string; text: string; border: string }> = {
-  active: { bg: 'bg-[#00ff88]/15', text: 'text-[#00ff88]', border: 'border-[#00ff88]/30' },
+  active: { bg: 'bg-[#34d399]/15', text: 'text-[#34d399]', border: 'border-[#34d399]/30' },
   revoked: { bg: 'bg-[#ef4444]/15', text: 'text-[#ef4444]', border: 'border-[#ef4444]/30' },
-  expired: { bg: 'bg-[#eab308]/15', text: 'text-[#eab308]', border: 'border-[#eab308]/30' },
-  suspect: { bg: 'bg-[#f97316]/15', text: 'text-[#f97316]', border: 'border-[#f97316]/30' },
+  expired: { bg: 'bg-[#facc15]/15', text: 'text-[#facc15]', border: 'border-[#facc15]/30' },
+  suspect: { bg: 'bg-[#fb923c]/15', text: 'text-[#fb923c]', border: 'border-[#fb923c]/30' },
 };
 
 const ACTION_COLORS: Record<string, string> = {
   identity_scan: 'text-[#06b6d4]',
-  revocation_started: 'text-[#eab308]',
+  revocation_started: 'text-[#facc15]',
   revocation_completed: 'text-[#ef4444]',
   rollback_started: 'text-[#a78bfa]',
-  rollback_completed: 'text-[#00ff88]',
+  rollback_completed: 'text-[#34d399]',
 };
 
 // ─── Component ───────────────────────────────────────────────
@@ -136,7 +136,7 @@ export function NHIKillSwitch() {
     : 'green' as const;
 
   const statusLabel = { green: 'ALL CLEAR', yellow: 'THREATS DETECTED', red: 'BREACH ACTIVE' };
-  const statusColor = { green: '#00ff88', yellow: '#eab308', red: '#ef4444' };
+  const statusColor = { green: '#34d399', yellow: '#facc15', red: '#ef4444' };
 
   // ─── Data Fetching ──────────────────────────────────────────
 
@@ -302,8 +302,8 @@ export function NHIKillSwitch() {
                 boxShadow: systemStatus === 'red'
                   ? ['0 0 20px rgba(239,68,68,0.3)', '0 0 40px rgba(239,68,68,0.5)', '0 0 20px rgba(239,68,68,0.3)']
                   : systemStatus === 'yellow'
-                    ? ['0 0 15px rgba(234,179,8,0.2)', '0 0 30px rgba(234,179,8,0.4)', '0 0 15px rgba(234,179,8,0.2)']
-                    : ['0 0 12px rgba(0,255,136,0.2)', '0 0 24px rgba(0,255,136,0.3)', '0 0 12px rgba(0,255,136,0.2)'],
+                    ? ['0 0 15px rgba(250,204,21,0.2)', '0 0 30px rgba(250,204,21,0.4)', '0 0 15px rgba(250,204,21,0.2)']
+                    : ['0 0 12px rgba(52,211,153,0.2)', '0 0 24px rgba(52,211,153,0.3)', '0 0 12px rgba(52,211,153,0.2)'],
               }}
               transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
               className="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgba(0,0,0,0.4)] border border-[rgba(255,255,255,0.06)]"
@@ -318,7 +318,7 @@ export function NHIKillSwitch() {
             />
           </div>
           <div>
-            <h2 className="text-base font-bold text-[#e6edf3] tracking-tight">NHI KILL SWITCH</h2>
+            <h2 className="text-base font-bold text-[#f1f5f9] tracking-tight">NHI KILL SWITCH</h2>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-[10px] font-mono font-semibold" style={{ color: statusColor[systemStatus] }}>
                 {statusLabel[systemStatus]}
@@ -332,10 +332,10 @@ export function NHIKillSwitch() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={handleSeed} className="text-muted-foreground hover:text-[#e6edf3] h-8 text-xs gap-1.5">
+          <Button variant="ghost" size="sm" onClick={handleSeed} className="text-muted-foreground hover:text-[#f1f5f9] h-8 text-xs gap-1.5">
             <RefreshCw className="h-3.5 w-3.5" /> Seed Data
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => { fetchData(); fetchAudit(); }} className="text-muted-foreground hover:text-[#e6edf3] h-8 text-xs gap-1.5">
+          <Button variant="ghost" size="sm" onClick={() => { fetchData(); fetchAudit(); }} className="text-muted-foreground hover:text-[#f1f5f9] h-8 text-xs gap-1.5">
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
           </Button>
         </div>
@@ -344,10 +344,10 @@ export function NHIKillSwitch() {
       {/* ─── Stats Row ───────────────────────────────────────── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { label: 'Total Identities', value: stats?.total ?? 0, icon: ShieldCheck, color: '#e6edf3' },
-          { label: 'Active Threats', value: stats?.suspect ?? 0, icon: AlertTriangle, color: '#f97316' },
+          { label: 'Total Identities', value: stats?.total ?? 0, icon: ShieldCheck, color: '#f1f5f9' },
+          { label: 'Active Threats', value: stats?.suspect ?? 0, icon: AlertTriangle, color: '#fb923c' },
           { label: 'Revoked (24h)', value: stats?.revoked24h ?? 0, icon: XCircle, color: '#ef4444' },
-          { label: 'Blast Radius', value: totalBlast, icon: Zap, color: '#eab308' },
+          { label: 'Blast Radius', value: totalBlast, icon: Zap, color: '#facc15' },
         ].map((stat) => (
           <motion.div
             key={stat.label}
@@ -373,7 +373,7 @@ export function NHIKillSwitch() {
           <div className="p-4 border-b border-[rgba(255,255,255,0.06)]">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-3">
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-[#e6edf3]">Machine Identities</h3>
+                <h3 className="text-sm font-semibold text-[#f1f5f9]">Machine Identities</h3>
                 <Badge variant="outline" className="h-5 text-[10px] border-[rgba(255,255,255,0.1)] text-muted-foreground">
                   {filteredIdentities.length}
                 </Badge>
@@ -398,7 +398,7 @@ export function NHIKillSwitch() {
                 <select
                   value={filterCloud}
                   onChange={(e) => setFilterCloud(e.target.value)}
-                  className="h-8 text-xs px-2 rounded-lg bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.06)] text-muted-foreground focus:outline-none focus:border-[rgba(0,255,136,0.2)]"
+                  className="h-8 text-xs px-2 rounded-lg bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.06)] text-muted-foreground focus:outline-none focus:border-[rgba(52,211,153,0.2)]"
                 >
                   <option value="all">All Clouds</option>
                   <option value="aws">AWS</option>
@@ -409,7 +409,7 @@ export function NHIKillSwitch() {
                 <select
                   value={filterStatus}
                   onChange={(e) => setFilterStatus(e.target.value)}
-                  className="h-8 text-xs px-2 rounded-lg bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.06)] text-muted-foreground focus:outline-none focus:border-[rgba(0,255,136,0.2)]"
+                  className="h-8 text-xs px-2 rounded-lg bg-[rgba(0,0,0,0.3)] border border-[rgba(255,255,255,0.06)] text-muted-foreground focus:outline-none focus:border-[rgba(52,211,153,0.2)]"
                 >
                   <option value="all">All Status</option>
                   <option value="active">Active</option>
@@ -436,7 +436,7 @@ export function NHIKillSwitch() {
             ) : (
               <table className="w-full">
                 <thead className="sticky top-0 z-10">
-                  <tr className="border-b border-[rgba(255,255,255,0.06)] bg-[#0a0d14]">
+                  <tr className="border-b border-[rgba(255,255,255,0.06)] bg-[#050710]">
                     <th className="w-10 px-3 py-2.5">
                       <Checkbox
                         checked={selectedIds.size === filteredIdentities.length && filteredIdentities.length > 0}
@@ -466,7 +466,7 @@ export function NHIKillSwitch() {
                         initial={{ opacity: 0, x: -10 }}
                         animate={{ opacity: 1, x: 0 }}
                         transition={{ delay: i * 0.02, duration: 0.2 }}
-                        className={`border-b border-[rgba(255,255,255,0.03)] transition-colors hover:bg-[rgba(255,255,255,0.02)] ${isSelected ? 'bg-[rgba(0,255,136,0.04)]' : ''}`}
+                        className={`border-b border-[rgba(255,255,255,0.03)] transition-colors hover:bg-[rgba(255,255,255,0.02)] ${isSelected ? 'bg-[rgba(52,211,153,0.04)]' : ''}`}
                       >
                         <td className="px-3 py-2.5">
                           <Checkbox
@@ -482,7 +482,7 @@ export function NHIKillSwitch() {
                         </td>
                         <td className="px-3 py-2.5">
                           <div className="max-w-[200px] lg:max-w-[280px]">
-                            <div className="text-[11px] font-mono text-[#e6edf3] truncate" title={identity.identifier}>
+                            <div className="text-[11px] font-mono text-[#f1f5f9] truncate" title={identity.identifier}>
                               {identity.displayName || identity.identifier}
                             </div>
                             <div className="text-[10px] text-muted-foreground/60 font-mono truncate mt-0.5">
@@ -502,7 +502,7 @@ export function NHIKillSwitch() {
                           </span>
                         </td>
                         <td className="px-3 py-2.5 hidden md:table-cell">
-                          <span className="text-[11px] font-mono text-[#e6edf3]">
+                          <span className="text-[11px] font-mono text-[#f1f5f9]">
                             {identity.blastRadius.toLocaleString()}
                           </span>
                         </td>
@@ -515,7 +515,7 @@ export function NHIKillSwitch() {
                           <div className="flex items-center justify-end gap-1">
                             <button
                               onClick={() => setDetailIdentity(identity)}
-                              className="p-1.5 rounded-md hover:bg-[rgba(255,255,255,0.06)] text-muted-foreground hover:text-[#e6edf3] transition-colors"
+                              className="p-1.5 rounded-md hover:bg-[rgba(255,255,255,0.06)] text-muted-foreground hover:text-[#f1f5f9] transition-colors"
                               title="View Details"
                             >
                               <Eye className="h-3.5 w-3.5" />
@@ -624,15 +624,15 @@ export function NHIKillSwitch() {
           <div className="rounded-xl border border-[rgba(255,255,255,0.06)] bg-[rgba(0,0,0,0.3)] p-4">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <BarChart3 className="h-4 w-4 text-[#eab308]" />
-                <h3 className="text-sm font-semibold text-[#e6edf3]">Impact Assessment</h3>
+                <BarChart3 className="h-4 w-4 text-[#facc15]" />
+                <h3 className="text-sm font-semibold text-[#f1f5f9]">Impact Assessment</h3>
               </div>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={handleAssess}
                 disabled={assessing || !identities.length}
-                className="h-7 text-[10px] text-[#eab308] hover:text-[#eab308]/80 hover:bg-[#eab308]/10 gap-1"
+                className="h-7 text-[10px] text-[#facc15] hover:text-[#facc15]/80 hover:bg-[#facc15]/10 gap-1"
               >
                 {assessing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
                 Assess
@@ -643,11 +643,11 @@ export function NHIKillSwitch() {
                 <div className="grid grid-cols-2 gap-2">
                   <div className="rounded-lg bg-[rgba(255,255,255,0.03)] p-2.5">
                     <div className="text-[10px] text-muted-foreground">Affected Identities</div>
-                    <div className="text-lg font-bold font-mono text-[#e6edf3]">{assessment.summary.affectedIdentities}</div>
+                    <div className="text-lg font-bold font-mono text-[#f1f5f9]">{assessment.summary.affectedIdentities}</div>
                   </div>
                   <div className="rounded-lg bg-[rgba(255,255,255,0.03)] p-2.5">
                     <div className="text-[10px] text-muted-foreground">Affected Resources</div>
-                    <div className="text-lg font-bold font-mono text-[#eab308]">{assessment.summary.affectedResources.toLocaleString()}</div>
+                    <div className="text-lg font-bold font-mono text-[#facc15]">{assessment.summary.affectedResources.toLocaleString()}</div>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -655,14 +655,14 @@ export function NHIKillSwitch() {
                     <div className="text-[10px] text-[#ef4444]">Risk Before</div>
                     <div className="text-lg font-bold font-mono text-[#ef4444]">{assessment.summary.riskBefore}</div>
                   </div>
-                  <div className="rounded-lg bg-[rgba(0,255,136,0.06)] p-2.5">
-                    <div className="text-[10px] text-[#00ff88]">Risk After</div>
-                    <div className="text-lg font-bold font-mono text-[#00ff88]">{assessment.summary.riskAfter}</div>
+                  <div className="rounded-lg bg-[rgba(52,211,153,0.06)] p-2.5">
+                    <div className="text-[10px] text-[#34d399]">Risk After</div>
+                    <div className="text-lg font-bold font-mono text-[#34d399]">{assessment.summary.riskAfter}</div>
                   </div>
                 </div>
                 <div className="text-center">
                   <span className="text-[10px] text-muted-foreground">Risk Reduction: </span>
-                  <span className="text-xs font-bold text-[#00ff88]">-{assessment.summary.riskReduction}%</span>
+                  <span className="text-xs font-bold text-[#34d399]">-{assessment.summary.riskReduction}%</span>
                 </div>
               </motion.div>
             ) : (
@@ -674,7 +674,7 @@ export function NHIKillSwitch() {
           <div className="rounded-xl border border-[rgba(255,255,255,0.06)] bg-[rgba(0,0,0,0.3)] p-4">
             <div className="flex items-center gap-2 mb-3">
               <ScrollText className="h-4 w-4 text-[#ef4444]" />
-              <h3 className="text-sm font-semibold text-[#e6edf3]">Recent Revocations</h3>
+              <h3 className="text-sm font-semibold text-[#f1f5f9]">Recent Revocations</h3>
             </div>
             {recentRevocations.length === 0 ? (
               <p className="text-[11px] text-muted-foreground/60">No recent revocations</p>
@@ -692,7 +692,7 @@ export function NHIKillSwitch() {
                     >
                       <XCircle className="h-3.5 w-3.5 text-[#ef4444] mt-0.5 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <div className="text-[11px] text-[#e6edf3] font-mono truncate">
+                        <div className="text-[11px] text-[#f1f5f9] font-mono truncate">
                           {log.revocation?.identifier || detail?.identifier || 'Unknown'}
                         </div>
                         <div className="flex items-center gap-2 mt-0.5">
@@ -719,7 +719,7 @@ export function NHIKillSwitch() {
         <div className="p-4 border-b border-[rgba(255,255,255,0.06)]">
           <div className="flex items-center gap-2">
             <FileText className="h-4 w-4 text-[#06b6d4]" />
-            <h3 className="text-sm font-semibold text-[#e6edf3]">Audit Trail</h3>
+            <h3 className="text-sm font-semibold text-[#f1f5f9]">Audit Trail</h3>
             <Badge variant="outline" className="h-5 text-[10px] border-[rgba(6,182,212,0.2)] text-[#06b6d4]">
               {auditLogs.length} events
             </Badge>
@@ -763,7 +763,7 @@ export function NHIKillSwitch() {
 
       {/* ─── Confirmation Modal ────────────────────────────── */}
       <Dialog open={showModal} onOpenChange={setShowModal}>
-        <DialogContent className="border-[#ef4444]/20 bg-[#0d1117] max-w-md">
+        <DialogContent className="border-[#ef4444]/20 bg-[#080b14] max-w-md">
           <DialogHeader>
             <DialogTitle className="text-[#ef4444] flex items-center gap-2">
               <AlertTriangle className="h-5 w-5" />
@@ -775,7 +775,7 @@ export function NHIKillSwitch() {
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-lg bg-[#ef4444]/5 border border-[#ef4444]/15 p-4 mt-2">
-            <p className="text-sm text-[#e6edf3] font-semibold">
+            <p className="text-sm text-[#f1f5f9] font-semibold">
               {hasSelection
                 ? `${selectedIds.size} identities will be revoked.`
                 : `${stats?.suspect ?? 0} suspect identities will be revoked.`}
@@ -788,7 +788,7 @@ export function NHIKillSwitch() {
             <Button
               variant="ghost"
               onClick={() => setShowModal(false)}
-              className="text-muted-foreground hover:text-[#e6edf3]"
+              className="text-muted-foreground hover:text-[#f1f5f9]"
             >
               Cancel
             </Button>
@@ -804,11 +804,11 @@ export function NHIKillSwitch() {
 
       {/* ─── Detail Modal ──────────────────────────────────── */}
       <Dialog open={!!detailIdentity} onOpenChange={() => setDetailIdentity(null)}>
-        <DialogContent className="border-[rgba(255,255,255,0.08)] bg-[#0d1117] max-w-lg">
+        <DialogContent className="border-[rgba(255,255,255,0.08)] bg-[#080b14] max-w-lg">
           {detailIdentity && (
             <>
               <DialogHeader>
-                <DialogTitle className="text-[#e6edf3]">Identity Details</DialogTitle>
+                <DialogTitle className="text-[#f1f5f9]">Identity Details</DialogTitle>
                 <DialogDescription className="text-muted-foreground">
                   {detailIdentity.displayName || detailIdentity.identityType}
                 </DialogDescription>
@@ -817,11 +817,11 @@ export function NHIKillSwitch() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Type</span>
-                    <p className="text-xs text-[#e6edf3] font-mono mt-0.5">{detailIdentity.identityType}</p>
+                    <p className="text-xs text-[#f1f5f9] font-mono mt-0.5">{detailIdentity.identityType}</p>
                   </div>
                   <div>
                     <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Cloud</span>
-                    <p className="text-xs text-[#e6edf3] font-mono mt-0.5 uppercase">{detailIdentity.cloudProvider}</p>
+                    <p className="text-xs text-[#f1f5f9] font-mono mt-0.5 uppercase">{detailIdentity.cloudProvider}</p>
                   </div>
                   <div>
                     <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Status</span>
@@ -841,18 +841,18 @@ export function NHIKillSwitch() {
                   </div>
                   <div>
                     <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Blast Radius</span>
-                    <p className="text-xs text-[#eab308] font-mono font-bold mt-0.5">{detailIdentity.blastRadius.toLocaleString()} resources</p>
+                    <p className="text-xs text-[#facc15] font-mono font-bold mt-0.5">{detailIdentity.blastRadius.toLocaleString()} resources</p>
                   </div>
                   <div>
                     <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Last Rotated</span>
-                    <p className="text-xs text-[#e6edf3] font-mono mt-0.5">
+                    <p className="text-xs text-[#f1f5f9] font-mono mt-0.5">
                       {detailIdentity.lastRotated ? new Date(detailIdentity.lastRotated).toLocaleDateString() : 'Never'}
                     </p>
                   </div>
                 </div>
                 <div>
                   <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Identifier</span>
-                  <p className="text-xs text-[#e6edf3] font-mono mt-0.5 break-all bg-[rgba(0,0,0,0.3)] rounded-lg p-2.5">{detailIdentity.identifier}</p>
+                  <p className="text-xs text-[#f1f5f9] font-mono mt-0.5 break-all bg-[rgba(0,0,0,0.3)] rounded-lg p-2.5">{detailIdentity.identifier}</p>
                 </div>
                 <div>
                   <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Permissions</span>
@@ -860,7 +860,7 @@ export function NHIKillSwitch() {
                     {(() => {
                       try {
                         return JSON.parse(detailIdentity.permissions).map((p: string, i: number) => (
-                          <Badge key={i} variant="outline" className="text-[10px] font-mono border-[rgba(255,255,255,0.08)] text-[#e6edf3]">
+                          <Badge key={i} variant="outline" className="text-[10px] font-mono border-[rgba(255,255,255,0.08)] text-[#f1f5f9]">
                             {p}
                           </Badge>
                         ));

@@ -15,15 +15,15 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ReconPro — Enterprise Attack Surface Management",
-  description: "Billion-dollar grade attack surface management platform. 13-category reconnaissance, real-time threat intelligence, compliance frameworks (SOC2, HIPAA, PCI-DSS), continuous monitoring, and team collaboration for enterprise security operations.",
-  keywords: ["cybersecurity", "attack surface management", "ASM", "reconnaissance", "vulnerability scanner", "penetration testing", "enterprise security", "SOC2 compliance", "threat intelligence", "continuous monitoring"],
+  description: "Billion-dollar grade attack surface management platform. 13-category reconnaissance, real-time threat intelligence, compliance frameworks, continuous monitoring, and team collaboration for enterprise security operations.",
+  keywords: ["cybersecurity", "attack surface management", "ASM", "reconnaissance", "vulnerability scanner", "enterprise security", "SOC2 compliance", "threat intelligence"],
   authors: [{ name: "ReconPro Security" }],
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
   },
   openGraph: {
-    title: "ReconPro — Enterprise Attack Surface Management Platform",
-    description: "Enterprise-grade ASM with real-time threat intelligence, 13-category scanning, compliance frameworks, and continuous monitoring.",
+    title: "ReconPro — Enterprise Attack Surface Management",
+    description: "Enterprise-grade ASM with real-time threat intelligence, 13-category scanning, and continuous monitoring.",
     type: "website",
   },
 };
@@ -36,7 +36,13 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        style={{
+          backgroundColor: '#030407',
+          color: '#f1f5f9',
+          WebkitFontSmoothing: 'antialiased',
+          MozOsxFontSmoothing: 'grayscale',
+        }}
       >
         {children}
         <Toaster />

@@ -24,11 +24,11 @@ interface ExploitSummary { totalCVEs: number; criticalCVEs: number; weaponized: 
 interface AttackSurface { score: number; vectors: string[]; }
 
 const severityColors: Record<string, string> = {
-  critical: '#ff0040', high: '#ff6b35', medium: '#ffc107', low: '#00ff88', info: '#00b4d8',
+  critical: '#ff0040', high: '#ff6b35', medium: '#ffc107', low: '#34d399', info: '#00b4d8',
 };
 const severityBg: Record<string, string> = {
   critical: 'rgba(255,0,64,0.12)', high: 'rgba(255,107,53,0.12)', medium: 'rgba(255,193,7,0.12)',
-  low: 'rgba(0,255,136,0.12)', info: 'rgba(0,180,216,0.12)',
+  low: 'rgba(52,211,153,0.12)', info: 'rgba(0,180,216,0.12)',
 };
 const exploitColors: Record<string, string> = { weaponized: '#ff0040', poc: '#ff6b35', theoretical: '#ffc107' };
 
@@ -203,7 +203,7 @@ export function VulnArsenal({ onScan }: { onScan?: (target: string) => void }) {
                   {result.banners.map((b, i) => (
                     <div key={i} className="text-xs font-mono bg-[#0a0e1a] p-2 rounded-lg">
                       <span className="text-[#ff6b35]">:{b.port}</span> <span className="text-gray-500">{b.service}</span>
-                      <div className="text-[#00ff88] mt-1">{b.banner.substring(0, 150)}{b.banner.length > 150 ? '...' : ''}</div>
+                      <div className="text-[#34d399] mt-1">{b.banner.substring(0, 150)}{b.banner.length > 150 ? '...' : ''}</div>
                     </div>
                   ))}
                 </div>
@@ -219,7 +219,7 @@ export function VulnArsenal({ onScan }: { onScan?: (target: string) => void }) {
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-mono whitespace-nowrap transition-all ${
                     activeTab === tab.id
                       ? 'bg-[#ff004020] text-[#ff4060] border border-[#ff004044]'
-                      : 'bg-[#0d1117] text-gray-400 border border-[#ffffff10] hover:border-[#ffffff30]'
+                      : 'bg-[#080b14] text-gray-400 border border-[#ffffff10] hover:border-[#ffffff30]'
                   }`}
                 >
                   <span>{tab.icon}</span>
@@ -284,7 +284,7 @@ export function VulnArsenal({ onScan }: { onScan?: (target: string) => void }) {
                                 <div className="col-span-2"><span className="text-gray-500">Exploit:</span> <span style={{ color: exploitColors[cve.exploitAvailable] }}>{cve.exploitAvailable}</span></div>
                                 <div className="col-span-2"><span className="text-gray-500">EPSS:</span> <span className="text-white">{(cve.epss * 100).toFixed(1)}% probability of exploitation in 30 days</span></div>
                                 <div className="col-span-2 bg-[#0a0e1a] p-2 rounded-lg mt-2">
-                                  <span className="text-[#00ff88] font-mono">Remediation:</span>
+                                  <span className="text-[#34d399] font-mono">Remediation:</span>
                                   <div className="text-gray-300 mt-1">{cve.remediation}</div>
                                 </div>
                               </div>
@@ -309,7 +309,7 @@ export function VulnArsenal({ onScan }: { onScan?: (target: string) => void }) {
                         </div>
                         <div className="font-bold text-sm mb-1">{v.title}</div>
                         <div className="text-xs text-gray-400 mb-2">{v.description}</div>
-                        <div className="text-xs font-mono text-[#00ff88] bg-[#0a0e1a] p-2 rounded-lg">
+                        <div className="text-xs font-mono text-[#34d399] bg-[#0a0e1a] p-2 rounded-lg">
                           <span className="text-gray-500">$ </span>{v.proof || v.evidence}
                         </div>
                         <div className="text-xs text-gray-500 mt-1">Asset: {v.asset}</div>

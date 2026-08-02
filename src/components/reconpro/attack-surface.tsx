@@ -34,8 +34,8 @@ interface AttackSurfaceProps {
 
 const severityNodeColors: Record<string, string> = {
   critical: '#ef4444',
-  high: '#f97316',
-  medium: '#eab308',
+  high: '#fb923c',
+  medium: '#facc15',
   low: '#22c55e',
   info: '#6b7280',
 };
@@ -314,7 +314,7 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
         const isHovered = hoveredNode === node.id;
         const r = node.radius + (isHovered ? 3 : 0);
 
-        let color = '#00ff88';
+        let color = '#34d399';
         let glowColor = 'rgba(0, 255, 136, 0.3)';
 
         if (node.severity) {
@@ -435,8 +435,8 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-[rgba(255,255,255,0.04)]">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse-glow" />
-          <h3 className="text-sm font-semibold text-[#e6edf3]">Attack Surface Map</h3>
+          <div className="w-2 h-2 rounded-full bg-[#34d399] animate-pulse-glow" />
+          <h3 className="text-sm font-semibold text-[#f1f5f9]">Attack Surface Map</h3>
           <span className="text-xs text-muted-foreground font-mono">{domain}</span>
         </div>
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -461,8 +461,8 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
         <span className="text-xs text-muted-foreground">Severity:</span>
         {[
           { label: 'Critical', color: '#ef4444' },
-          { label: 'High', color: '#f97316' },
-          { label: 'Medium', color: '#eab308' },
+          { label: 'High', color: '#fb923c' },
+          { label: 'Medium', color: '#facc15' },
           { label: 'Low', color: '#22c55e' },
           { label: 'Info', color: '#6b7280' },
           { label: 'Tech', color: '#06b6d4' },
