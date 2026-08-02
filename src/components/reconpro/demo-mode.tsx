@@ -276,7 +276,7 @@ export function DemoModeToggle({ position = 'floating' }: DemoModeToggleProps) {
               exit={{ opacity: 0, x: 20, scale: 0.9 }}
               transition={{ duration: 0.2 }}
               onClick={handleStartWalkthrough}
-              className="mb-2 flex items-center gap-2 rounded-lg border border-[#3dd68c]/30 bg-[#080b14] px-4 py-2.5 text-sm font-medium text-[#3dd68c] shadow-lg shadow-[#3dd68c]/5 transition-colors hover:bg-[#3dd68c]/10"
+              className="mb-2 flex items-center gap-2 rounded-lg border border-[#00ff88]/30 bg-[#080b14] px-4 py-2.5 text-sm font-medium text-[#00ff88] shadow-lg shadow-[#00ff88]/5 transition-colors hover:bg-[#00ff88]/10"
             >
               <PlayIcon className="h-3.5 w-3.5" />
               Start Investor Walkthrough
@@ -290,8 +290,8 @@ export function DemoModeToggle({ position = 'floating' }: DemoModeToggleProps) {
           className={
             'relative flex items-center gap-2.5 rounded-full px-5 py-3 text-sm font-semibold transition-all duration-300 ' +
             (isDemo
-              ? 'border border-[#3dd68c]/50 bg-[#3dd68c]/10 text-[#3dd68c] shadow-[0_0_20px_rgba(52,211,153,0.25),0_0_60px_rgba(52,211,153,0.08)]'
-              : 'border border-white/15 bg-[#080b14]/90 text-[#5a5850] backdrop-blur-md hover:border-[#3dd68c]/30 hover:text-[#e8e6e1]')
+              ? 'border border-[#00ff88]/50 bg-[#00ff88]/10 text-[#00ff88] shadow-[0_0_20px_rgba(52,211,153,0.25),0_0_60px_rgba(52,211,153,0.08)]'
+              : 'border border-white/15 bg-[#080b14]/90 text-[#444444] backdrop-blur-md hover:border-[#00ff88]/30 hover:text-[#f0f0f0]')
           }
           whileHover={{ scale: 1.04 }}
           whileTap={{ scale: 0.97 }}
@@ -299,12 +299,12 @@ export function DemoModeToggle({ position = 'floating' }: DemoModeToggleProps) {
           {/* Pulsing ring when active */}
           {isDemo && (
             <motion.span
-              className="pointer-events-none absolute inset-0 rounded-full border border-[#3dd68c]/40"
+              className="pointer-events-none absolute inset-0 rounded-full border border-[#00ff88]/40"
               animate={{ scale: [1, 1.15], opacity: [0.6, 0] }}
               transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }}
             />
           )}
-          <Sparkles className={isDemo ? 'h-4 w-4 text-[#3dd68c]' : 'h-4 w-4'} />
+          <Sparkles className={isDemo ? 'h-4 w-4 text-[#00ff88]' : 'h-4 w-4'} />
           <span className="relative">
             {isDemo ? `DEMO MODE — ${companyName}` : 'Investor Demo'}
           </span>
@@ -320,20 +320,20 @@ export function DemoModeToggle({ position = 'floating' }: DemoModeToggleProps) {
       className={
         'relative flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition-all duration-300 ' +
         (isDemo
-          ? 'border border-[#3dd68c]/40 bg-[#3dd68c]/10 text-[#3dd68c] shadow-[0_0_12px_rgba(52,211,153,0.15)]'
-          : 'border border-white/10 bg-white/5 text-[#5a5850] hover:border-[#3dd68c]/20 hover:text-[#e8e6e1]')
+          ? 'border border-[#00ff88]/40 bg-[#00ff88]/10 text-[#00ff88] shadow-[0_0_12px_rgba(52,211,153,0.15)]'
+          : 'border border-white/10 bg-white/5 text-[#444444] hover:border-[#00ff88]/20 hover:text-[#f0f0f0]')
       }
       whileHover={{ scale: 1.03 }}
       whileTap={{ scale: 0.97 }}
     >
       {isDemo && (
         <motion.span
-          className="pointer-events-none absolute inset-0 rounded-lg border border-[#3dd68c]/30"
+          className="pointer-events-none absolute inset-0 rounded-lg border border-[#00ff88]/30"
           animate={{ scale: [1, 1.2], opacity: [0.5, 0] }}
           transition={{ duration: 2, repeat: Infinity, ease: 'easeOut' }}
         />
       )}
-      <Sparkles className={isDemo ? 'h-3.5 w-3.5 text-[#3dd68c]' : 'h-3.5 w-3.5'} />
+      <Sparkles className={isDemo ? 'h-3.5 w-3.5 text-[#00ff88]' : 'h-3.5 w-3.5'} />
       <span className="relative">
         {isDemo ? `DEMO — ${companyName}` : 'Investor Demo'}
       </span>
@@ -457,7 +457,7 @@ export function InvestorWalkthrough() {
       {/* ── Close button ──────────────────────────────────────────────── */}
       <motion.button
         onClick={handleSkip}
-        className="absolute right-5 top-5 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-[#5a5850] transition-colors hover:border-white/20 hover:bg-white/10 hover:text-white"
+        className="absolute right-5 top-5 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-[#444444] transition-colors hover:border-white/20 hover:bg-white/10 hover:text-white"
         whileHover={{ scale: 1.1 }}
         whileTap={{ scale: 0.9 }}
         aria-label="Close walkthrough"
@@ -484,17 +484,17 @@ export function InvestorWalkthrough() {
           >
             {/* Step indicator */}
             <div className="mb-6 flex items-center gap-3">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#3dd68c]/10 text-sm font-bold text-[#3dd68c]">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#00ff88]/10 text-sm font-bold text-[#00ff88]">
                 {currentStep + 1}
               </span>
-              <span className="text-sm font-medium text-[#3d3b38]">
+              <span className="text-sm font-medium text-[#333333]">
                 Step {currentStep + 1} of {WALKTHROUGH_STEPS.length}
               </span>
 
               {/* Auto-advance progress bar */}
               <div className="ml-auto h-1 w-24 overflow-hidden rounded-full bg-white/5">
                 <motion.div
-                  className="h-full rounded-full bg-[#3dd68c]/40"
+                  className="h-full rounded-full bg-[#00ff88]/40"
                   initial={{ width: '0%' }}
                   animate={{ width: `${progressPercent}%` }}
                   transition={{ duration: 0.1, ease: 'linear' }}
@@ -514,7 +514,7 @@ export function InvestorWalkthrough() {
 
             {/* Title */}
             <motion.h2
-              className="mb-2 text-2xl font-bold tracking-tight text-[#e8e6e1] md:text-3xl"
+              className="mb-2 text-2xl font-bold tracking-tight text-[#f0f0f0] md:text-3xl"
               initial={{ y: 10, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               transition={{ delay: 0.1 }}
@@ -524,7 +524,7 @@ export function InvestorWalkthrough() {
 
             {/* Tagline */}
             <motion.p
-              className="mb-4 text-base font-medium text-[#3dd68c]"
+              className="mb-4 text-base font-medium text-[#00ff88]"
               initial={{ y: 10, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               transition={{ delay: 0.15 }}
@@ -534,7 +534,7 @@ export function InvestorWalkthrough() {
 
             {/* Description */}
             <motion.p
-              className="mb-8 leading-relaxed text-[#5a5850]"
+              className="mb-8 leading-relaxed text-[#444444]"
               initial={{ y: 10, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               transition={{ delay: 0.2 }}
@@ -550,13 +550,13 @@ export function InvestorWalkthrough() {
                 animate={{ scale: 1, opacity: 1 }}
                 transition={{ delay: 0.25, type: 'spring', stiffness: 200 }}
               >
-                <div className="text-3xl font-extrabold tracking-tight text-[#e8e6e1] md:text-4xl">
+                <div className="text-3xl font-extrabold tracking-tight text-[#f0f0f0] md:text-4xl">
                   {step.stat.value}
                 </div>
-                <div className="mt-1 text-sm font-semibold text-[#3dd68c]">
+                <div className="mt-1 text-sm font-semibold text-[#00ff88]">
                   {step.stat.label}
                 </div>
-                <div className="mt-0.5 text-xs text-[#3d3b38]">
+                <div className="mt-0.5 text-xs text-[#333333]">
                   {step.stat.sublabel}
                 </div>
 
@@ -565,17 +565,17 @@ export function InvestorWalkthrough() {
                   <MiniMetric
                     label="Risk Score"
                     value={String(presetData.riskScore)}
-                    color="#3dd68c"
+                    color="#00ff88"
                   />
                   <MiniMetric
                     label="Uptime"
                     value={presetData.uptime}
-                    color="#3dd68c"
+                    color="#00ff88"
                   />
                   <MiniMetric
                     label="Compliance"
                     value={`${presetData.complianceScore}%`}
-                    color="#3dd68c"
+                    color="#00ff88"
                   />
                 </div>
               </motion.div>
@@ -589,11 +589,11 @@ export function InvestorWalkthrough() {
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ delay: 0.3 }}
               >
-                <div className="rounded-xl border border-[#3dd68c]/20 bg-[#3dd68c]/5 p-6 text-center">
-                  <p className="mb-1 text-lg font-bold text-[#e8e6e1]">
+                <div className="rounded-xl border border-[#00ff88]/20 bg-[#00ff88]/5 p-6 text-center">
+                  <p className="mb-1 text-lg font-bold text-[#f0f0f0]">
                     Trusted by security teams worldwide
                   </p>
-                  <p className="text-sm text-[#5a5850]">
+                  <p className="text-sm text-[#444444]">
                     Join hundreds of enterprises that trust ReconPro to protect their attack surface.
                   </p>
                 </div>
@@ -620,9 +620,9 @@ export function InvestorWalkthrough() {
                   className={
                     'h-2 rounded-full transition-all duration-300 ' +
                     (i === currentStep
-                      ? 'w-8 bg-[#3dd68c]'
+                      ? 'w-8 bg-[#00ff88]'
                       : i < currentStep
-                        ? 'w-2 bg-[#3dd68c]/40'
+                        ? 'w-2 bg-[#00ff88]/40'
                         : 'w-2 bg-white/10 hover:bg-white/20')
                   }
                   whileHover={{ scale: 1.2 }}
@@ -638,7 +638,7 @@ export function InvestorWalkthrough() {
                 {!isFirst && (
                   <motion.button
                     onClick={handlePrev}
-                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-[#5a5850] transition-colors hover:border-white/20 hover:bg-white/10 hover:text-white"
+                    className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-[#444444] transition-colors hover:border-white/20 hover:bg-white/10 hover:text-white"
                     whileHover={{ scale: 1.03 }}
                     whileTap={{ scale: 0.97 }}
                   >
@@ -653,7 +653,7 @@ export function InvestorWalkthrough() {
                 {!isLast && (
                   <motion.button
                     onClick={handleSkip}
-                    className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-[#3d3b38] transition-colors hover:text-[#5a5850]"
+                    className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium text-[#333333] transition-colors hover:text-[#444444]"
                     whileHover={{ scale: 1.03 }}
                     whileTap={{ scale: 0.97 }}
                   >
@@ -665,7 +665,7 @@ export function InvestorWalkthrough() {
                 {isLast ? (
                   <motion.button
                     onClick={handleEnd}
-                    className="flex items-center gap-2 rounded-lg bg-[#3dd68c] px-6 py-2.5 text-sm font-bold text-[#080a10] shadow-lg shadow-[#3dd68c]/20 transition-all hover:bg-[#00e67a] hover:shadow-[#3dd68c]/30"
+                    className="flex items-center gap-2 rounded-lg bg-[#00ff88] px-6 py-2.5 text-sm font-bold text-[#080a10] shadow-lg shadow-[#00ff88]/20 transition-all hover:bg-[#00e67a] hover:shadow-[#00ff88]/30"
                     whileHover={{ scale: 1.04 }}
                     whileTap={{ scale: 0.97 }}
                   >
@@ -675,7 +675,7 @@ export function InvestorWalkthrough() {
                 ) : (
                   <motion.button
                     onClick={handleNext}
-                    className="flex items-center gap-2 rounded-lg bg-[#3dd68c] px-5 py-2.5 text-sm font-bold text-[#080a10] shadow-lg shadow-[#3dd68c]/20 transition-all hover:bg-[#00e67a] hover:shadow-[#3dd68c]/30"
+                    className="flex items-center gap-2 rounded-lg bg-[#00ff88] px-5 py-2.5 text-sm font-bold text-[#080a10] shadow-lg shadow-[#00ff88]/20 transition-all hover:bg-[#00e67a] hover:shadow-[#00ff88]/30"
                     whileHover={{ scale: 1.04 }}
                     whileTap={{ scale: 0.97 }}
                   >
@@ -700,7 +700,7 @@ function MiniMetric({ label, value, color }: { label: string; value: string; col
       <div className="text-lg font-bold" style={{ color }}>
         {value}
       </div>
-      <div className="text-[10px] font-medium uppercase tracking-wider text-[#3d3b38]">
+      <div className="text-[10px] font-medium uppercase tracking-wider text-[#333333]">
         {label}
       </div>
     </div>

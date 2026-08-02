@@ -40,9 +40,9 @@ export function RiskGauge({ value, size = 180, label }: RiskGaugeProps) {
     // Gradient arc
     const gradient = ctx.createLinearGradient(cx - radius, cy, cx + radius, cy);
     gradient.addColorStop(0, '#22c55e');
-    gradient.addColorStop(0.3, '#e8b33d');
-    gradient.addColorStop(0.6, '#e8943d');
-    gradient.addColorStop(1, '#e84057');
+    gradient.addColorStop(0.3, '#ffaa00');
+    gradient.addColorStop(0.6, '#ff8844');
+    gradient.addColorStop(1, '#ff3355');
 
     const valueAngle = startAngle + (value / 100) * range;
     ctx.beginPath();
@@ -78,7 +78,7 @@ export function RiskGauge({ value, size = 180, label }: RiskGaugeProps) {
     }
 
     // Center value
-    ctx.fillStyle = value > 70 ? '#e84057' : value > 40 ? '#e8943d' : '#3dd68c';
+    ctx.fillStyle = value > 70 ? '#ff3355' : value > 40 ? '#ff8844' : '#00ff88';
     ctx.font = `bold ${size * 0.22}px "Geist Sans", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

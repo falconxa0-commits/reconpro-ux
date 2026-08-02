@@ -17,7 +17,7 @@ const SCAN_PHASES: ScanPhase[] = [
   { id: 'ssl', label: 'SSL/TLS', icon: <Lock className="w-5 h-5" />, color: '#d2a8ff' },
   { id: 'ports', label: 'Port Scan', icon: <Radio className="w-5 h-5" />, color: '#f0883e' },
   { id: 'subdomains', label: 'Subdomains', icon: <Globe className="w-5 h-5" />, color: '#79c0ff' },
-  { id: 'vulns', label: 'Vuln Probe', icon: <Bug className="w-5 h-5" />, color: '#e84057' },
+  { id: 'vulns', label: 'Vuln Probe', icon: <Bug className="w-5 h-5" />, color: '#ff3355' },
   { id: 'osint', label: 'OSINT', icon: <FileSearch className="w-5 h-5" />, color: '#d2a8ff' },
 ];
 
@@ -101,25 +101,25 @@ export function ScanOverlay({ isScanning, domain, findingCount, onNewFinding }: 
           className="w-full max-w-4xl mx-auto space-y-4"
         >
           {/* Target Header */}
-          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#0a0a10] border border-[rgba(52,211,153,0.15)]">
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#000000] border border-[rgba(52,211,153,0.15)]">
             <motion.div
               animate={{ rotate: 360 }}
               transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
-              className="text-[#3dd68c]"
+              className="text-[#00ff88]"
             >
               <Crosshair className="w-5 h-5" />
             </motion.div>
             <div className="flex-1">
               <div className="text-xs text-muted-foreground uppercase tracking-wider">Target Locked</div>
-              <div className="font-mono font-bold text-[#3dd68c]">{domain}</div>
+              <div className="font-mono font-bold text-[#00ff88]">{domain}</div>
             </div>
             <div className="text-right">
               <div className="text-xs text-muted-foreground">Findings</div>
               <motion.div
-                className="font-mono font-bold text-[#e8e6e1] text-xl"
+                className="font-mono font-bold text-[#f0f0f0] text-xl"
                 key={findingCount}
-                initial={{ scale: 1.3, color: '#3dd68c' }}
-                animate={{ scale: 1, color: '#e8e6e1' }}
+                initial={{ scale: 1.3, color: '#00ff88' }}
+                animate={{ scale: 1, color: '#f0f0f0' }}
                 transition={{ duration: 0.3 }}
               >
                 {findingCount}
@@ -133,7 +133,7 @@ export function ScanOverlay({ isScanning, domain, findingCount, onNewFinding }: 
               <motion.div
                 className="h-full rounded-full"
                 style={{
-                  background: 'linear-gradient(90deg, #3dd68c, #79c0ff, #d2a8ff, #f0883e, #e84057)',
+                  background: 'linear-gradient(90deg, #00ff88, #79c0ff, #d2a8ff, #f0883e, #ff3355)',
                 }}
                 animate={{ width: `${progress}%` }}
                 transition={{ duration: 0.3 }}
@@ -165,7 +165,7 @@ export function ScanOverlay({ isScanning, domain, findingCount, onNewFinding }: 
                 animate={idx === activePhase ? { scale: [1, 1.05, 1] } : {}}
                 transition={{ duration: 1, repeat: Infinity }}
               >
-                <div style={{ color: idx <= activePhase ? phase.color : '#3d3b38' }}>
+                <div style={{ color: idx <= activePhase ? phase.color : '#333333' }}>
                   {phase.icon}
                 </div>
                 <span className="text-[9px] text-muted-foreground text-center leading-tight">{phase.label}</span>
@@ -192,11 +192,11 @@ export function ScanOverlay({ isScanning, domain, findingCount, onNewFinding }: 
 
           {/* Live Findings Feed */}
           <div className="rounded-xl bg-[#080b14] border border-[rgba(52,211,153,0.08)] overflow-hidden">
-            <div className="px-3 py-1.5 bg-[#0a0a10] border-b border-[rgba(0,255,255,0.06)] flex items-center gap-2">
+            <div className="px-3 py-1.5 bg-[#000000] border-b border-[rgba(0,255,255,0.06)] flex items-center gap-2">
               <motion.div
                 animate={{ opacity: [1, 0.3, 1] }}
                 transition={{ duration: 1, repeat: Infinity }}
-                className="w-2 h-2 rounded-full bg-[#3dd68c]"
+                className="w-2 h-2 rounded-full bg-[#00ff88]"
               />
               <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">Live Findings Feed</span>
             </div>
@@ -215,18 +215,18 @@ export function ScanOverlay({ isScanning, domain, findingCount, onNewFinding }: 
                         f.severity === 'high' ? 'rgba(251,191,36,0.1)' :
                         f.severity === 'medium' ? 'rgba(250,204,21,0.05)' : 'rgba(255,255,255,0.02)',
                       borderLeft: `2px solid ${
-                        f.severity === 'critical' ? '#e84057' :
-                        f.severity === 'high' ? '#e8943d' :
-                        f.severity === 'medium' ? '#e8b33d' : '#3d3b38'
+                        f.severity === 'critical' ? '#ff3355' :
+                        f.severity === 'high' ? '#ff8844' :
+                        f.severity === 'medium' ? '#ffaa00' : '#333333'
                       }`,
                     }}
                   >
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                      f.severity === 'critical' ? 'bg-[#e84057]' :
-                      f.severity === 'high' ? 'bg-[#e8943d]' :
-                      f.severity === 'medium' ? 'bg-[#e8b33d]' : 'bg-[#3d3b38]'
+                      f.severity === 'critical' ? 'bg-[#ff3355]' :
+                      f.severity === 'high' ? 'bg-[#ff8844]' :
+                      f.severity === 'medium' ? 'bg-[#ffaa00]' : 'bg-[#333333]'
                     }`} />
-                    <span className="text-[#e8e6e1] truncate">{f.title}</span>
+                    <span className="text-[#f0f0f0] truncate">{f.title}</span>
                     <span className="text-muted-foreground ml-auto shrink-0 text-[9px]">{f.category}</span>
                   </motion.div>
                 ))}

@@ -866,7 +866,7 @@ export function SovereignControlPanel() {
               variant="outline"
               onClick={() => setConfirmAction(null)}
               className="rounded-lg"
-              style={{ borderColor: 'rgba(255,255,255,0.1)', color: '#7a7873' }}
+              style={{ borderColor: 'rgba(255,255,255,0.1)', color: '#666666' }}
             >
               Cancel
             </Button>

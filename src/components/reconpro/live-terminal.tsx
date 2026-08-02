@@ -163,10 +163,10 @@ export function LiveTerminal({ isScanning, domain }: LiveTerminalProps) {
   }, [lines]);
 
   const lineColors: Record<string, string> = {
-    command: 'text-[#3dd68c]',
-    output: 'text-[#5a5850]',
+    command: 'text-[#00ff88]',
+    output: 'text-[#444444]',
     finding: 'text-[#79c0ff]',
-    critical: 'text-[#e84057] font-bold',
+    critical: 'text-[#ff3355] font-bold',
     success: 'text-[#3fb950]',
     info: 'text-[#d2a8ff]',
   };
@@ -174,14 +174,14 @@ export function LiveTerminal({ isScanning, domain }: LiveTerminalProps) {
   return (
     <div className="w-full max-w-4xl mx-auto rounded-xl border border-[rgba(52,211,153,0.12)] bg-[#080b14] overflow-hidden">
       {/* Terminal header */}
-      <div className="flex items-center gap-2 px-4 py-2 bg-[#0a0a10] border-b border-[rgba(52,211,153,0.08)]">
+      <div className="flex items-center gap-2 px-4 py-2 bg-[#000000] border-b border-[rgba(52,211,153,0.08)]">
         <div className="flex gap-1.5">
-          <div className="w-3 h-3 rounded-full bg-[#e84057]/80" />
+          <div className="w-3 h-3 rounded-full bg-[#ff3355]/80" />
           <div className="w-3 h-3 rounded-full bg-[#e3b341]/80" />
           <div className="w-3 h-3 rounded-full bg-[#3fb950]/80" />
         </div>
         <span className="text-xs font-mono text-muted-foreground ml-2">reconpro@scanner:~$</span>
-        <span className="text-xs font-mono text-[#3dd68c] ml-auto">
+        <span className="text-xs font-mono text-[#00ff88] ml-auto">
           {isScanning ? (
             <motion.span
               animate={{ opacity: [1, 0.3, 1] }}
@@ -214,9 +214,9 @@ export function LiveTerminal({ isScanning, domain }: LiveTerminalProps) {
               initial={{ opacity: 0, x: -10 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.1 }}
-              className={`whitespace-nowrap overflow-hidden text-ellipsis ${lineColors[line.type] || 'text-[#e8e6e1]'}`}
+              className={`whitespace-nowrap overflow-hidden text-ellipsis ${lineColors[line.type] || 'text-[#f0f0f0]'}`}
             >
-              {line.type === 'command' && <span className="text-[#3dd68c]">$ </span>}
+              {line.type === 'command' && <span className="text-[#00ff88]">$ </span>}
               {line.text || '\u00A0'}
             </motion.div>
           ))}
@@ -225,9 +225,9 @@ export function LiveTerminal({ isScanning, domain }: LiveTerminalProps) {
         {/* Blinking cursor */}
         {isScanning && (
           <div className="flex items-center gap-1 mt-1">
-            <span className="text-[#3dd68c]">$</span>
+            <span className="text-[#00ff88]">$</span>
             <motion.span
-              className="w-2 h-4 bg-[#3dd68c]"
+              className="w-2 h-4 bg-[#00ff88]"
               animate={{ opacity: [1, 0] }}
               transition={{ duration: 0.5, repeat: Infinity }}
             />

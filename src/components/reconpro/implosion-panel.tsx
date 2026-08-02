@@ -58,7 +58,7 @@ interface ScanOption { id: string; target: { domain: string } | null; status: st
 // ═══════════════════════════════════════════════════════════════════════
 
 const INDUSTRIES: { key: IndustryKey; label: string; icon: React.ReactNode; avgCost: string; color: string }[] = [
-  { key: 'healthcare', label: 'Healthcare', icon: <Building className="w-4 h-4" />, avgCost: '$10.93M avg breach', color: '#e84057' },
+  { key: 'healthcare', label: 'Healthcare', icon: <Building className="w-4 h-4" />, avgCost: '$10.93M avg breach', color: '#ff3355' },
   { key: 'finance', label: 'Finance', icon: <Landmark className="w-4 h-4" />, avgCost: '$5.90M avg breach', color: '#f59e0b' },
   { key: 'technology', label: 'Technology', icon: <Monitor className="w-4 h-4" />, avgCost: '$4.88M avg breach', color: '#3b82f6' },
   { key: 'retail', label: 'Retail', icon: <ShoppingBag className="w-4 h-4" />, avgCost: '$3.28M avg breach', color: '#8b5cf6' },
@@ -69,8 +69,8 @@ const INDUSTRIES: { key: IndustryKey; label: string; icon: React.ReactNode; avgC
 const SEVERITY_PRESETS: { key: SeverityKey; label: string; description: string; color: string; borderColor: string; icon: React.ReactNode }[] = [
   { key: 'minimal', label: 'MINIMAL', description: 'Limited exposure, quick containment. Low financial impact.', color: '#22c55e', borderColor: 'border-green-900/60', icon: <Shield className="w-5 h-5" /> },
   { key: 'moderate', label: 'MODERATE', description: 'Standard breach scenario. Significant but recoverable.', color: '#f59e0b', borderColor: 'border-amber-900/60', icon: <AlertTriangle className="w-5 h-5" /> },
-  { key: 'severe', label: 'SEVERE', description: 'Major breach with widespread exfiltration. Board-level crisis.', color: '#e8943d', borderColor: 'border-orange-900/60', icon: <AlertOctagon className="w-5 h-5" /> },
-  { key: 'catastrophic', label: 'CATASTROPHIC', description: 'Existential threat. Complete system compromise.', color: '#e84057', borderColor: 'border-red-900/60', icon: <Skull className="w-5 h-5" /> },
+  { key: 'severe', label: 'SEVERE', description: 'Major breach with widespread exfiltration. Board-level crisis.', color: '#ff8844', borderColor: 'border-orange-900/60', icon: <AlertOctagon className="w-5 h-5" /> },
+  { key: 'catastrophic', label: 'CATASTROPHIC', description: 'Existential threat. Complete system compromise.', color: '#ff3355', borderColor: 'border-red-900/60', icon: <Skull className="w-5 h-5" /> },
 ];
 
 const TABS = [
@@ -553,7 +553,7 @@ export function ImplosionPanel() {
               <div className="relative">
                 <motion.span
                   className="text-7xl font-black font-mono tracking-tight"
-                  style={{ color: '#e84057' }}
+                  style={{ color: '#ff3355' }}
                   animate={simulationComplete ? {
                     textShadow: [
                       '0 0 20px rgba(239,68,68,0.4)',
@@ -607,7 +607,7 @@ export function ImplosionPanel() {
                 phaseNum={2}
                 title="Data Exfiltration"
                 icon={<FileText className="w-5 h-5" />}
-                color="#e8943d"
+                color="#ff8844"
                 delay={0.8}
                 metrics={[
                   { label: 'Lost Business', value: `$${result.lostBusinessCost.toFixed(2)}M`, icon: <TrendingDown className="w-3.5 h-3.5" /> },
@@ -621,7 +621,7 @@ export function ImplosionPanel() {
                 phaseNum={3}
                 title="Regulatory Storm"
                 icon={<AlertOctagon className="w-5 h-5" />}
-                color="#e84057"
+                color="#ff3355"
                 delay={1.3}
                 showFines={true}
                 fineBreakdown={result.fineBreakdown}
@@ -671,8 +671,8 @@ export function ImplosionPanel() {
               <StackedBar
                 segments={[
                   { label: 'Detection', value: result.detectionCost, color: '#f59e0b' },
-                  { label: 'Containment', value: result.containmentCost, color: '#e8943d' },
-                  { label: 'Lost Business', value: result.lostBusinessCost, color: '#e84057' },
+                  { label: 'Containment', value: result.containmentCost, color: '#ff8844' },
+                  { label: 'Lost Business', value: result.lostBusinessCost, color: '#ff3355' },
                   { label: 'Post-Breach', value: result.postBreachCost, color: '#dc2626' },
                 ]}
               />
@@ -819,23 +819,23 @@ export function ImplosionPanel() {
 
                   {/* With ReconPro */}
                   <motion.div
-                    animate={{ borderColor: (fixCritical || implementControls || addInsurance) ? '#3dd68c' : '#1f2937' }}
+                    animate={{ borderColor: (fixCritical || implementControls || addInsurance) ? '#00ff88' : '#1f2937' }}
                     className="p-5 rounded-xl border bg-gray-900/40"
                   >
                     <div className="flex items-center gap-2 mb-3">
-                      <CheckCircle className="w-4 h-4" style={{ color: '#3dd68c' }} />
-                      <span className="text-xs font-bold uppercase tracking-wider" style={{ color: '#3dd68c' }}>With ReconPro</span>
+                      <CheckCircle className="w-4 h-4" style={{ color: '#00ff88' }} />
+                      <span className="text-xs font-bold uppercase tracking-wider" style={{ color: '#00ff88' }}>With ReconPro</span>
                     </div>
                     <motion.div
                       key={`whatif-${fixCritical}-${implementControls}-${addInsurance}`}
                       initial={{ opacity: 0, y: 5 }}
                       animate={{ opacity: 1, y: 0 }}
                       className="text-3xl font-black font-mono"
-                      style={{ color: '#3dd68c' }}
+                      style={{ color: '#00ff88' }}
                     >
                       ${getWhatIfReductions().newTotal.toFixed(2)}M
                     </motion.div>
-                    <p className="text-[10px] mt-1" style={{ color: '#3dd68c' }}>
+                    <p className="text-[10px] mt-1" style={{ color: '#00ff88' }}>
                       Savings: ${getWhatIfReductions().total.toFixed(2)}M ({((getWhatIfReductions().total / result.totalEstimatedImpact) * 100).toFixed(0)}% reduction)
                     </p>
                   </motion.div>
@@ -854,13 +854,13 @@ export function ImplosionPanel() {
                       <p className="text-[10px] text-gray-600 uppercase">ReconPro Annual Cost</p>
                     </div>
                     <div>
-                      <p className="text-lg font-black font-mono" style={{ color: '#3dd68c' }}>
+                      <p className="text-lg font-black font-mono" style={{ color: '#00ff88' }}>
                         ${getWhatIfReductions().total.toFixed(1)}M
                       </p>
                       <p className="text-[10px] text-gray-600 uppercase">Estimated Savings</p>
                     </div>
                     <div>
-                      <p className="text-lg font-black font-mono" style={{ color: '#3dd68c' }}>
+                      <p className="text-lg font-black font-mono" style={{ color: '#00ff88' }}>
                         {getWhatIfReductions().roi > 0 ? `${getWhatIfReductions().roi.toFixed(0)}x` : '—'}
                       </p>
                       <p className="text-[10px] text-gray-600 uppercase">ROI</p>
@@ -873,7 +873,7 @@ export function ImplosionPanel() {
                       className="mt-4 p-3 rounded-lg text-center"
                       style={{ background: 'rgba(52,211,153,0.05)', border: '1px solid rgba(52,211,153,0.15)' }}
                     >
-                      <p className="text-xs font-bold" style={{ color: '#3dd68c' }}>
+                      <p className="text-xs font-bold" style={{ color: '#00ff88' }}>
                         ReconPro pays for itself {getWhatIfReductions().roi > 10 ? 'thousands' : getWhatIfReductions().roi > 1 ? 'hundreds' : 'multiple'} of times over
                       </p>
                     </motion.div>
@@ -1146,7 +1146,7 @@ function ComparisonBar({ label, company, industry }: { label: string; company: n
               animate={{ width: `${companyPct}%` }}
               transition={{ duration: 1, ease: 'easeOut' }}
               className="h-full rounded-full"
-              style={{ background: 'linear-gradient(90deg, #e84057, #e8943d)' }}
+              style={{ background: 'linear-gradient(90deg, #ff3355, #ff8844)' }}
             />
           </div>
         </div>
@@ -1172,14 +1172,14 @@ function PercentileCard({ label, value }: { label: string; value: number }) {
   return (
     <div className="p-3 rounded-lg bg-gray-950/60 border border-gray-800/40 text-center">
       <p className="text-[10px] text-gray-600 uppercase font-bold mb-1">{label}</p>
-      <p className="text-xl font-black font-mono" style={{ color: isHigh ? '#e84057' : '#3dd68c' }}>{value}th</p>
+      <p className="text-xl font-black font-mono" style={{ color: isHigh ? '#ff3355' : '#00ff88' }}>{value}th</p>
       <div className="mt-1.5 mx-auto w-full h-1.5 bg-gray-900 rounded-full overflow-hidden">
         <motion.div
           initial={{ width: 0 }}
           animate={{ width: `${value}%` }}
           transition={{ duration: 1.2, ease: 'easeOut' }}
           className="h-full rounded-full"
-          style={{ background: isHigh ? '#e84057' : '#3dd68c' }}
+          style={{ background: isHigh ? '#ff3355' : '#00ff88' }}
         />
       </div>
     </div>
@@ -1228,7 +1228,7 @@ function ToggleCard({ label, description, checked, onChange, reduction, icon }:
           animate={{ x: checked ? 16 : 0 }}
           transition={{ type: 'spring', stiffness: 500, damping: 30 }}
           className="w-5 h-5 rounded-full"
-          style={{ background: checked ? '#3dd68c' : '#4b5563' }}
+          style={{ background: checked ? '#00ff88' : '#4b5563' }}
         />
       </div>
     </motion.button>

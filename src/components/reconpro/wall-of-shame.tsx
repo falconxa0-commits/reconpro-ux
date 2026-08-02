@@ -132,7 +132,7 @@ function AnimCounter({ target, dur = 1200 }: { target: number; dur?: number }) {
 // Sparkline
 // ═══════════════════════════════════════════════════════════════════════
 
-function Sparkline({ data, color = '#e84057', w = 120, h = 32 }: { data: number[]; color?: string; w?: number; h?: number }) {
+function Sparkline({ data, color = '#ff3355', w = 120, h = 32 }: { data: number[]; color?: string; w?: number; h?: number }) {
   if (data.length < 2) return null;
   const mx = Math.max(...data, 1), mn = Math.min(...data, 0), rng = mx - mn || 1, step = w / (data.length - 1);
   const pts = data.map((v, i) => `${i * step},${h - ((v - mn) / rng) * (h - 4) - 2}`).join(' ');
@@ -210,9 +210,9 @@ function StatsDash({ stats }: { stats: Stats }) {
   }, [stats]);
   const cards = [
     { label: 'Total Today', value: stats.totalToday, icon: Rss, color: '#3b82f6', sd: trend },
-    { label: 'Critical This Week', value: stats.criticalThisWeek, icon: ShieldAlert, color: '#e84057', sd: trend },
+    { label: 'Critical This Week', value: stats.criticalThisWeek, icon: ShieldAlert, color: '#ff3355', sd: trend },
     { label: 'Most Affected Industry', value: topInd, icon: Globe, color: '#f59e0b', isText: true, sd: null },
-    { label: 'Top Finding Type', value: topFt, icon: Zap, color: '#a88a3a', isText: true, sd: null },
+    { label: 'Top Finding Type', value: topFt, icon: Zap, color: '#888888', isText: true, sd: null },
   ];
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

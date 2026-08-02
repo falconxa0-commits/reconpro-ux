@@ -62,21 +62,21 @@ function AlertFeedUI({ alerts, onDismiss }: { alerts: CriticalAlert[]; onDismiss
                 alert.severity === 'critical' ? 'bg-[rgba(244,63,94,0.2)]' : 'bg-[rgba(251,191,36,0.2)]'
               }`}>
                 {alert.severity === 'critical' ? (
-                  <ShieldAlert className="w-4 h-4 text-[#e84057]" />
+                  <ShieldAlert className="w-4 h-4 text-[#ff3355]" />
                 ) : (
-                  <AlertTriangle className="w-4 h-4 text-[#e8943d]" />
+                  <AlertTriangle className="w-4 h-4 text-[#ff8844]" />
                 )}
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className={`text-[10px] font-bold uppercase tracking-wider ${
-                    alert.severity === 'critical' ? 'text-[#e84057]' : 'text-[#e8943d]'
+                    alert.severity === 'critical' ? 'text-[#ff3355]' : 'text-[#ff8844]'
                   }`}>
                     {alert.severity === 'critical' ? 'CRITICAL' : 'HIGH'}
                   </span>
-                  <Zap className={`w-3 h-3 ${alert.severity === 'critical' ? 'text-[#e84057]' : 'text-[#e8943d]'} animate-pulse`} />
+                  <Zap className={`w-3 h-3 ${alert.severity === 'critical' ? 'text-[#ff3355]' : 'text-[#ff8844]'} animate-pulse`} />
                 </div>
-                <p className="text-xs font-semibold text-[#e8e6e1] mt-0.5 truncate">{alert.title}</p>
+                <p className="text-xs font-semibold text-[#f0f0f0] mt-0.5 truncate">{alert.title}</p>
                 <p className="text-[10px] text-muted-foreground truncate font-mono mt-0.5">{alert.evidence}</p>
               </div>
               <button

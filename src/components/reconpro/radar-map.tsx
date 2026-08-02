@@ -39,9 +39,9 @@ interface RadarMapProps {
 // ─── Constants ───────────────────────────────────────────────────────
 
 const SEV_COLORS: Record<string, string> = {
-  critical: '#e84057',
-  high: '#e8943d',
-  medium: '#e8b33d',
+  critical: '#ff3355',
+  high: '#ff8844',
+  medium: '#ffaa00',
   low: '#22c55e',
   info: '#6b7280',
 };
@@ -322,7 +322,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
         const ly = cy + labelR * Math.sin(rad);
         ctx.textAlign = d.align;
         ctx.textBaseline = d.base;
-        ctx.fillStyle = d.text === 'N' ? '#3dd68c' : 'rgba(0, 255, 136, 0.45)';
+        ctx.fillStyle = d.text === 'N' ? '#00ff88' : 'rgba(0, 255, 136, 0.45)';
         ctx.fillText(d.text, lx, ly);
       }
 
@@ -403,7 +403,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
             blip.discoveredAt = t;
             blip.pingPhase = 1;
             discoveredOrderRef.current.push(blip.id);
-            const color = SEV_COLORS[blip.severity] || '#3dd68c';
+            const color = SEV_COLORS[blip.severity] || '#00ff88';
             pings.push({ x: bx, y: by, r: 0, alpha: 0.8, color });
           }
         } else {
@@ -416,7 +416,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
           blip.pingPhase = Math.max(0, blip.pingPhase - dt * 1.2);
           const pingR = (1 - blip.pingPhase) * 30;
           const pingAlpha = blip.pingPhase * 0.5;
-          const color = SEV_COLORS[blip.severity] || '#3dd68c';
+          const color = SEV_COLORS[blip.severity] || '#00ff88';
           const pr = parseInt(color.slice(1, 3), 16);
           const pg = parseInt(color.slice(3, 5), 16);
           const pb = parseInt(color.slice(5, 7), 16);
@@ -444,7 +444,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
         if (!blip.discovered) continue;
 
         const alpha = Math.max(0.12, blip.brightness);
-        const color = SEV_COLORS[blip.severity] || '#3dd68c';
+        const color = SEV_COLORS[blip.severity] || '#00ff88';
         const cr = parseInt(color.slice(1, 3), 16);
         const cg = parseInt(color.slice(3, 5), 16);
         const cb = parseInt(color.slice(5, 7), 16);
@@ -584,7 +584,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
       // Center dot
       ctx.beginPath();
       ctx.arc(cx, cy, 2, 0, Math.PI * 2);
-      ctx.fillStyle = '#3dd68c';
+      ctx.fillStyle = '#00ff88';
       ctx.fill();
 
       // Domain label below center
@@ -740,19 +740,19 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[rgba(255,255,255,0.04)]">
         <div className="flex items-center gap-3">
-          <div className={`w-2 h-2 rounded-full ${isScanning ? 'bg-[#3dd68c] animate-pulse-glow' : 'bg-[#3dd68c]/50'}`} />
-          <h3 className="text-sm font-semibold text-[#e8e6e1]">Radar Mapping</h3>
+          <div className={`w-2 h-2 rounded-full ${isScanning ? 'bg-[#00ff88] animate-pulse-glow' : 'bg-[#00ff88]/50'}`} />
+          <h3 className="text-sm font-semibold text-[#f0f0f0]">Radar Mapping</h3>
           <span className="text-xs text-muted-foreground font-mono">{domain}</span>
           {isScanning && (
-            <Badge variant="outline" className="text-[10px] px-2 py-0 border-[#3dd68c]/30 text-[#3dd68c] animate-pulse">
+            <Badge variant="outline" className="text-[10px] px-2 py-0 border-[#00ff88]/30 text-[#00ff88] animate-pulse">
               LIVE SCAN
             </Badge>
           )}
         </div>
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <span className="font-mono">{discoveredCount} contacts</span>
-          {critCount > 0 && <span className="text-[#e84057] font-mono">{critCount} crit</span>}
-          {highCount > 0 && <span className="text-[#e8943d] font-mono">{highCount} high</span>}
+          {critCount > 0 && <span className="text-[#ff3355] font-mono">{critCount} crit</span>}
+          {highCount > 0 && <span className="text-[#ff8844] font-mono">{highCount} high</span>}
         </div>
       </div>
 
@@ -774,12 +774,12 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
               top: Math.max(tooltipPos.y - 50, 8),
             }}
           >
-            <div className="font-mono text-[#e8e6e1] text-xs mb-1.5 truncate">{hoveredBlip.fullLabel}</div>
+            <div className="font-mono text-[#f0f0f0] text-xs mb-1.5 truncate">{hoveredBlip.fullLabel}</div>
             <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="outline" className={`text-[9px] px-1.5 py-0 ${
-                hoveredBlip.severity === 'critical' ? 'bg-[#e84057]/15 text-[#e84057] border-[#e84057]/30' :
-                hoveredBlip.severity === 'high' ? 'bg-[#e8943d]/15 text-[#e8943d] border-[#e8943d]/30' :
-                hoveredBlip.severity === 'medium' ? 'bg-[#e8b33d]/15 text-[#e8b33d] border-[#e8b33d]/30' :
+                hoveredBlip.severity === 'critical' ? 'bg-[#ff3355]/15 text-[#ff3355] border-[#ff3355]/30' :
+                hoveredBlip.severity === 'high' ? 'bg-[#ff8844]/15 text-[#ff8844] border-[#ff8844]/30' :
+                hoveredBlip.severity === 'medium' ? 'bg-[#ffaa00]/15 text-[#ffaa00] border-[#ffaa00]/30' :
                 hoveredBlip.severity === 'low' ? 'bg-[#22c55e]/15 text-[#22c55e] border-[#22c55e]/30' :
                 'bg-[#6b7280]/15 text-[#6b7280] border-[#6b7280]/30'
               }`}>
@@ -798,7 +798,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
                     className="w-1.5 h-3 rounded-sm"
                     style={{
                       backgroundColor: i <= Math.ceil(hoveredBlip.signalStrength * 5)
-                        ? (SEV_COLORS[hoveredBlip.severity] || '#3dd68c')
+                        ? (SEV_COLORS[hoveredBlip.severity] || '#00ff88')
                         : 'rgba(255,255,255,0.08)',
                     }}
                   />
@@ -824,12 +824,12 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-muted-foreground uppercase tracking-wider">Range:</span>
           {[
-            { label: 'Vulns', c: '#e84057' },
-            { label: 'Headers', c: '#e8943d' },
-            { label: 'Ports', c: '#e8b33d' },
+            { label: 'Vulns', c: '#ff3355' },
+            { label: 'Headers', c: '#ff8844' },
+            { label: 'Ports', c: '#ffaa00' },
             { label: 'SSL', c: '#22c55e' },
             { label: 'DNS', c: '#a78bfa' },
-            { label: 'Subs', c: '#e8b33d' },
+            { label: 'Subs', c: '#ffaa00' },
             { label: 'Tech', c: '#6b7280' },
           ].map(s => (
             <div key={s.label} className="flex items-center gap-1">
@@ -839,7 +839,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
           ))}
         </div>
         <div className="flex items-center gap-1.5 text-[9px] text-muted-foreground font-mono">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#3dd68c] animate-pulse" />
+          <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-pulse" />
           SWEEP ACTIVE
         </div>
       </div>

@@ -257,7 +257,7 @@ function DoomCountdown({ doomDate, doomScore, urgencyLevel }: { doomDate: string
           />
           <defs>
             <linearGradient id="doomGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor={doomScore >= 70 ? '#e84057' : doomScore >= 50 ? '#e8943d' : '#22c55e'} />
+              <stop offset="0%" stopColor={doomScore >= 70 ? '#ff3355' : doomScore >= 50 ? '#ff8844' : '#22c55e'} />
               <stop offset="100%" stopColor={doomScore >= 70 ? '#dc2626' : doomScore >= 50 ? '#ea580c' : '#16a34a'} />
             </linearGradient>
           </defs>
@@ -396,7 +396,7 @@ function AssetBreakdown({ assets, sortBy, onSortChange }: {
             onClick={() => onSortChange(s)}
             className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
               sortBy === s
-                ? 'bg-[#3dd68c]/10 text-[#3dd68c] border border-[#3dd68c]/20'
+                ? 'bg-[#00ff88]/10 text-[#00ff88] border border-[#00ff88]/20'
                 : 'text-gray-500 hover:text-gray-300 border border-transparent'
             }`}
           >
@@ -507,12 +507,12 @@ function MigrationRoadmap({ steps }: { steps: MigrationStep[] }) {
   return (
     <div className="space-y-4">
       {/* Total cost header */}
-      <div className="flex items-center justify-between p-4 rounded-xl border border-[#3dd68c]/10 bg-[#3dd68c]/5">
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[#00ff88]/10 bg-[#00ff88]/5">
         <div>
           <div className="text-xs text-gray-500">Estimated Total Migration Cost</div>
-          <div className="text-2xl font-black text-[#3dd68c] font-mono">{totalCost}</div>
+          <div className="text-2xl font-black text-[#00ff88] font-mono">{totalCost}</div>
         </div>
-        <button className="px-4 py-2 rounded-lg bg-[#3dd68c] text-black font-bold text-sm hover:bg-[#3dd68c]/90 transition-colors">
+        <button className="px-4 py-2 rounded-lg bg-[#00ff88] text-black font-bold text-sm hover:bg-[#00ff88]/90 transition-colors">
           Request Quote
         </button>
       </div>
@@ -558,8 +558,8 @@ function MigrationRoadmap({ steps }: { steps: MigrationStep[] }) {
                 <div className="flex items-center gap-2">
                   <Lock className="w-3 h-3 text-red-400" />
                   <span className="text-gray-400">{step.currentCrypto}</span>
-                  <ArrowDown className="w-3 h-3 text-[#3dd68c]" />
-                  <Unlock className="w-3 h-3 text-[#3dd68c]" />
+                  <ArrowDown className="w-3 h-3 text-[#00ff88]" />
+                  <Unlock className="w-3 h-3 text-[#00ff88]" />
                   <span className="text-emerald-400 font-semibold">{step.recommendedCrypto}</span>
                 </div>
                 <div className="flex items-center gap-3 text-gray-500">

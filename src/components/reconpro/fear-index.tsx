@@ -61,7 +61,7 @@ const SECTOR_LABELS: Record<SectorKey, string> = {
 // ── Trend Arrow Component ─────────────────────────────────────────────
 
 function TrendArrow({ trend, change, size = 16 }: { trend: TrendDirection; change: number; size?: number }) {
-  const color = trend === 'rising' ? '#e84057' : trend === 'falling' ? '#22c55e' : '#6b7280';
+  const color = trend === 'rising' ? '#ff3355' : trend === 'falling' ? '#22c55e' : '#6b7280';
   if (trend === 'rising') return <TrendingUp size={size} style={{ color }} />;
   if (trend === 'falling') return <TrendingDown size={size} style={{ color }} />;
   return <Activity size={size} style={{ color }} />;
@@ -228,9 +228,9 @@ function TrendChart({ data }: { data: HistoricalDataPoint[] }) {
   // Level zone backgrounds
   const zones = [
     { from: 0, to: 20, color: '#22c55e08' },
-    { from: 20, to: 40, color: '#e8b33d08' },
-    { from: 40, to: 60, color: '#e8943d08' },
-    { from: 60, to: 80, color: '#e8405708' },
+    { from: 20, to: 40, color: '#ffaa0008' },
+    { from: 40, to: 60, color: '#ff884408' },
+    { from: 60, to: 80, color: '#ff335508' },
     { from: 80, to: 100, color: '#7f1d1d08' },
   ];
 
@@ -287,8 +287,8 @@ function TrendChart({ data }: { data: HistoricalDataPoint[] }) {
         <path d={areaPath} fill="url(#fearGradient)" opacity={0.3} />
         <defs>
           <linearGradient id="fearGradient" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#e84057" stopOpacity={0.4} />
-            <stop offset="100%" stopColor="#e84057" stopOpacity={0} />
+            <stop offset="0%" stopColor="#ff3355" stopOpacity={0.4} />
+            <stop offset="100%" stopColor="#ff3355" stopOpacity={0} />
           </linearGradient>
         </defs>
         {/* Score line */}
@@ -307,8 +307,8 @@ function TrendChart({ data }: { data: HistoricalDataPoint[] }) {
             onMouseEnter={() => setHoveredSpike(i)} onMouseLeave={() => setHoveredSpike(null)}
             className="cursor-pointer"
           >
-            <circle cx={xScale(i)} cy={yScale(data[i].score)} r={5} fill="#e84057" stroke="#1f2937" strokeWidth={2} />
-            <line x1={xScale(i)} y1={yScale(data[i].score)} x2={xScale(i)} y2={yScale(0)} stroke="#e8405744" strokeWidth={1} strokeDasharray="3 3" />
+            <circle cx={xScale(i)} cy={yScale(data[i].score)} r={5} fill="#ff3355" stroke="#1f2937" strokeWidth={2} />
+            <line x1={xScale(i)} y1={yScale(data[i].score)} x2={xScale(i)} y2={yScale(0)} stroke="#ff335544" strokeWidth={1} strokeDasharray="3 3" />
           </g>
         ))}
         {/* Spike tooltip */}
@@ -448,7 +448,7 @@ function ThreatFeed({ threats }: { threats: string[] }) {
   }, [threats.length]);
 
   const severityIcons = [AlertTriangle, Zap, Shield, Activity, Radio];
-  const severityColors = ['#e84057', '#e8943d', '#e8b33d', '#60a5fa', '#a78bfa'];
+  const severityColors = ['#ff3355', '#ff8844', '#ffaa00', '#60a5fa', '#a78bfa'];
 
   return (
     <div className="space-y-2">

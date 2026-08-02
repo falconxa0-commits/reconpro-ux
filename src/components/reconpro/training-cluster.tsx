@@ -157,8 +157,8 @@ function generateUtilData(): number[] {
 const STATUS_COLORS: Record<NodeStatus, string> = {
   online: '#22c55e',
   training: '#3b82f6',
-  idle: '#6b6960',
-  offline: '#e84057',
+  idle: '#555555',
+  offline: '#ff3355',
 };
 
 const PROVIDER_COLORS: Record<CloudProvider, string> = {
@@ -241,7 +241,7 @@ export function TrainingClusterPanel() {
     const circumference = 2 * Math.PI * radius;
     const arcLength = (value / 100) * circumference;
     const dashOffset = circumference - arcLength;
-    const color = value > 85 ? '#e84057' : value > 65 ? '#f59e0b' : '#3b82f6';
+    const color = value > 85 ? '#ff3355' : value > 65 ? '#f59e0b' : '#3b82f6';
 
     return (
       <svg width={size} height={size} className="drop-shadow-lg">
@@ -252,7 +252,7 @@ export function TrainingClusterPanel() {
           style={{ filter: `drop-shadow(0 0 8px ${color}60)` }}
         />
         <text x={cx} y={cy - 4} textAnchor="middle" fill="white" fontSize="28" fontWeight="bold">{value}%</text>
-        <text x={cx} y={cy + 16} textAnchor="middle" fill="#6b6960" fontSize="10">UTILIZATION</text>
+        <text x={cx} y={cy + 16} textAnchor="middle" fill="#555555" fontSize="10">UTILIZATION</text>
       </svg>
     );
   };
@@ -520,7 +520,7 @@ export function TrainingClusterPanel() {
                           <div className="h-1.5 bg-white/5 rounded-full overflow-hidden">
                             <div className="h-full rounded-full transition-all duration-500" style={{
                               width: `${node.utilization}%`,
-                              backgroundColor: node.utilization > 80 ? '#e84057' : node.utilization > 60 ? '#f59e0b' : STATUS_COLORS[node.status],
+                              backgroundColor: node.utilization > 80 ? '#ff3355' : node.utilization > 60 ? '#f59e0b' : STATUS_COLORS[node.status],
                             }} />
                           </div>
                         </div>
@@ -695,7 +695,7 @@ export function TrainingClusterPanel() {
                             <motion.div initial={{ width: 0 }} animate={{ width: `${(mem / 80) * 100}%` }}
                               transition={{ duration: 0.5, delay: i * 0.05 }}
                               className="h-full rounded-full" style={{
-                                backgroundColor: mem > 60 ? '#e84057' : mem > 40 ? '#f59e0b' : '#3b82f6',
+                                backgroundColor: mem > 60 ? '#ff3355' : mem > 40 ? '#f59e0b' : '#3b82f6',
                               }} />
                           </div>
                           <span className="text-xs text-slate-400 w-16 text-right">{mem} GB</span>

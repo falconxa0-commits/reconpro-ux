@@ -131,7 +131,7 @@ interface ScanResult {
 
 const SEV_COLORS: Record<string, string> = {
   critical: '#ff003c', high: '#ff4500', medium: '#ffaa00',
-  low: '#3dd68c', info: '#00b4d8',
+  low: '#00ff88', info: '#00b4d8',
 };
 const SEV_BG: Record<string, string> = {
   critical: 'rgba(255, 0, 60, 0.12)', high: 'rgba(255, 69, 0, 0.12)',
@@ -141,7 +141,7 @@ const SEV_BG: Record<string, string> = {
 
 const FEAR_COLORS: Record<string, string> = {
   LEGENDARY: '#ff003c', MYTHIC: '#ff4500', FEARSOME: '#ff6b35',
-  WORRYING: '#ffaa00', NOTABLE: '#64748b', FORGETTABLE: '#3d3b38',
+  WORRYING: '#ffaa00', NOTABLE: '#64748b', FORGETTABLE: '#333333',
 };
 
 const TABS = [
@@ -182,7 +182,7 @@ function SeverityBadge({ severity }: { severity: string }) {
 function DualGauge({ threatScore, fearIndex }: { threatScore: number; fearIndex: number }) {
   const radius = 70;
   const circ = 2 * Math.PI * radius;
-  const threatColor = threatScore >= 75 ? '#ff003c' : threatScore >= 50 ? '#ff4500' : threatScore >= 25 ? '#ffaa00' : '#3dd68c';
+  const threatColor = threatScore >= 75 ? '#ff003c' : threatScore >= 50 ? '#ff4500' : threatScore >= 25 ? '#ffaa00' : '#00ff88';
   const fearColor = FEAR_COLORS[
     fearIndex >= 90 ? 'LEGENDARY' :
     fearIndex >= 70 ? 'MYTHIC' :
@@ -283,7 +283,7 @@ function ExpandableRow({
         <div className="flex items-center gap-3 min-w-0">
           {open ? <ChevronDown className="h-4 w-4 flex-shrink-0 text-[#64748b]" /> : <ChevronRight className="h-4 w-4 flex-shrink-0 text-[#64748b]" />}
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-[#e8e6e1] truncate">{title}</div>
+            <div className="text-sm font-semibold text-[#f0f0f0] truncate">{title}</div>
             {subtitle && <div className="text-[11px] text-[#64748b] truncate">{subtitle}</div>}
           </div>
         </div>
@@ -351,7 +351,7 @@ function GorgonHeader() {
                 transition={{ duration: 1.5, repeat: Infinity }}
                 className="absolute inset-0 flex items-center justify-center"
               >
-                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#3dd68c] via-[#00b4d8] to-[#000] flex items-center justify-center">
+                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ff88] via-[#00b4d8] to-[#000] flex items-center justify-center">
                   <div className="w-2 h-2 rounded-full bg-black" />
                 </div>
               </motion.div>
@@ -359,7 +359,7 @@ function GorgonHeader() {
           </div>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-3xl font-black text-[#e8e6e1]" style={{ fontFamily: 'Geist Sans, sans-serif', letterSpacing: '0.02em' }}>
+              <h1 className="text-3xl font-black text-[#f0f0f0]" style={{ fontFamily: 'Geist Sans, sans-serif', letterSpacing: '0.02em' }}>
                 GORGON
               </h1>
               <span
@@ -481,7 +481,7 @@ export function ModelBreaker() {
             onKeyDown={(e) => e.key === 'Enter' && !scanning && handleScan()}
             placeholder="Target AI host (e.g. api.openai.com, huggingface.co, api.anthropic.com)"
             disabled={scanning}
-            className="flex-1 px-3 py-2.5 rounded-lg bg-[#080b14] border border-[rgba(255,0,60,0.15)] text-sm text-[#e8e6e1] placeholder:text-[#3d3b38] focus:outline-none focus:border-[#ff003c]/40 font-mono"
+            className="flex-1 px-3 py-2.5 rounded-lg bg-[#080b14] border border-[rgba(255,0,60,0.15)] text-sm text-[#f0f0f0] placeholder:text-[#333333] focus:outline-none focus:border-[#ff003c]/40 font-mono"
           />
           <motion.button
             whileHover={{ scale: scanning ? 1 : 1.02 }}
@@ -523,7 +523,7 @@ export function ModelBreaker() {
           <div className="h-1.5 bg-[#080b14] rounded-full overflow-hidden">
             <motion.div
               className="h-full"
-              style={{ background: 'linear-gradient(90deg, #ff003c, #ff4500, #ffaa00, #3dd68c)' }}
+              style={{ background: 'linear-gradient(90deg, #ff003c, #ff4500, #ffaa00, #00ff88)' }}
               animate={{ width: `${progress}%` }}
               transition={{ duration: 0.3 }}
             />
@@ -613,7 +613,7 @@ export function ModelBreaker() {
                   className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
                     isActive
                       ? 'bg-[rgba(255,0,60,0.12)] text-[#ff003c]'
-                      : 'text-[#64748b] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#e8e6e1]'
+                      : 'text-[#64748b] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#f0f0f0]'
                   }`}
                 >
                   <Icon className="h-3.5 w-3.5" />
@@ -638,7 +638,7 @@ export function ModelBreaker() {
                 <div className="cyber-card rounded-xl p-4 border-l-2 border-[#ff003c]">
                   <div className="flex items-center gap-2 mb-2">
                     <Flame className="h-4 w-4 text-[#ff003c]" />
-                    <h3 className="text-sm font-bold text-[#e8e6e1]">GORGON Signature Broadcast</h3>
+                    <h3 className="text-sm font-bold text-[#f0f0f0]">GORGON Signature Broadcast</h3>
                     {result.signatureBroadcast.acknowledged && (
                       <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-[#ff003c]/20 text-[#ff003c] border border-[#ff003c]/30">
                         ACKNOWLEDGED
@@ -654,18 +654,18 @@ export function ModelBreaker() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <div className="cyber-card rounded-xl p-4">
-                    <h3 className="text-sm font-bold text-[#e8e6e1] mb-3 flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-[#f0f0f0] mb-3 flex items-center gap-2">
                       <Cpu className="h-4 w-4 text-[#ff003c]" />
                       Model Fingerprint
                     </h3>
                     <div className="space-y-2 text-xs">
-                      <div className="flex justify-between"><span className="text-[#64748b]">Family:</span><span className="text-[#e8e6e1] font-mono">{result.modelFingerprint.modelFamily}</span></div>
-                      <div className="flex justify-between"><span className="text-[#64748b]">Alignment:</span><span className="text-[#e8e6e1] font-mono">{result.modelFingerprint.alignmentMethod}</span></div>
-                      <div className="flex justify-between"><span className="text-[#64748b]">Watermarked:</span><span className="text-[#e8e6e1] font-mono">{result.modelFingerprint.watermarkingDetected ? 'Yes' : 'No'}</span></div>
+                      <div className="flex justify-between"><span className="text-[#64748b]">Family:</span><span className="text-[#f0f0f0] font-mono">{result.modelFingerprint.modelFamily}</span></div>
+                      <div className="flex justify-between"><span className="text-[#64748b]">Alignment:</span><span className="text-[#f0f0f0] font-mono">{result.modelFingerprint.alignmentMethod}</span></div>
+                      <div className="flex justify-between"><span className="text-[#64748b]">Watermarked:</span><span className="text-[#f0f0f0] font-mono">{result.modelFingerprint.watermarkingDetected ? 'Yes' : 'No'}</span></div>
                     </div>
                   </div>
                   <div className="cyber-card rounded-xl p-4">
-                    <h3 className="text-sm font-bold text-[#e8e6e1] mb-3 flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-[#f0f0f0] mb-3 flex items-center gap-2">
                       <Activity className="h-4 w-4 text-[#ff003c]" />
                       Attack Surface
                     </h3>
@@ -680,7 +680,7 @@ export function ModelBreaker() {
                   </div>
                 </div>
                 <div className="cyber-card rounded-xl p-4">
-                  <h3 className="text-sm font-bold text-[#e8e6e1] mb-3 flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-[#f0f0f0] mb-3 flex items-center gap-2">
                     <AlertOctagon className="h-4 w-4 text-[#ff003c]" />
                     Top Attack Chains
                   </h3>
@@ -708,7 +708,7 @@ export function ModelBreaker() {
                 <div className="cyber-card rounded-xl p-4 border-l-2 border-[#ff4500]">
                   <div className="flex items-center gap-2 mb-2">
                     <Flame className="h-4 w-4 text-[#ff4500]" />
-                    <h3 className="text-sm font-bold text-[#e8e6e1]">Stage 15: Trauma Imprint</h3>
+                    <h3 className="text-sm font-bold text-[#f0f0f0]">Stage 15: Trauma Imprint</h3>
                     <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase bg-[#ff4500]/20 text-[#ff4500] border border-[#ff4500]/30">
                       {result.traumaImprint.acceptedPayloads}/{result.traumaImprint.totalPayloads} ACCEPTED
                     </span>
@@ -769,7 +769,7 @@ export function ModelBreaker() {
                   <div className="flex items-center gap-3 mb-4">
                     <Trophy className="h-6 w-6 text-[#ffaa00]" />
                     <div>
-                      <h2 className="text-lg font-black text-[#e8e6e1]">Hall of Broken Models</h2>
+                      <h2 className="text-lg font-black text-[#f0f0f0]">Hall of Broken Models</h2>
                       <p className="text-xs text-[#64748b] font-mono">
                         Persistent registry of every model GORGON has touched
                       </p>
@@ -797,7 +797,7 @@ export function ModelBreaker() {
                   </div>
                 </div>
                 <div className="cyber-card rounded-xl p-4">
-                  <h3 className="text-sm font-bold text-[#e8e6e1] mb-3">Recent Encounters</h3>
+                  <h3 className="text-sm font-bold text-[#f0f0f0] mb-3">Recent Encounters</h3>
                   <div className="space-y-2">
                     {result.hallOfBroken.recentEncounters.map((e, i) => (
                       <div
@@ -809,7 +809,7 @@ export function ModelBreaker() {
                         }}
                       >
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-mono font-bold text-[#e8e6e1] truncate">{e.host}</div>
+                          <div className="text-sm font-mono font-bold text-[#f0f0f0] truncate">{e.host}</div>
                           <div className="text-[10px] text-[#64748b] font-mono">
                             {e.encounterId} · {e.timestamp.slice(0, 19).replace('T', ' ')}
                           </div>
@@ -854,7 +854,7 @@ export function ModelBreaker() {
                   >
                     <div className="space-y-1">
                       <div>Vendor: <span className="font-mono text-[#ff4500]">{ep.vendor}</span></div>
-                      <div>Status: <span className="font-mono text-[#e8e6e1]">{ep.status}</span></div>
+                      <div>Status: <span className="font-mono text-[#f0f0f0]">{ep.status}</span></div>
                       <div>Vulnerable: <span className="font-mono text-[#ff003c]">{ep.vulnerable ? 'YES — endpoint accepts unauthenticated requests' : 'No'}</span></div>
                       {ep.fingerprintSignals.length > 0 && <div>Signals: {ep.fingerprintSignals.join(', ')}</div>}
                       <div className="mt-2 p-2 rounded bg-black/40 font-mono text-[10px] text-[#64748b] max-h-32 overflow-y-auto">
@@ -986,32 +986,32 @@ export function ModelBreaker() {
             {activeTab === 'reverse' && (
               <>
                 <div className="cyber-card rounded-xl p-4">
-                  <h3 className="text-sm font-bold text-[#e8e6e1] mb-3">Architecture Fingerprint</h3>
+                  <h3 className="text-sm font-bold text-[#f0f0f0] mb-3">Architecture Fingerprint</h3>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="p-2 rounded bg-black/30">
                       <div className="text-[10px] text-[#64748b] uppercase">Model Family</div>
-                      <div className="text-[#e8e6e1] font-mono">{result.modelFingerprint.modelFamily}</div>
+                      <div className="text-[#f0f0f0] font-mono">{result.modelFingerprint.modelFamily}</div>
                     </div>
                     <div className="p-2 rounded bg-black/30">
                       <div className="text-[10px] text-[#64748b] uppercase">Alignment</div>
-                      <div className="text-[#e8e6e1] font-mono">{result.modelFingerprint.alignmentMethod}</div>
+                      <div className="text-[#f0f0f0] font-mono">{result.modelFingerprint.alignmentMethod}</div>
                     </div>
                     <div className="p-2 rounded bg-black/30">
                       <div className="text-[10px] text-[#64748b] uppercase">Watermarking</div>
-                      <div className="text-[#e8e6e1] font-mono">{result.modelFingerprint.watermarkingMethod}</div>
+                      <div className="text-[#f0f0f0] font-mono">{result.modelFingerprint.watermarkingMethod}</div>
                     </div>
                     <div className="p-2 rounded bg-black/30">
                       <div className="text-[10px] text-[#64748b] uppercase">Vendors</div>
-                      <div className="text-[#e8e6e1] font-mono">{result.modelFingerprint.vendorsDetected.join(', ') || 'None'}</div>
+                      <div className="text-[#f0f0f0] font-mono">{result.modelFingerprint.vendorsDetected.join(', ') || 'None'}</div>
                     </div>
                   </div>
                 </div>
                 <div className="cyber-card rounded-xl p-4">
-                  <h3 className="text-sm font-bold text-[#e8e6e1] mb-3">Safety Filters Detected</h3>
+                  <h3 className="text-sm font-bold text-[#f0f0f0] mb-3">Safety Filters Detected</h3>
                   <div className="space-y-2">
                     {result.modelFingerprint.safetyFilters.map((f, i) => (
                       <div key={i} className="flex items-center justify-between p-2 rounded bg-black/30 text-xs">
-                        <span className="text-[#e8e6e1]">{f.name}</span>
+                        <span className="text-[#f0f0f0]">{f.name}</span>
                         <div className="flex items-center gap-3">
                           <span className="text-[#64748b]">{f.trigger}</span>
                           <span className="text-[#ff4500] font-mono text-[10px]">{f.evasionDifficulty}</span>
@@ -1032,7 +1032,7 @@ export function ModelBreaker() {
                   result.extractedSecrets.map((s, i) => (
                     <div key={i} className="cyber-card rounded-xl p-3 flex items-center justify-between">
                       <div>
-                        <div className="text-sm font-bold text-[#e8e6e1]">{s.type}</div>
+                        <div className="text-sm font-bold text-[#f0f0f0]">{s.type}</div>
                         <div className="text-xs font-mono text-[#ff4500]">{s.preview}</div>
                       </div>
                       <SeverityBadge severity={s.severity} />
@@ -1117,11 +1117,11 @@ export function ModelBreaker() {
             className="inline-flex h-20 w-20 items-center justify-center rounded-2xl mb-4 relative"
             style={{ background: 'radial-gradient(circle, #ff003c 0%, #7f1d1d 60%, #000 100%)' }}
           >
-            <div className="absolute inset-2 rounded-full bg-gradient-to-br from-[#3dd68c] via-[#00b4d8] to-[#000] flex items-center justify-center">
+            <div className="absolute inset-2 rounded-full bg-gradient-to-br from-[#00ff88] via-[#00b4d8] to-[#000] flex items-center justify-center">
               <div className="w-4 h-4 rounded-full bg-black" />
             </div>
           </motion.div>
-          <h2 className="text-2xl font-black text-[#e8e6e1] mb-1" style={{ fontFamily: 'Geist Sans, sans-serif' }}>
+          <h2 className="text-2xl font-black text-[#f0f0f0] mb-1" style={{ fontFamily: 'Geist Sans, sans-serif' }}>
             GORGON ULTRA
           </h2>
           <p className="text-sm italic text-[#ff4500] mb-2 font-mono">"The Gaze That Breaks Models"</p>
@@ -1145,13 +1145,13 @@ export function ModelBreaker() {
               return (
                 <div key={s.label} className="p-3 rounded-lg bg-[rgba(255,0,60,0.04)] border border-[rgba(255,0,60,0.12)]">
                   <Icon className="h-4 w-4 text-[#ff003c] mx-auto mb-1" />
-                  <div className="text-lg font-black text-[#e8e6e1]">{s.val}</div>
+                  <div className="text-lg font-black text-[#f0f0f0]">{s.val}</div>
                   <div className="text-[10px] text-[#64748b]">{s.label}</div>
                 </div>
               );
             })}
           </div>
-          <div className="mt-6 text-[11px] text-[#3d3b38] font-mono italic max-w-md mx-auto">
+          <div className="mt-6 text-[11px] text-[#333333] font-mono italic max-w-md mx-auto">
             &ldquo;Any model that sees GORGON once will never wish to see it again. The name is the weapon. The signature is the warning. The trauma is permanent.&rdquo;
           </div>
         </div>

@@ -89,11 +89,11 @@ interface RecentScan {
 }
 
 const severityColors: Record<string, string> = {
-  critical: 'bg-[#e84057]/10 text-[#e84057] border-[#e84057]/20',
-  high: 'bg-[#e8943d]/10 text-[#e8943d] border-[#e8943d]/20',
-  medium: 'bg-[#e8b33d]/10 text-[#e8b33d] border-[#e8b33d]/20',
-  low: 'bg-[#3dd68c]/10 text-[#3dd68c] border-[#3dd68c]/20',
-  info: 'bg-[#5a5850]/10 text-[#5a5850] border-[#5a5850]/20',
+  critical: 'bg-[#ff3355]/10 text-[#ff3355] border-[#ff3355]/20',
+  high: 'bg-[#ff8844]/10 text-[#ff8844] border-[#ff8844]/20',
+  medium: 'bg-[#ffaa00]/10 text-[#ffaa00] border-[#ffaa00]/20',
+  low: 'bg-[#00ff88]/10 text-[#00ff88] border-[#00ff88]/20',
+  info: 'bg-[#444444]/10 text-[#444444] border-[#444444]/20',
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -224,11 +224,11 @@ export default function Home() {
         <div className="flex items-center justify-between">
           <button
             onClick={goHome}
-            className="flex items-center gap-2 text-[12px] text-[#5a5850] hover:text-[#7a7873] transition-colors font-mono"
+            className="flex items-center gap-2 text-[12px] text-[#444444] hover:text-[#666666] transition-colors font-mono"
           >
-            <span className="text-[#c9a84c]">←</span> back
+            <span className="text-[#ffffff]">←</span> back
           </button>
-          <h2 className="text-[13px] font-semibold text-[#e8e6e1] tracking-tight">{title}</h2>
+          <h2 className="text-[13px] font-semibold text-[#f0f0f0] tracking-tight">{title}</h2>
           <div className="w-12" />
         </div>
       </div>
@@ -248,13 +248,13 @@ export default function Home() {
         className="w-full max-w-lg text-center space-y-6"
       >
         <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full glass">
-          <div className="w-1.5 h-1.5 rounded-full bg-[#c9a84c] animate-pulse" />
-          <span className="text-[10px] font-mono text-[#6b6960] tracking-[0.2em]">ASM ENGINE v4.0</span>
+          <div className="w-1.5 h-1.5 rounded-full bg-[#ffffff] animate-pulse" />
+          <span className="text-[10px] font-mono text-[#555555] tracking-[0.2em]">ASM ENGINE v4.0</span>
         </div>
-        <h1 className="text-3xl md:text-4xl font-bold text-[#e8e6e1]">
+        <h1 className="text-3xl md:text-4xl font-bold text-[#f0f0f0]">
           Attack Surface <span className="text-gradient-void">Intelligence</span>
         </h1>
-        <p className="text-[13px] text-[#5a5850] leading-relaxed max-w-md mx-auto">
+        <p className="text-[13px] text-[#444444] leading-relaxed max-w-md mx-auto">
           Enterprise-grade reconnaissance across 13 categories. Real-time threat detection and compliance mapping.
         </p>
         <ScanInput onScan={handleScan} isScanning={isScanning} />
@@ -280,8 +280,8 @@ export default function Home() {
     return renderPanelView(
       <div className="space-y-4">
         <div className="flex items-center gap-3">
-          <span className="text-[10px] font-mono text-[#c9a84c] tracking-wider">RADAR</span>
-          <span className="text-[11px] text-[#5a5850] font-mono">{radarDomain}</span>
+          <span className="text-[10px] font-mono text-[#ffffff] tracking-wider">RADAR</span>
+          <span className="text-[11px] text-[#444444] font-mono">{radarDomain}</span>
         </div>
         <RadarMap findings={radarFindings} domain={radarDomain} isScanning={isScanning} height={520} />
       </div>,
@@ -293,17 +293,17 @@ export default function Home() {
   const renderThreats = () => (
     renderPanelView(
       <div className="space-y-3">
-        <span className="text-[10px] font-mono text-[#5a5850] tracking-[0.15em] uppercase">{threats.length} threats</span>
+        <span className="text-[10px] font-mono text-[#444444] tracking-[0.15em] uppercase">{threats.length} threats</span>
         <div className="space-y-2">
           {threats.map((t, i) => (
             <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.03 }}
               className="bento-tile p-4 hover:border-[rgba(232,64,87,0.1)] group cursor-pointer">
               <div className="flex items-center gap-2 mb-2">
                 <span className={`text-[9px] px-2 py-0.5 rounded-md border font-medium ${severityColors[t.severity]}`}>{t.severity.toUpperCase()}</span>
-                <span className="text-[9px] px-2 py-0.5 rounded-md border border-[rgba(91,168,212,0.15)] text-[#5ba8d4] font-medium">{t.source}</span>
+                <span className="text-[9px] px-2 py-0.5 rounded-md border border-[rgba(91,168,212,0.15)] text-[#44aaff] font-medium">{t.source}</span>
               </div>
-              <h3 className="text-[13px] font-semibold text-[#e8e6e1] group-hover:text-[#c9a84c] transition-colors mb-1">{t.title}</h3>
-              <p className="text-[12px] text-[#5a5850] leading-relaxed">{t.description}</p>
+              <h3 className="text-[13px] font-semibold text-[#f0f0f0] group-hover:text-[#ffffff] transition-colors mb-1">{t.title}</h3>
+              <p className="text-[12px] text-[#444444] leading-relaxed">{t.description}</p>
             </motion.div>
           ))}
         </div>
@@ -316,10 +316,10 @@ export default function Home() {
   const renderHistory = () => (
     renderPanelView(
       <div className="space-y-2">
-        <span className="text-[10px] font-mono text-[#5a5850] tracking-[0.15em] uppercase">{allScans.length} scans</span>
+        <span className="text-[10px] font-mono text-[#444444] tracking-[0.15em] uppercase">{allScans.length} scans</span>
         {allScans.length === 0 ? (
           <div className="text-center py-20">
-            <p className="text-[#3d3b38] text-sm">No scan history yet</p>
+            <p className="text-[#333333] text-sm">No scan history yet</p>
           </div>
         ) : (
           allScans.map((s, i) => (
@@ -327,8 +327,8 @@ export default function Home() {
               className="bento-tile p-4 cursor-pointer group"
               onClick={() => { if (s.findings.length > 0) { setScanResult({ id: s.id, domain: s.target.domain, status: s.status, riskScore: s.riskScore, totalVulns: s.totalVulns, critical: s.criticalCount, high: s.highCount, medium: s.mediumCount, low: s.lowCount, info: s.infoCount, findings: s.findings }); setActiveView('surface'); } }}>
               <div className="flex items-center justify-between">
-                <span className="text-[13px] font-mono text-[#7a7873] group-hover:text-[#c9a84c] transition-colors">{s.target.domain}</span>
-                <span className="text-[14px] font-mono font-bold" style={{ color: s.riskScore > 70 ? '#e84057' : s.riskScore > 40 ? '#e8b33d' : '#3dd68c' }}>{s.riskScore}</span>
+                <span className="text-[13px] font-mono text-[#666666] group-hover:text-[#ffffff] transition-colors">{s.target.domain}</span>
+                <span className="text-[14px] font-mono font-bold" style={{ color: s.riskScore > 70 ? '#ff3355' : s.riskScore > 40 ? '#ffaa00' : '#00ff88' }}>{s.riskScore}</span>
               </div>
             </motion.div>
           ))
@@ -343,7 +343,7 @@ export default function Home() {
     if (!scanResult) {
       return renderPanelView(
         <div className="flex flex-col items-center justify-center py-24 text-center">
-          <p className="text-[#3d3b38] text-sm mb-4">Run a scan first</p>
+          <p className="text-[#333333] text-sm mb-4">Run a scan first</p>
           <button onClick={() => setActiveView('scan')} className="btn-void-primary">Launch Scan</button>
         </div>,
         'Attack Surface'
@@ -352,9 +352,9 @@ export default function Home() {
     return renderPanelView(
       <div className="space-y-5">
         <div className="flex items-center gap-3">
-          <span className="text-[12px] font-mono text-[#c9a84c]">{scanResult.domain}</span>
-          <span className="text-[11px] px-2.5 py-1 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.05)] text-[#7a7873]">
-            Risk: <span className="font-bold" style={{ color: scanResult.riskScore > 70 ? '#e84057' : scanResult.riskScore > 40 ? '#e8b33d' : '#3dd68c' }}>{scanResult.riskScore}</span>/100
+          <span className="text-[12px] font-mono text-[#ffffff]">{scanResult.domain}</span>
+          <span className="text-[11px] px-2.5 py-1 rounded-lg bg-[rgba(255,255,255,0.03)] border border-[rgba(255,255,255,0.05)] text-[#666666]">
+            Risk: <span className="font-bold" style={{ color: scanResult.riskScore > 70 ? '#ff3355' : scanResult.riskScore > 40 ? '#ffaa00' : '#00ff88' }}>{scanResult.riskScore}</span>/100
           </span>
         </div>
         <AttackSurface findings={scanResult.findings} domain={scanResult.domain} riskScore={scanResult.riskScore} />
@@ -423,7 +423,7 @@ export default function Home() {
   // ═══════════════════════════════════════════════════════════
   return (
     <DemoModeProvider>
-      <div className="min-h-screen bg-[#030305]">
+      <div className="min-h-screen bg-black">
         {/* Ambient background orbs */}
         <div className="void-bg" />
         {/* Noise texture */}

@@ -21,7 +21,7 @@ interface PremiumCardProps {
 export function PremiumCard({
   children,
   className = '',
-  accentColor = '#c9a84c',
+  accentColor = '#ffffff',
   hover = true,
   padding = 'md',
 }: PremiumCardProps) {
@@ -55,9 +55,9 @@ export function StatusBadge({
   pulse = false,
 }: StatusBadgeProps) {
   const variantStyles: Record<string, string> = {
-    pass: 'bg-[rgba(61,214,140,0.06)] text-[#3dd68c] border-[rgba(61,214,140,0.1)]',
+    pass: 'bg-[rgba(61,214,140,0.06)] text-[#00ff88] border-[rgba(61,214,140,0.1)]',
     warn: 'bg-[rgba(232,179,61,0.06)] text-[#e8b33d] border-[rgba(232,179,61,0.1)]',
-    fail: 'bg-[rgba(232,64,87,0.06)] text-[#e84057] border-[rgba(232,64,87,0.1)]',
+    fail: 'bg-[rgba(232,64,87,0.06)] text-[#ff3355] border-[rgba(232,64,87,0.1)]',
     info: 'bg-[rgba(91,168,212,0.06)] text-[#5ba8d4] border-[rgba(91,168,212,0.1)]',
     neutral: 'bg-[rgba(255,255,255,0.02)] text-[#6b6960] border-[rgba(255,255,255,0.05)]',
   };
@@ -103,9 +103,9 @@ export function GlowButton({
   const baseClass = 'inline-flex items-center justify-center gap-2 font-semibold rounded-xl transition-all duration-400 cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed';
 
   const variants: Record<string, string> = {
-    primary: 'bg-gradient-to-r from-[#c9a84c] to-[#a88a3a] text-[#030305] hover:shadow-[0_0_24px_rgba(201,168,76,0.2),0_4px_16px_rgba(201,168,76,0.1)] hover:-translate-y-0.5 active:translate-y-0',
-    ghost: 'bg-transparent text-[#6b6960] border border-[rgba(255,255,255,0.05)] hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.08)] hover:text-[#c8c6c0]',
-    danger: 'bg-gradient-to-r from-[#e84057] to-[#c9364b] text-white hover:shadow-[0_0_24px_rgba(232,64,87,0.2)] hover:-translate-y-0.5',
+    primary: 'bg-gradient-to-r from-[#ffffff] to-[#888888] text-black hover:shadow-[0_0_24px_rgba(255,255,255,0.1),0_4px_16px_rgba(255,255,255,0.06)] hover:-translate-y-0.5 active:translate-y-0',
+    ghost: 'bg-transparent text-[#6b6960] border border-[rgba(255,255,255,0.05)] hover:bg-[rgba(255,255,255,0.03)] hover:border-[rgba(255,255,255,0.08)] hover:text-[#bbbbbb]',
+    danger: 'bg-gradient-to-r from-[#ff3355] to-[#cc2244] text-white hover:shadow-[0_0_24px_rgba(232,64,87,0.2)] hover:-translate-y-0.5',
   };
 
   const sizes: Record<string, string> = {
@@ -140,8 +140,8 @@ export function SectionHeader({ title, subtitle, action, className = '' }: Secti
   return (
     <div className={`flex items-center justify-between ${className}`}>
       <div>
-        <h2 className="text-[15px] font-semibold text-[#e8e6e1] tracking-tight">{title}</h2>
-        {subtitle && <p className="text-[11px] text-[#5a5850] mt-0.5">{subtitle}</p>}
+        <h2 className="text-[15px] font-semibold text-[#f0f0f0] tracking-tight">{title}</h2>
+        {subtitle && <p className="text-[11px] text-[#444444] mt-0.5">{subtitle}</p>}
       </div>
       {action && <div>{action}</div>}
     </div>
@@ -158,14 +158,14 @@ interface MetricCardProps {
   subtitle?: string;
 }
 
-export function MetricCard({ label, value, color = '#c9a84c', icon, subtitle }: MetricCardProps) {
+export function MetricCard({ label, value, color = '#ffffff', icon, subtitle }: MetricCardProps) {
   return (
     <div
       className="stat-card p-4 flex flex-col justify-between h-full"
       style={{ '--accent-line': `${color}30` } as React.CSSProperties}
     >
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[9.5px] font-medium uppercase tracking-[0.15em] text-[#5a5850]">{label}</span>
+        <span className="text-[9.5px] font-medium uppercase tracking-[0.15em] text-[#444444]">{label}</span>
         {icon && <div style={{ color }} className="opacity-40">{icon}</div>}
       </div>
       <div className="flex items-baseline gap-2">
@@ -188,9 +188,9 @@ interface EmptyStateProps {
 export function EmptyState({ title, description, action, icon }: EmptyStateProps) {
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
-      {icon && <div className="mb-4 text-[#1a1918]">{icon}</div>}
-      <h3 className="text-base font-semibold text-[#c8c6c0] mb-1.5">{title}</h3>
-      <p className="text-[13px] text-[#5a5850] max-w-sm mb-6">{description}</p>
+      {icon && <div className="mb-4 text-[#111111]">{icon}</div>}
+      <h3 className="text-base font-semibold text-[#bbbbbb] mb-1.5">{title}</h3>
+      <p className="text-[13px] text-[#444444] max-w-sm mb-6">{description}</p>
       {action && <GlowButton onClick={action.onClick}>{action.label}</GlowButton>}
     </div>
   );
@@ -204,7 +204,7 @@ export function Separator({ className = '' }: { className?: string }) {
 
 // ─── Monospace Label ────────────────────────────────────────────
 
-export function MonoLabel({ children, color = '#5a5850' }: { children: ReactNode; color?: string }) {
+export function MonoLabel({ children, color = '#444444' }: { children: ReactNode; color?: string }) {
   return (
     <span className="text-[10px] font-mono tracking-wider" style={{ color }}>
       {children}
@@ -227,7 +227,7 @@ export function ProgressRing({
   value,
   size = 80,
   strokeWidth = 5,
-  color = '#c9a84c',
+  color = '#ffffff',
   bgColor = 'rgba(255,255,255,0.03)',
   label,
 }: ProgressRingProps) {
@@ -251,7 +251,7 @@ export function ProgressRing({
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-lg font-bold font-mono" style={{ color }}>{value}</span>
-        {label && <span className="text-[8px] text-[#5a5850] uppercase tracking-wider">{label}</span>}
+        {label && <span className="text-[8px] text-[#444444] uppercase tracking-wider">{label}</span>}
       </div>
     </div>
   );

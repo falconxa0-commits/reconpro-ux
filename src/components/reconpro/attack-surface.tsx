@@ -33,9 +33,9 @@ interface AttackSurfaceProps {
 }
 
 const severityNodeColors: Record<string, string> = {
-  critical: '#e84057',
-  high: '#e8943d',
-  medium: '#e8b33d',
+  critical: '#ff3355',
+  high: '#ff8844',
+  medium: '#ffaa00',
   low: '#22c55e',
   info: '#6b7280',
 };
@@ -314,7 +314,7 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
         const isHovered = hoveredNode === node.id;
         const r = node.radius + (isHovered ? 3 : 0);
 
-        let color = '#3dd68c';
+        let color = '#00ff88';
         let glowColor = 'rgba(0, 255, 136, 0.3)';
 
         if (node.severity) {
@@ -435,8 +435,8 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-[rgba(255,255,255,0.04)]">
         <div className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-[#3dd68c] animate-pulse-glow" />
-          <h3 className="text-sm font-semibold text-[#e8e6e1]">Attack Surface Map</h3>
+          <div className="w-2 h-2 rounded-full bg-[#00ff88] animate-pulse-glow" />
+          <h3 className="text-sm font-semibold text-[#f0f0f0]">Attack Surface Map</h3>
           <span className="text-xs text-muted-foreground font-mono">{domain}</span>
         </div>
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -460,9 +460,9 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
       <div className="flex flex-wrap items-center gap-4 p-4 border-t border-[rgba(255,255,255,0.04)]">
         <span className="text-xs text-muted-foreground">Severity:</span>
         {[
-          { label: 'Critical', color: '#e84057' },
-          { label: 'High', color: '#e8943d' },
-          { label: 'Medium', color: '#e8b33d' },
+          { label: 'Critical', color: '#ff3355' },
+          { label: 'High', color: '#ff8844' },
+          { label: 'Medium', color: '#ffaa00' },
           { label: 'Low', color: '#22c55e' },
           { label: 'Info', color: '#6b7280' },
           { label: 'Tech', color: '#06b6d4' },

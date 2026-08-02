@@ -97,9 +97,9 @@ export function CLIShowcase({ className = '', animated = true }: CLIShowcaseProp
         <div className="cli-dot cli-dot-red" />
         <div className="cli-dot cli-dot-yellow" />
         <div className="cli-dot cli-dot-green" />
-        <span className="ml-3 text-[11px] text-[#5a5850] font-mono tracking-wide">reconpro — acme-corp.com</span>
+        <span className="ml-3 text-[11px] text-[#444444] font-mono tracking-wide">reconpro — acme-corp.com</span>
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-[9px] text-[#3d3b38] font-mono">zsh</span>
+          <span className="text-[9px] text-[#333333] font-mono">zsh</span>
         </div>
       </div>
 
@@ -133,20 +133,20 @@ export function CLIShowcase({ className = '', animated = true }: CLIShowcaseProp
 
 export function CLIPreview({ className = '' }: { className?: string }) {
   return (
-    <div className={`bg-[#050507] border border-[rgba(255,255,255,0.04)] rounded-xl overflow-hidden font-mono ${className}`}>
+    <div className={`bg-[#000000] border border-[rgba(255,255,255,0.04)] rounded-xl overflow-hidden font-mono ${className}`}>
       {/* Mini titlebar */}
       <div className="flex items-center gap-1.5 px-3 py-2 bg-[rgba(255,255,255,0.015)] border-b border-[rgba(255,255,255,0.03)]">
-        <div className="w-2 h-2 rounded-full bg-[#e84057]/60" />
-        <div className="w-2 h-2 rounded-full bg-[#e8b33d]/60" />
-        <div className="w-2 h-2 rounded-full bg-[#3dd68c]/60" />
-        <span className="ml-2 text-[8px] text-[#3d3b38] tracking-wider">RECONPRO</span>
+        <div className="w-2 h-2 rounded-full bg-[#ff3355]/60" />
+        <div className="w-2 h-2 rounded-full bg-[#ffaa00]/60" />
+        <div className="w-2 h-2 rounded-full bg-[#00ff88]/60" />
+        <span className="ml-2 text-[8px] text-[#333333] tracking-wider">RECONPRO</span>
       </div>
       <div className="p-3 text-[10px] leading-[1.7] space-y-0">
-        <div><span className="text-[#c9a84c]">$ </span><span className="text-[#e8e6e1]">reconpro</span> <span className="text-[#5ba8d4]">--target</span> <span className="text-[#3dd68c]">acme.io</span></div>
-        <div className="text-[#5a5850]">  ████████████████████ 100%</div>
-        <div className="text-[#5a5850]">  ├─ 42 assets  │  2 critical  │  73/100 risk</div>
-        <div className="text-[#3dd68c]">  └─ Report: ./output/acme.json</div>
-        <div className="mt-1"><span className="text-[#c9a84c]">$ </span><span className="cli-cursor" style={{ width: '6px', height: '12px' }} /></div>
+        <div><span className="text-[#ffffff]">$ </span><span className="text-[#f0f0f0]">reconpro</span> <span className="text-[#44aaff]">--target</span> <span className="text-[#00ff88]">acme.io</span></div>
+        <div className="text-[#444444]">  ████████████████████ 100%</div>
+        <div className="text-[#444444]">  ├─ 42 assets  │  2 critical  │  73/100 risk</div>
+        <div className="text-[#00ff88]">  └─ Report: ./output/acme.json</div>
+        <div className="mt-1"><span className="text-[#ffffff]">$ </span><span className="cli-cursor" style={{ width: '6px', height: '12px' }} /></div>
       </div>
     </div>
   );

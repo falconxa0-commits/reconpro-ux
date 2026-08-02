@@ -25,7 +25,7 @@ interface BottomDockProps {
 // ─── Dock Items — Primary Row ──────────────────────────────────────
 
 const PRIMARY_DOCK: DockItem[] = [
-  { id: 'executive', icon: LayoutDashboard, label: 'Command', color: '#c9a84c' },
+  { id: 'executive', icon: LayoutDashboard, label: 'Command', color: '#ffffff' },
   { id: 'scan', icon: Radar, label: 'Scan', color: '#5ba8d4' },
   { id: 'surface', icon: Globe, label: 'Attack Surface', color: '#e8b33d' },
   { id: 'threats', icon: AlertTriangle, label: 'Threats', color: '#e84057' },
@@ -90,7 +90,7 @@ function ExpandedMenu({
               onClick={() => { onSelect(item.id); onClose(); }}
               className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[12px] font-medium transition-all duration-300 text-left
                 ${isActive
-                  ? 'bg-[rgba(201,168,76,0.08)] text-[#c9a84c]'
+                  ? 'bg-[rgba(201,168,76,0.08)] text-[#ffffff]'
                   : 'text-[#6b6960] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#c8c6c0]'
                 }`}
             >
@@ -134,7 +134,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
             transition={{ duration: 0.2 }}
-            className="absolute bottom-full mb-2 px-3 py-1.5 rounded-lg bg-[rgba(6,6,10,0.97)] border border-[rgba(255,255,255,0.06)] text-[11px] text-[#7a7873] font-medium whitespace-nowrap backdrop-blur-xl"
+            className="absolute bottom-full mb-2 px-3 py-1.5 rounded-lg bg-[rgba(6,6,10,0.97)] border border-[rgba(255,255,255,0.06)] text-[11px] text-[#666666] font-medium whitespace-nowrap backdrop-blur-xl"
             style={{ pointerEvents: 'none' }}
           >
             {PRIMARY_DOCK.find(d => d.id === hoveredItem)?.label || SECONDARY_DOCK.find(d => d.id === hoveredItem)?.label}
@@ -148,7 +148,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
         {PRIMARY_DOCK.map((item) => {
           const Icon = item.icon;
           const isActive = activeView === item.id;
-          const color = item.color || '#c9a84c';
+          const color = item.color || '#ffffff';
           return (
             <motion.button
               key={item.id}
@@ -195,11 +195,11 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
             transition={{ type: 'spring', stiffness: 400, damping: 22 }}
             className="w-[48px] h-[48px] rounded-[16px] flex items-center justify-center transition-all duration-400"
             style={{
-              background: 'linear-gradient(135deg, #c9a84c, #a88a3a)',
-              boxShadow: '0 0 24px rgba(201,168,76,0.15), 0 4px 16px rgba(201,168,76,0.08)',
+              background: 'rgba(255,255,255,0.9)',
+              boxShadow: '0 0 24px rgba(255,255,255,0.06)',
             }}
           >
-            <Zap className="w-[20px] h-[20px] text-[#030305]" strokeWidth={2} />
+            <Zap className="w-[20px] h-[20px] text-black" strokeWidth={2} />
           </motion.button>
         </div>
       </div>
