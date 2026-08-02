@@ -198,48 +198,52 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="reconpro",
         description=(
-            "ReconPro Nexus v5 — Eleven Blades. Agentic Security Engine.\n"
-            "The full-spectrum security reconnaissance platform with AI agent.\n\n"
+            "ReconPro Nexus v6 — Eleven Blades. Swarm Intelligence. Agentic AI.\n"
+            "The full-spectrum security platform with AI agent, swarm, and knowledge graph.\n\n"
             "Quick Start:  reconpro nexus           (mind-blowing agent TUI)\n"
-            "Remote:       scan, vibesec (target a URL/domain)\n"
-            "Local:        audit, dev, doctor, ports, secrets (scan your machine)\n"
-            "Interactive:  chat (talk to ReconPro), tui (visual dashboard)\n"
-            "Advanced:     blitz, agent, subdomains, schedule, serve, plugins"
+            "AI Agent:     reconpro agent <goal>   (LLM-powered, 18 tools)\n"
+            "Swarm:        reconpro swarm <target>  (SCOUT→HACKER→CODER→GUARDIAN)\n"
+            "Adversarial:  reconpro adversarial <target>  (hacker vs coder self-play)\n"
+            "Intel:        cve, graph (threat intel + knowledge graph)\n"
+            "Export:       export (SARIF/MD/JSON/HTML)"
         ),
         epilog="""Examples:
   # NEXUS (recommended)
   reconpro nexus                # Mind-blowing agent TUI
 
+  # AI Agent (reasoning + 18 tools)
+  reconpro agent \"fully recon example.com, find CVEs, generate SARIF\"
+  reconpro agent \"swarm attack myapp.com with 3 rounds\"
+
+  # Swarm Intelligence
+  reconpro swarm example.com               # SCOUT→HACKER→CODER→GUARDIAN
+  reconpro swarm example.com --mode attack   # SCOUT+HACKER only
+
+  # Adversarial Self-Play
+  reconpro adversarial example.com           # 3-round hacker vs coder
+
   # Remote
   reconpro scan example.com
-  reconpro example.com --all --json -o report.json
   reconpro vibesec example.com
 
-  # Local
+  # Local + Code
   reconpro audit              # Full machine audit
-  reconpro dev /path/to/project
-  reconpro doctor             # Health check + fix commands
-  reconpro ports              # Open ports
+  reconpro ast /path/to/code  # AST vulnerability analysis
   reconpro secrets            # Find secrets
 
-  # Interactive
-  reconpro chat               # Talk to ReconPro naturally
-  reconpro tui                 # Visual dashboard
+  # Threat Intelligence
+  reconpro cve SQL injection    # NVD CVE lookup
+  reconpro graph example.com   # Knowledge graph
+
+  # Export (CI/CD ready)
+  reconpro export report.sarif # SARIF for GitHub Code Scanning
+  reconpro export report.md     # Markdown report
 
   # Advanced
   reconpro blitz t1.com t2.com t3.com
   reconpro subdomains example.com
-  reconpro agent find all subdomains of example.com and scan them
   reconpro schedule example.com --every 1h
-  reconpro serve --port 7890
-  reconpro report              # HTML report from last scan
-  reconpro history             # View past scans
-  reconpro diff                # Compare last two scans
-  reconpro screenshot https://example.com
-  reconpro open https://example.com
-  reconpro plugin create my-check
-  reconpro plugin list
-  reconpro plugin run my-check example.com""",
+  reconpro serve --port 7890""",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -361,6 +365,39 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("name", nargs="?", default=None)
     p.add_argument("target", nargs="?", default=None)
 
+    # ── swarm ─────────────────────────────────────────────────────
+    p = sub.add_parser("swarm", help="Swarm attack: SCOUT→HACKER→CODER→GUARDIAN")
+    p.add_argument("target", help="Target domain or URL")
+    p.add_argument("--mode", "-m", type=str, default="full",
+                     choices=["full", "recon", "attack", "fix", "verify"])
+
+    # ── adversarial ────────────────────────────────────────────────
+    p = sub.add_parser("adversarial", help="Adversarial self-play: hacker vs coder loop")
+    p.add_argument("target", help="Target domain or URL")
+    p.add_argument("--rounds", "-r", type=int, default=3)
+    p.add_argument("--modules", "-m", type=str)
+    p.add_argument("--local", action="store_true", help="Target is local machine")
+
+    # ── ast ─────────────────────────────────────────────────────────
+    p = sub.add_parser("ast", help="AST code analysis (Python/JS/TS vulnerability patterns)")
+    p.add_argument("path", nargs="?", default=".", help="File or directory to analyze")
+
+    # ── cve ─────────────────────────────────────────────────────────
+    p = sub.add_parser("cve", help="CVE/NVD threat intelligence lookup")
+    p.add_argument("query", help="Search query (e.g. 'SQL injection', 'CVE-2024-1234')")
+    p.add_argument("--limit", "-n", type=int, default=5)
+
+    # ── graph ───────────────────────────────────────────────────────
+    p = sub.add_parser("graph", help="Knowledge graph: attack surface, blast radius, chains")
+    p.add_argument("target", nargs="?", default=None, help="Target (default: use last scan)")
+    p.add_argument("--action", "-a", type=str, default="stats",
+                     choices=["stats", "chains", "surface", "blast", "export"])
+
+    # ── export ──────────────────────────────────────────────────────
+    p = sub.add_parser("export", help="Export last scan to SARIF/MD/JSON/HTML")
+    p.add_argument("output", nargs="?", default="reconpro_report.sarif",
+                     help="Output path (format auto-detected from extension)")
+
     # ── Parse ─────────────────────────────────────────────────────
     args, remaining = parser.parse_known_args(argv)
     cmd = args.subcommand
@@ -419,8 +456,124 @@ def main(argv: list[str] | None = None) -> None:
             console.print("  [yellow]Usage: reconpro agent \"fully scan example.com and find subdomains\"[/]")
             sys.exit(1)
         console.print(BANNER)
-        from .agent import run_agent
-        run_agent(goal)
+        from .nexus_agent import run_nexus_agent
+        run_nexus_agent(goal)
+        return
+
+    # ── SWARM ─────────────────────────────────────────────────────
+    if cmd == "swarm":
+        console.print(BANNER)
+        from .swarm import run_swarm
+        run_swarm(args.target, mode=args.mode)
+        return
+
+    # ── ADVERSARIAL ────────────────────────────────────────────────
+    if cmd == "adversarial":
+        console.print(BANNER)
+        from .adversarial import run_adversarial
+        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+        run_adversarial(args.target, max_rounds=args.rounds, modules=modules, is_local=args.local)
+        return
+
+    # ── AST ────────────────────────────────────────────────────────
+    if cmd == "ast":
+        console.print(BANNER)
+        from .modules.ast_analyzer import ASTAnalyzer
+        analyzer = ASTAnalyzer()
+        path = os.path.abspath(args.path)
+        findings = _spinner_wrap(f"Analyzing {path}...", analyzer.analyze_directory, path)
+        if not findings:
+            console.print("\n  [bright_green]No vulnerabilities found in code.[/]")
+        else:
+            table = Table(border_style="dim", header_style="bold dim")
+            table.add_column("Severity", style="bold", width=10)
+            table.add_column("File", style="cyan", width=30)
+            table.add_column("Line", style="dim", width=6)
+            table.add_column("Finding")
+            for f in sorted(findings, key=lambda x: {"critical":0,"high":1,"medium":2,"low":3}.get(x.severity,4)):
+                c = SEV_COLORS.get(f.severity, "white")
+                table.add_row(f"[{c}]{f.severity.upper()}[/{c}]", f.asset[-30:] if f.asset else "", str(f.evidence)[:6] if f.evidence else "", f.title[:60])
+            console.print(table)
+            console.print(f"\n  [bold]{len(findings)} vulnerability pattern(s) found.[/]")
+        console.print()
+        return
+
+    # ── CVE ─────────────────────────────────────────────────────────
+    if cmd == "cve":
+        console.print(BANNER)
+        from .cve_radar import CVERadar
+        radar = CVERadar()
+        if args.query.upper().startswith("CVE-"):
+            details = _spinner_wrap(f"Looking up {args.query}...", radar.get_cve_details, args.query)
+            if details:
+                console.print(f"\n  [bold]{details.get('id', args.query)}[/]")
+                console.print(f"  Severity: [red]{details.get('severity', '?')}[/]  CVSS: {details.get('cvss', '?')}")
+                console.print(f"  {details.get('description', 'No description')[:200]}")
+            else:
+                console.print(f"  [dim]No results for {args.query}.[/]")
+        else:
+            results = _spinner_wrap(f"Searching NVD for '{args.query}'...", radar.search_nvd, args.query, args.limit)
+            if results:
+                for r in results:
+                    console.print(f"  [bold]{r.get('id', '?')}[/]  [red]{r.get('severity', '?')}[/]  {r.get('description', '')[:100]}")
+                console.print(f"\n  [bold]{len(results)} result(s).[/]")
+            else:
+                console.print(f"  [dim]No CVEs found for '{args.query}'.[/]")
+        console.print()
+        return
+
+    # ── GRAPH ───────────────────────────────────────────────────────
+    if cmd == "graph":
+        console.print(BANNER)
+        from .knowledge_graph import SecurityKnowledgeGraph
+        graph = SecurityKnowledgeGraph()
+        # Load from last scan if available
+        latest = get_latest()
+        if latest:
+            graph.add_scan_result(latest)
+        target = args.target or (latest.get("target") if latest else None)
+        action = args.action
+        if action == "stats" or not target:
+            stats = graph.stats()
+            console.print(f"\n  [bold]Knowledge Graph Stats:[/]")
+            for k, v in stats.items():
+                console.print(f"    [cyan]{k}:[/] {v}")
+        elif action == "chains":
+            chains = graph.find_chains(target)
+            if chains:
+                console.print(f"\n  [bold]Attack Chains for {target}:[/]")
+                for i, chain in enumerate(chains[:10]):
+                    console.print(f"    [red]Chain {i+1}:[/] {' → '.join(chain)}")
+            else:
+                console.print(f"  [dim]No attack chains found for {target}.[/]")
+        elif action == "surface":
+            surface = graph.get_attack_surface(target)
+            console.print(f"\n  [bold]Attack Surface for {target}:[/]")
+            for k, v in surface.items():
+                console.print(f"    [cyan]{k}:[/] {v}")
+        elif action == "blast":
+            blast = graph.get_blast_radius(target)
+            console.print(f"\n  [bold]Blast Radius from {target}:[/]")
+            console.print(f"    [red]{len(blast)} reachable vulnerabilities[/]")
+        elif action == "export":
+            cypher = graph.to_cypher()
+            console.print(f"\n  [bold]Cypher Export:[/] {len(cypher)} statements")
+            for line in cypher[:20]:
+                console.print(f"    {line[:100]}")
+        graph.save()
+        console.print(f"\n  [dim]Graph saved to ~/.reconpro/memory/graph.json[/]")
+        console.print()
+        return
+
+    # ── EXPORT ──────────────────────────────────────────────────────
+    if cmd == "export":
+        data = get_latest()
+        if not data:
+            console.print("  [yellow]No scan data. Run a scan first.[/]")
+            sys.exit(1)
+        from .formats import export as _export
+        path = _spinner_wrap(f"Exporting to {args.output}...", _export, data, args.output)
+        console.print(f"  [green]Exported: [cyan]{path}[/][/]")
         return
 
     # ── SUBDOMAINS ────────────────────────────────────────────────

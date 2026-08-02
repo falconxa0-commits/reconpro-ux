@@ -1,738 +1,1555 @@
-"""ReconPro NEXUS — Mind-blowing terminal UI with Textual.
+"""ReconPro NEXUS — Interactive Textual TUI.
 
-Full split-screen interface: agent chat + live findings + module status.
-Mouse support, keyboard navigation, real-time scan visualization, animated boot.
+A mind-blowing terminal interface for ReconPro security scanner.
+Concurrent agent-backed scanning with live findings feed,
+module status grid, score tracking, and animated boot sequence.
 """
 from __future__ import annotations
 
-import os
-import sys
+import asyncio
+import re
 import time
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll, ScrollableContainer
-from textual.widgets import (
-    Header, Footer, Input, Static, RichLog, ProgressBar, Label,
-)
-from textual.reactive import reactive
-from textual.worker import Worker, get_current_worker
-from textual import events, work
+from textual.binding import Binding
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
+from textual.events import Click, Key
+from textual.reactive import reactive
+from textual.screen import ModalScreen
+from textual.timer import Timer
+from textual.widget import Widget
+from textual.widgets import (
+    Footer,
+    Header,
+    Input,
+    Label,
+    RichLog,
+    Static,
+    Button,
+)
 
-from . import __version__
-from .scanner import scan, audit_scan, MODULE_REGISTRY, LOCAL_MODULES, ALL_MODULES
-from .history import list_scans, get_latest, save_scan, diff_scans
-from .reports import generate_html_report
-from .parallel import blitz_scan
-from .subdomains import discover_subdomains
+# ════════════════════════════════════════════════════════════════════════════════
+# Constants
+# ════════════════════════════════════════════════════════════════════════════════
 
-# Colors
-SEV_COLORS = {
-    "critical": "bright_red", "high": "red",
-    "medium": "yellow", "low": "green", "info": "dim",
-}
-SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-GRADE_COLORS = {
-    "A+": "#00ff88", "A": "#44dd66", "B": "#ffdd00",
-    "C": "#ff8800", "D": "#ff4444", "F": "#ff0044",
-}
-GRADE_COLORS_RICH = {
-    "A+": "bright_green", "A": "green", "B": "yellow",
-    "C": "red", "D": "bright_red", "F": "bold bright_red",
+VERSION = "4.0.0"
+BG = "#0a0a14"
+CYAN = "#00ffcc"
+RED = "#ff0044"
+YELLOW = "#ffdd00"
+GREEN = "#00ff88"
+DIM_CYAN = "#0a4a3a"
+DIM_RED = "#4a0a1a"
+PANEL_BG = "#0e0e1c"
+BORDER_COLOR = "#1a1a2e"
+HEADER_BG = "#0c0c18"
+INPUT_BG = "#0f0f1e"
+
+SEV_STYLES: Dict[str, str] = {
+    "critical": "bold " + RED,
+    "high": RED,
+    "medium": YELLOW,
+    "low": GREEN,
+    "info": "#666688",
 }
 
-NEXUS_CSS = """
-Screen {
-    background: #0a0a14;
-    color: #c8c8d0;
+GRADE_COLORS: Dict[str, str] = {
+    "A+": GREEN,
+    "A": "#44dd66",
+    "B": YELLOW,
+    "C": "#ff8800",
+    "D": "#ff4444",
+    "F": RED,
 }
-.nexus-header {
-    background: #0d0d1a;
-    border-bottom: solid #1a1a3a;
-    height: 3;
-    padding: 0 1;
-    content-align: left middle;
-}
-#main-container {
-    height: 1fr;
-}
-.chat-panel {
-    border-right: solid #1a1a3a;
-    width: 42%;
-    background: #0c0c18;
-}
-#chat-log {
-    background: transparent;
-    border: none;
-    scrollbar-size: 1 1;
-    scrollbar-color: #1a1a3a #0a0a14;
-    padding: 0 1;
-}
-#feed-log {
-    background: transparent;
-    border: none;
-    scrollbar-size: 1 1;
-    scrollbar-color: #1a1a3a #0a0a14;
-    padding: 0 1;
-}
-#module-log {
-    background: transparent;
-    border: none;
-    scrollbar-size: 1 1;
-    scrollbar-color: #1a1a3a #0a0a14;
-    padding: 0 1;
-}
-.panel-label {
-    background: #0d0d1a;
-    color: #00ffcc;
-    text-style: bold;
-    height: 1;
-    padding: 0 1;
-    border-bottom: solid #1a1a3a;
-}
-.feed-panel {
-    background: #0c0c18;
-}
-.module-panel {
-    background: #0c0c18;
-    border-top: solid #1a1a3a;
-    height: 35%;
-}
-.input-area {
-    background: #0d0d1a;
-    border-top: solid #1a1a3a;
-    height: 3;
-    padding: 0 1;
-}
-#cmd-input {
-    background: #0d0d1a;
-    border: solid #1a2a3a;
-    color: #00ffcc;
-    caret-color: #00ffcc;
-    padding: 0 1;
-}
-#cmd-input:focus {
-    border: solid #00ffcc;
-}
-#cmd-input > .input--placeholder {
-    color: #334455;
-}
-.shortcut-bar {
-    background: #08080f;
-    color: #445566;
-    height: 1;
-    padding: 0 1;
-    content-align: left middle;
-}
-RichLog {
-    background: transparent;
-}
-.boot-line { color: #00ffcc; text-style: dim; }
-.msg-nexus { color: #00ffcc; text-style: bold; }
-.msg-user { color: #ff8844; text-style: bold; }
-.msg-system { color: #888899; text-style: italic; }
-.msg-error { color: #ff4444; }
-.msg-success { color: #00ff88; }
-.msg-warning { color: #ffaa00; }
-.finding-critical { color: #ff4444; text-style: bold; }
-.finding-high { color: #ff6644; }
-.finding-medium { color: #ffaa00; }
-.finding-low { color: #44cc66; }
-.finding-info { color: #666677; }
-.module-active { color: #00ffcc; text-style: bold; }
-.module-done { color: #446666; }
-.module-idle { color: #333344; }
-.module-error { color: #ff4444; }
-"""
 
-BOOT_MESSAGES = [
-    ("[boot] Initializing ReconPro Nexus v{}...".format(__version__), 0.12),
-    ("[boot] Loading scanner core...", 0.08),
-    ("[boot] Registering 11 scanning modules...", 0.10),
-    ("[boot] Mounting tool registry (18 tools)...", 0.08),
-    ("[boot] Initializing agent memory...", 0.06),
-    ("[boot] Calibrating threat detection...", 0.08),
-    ("[boot] Starting parallel engine...", 0.06),
-    ("[boot] NEXUS ONLINE.", 0.04),
-]
+MODULE_NAMES: Dict[str, str] = {
+    "recon": "RECON",
+    "auth": "AUTH BYPASS",
+    "chain": "CHAIN HUNTER",
+    "bot": "BOT HUNTER",
+    "gorgon": "GORGON ULTRA",
+    "oblivion": "OBLIVION",
+    "vibesec": "VIBESEC",
+    "nhi": "NHI GRAPH",
+    "host": "HOST AUDIT",
+    "dev": "DEV SEC",
+    "doctor": "DOCTOR",
+}
+
+SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Finding Detail Modal
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+class FindingDetailModal(ModalScreen):
+    """Modal overlay showing full finding details."""
+
+    def __init__(self, finding: Dict[str, Any]) -> None:
+        super().__init__()
+        self.finding = finding
+
+    def compose(self) -> ComposeResult:
+        f = self.finding
+        sev = f.get("severity", "info").lower()
+        sev_color = SEV_STYLES.get(sev, "white")
+        title = f.get("title", "Unknown")
+        category = f.get("category", "")
+        module = f.get("module", "")
+        pts = f.get("points_deducted", 0)
+        evidence = f.get("evidence", "")
+        remediation = f.get("remediation", "No remediation available.")
+        description = f.get("description", "")
+        asset = f.get("asset", "")
+        related_cves = f.get("related_cves", [])
+
+        lines: List[str] = []
+        lines.append(f"[{sev_color}][{sev.upper()}] {title}[/]")
+        lines.append("")
+        if asset:
+            lines.append(f"[dim]Asset:[/] [cyan]{asset}[/]")
+        if category:
+            lines.append(f"[dim]Category:[/] {category}")
+        if module:
+            lines.append(f"[dim]Module:[/] {module}")
+        lines.append(f"[dim]Points:[/] -{pts}")
+        if related_cves:
+            cve_ids = ", ".join(
+                c.get("cve_id", "") for c in related_cves[:5] if c.get("cve_id")
+            )
+            if cve_ids:
+                lines.append(f"[dim]CVEs:[/] [red]{cve_ids}[/]")
+        lines.append("")
+        if description:
+            lines.append(f"[bold]Description:[/]")
+            lines.append(f"[dim]{description}[/]")
+            lines.append("")
+        if evidence:
+            lines.append(f"[bold]Evidence:[/]")
+            lines.append(f"[dim]{evidence}[/]")
+            lines.append("")
+        lines.append(f"[bold]{GREEN}Remediation:[/]")
+        lines.append(f"{GREEN}{remediation}[/]")
+
+        content = "\n".join(lines)
+
+        with Vertical(classes="modal-container"):
+            yield Label(content, classes="modal-content")
+            with Horizontal(classes="modal-actions"):
+                yield Button("Close", variant="primary", id="close-modal")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close-modal":
+            self.dismiss()
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Boot Screen Widget
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+class BootScreen(Widget):
+    """Full-screen animated boot sequence."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._step = 0
+        self._spinner_idx = 0
+        self._module_idx = 0
+        self._module_names = list(MODULE_NAMES.values())
+        self._done = False
+        self._timer: Optional[Timer] = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="boot-container"):
+            yield Static("", id="boot-line-1", classes="boot-title")
+            yield Static("", id="boot-line-2", classes="boot-line")
+            yield Static("", id="boot-line-3", classes="boot-line")
+            yield Static("", id="boot-line-4", classes="boot-line")
+
+    def on_mount(self) -> None:
+        self._timer = self.set_interval(0.04, self._tick)
+
+    def _tick(self) -> None:
+        app = self.app
+        if not isinstance(app, NexusApp):
+            return
+
+        line1 = app.query_one("#boot-line-1", Static)
+        line2 = app.query_one("#boot-line-2", Static)
+        line3 = app.query_one("#boot-line-3", Static)
+        line4 = app.query_one("#boot-line-4", Static)
+
+        if self._step == 0:
+            # Letter-by-letter title
+            title = "RECONPRO NEXUS"
+            chars = title[: self._spinner_idx]
+            self._spinner_idx += 1
+            line1.update(f"[{CYAN} bold]{chars}[/]")
+            if self._spinner_idx > len(title):
+                self._spinner_idx = 0
+                self._step = 1
+                line1.update(f"[{CYAN} bold]{title}[/]  [{DIM_CYAN}]v{VERSION}[/]")
+
+        elif self._step == 1:
+            # Spinner for "Initializing agent..."
+            frame = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
+            self._spinner_idx += 1
+            line2.update(f"  [{CYAN}]{frame}[/] [{DIM_CYAN}]Initializing agent...[/]")
+            if self._spinner_idx > 30:
+                self._spinner_idx = 0
+                self._step = 2
+                line2.update(f"  [{GREEN}]✓[/] [{DIM_CYAN}]Agent initialized.[/]")
+
+        elif self._step == 2:
+            # Module names appearing one by one
+            if self._module_idx < len(self._module_names):
+                visible = self._module_names[: self._module_idx + 1]
+                self._module_idx += 1
+                modules_str = "  ".join(f"[{CYAN}]○[/] [{DIM_CYAN}]{m}[/]" for m in visible)
+                remaining = len(self._module_names) - self._module_idx
+                if remaining > 0:
+                    modules_str += f"  [{DIM_CYAN}]+{remaining} more...[/]"
+                frame = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
+                self._spinner_idx += 1
+                line3.update(
+                    f"  [{CYAN}]{frame}[/] [{DIM_CYAN}]Loading {len(self._module_names)} modules...[/]\n  {modules_str}"
+                )
+            else:
+                all_mods = "  ".join(
+                    f"[{GREEN}]●[/] [{DIM_CYAN}]{m}[/]" for m in self._module_names
+                )
+                line3.update(
+                    f"  [{GREEN}]✓[/] [{DIM_CYAN}]All {len(self._module_names)} modules loaded.[/]\n  {all_mods}"
+                )
+                self._step = 3
+                self._spinner_idx = 0
+
+        elif self._step == 3:
+            # "Ready." with flash
+            if self._spinner_idx == 0:
+                line4.update(f"[{YELLOW} bold]  ▶  READY.[/]")
+            elif self._spinner_idx == 6:
+                line4.update(f"[{GREEN} bold]  ▶  READY.[/]")
+            elif self._spinner_idx >= 10:
+                self._done = True
+                if self._timer:
+                    self._timer.stop()
+                self.app.call_from_thread(self.app._finish_boot)
+            self._spinner_idx += 1
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Module Status Cell Widget
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+class ModuleCell(Static):
+    """Single module status cell in the grid."""
+
+    def __init__(self, module_id: str, name: str) -> None:
+        super().__init__()
+        self.module_id = module_id
+        self.module_name = name
+        self.status = "idle"  # idle | scanning | done | error
+        self.finding_count = 0
+        self._spinner_idx = 0
+        self._timer: Optional[Timer] = None
+
+    def on_mount(self) -> None:
+        self._update_display()
+        self._timer = self.set_interval(0.1, self._spin)
+
+    def _spin(self) -> None:
+        if self.status == "scanning":
+            self._spinner_idx = (self._spinner_idx + 1) % len(SPINNER_FRAMES)
+            self._update_display()
+
+    def _update_display(self) -> None:
+        name_short = self.module_name[:14]
+        if self.status == "idle":
+            icon = f"[{DIM_CYAN}]○[/]"
+            status_text = f"[{DIM_CYAN}]idle[/]"
+        elif self.status == "scanning":
+            frame = SPINNER_FRAMES[self._spinner_idx]
+            icon = f"[{CYAN}]{frame}[/]"
+            status_text = f"[{CYAN}]scanning[/]"
+        elif self.status == "done":
+            icon = f"[{GREEN}]✓[/]"
+            status_text = f"[{GREEN}]done ({self.finding_count})[/]"
+        elif self.status == "error":
+            icon = f"[{RED}]✗[/]"
+            status_text = f"[{RED}]error[/]"
+        else:
+            icon = "○"
+            status_text = "idle"
+
+        self.update(
+            f"{icon} [{CYAN} bold]{name_short}[/]\n  {status_text}"
+        )
+
+    def set_status(self, status: str, count: int = 0) -> None:
+        self.status = status
+        self.finding_count = count
+        self._update_display()
+
+    def on_unmount(self) -> None:
+        if self._timer:
+            self._timer.stop()
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Pulsing Status Dot Widget
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+class StatusDot(Static):
+    """Pulsing dot indicator for scan status."""
+
+    scanning: reactive[bool] = reactive(False)
+
+    def __init__(self) -> None:
+        super().__init__("")
+        self._phase = 0
+
+    def on_mount(self) -> None:
+        self.set_interval(0.3, self._pulse)
+
+    def watch_scanning(self) -> None:
+        pass
+
+    def _pulse(self) -> None:
+        self._phase = (self._phase + 1) % 4
+        if self.scanning:
+            brightness = ["#003322", "#006644", CYAN, "#006644"][self._phase]
+            self.update(f"[{brightness}]●[/]")
+        else:
+            self.update(f"[{GREEN}]●[/]")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Main Application
+# ════════════════════════════════════════════════════════════════════════════════
 
 
 class NexusApp(App):
+    """ReconPro NEXUS — The security scanner TUI."""
+
     TITLE = "RECONPRO NEXUS"
-    SUB_TITLE = f"v{__version__}"
-    CSS = NEXUS_CSS
+    SUB_TITLE = f"v{VERSION}"
+    CSS = f"""
+    /* ── Base ────────────────────────────────────────────── */
+    Screen {{
+        background: {BG};
+        color: #ccccdd;
+    }}
+
+    /* ── Boot Screen ─────────────────────────────────────── */
+    .boot-container {{
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        padding: 4;
+    }}
+    .boot-title {{
+        text-align: center;
+        margin-bottom: 2;
+    }}
+    .boot-line {{
+        text-align: center;
+        margin-bottom: 1;
+    }}
+
+    /* ── Main Layout ─────────────────────────────────────── */
+    #main-container {{
+        display: none;
+        width: 100%;
+        height: 100%;
+    }}
+    #main-container.visible {{
+        display: block;
+    }}
+
+    /* ── Header Bar ──────────────────────────────────────── */
+    #app-header {{
+        dock: top;
+        width: 100%;
+        height: 3;
+        background: {HEADER_BG};
+        border-bottom: solid {BORDER_COLOR};
+        padding: 0 2;
+        content-align: left middle;
+    }}
+    #header-title {{
+        color: {CYAN};
+        text-style: bold;
+    }}
+    #header-version {{
+        color: {DIM_CYAN};
+        margin-left: 1;
+    }}
+    #header-target {{
+        color: #888899;
+        margin-left: 2;
+    }}
+    #header-status {{
+        color: {GREEN};
+        margin-left: 1;
+    }}
+    #header-scanning {{
+        color: {YELLOW};
+        margin-left: 1;
+        text-style: bold;
+    }}
+    #header-score {{
+        margin-left: auto;
+        text-align: right;
+    }}
+    #score-value {{
+        text-style: bold;
+    }}
+    #score-grade {{
+        text-style: bold;
+        margin-left: 1;
+    }}
+
+    /* ── Content Area ────────────────────────────────────── */
+    #content {{
+        width: 100%;
+        height: 1fr;
+        dock: top;
+    }}
+
+    /* ── Left Panel (Chat/Command) ────────────────────────── */
+    #left-panel {{
+        width: 40%;
+        height: 100%;
+        dock: left;
+        border-right: solid {BORDER_COLOR};
+    }}
+    #chat-header {{
+        height: 1;
+        background: {HEADER_BG};
+        border-bottom: solid {BORDER_COLOR};
+        padding: 0 1;
+        content-align: left middle;
+        color: {CYAN};
+        text-style: bold;
+    }}
+    #chat-log {{
+        width: 100%;
+        height: 1fr;
+        border: none;
+        background: {PANEL_BG};
+        padding: 0 1;
+    }}
+    #chat-log::-webkit-scrollbar {{
+        width: 1;
+    }}
+
+    /* ── Right Panel ─────────────────────────────────────── */
+    #right-panel {{
+        width: 60%;
+        height: 100%;
+    }}
+
+    /* ── Findings Feed ───────────────────────────────────── */
+    #findings-header {{
+        height: 1;
+        background: {HEADER_BG};
+        border-bottom: solid {BORDER_COLOR};
+        padding: 0 1;
+        content-align: left middle;
+        color: {RED};
+        text-style: bold;
+    }}
+    #findings-feed {{
+        width: 100%;
+        height: 3fr;
+        border: none;
+        background: {PANEL_BG};
+        padding: 0 1;
+    }}
+
+    /* ── Module Grid ─────────────────────────────────────── */
+    #modules-header {{
+        height: 1;
+        background: {HEADER_BG};
+        border-top: solid {BORDER_COLOR};
+        border-bottom: solid {BORDER_COLOR};
+        padding: 0 1;
+        content-align: left middle;
+        color: {GREEN};
+        text-style: bold;
+    }}
+    #module-grid {{
+        width: 100%;
+        height: 2fr;
+        background: {PANEL_BG};
+        padding: 0 1;
+        layout: grid;
+        grid-size: 3;
+        grid-gutter: 0 2;
+        grid-columns: 1fr 1fr 1fr;
+        overflow-y: auto;
+    }}
+    .module-cell {{
+        height: 3;
+        padding: 0 1;
+        border: solid {BORDER_COLOR};
+        margin-bottom: 1;
+        background: {BG};
+        overflow: hidden;
+    }}
+
+    /* ── Bottom Bar ──────────────────────────────────────── */
+    #bottom-bar {{
+        dock: bottom;
+        width: 100%;
+        height: 3;
+        background: {HEADER_BG};
+        border-top: solid {BORDER_COLOR};
+        padding: 0 1;
+        content-align: left middle;
+    }}
+    #command-input {{
+        width: 70%;
+        background: {INPUT_BG};
+        border: solid {BORDER_COLOR};
+        color: {CYAN};
+        padding: 0 1;
+        margin-right: 2;
+    }}
+    #command-input:focus {{
+        border: solid {CYAN};
+    }}
+    #bottom-info {{
+        width: 30%;
+        text-align: right;
+        color: #888899;
+    }}
+    #finding-counter {{
+        color: {RED};
+        text-style: bold;
+    }}
+
+    /* ── Modal ───────────────────────────────────────────── */
+    .modal-container {{
+        align: center middle;
+        background: rgba(10, 10, 20, 0.92);
+        padding: 4 8;
+    }}
+    .modal-content {{
+        background: {PANEL_BG};
+        border: solid {CYAN};
+        padding: 2 4;
+        max-width: 120;
+        max-height: 30;
+        overflow-y: auto;
+    }}
+    .modal-actions {{
+        align: center middle;
+        margin-top: 1;
+    }}
+    .modal-actions Button {{
+        margin: 0 2;
+    }}
+
+    /* ── Hide default header/footer ──────────────────────── */
+    Header {{
+        display: none;
+    }}
+    Footer {{
+        display: none;
+    }}
+
+    /* ── Scrollbars (where supported) ────────────────────── */
+    RichLog {{
+        scrollbar-size: 1 1;
+        scrollbar-color: {DIM_CYAN} {BG};
+    }}
+    VerticalScroll {{
+        scrollbar-size: 1 1;
+        scrollbar-color: {DIM_CYAN} {BG};
+    }}
+    """
+
     BINDINGS = [
-        ("tab", "focus_next", "Switch Panel"),
-        ("shift+tab", "focus_prev", "Switch Panel"),
-        ("ctrl+s", "quick_scan", "Scan"),
-        ("ctrl+a", "quick_audit", "Audit"),
-        ("ctrl+d", "quick_doctor", "Doctor"),
-        ("ctrl+l", "clear_chat", "Clear"),
-        ("ctrl+r", "quick_report", "Report"),
-        ("ctrl+h", "show_history", "History"),
-        ("ctrl+q", "quit_app", "Quit"),
-        ("f1", "show_help", "Help"),
+        Binding("ctrl+l", "clear_feed", "Clear feed"),
+        Binding("ctrl+s", "rescan", "Re-scan"),
+        Binding("tab", "cycle_focus", "Cycle focus"),
+        Binding("ctrl+c", "quit", "Quit"),
+        Binding("d", "show_last_finding", "Detail"),
     ]
 
-    score = reactive(0)
-    grade = reactive("---")
-    target = reactive("---")
-    scanning = reactive(False)
-    findings_count = reactive(0)
-    critical_count = reactive(0)
-    high_count = reactive(0)
+    # ── Reactive state ──
+    score: reactive[int] = reactive(100)
+    grade: reactive[str] = reactive("A+")
+    finding_count: reactive[int] = reactive(0)
+    is_scanning: reactive[bool] = reactive(False)
+    current_target: reactive[str] = reactive("")
+    scan_start_time: reactive[Optional[float]] = reactive(None)
+    last_scan_data: reactive[Optional[Dict[str, Any]]] = reactive(None)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._command_history: List[str] = []
+        self._history_index: int = -1
+        self._findings_list: List[Dict[str, Any]] = []
+        self._last_finding: Optional[Dict[str, Any]] = None
+        self._module_cells: Dict[str, ModuleCell] = {}
+        self._boot_done = False
+        self._elapsed_timer: Optional[Timer] = None
+        self._focus_order = ["#command-input", "#chat-log", "#findings-feed", "#module-grid"]
+        self._focus_idx = 0
+
+    # ── Compose ──────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        yield Static(self._build_header_text(), classes="nexus-header", id="nexus-header")
-        with Horizontal(id="main-container"):
-            with Vertical(classes="chat-panel"):
-                yield Static("══ AGENT CHAT", classes="panel-label")
-                yield RichLog(id="chat-log", highlight=True, markup=True, max_lines=500)
-            with Vertical(classes="feed-panel"):
-                yield Static("══ LIVE FEED", classes="panel-label")
-                with VerticalScroll():
-                    yield RichLog(id="feed-log", highlight=True, markup=True, max_lines=300)
-                with Vertical(classes="module-panel"):
-                    yield Static("══ MODULE STATUS", classes="panel-label")
-                    yield RichLog(id="module-log", highlight=True, markup=True, max_lines=100)
-        with Vertical(classes="input-area"):
-            yield Input(placeholder="Type a command or describe your goal...", id="cmd-input")
-        yield Static(
-            "[Tab] switch  [Ctrl+S] scan  [Ctrl+A] audit  [Ctrl+D] doctor  "
-            "[Ctrl+R] report  [F1] help  [Ctrl+Q] quit",
-            classes="shortcut-bar",
-        )
+        # Boot screen (shown first)
+        yield BootScreen(id="boot-screen")
 
-    def _build_header_text(self) -> str:
-        sc = self.score
-        g = self.grade
-        t = self.target
-        gc = GRADE_COLORS.get(g, "#888888")
-        bar_w = 20
-        filled = int(sc / 100 * bar_w) if sc > 0 else 0
-        bar = "\u2588" * filled + "\u2591" * (bar_w - filled)
-        clock = datetime.now().strftime("%H:%M:%S")
-        return (
-            f"[bold #00ffcc]\u2b22 RECONPRO NEXUS[/] "
-            f"[dim]v{__version__}[/]  \u2502  "
-            f"[bold #8888ff]Target:[/] [#aaaacc]{t}[/]  \u2502  "
-            f"[{gc}]{bar} {sc}/100 ({g})[/{gc}]  \u2502  "
-            f"[dim]\u25f0 {clock}[/]  \u2502  "
-            f"[bright_red]{self.critical_count}\u2b24[/] [red]{self.high_count}\u2b24[/] [#ffaa00]{self.findings_count} findings"
-        )
+        # Main container (hidden until boot finishes)
+        with Container(id="main-container"):
+            # Header
+            with Horizontal(id="app-header"):
+                yield Label("RECONPRO NEXUS", id="header-title")
+                yield Label(f"v{VERSION}", id="header-version")
+                yield Label("", id="header-target")
+                yield StatusDot(id="status-dot")
+                yield Label("", id="header-scanning")
+                with Horizontal(id="header-score"):
+                    yield Label("100", id="score-value")
+                    yield Label("(A+)", id="score-grade")
 
-    def _update_header(self) -> None:
+            # Content area
+            with Horizontal(id="content"):
+                # Left panel — Chat
+                with Vertical(id="left-panel"):
+                    yield Label("◄ COMMAND", id="chat-header")
+                    yield RichLog(
+                        id="chat-log",
+                        highlight=True,
+                        markup=True,
+                        max_lines=500,
+                        wrap=True,
+                    )
+
+                # Right panel
+                with Vertical(id="right-panel"):
+                    yield Label("► FINDINGS", id="findings-header")
+                    yield RichLog(
+                        id="findings-feed",
+                        highlight=True,
+                        markup=True,
+                        max_lines=1000,
+                        wrap=True,
+                    )
+                    yield Label("⬡ MODULES", id="modules-header")
+                    with Container(id="module-grid"):
+                        for mod_id, mod_name in MODULE_NAMES.items():
+                            cell = ModuleCell(mod_id, mod_name)
+                            cell.set_class(True, "module-cell")
+                            self._module_cells[mod_id] = cell
+                            yield cell
+
+            # Bottom bar
+            with Horizontal(id="bottom-bar"):
+                yield Input(
+                    placeholder="scan <target>  |  audit  |  agent <goal>  |  help",
+                    id="command-input",
+                )
+                yield Label("", id="bottom-info")
+
+    # ── Mount ───────────────────────────────────────────────────────────────
+
+    def on_mount(self) -> None:
+        self._elapsed_timer = self.set_interval(1.0, self._update_elapsed)
+        # Focus the input after a short delay
+        self.set_timer(0.1, self._focus_input)
+
+    def _focus_input(self) -> None:
         try:
-            header = self.query_one("#nexus-header", Static)
-            header.update(self._build_header_text())
+            inp = self.query_one("#command-input", Input)
+            inp.focus()
         except NoMatches:
             pass
 
-    def watch_score(self, old, new):
-        self._update_header()
-    def watch_grade(self, old, new):
-        self._update_header()
-    def watch_target(self, old, new):
-        self._update_header()
-    def watch_critical_count(self, old, new):
-        self._update_header()
-    def watch_high_count(self, old, new):
-        self._update_header()
-    def watch_findings_count(self, old, new):
-        self._update_header()
+    def _finish_boot(self) -> None:
+        """Called from boot screen when animation completes."""
+        try:
+            boot = self.query_one("#boot-screen", BootScreen)
+            boot.remove()
+        except NoMatches:
+            pass
 
-    def on_mount(self):
+        try:
+            main = self.query_one("#main-container", Container)
+            main.set_class(True, "visible")
+        except NoMatches:
+            pass
+
+        self._boot_done = True
+        self._focus_input()
+
+        # Welcome message in chat
         chat = self.query_one("#chat-log", RichLog)
+        chat.write(f"[{CYAN} bold]RECONPRO NEXUS v{VERSION}[/]")
+        chat.write(f"[{DIM_CYAN}]──────────────────────────────────────[/]")
+        chat.write(f"[{GREEN}]●[/] [{DIM_CYAN}]System ready. {len(MODULE_NAMES)} modules loaded.[/]")
+        chat.write(f"[{DIM_CYAN}]  Type [cyan bold]help[/] for commands, or start with [cyan bold]scan <target>[/][/]")
         chat.write("")
-        self.set_focus(self.query_one("#cmd-input", Input))
-        self._boot_animation()
 
-    def _boot_animation(self):
-        chat = self.query_one("#chat-log", RichLog)
-        chat.write("")
-        chat.write("[bold #00ffcc]  \u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563")
-        chat.write("[bold #00ffcc]  \u2551[/]  [bold bright_white]  R E C O N P R O    N E X U S   \u2022   A G E N T I C   S E C U R I T Y   E N G I N E  [bold #00ffcc]\u2551")
-        chat.write("[bold #00ffcc]  \u2560\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2563")
-        chat.write("")
-        self._boot_step(0)
+    # ── Reactive watchers ──────────────────────────────────────────────────
 
-    def _boot_step(self, step):
-        chat = self.query_one("#chat-log", RichLog)
-        if step >= len(BOOT_MESSAGES):
-            chat.write("")
-            chat.write("[msg-success]\u2714 All systems operational. Type a command or describe your goal.[/]")
-            chat.write("")
-            return
-        msg, delay = BOOT_MESSAGES[step]
-        if "ONLINE" in msg:
-            chat.write(f"[msg-nexus]{msg}[/]")
-        else:
-            chat.write(f"[boot-line]{msg} \u2714[/]")
-        self.set_timer(delay, lambda: self._boot_step(step + 1))
-
-    def on_input_submitted(self, event: Input.Submitted):
-        text = event.value.strip()
-        if not text:
-            return
-        event.input.value = ""
-        chat = self.query_one("#chat-log", RichLog)
-        chat.write(f"[msg-user]\u276f YOU:[/] {text}")
-        self._process_command(text)
-
-    def _process_command(self, text):
-        low = text.lower().strip()
-        chat = self.query_one("#chat-log", RichLog)
-        if low in ("quit", "exit", "q"):
-            self.quit_app(); return
-        if low in ("help", "?", "commands"):
-            self._show_help(); return
-        if low == "clear":
-            self.clear_chat(); return
-        if low.startswith("scan ") or ("." in low and " " not in low and not low.startswith(("agent", "blitz", "subdomain", "screenshot", "report", "history", "compare", "secrets", "ports", "audit", "dev", "doctor", "open ", "schedule", "plugin", "modules", "list"))) or low.startswith("http"):
-            target = low.replace("scan ", "").strip().split(" with ")[0].strip()
-            if not target or target == "scan":
-                chat.write("[msg-warning]Usage: scan <target> [with <modules>][/]"); return
-            modules = None
-            if "with " in low:
-                import re
-                m = re.search(r'with\s+([\w,\s]+)', low, re.IGNORECASE)
-                if m:
-                    modules = [x.strip().lower() for x in m.group(1).split(",") if x.strip()]
-            self._run_scan(target, modules); return
-        if low.startswith("audit"):
-            self._run_audit(); return
-        if low.startswith("dev"):
-            path = "."; parts = low.split()
-            if len(parts) > 1 and parts[1] not in ("scan", "check"): path = parts[1]
-            self._run_dev_scan(path); return
-        if low.startswith("doctor"):
-            self._run_doctor(); return
-        if low.startswith("blitz"):
-            import re
-            targets = re.findall(r'[\w\-]+\.[\w]{2,}', low)
-            if len(targets) < 2:
-                chat.write("[msg-warning]Usage: blitz t1.com t2.com t3.com[/]"); return
-            self._run_blitz(targets); return
-        if low.startswith("subdomain"):
-            parts = low.split()
-            if len(parts) < 2: chat.write("[msg-warning]Usage: subdomains <domain>[/]"); return
-            self._discover_subdomains(parts[1]); return
-        if low.startswith("agent "):
-            goal = text.split(" ", 1)[1]; self._run_agent_goal(goal); return
-        if low.startswith("report"):
-            self._generate_report(); return
-        if low.startswith("history"):
-            self._show_history(); return
-        if low.startswith("compare"):
-            self._compare_scans(); return
-        if low.startswith("secret"):
-            self._hunt_secrets(); return
-        if low.startswith("port"):
-            self._check_ports(); return
-        if low.startswith("screenshot"):
-            parts = low.split()
-            if len(parts) < 2: chat.write("[msg-warning]Usage: screenshot <url>[/]"); return
-            self._take_screenshot(parts[1]); return
-        if low.startswith("open "):
-            url = text.split(" ", 1)[1]; self._open_browser(url); return
-        if low == "score":
-            self._show_last_score(); return
-        if low.startswith("module") or low.startswith("list"):
-            self._list_modules(); return
-        self._run_agent_goal(text)
-
-    @work(thread=True, exclusive=True, group="scan")
-    def _run_scan(self, target, modules=None):
-        chat = self.query_one("#chat-log", RichLog)
-        self.target = target
-        self.scanning = True
-        chat.write(f"[msg-nexus]\u25b8 NEXUS:[/] Scanning [bold #aaaacc]{target}[/]...")
-        self._update_module_status("recon", "scanning")
+    def watch_score(self, old: int, new: int) -> None:
         try:
-            result = scan(target, modules=modules)
-            self.call_from_thread(self._on_scan_complete, result)
-        except Exception as e:
-            self.call_from_thread(chat.write, f"[msg-error]\u2718 Scan error: {e}[/]")
-            self.scanning = False
+            el = self.query_one("#score-value", Label)
+            el.update(f"{new}")
+            color = GRADE_COLORS.get(self.grade, "#ccccdd")
+            el.style = f"color: {color}; font-weight: bold"
+        except NoMatches:
+            pass
 
-    @work(thread=True, exclusive=True, group="scan")
-    def _run_audit(self):
-        chat = self.query_one("#chat-log", RichLog)
-        self.target = "localhost"
-        self.scanning = True
-        chat.write("[msg-nexus]\u25b8 NEXUS:[/] Auditing local machine...")
-        for m in LOCAL_MODULES: self._update_module_status(m, "scanning")
+    def watch_grade(self, old: str, new: str) -> None:
         try:
-            result = audit_scan(target="localhost")
-            self.call_from_thread(self._on_scan_complete, result)
-        except Exception as e:
-            self.call_from_thread(chat.write, f"[msg-error]\u2718 Audit error: {e}[/]")
-            self.scanning = False
+            el = self.query_one("#score-grade", Label)
+            el.update(f"({new})")
+            color = GRADE_COLORS.get(new, "#ccccdd")
+            el.style = f"color: {color}; font-weight: bold"
+        except NoMatches:
+            pass
 
-    @work(thread=True, exclusive=True, group="scan")
-    def _run_dev_scan(self, path):
-        chat = self.query_one("#chat-log", RichLog)
-        self.target = path
-        self.scanning = True
-        chat.write(f"[msg-nexus]\u25b8 NEXUS:[/] Dev scanning [bold #aaaacc]{path}[/]...")
-        self._update_module_status("dev", "scanning")
+    def watch_finding_count(self, old: int, new: int) -> None:
         try:
-            result = audit_scan(target=path, modules=["dev"])
-            self.call_from_thread(self._on_scan_complete, result)
-        except Exception as e:
-            self.call_from_thread(chat.write, f"[msg-error]\u2718 Dev scan error: {e}[/]")
-            self.scanning = False
-
-    @work(thread=True, exclusive=True, group="scan")
-    def _run_doctor(self):
-        chat = self.query_one("#chat-log", RichLog)
-        self.target = "localhost"
-        self.scanning = True
-        chat.write("[msg-nexus]\u25b8 NEXUS:[/] Running security diagnostics...")
-        self._update_module_status("doctor", "scanning")
-        try:
-            result = audit_scan(target="localhost", modules=["doctor"])
-            self.call_from_thread(self._on_scan_complete, result)
-        except Exception as e:
-            self.call_from_thread(chat.write, f"[msg-error]\u2718 Doctor error: {e}[/]")
-            self.scanning = False
-
-    @work(thread=True, exclusive=True, group="scan")
-    def _run_blitz(self, targets):
-        chat = self.query_one("#chat-log", RichLog)
-        self.target = f"{len(targets)} targets"
-        self.scanning = True
-        chat.write(f"[msg-nexus]\u25b8 NEXUS:[/] Blitz scanning [bold #aaaacc]{len(targets)} targets[/]...")
-        try:
-            result = blitz_scan(targets, max_workers=min(4, len(targets)), save=True)
-            total = result.get("total_findings", 0)
-            avg = result.get("average_score", 0)
-            avg_g = result.get("average_grade", "?")
-            self.call_from_thread(chat.write,
-                f"[msg-success]\u2714 Blitz complete:[/] {total} findings, avg [{GRADE_COLORS_RICH.get(avg_g, 'white')}]{avg}/100 ({avg_g})[/]")
-            self.scanning = False
-        except Exception as e:
-            self.call_from_thread(chat.write, f"[msg-error]\u2718 Blitz error: {e}[/]")
-            self.scanning = False
-
-    @work(thread=True, exclusive=True, group="scan")
-    def _run_agent_goal(self, goal):
-        chat = self.query_one("#chat-log", RichLog)
-        chat.write(f"[msg-nexus]\u25b8 NEXUS:[/] Processing goal: [dim]{goal}[/]")
-        try:
-            from .nexus_agent import NexusAgent
-            agent = NexusAgent(
-                on_message=lambda msg, style="msg-nexus": self.call_from_thread(self._agent_message, msg, style),
-                on_finding=lambda f: self.call_from_thread(self._agent_finding, f),
-                on_status=lambda s: self.call_from_thread(self._agent_status, s),
+            el = self.query_one("#bottom-info", Label)
+            crit = sum(
+                1 for f in self._findings_list
+                if f.get("severity", "").lower() == "critical"
             )
-            result = agent.execute(goal)
-            self.call_from_thread(self._on_agent_complete, result)
-        except Exception as e:
-            self.call_from_thread(chat.write, f"[msg-error]\u2718 Agent error: {e}[/]")
-            self.scanning = False
-
-    def _agent_message(self, msg, style="msg-nexus"):
-        try:
-            chat = self.query_one("#chat-log", RichLog)
-            chat.write(f"[{style}]\u25b8 NEXUS:[/] {msg}")
-        except Exception:
+            high = sum(
+                1 for f in self._findings_list
+                if f.get("severity", "").lower() == "high"
+            )
+            el.update(
+                f"[{GREEN}]●[/] {new} findings  [{RED}]{crit}[/]C [{YELLOW}]{high}[/]H"
+            )
+        except NoMatches:
             pass
 
-    def _agent_finding(self, finding):
+    def watch_is_scanning(self, old: bool, new: bool) -> None:
         try:
-            feed = self.query_one("#feed-log", RichLog)
-            sev = finding.get("severity", "info")
-            title = finding.get("title", "")[:65]
-            feed.write(f"[finding-{sev}]\u25cf {sev.upper():8}  {title}")
-            self.findings_count += 1
-            if sev == "critical": self.critical_count += 1
-            elif sev == "high": self.high_count += 1
-        except Exception:
-            pass
-
-    def _agent_status(self, status):
-        try:
-            feed = self.query_one("#feed-log", RichLog)
-            feed.write(f"[msg-system]\u2502 {status}[/]")
-        except Exception:
-            pass
-
-    def _on_scan_complete(self, result):
-        self.scanning = False
-        chat = self.query_one("#chat-log", RichLog)
-        feed = self.query_one("#feed-log", RichLog)
-        mod_log = self.query_one("#module-log", RichLog)
-        self.score = result.total_score
-        self.grade = result.grade
-        for mod_id in result.modules_run:
-            count = len(result.module_results.get(mod_id, {}).get("findings", []))
-            self._update_module_status(mod_id, "done", count)
-        mod_log.clear()
-        mod_log.write("[bold #00ffcc]\u2550\u2550 SCAN COMPLETE[/]")
-        mod_log.write("")
-        for mod_id in result.modules_run:
-            entry = result.module_results.get(mod_id, {})
-            count = len(entry.get("findings", []))
-            mod_name = MODULE_REGISTRY.get(mod_id, LOCAL_MODULES.get(mod_id, {})).get("name", mod_id.upper())
-            color = "#00ff88" if count == 0 else ("#ffaa00" if count < 5 else "#ff4444")
-            mod_log.write(f"  [{color}]\u2714[/] [#aaaacc]{mod_name:16}[/]  [dim]{count} findings[/]")
-        feed.write("")
-        feed.write(f"[bold #00ffcc]\u2550\u2550 SCAN RESULT: {result.target} \u2014 {result.total_score}/100 ({result.grade})[/]")
-        feed.write("")
-        sorted_findings = sorted(result.findings, key=lambda x: SEV_ORDER.get(x.get("severity", "info"), 4))
-        for f in sorted_findings:
-            sev = f.get("severity", "info")
-            title = f.get("title", "")[:70]
-            mod = f.get("module", "")
-            feed.write(f"[finding-{sev}]\u25cf {sev.upper():8}  {title} [dim]({mod})[/]")
-        g = result.grade
-        gc = GRADE_COLORS_RICH.get(g, "white")
-        total = len(result.findings)
-        sc = result.severity_counts
-        chat.write("")
-        chat.write(
-            f"[msg-success]\u2714 Scan complete:[/] [{gc}]{result.total_score}/100 ({g})[/{gc}]  "
-            f"{total} findings  [bright_red]{sc.get('critical', 0)} crit[/]  "
-            f"[red]{sc.get('high', 0)} high[/]  [#ffaa00]{sc.get('medium', 0)} med[/]"
-        )
-        top = sorted_findings[:5]
-        if top:
-            chat.write("[msg-system]Top findings:[/]")
-            for f in top:
-                sev = f.get("severity", "info")
-                c = SEV_COLORS.get(sev, "white")
-                chat.write(f"  [{c}]{sev.upper():8}[/{c}] {f.get('title', '')[:60]}")
-        chat.write("[msg-system]Type 'report' for HTML, 'compare' for diff.[/]")
-        chat.write("")
-        save_scan(result.to_dict())
-        self.critical_count = sc.get("critical", 0)
-        self.high_count = sc.get("high", 0)
-        self.findings_count = total
-
-    def _on_agent_complete(self, result):
-        self.scanning = False
-        chat = self.query_one("#chat-log", RichLog)
-        total = result.get("total_findings", 0)
-        steps = result.get("steps", [])
-        chat.write("")
-        chat.write(f"[msg-success]\u2714 Agent complete:[/] {total} findings across {len(result.get('targets', []))} target(s)")
-        if steps:
-            chat.write(f"[msg-system]Steps: {', '.join(steps)}[/]")
-        chat.write("")
-
-    def _update_module_status(self, mod_id, status, count=0):
-        try:
-            mod_log = self.query_one("#module-log", RichLog)
-            all_mods = {**MODULE_REGISTRY, **LOCAL_MODULES}
-            entry = all_mods.get(mod_id, {"name": mod_id.upper()})
-            name = entry.get("name", mod_id.upper())
-            if status == "scanning":
-                mod_log.write(f"  [module-active]\u25cf {name:16}[/] [module-active]SCANNING...[/]")
-            elif status == "done":
-                mod_log.write(f"  [module-done]\u25cf {name:16}[/] [module-done]{count} findings  DONE[/]")
-            elif status == "error":
-                mod_log.write(f"  [module-error]\u25cf {name:16}[/] [module-error]ERROR[/]")
-        except Exception:
-            pass
-
-    def _show_help(self):
-        chat = self.query_one("#chat-log", RichLog)
-        chat.write("""[bold #00ffcc]\u2550\u2550 NEXUS COMMANDS[/]
-[bold]  scan <target> [with <mods>]   [/]Remote scan
-[bold]  audit                        [/]Full local machine audit
-[bold]  dev [path]                   [/]Developer project scan
-[bold]  doctor                       [/]Security health check
-[bold]  blitz <t1> <t2> ...         [/]Parallel multi-target scan
-[bold]  subdomains <domain>           [/]Discover subdomains
-[bold]  agent <goal>                 [/]Autonomous goal-driven scan
-[bold]  screenshot <url>             [/]Browser screenshot
-[bold]  open <url>                   [/]Open in browser
-[bold]  report                       [/]Generate HTML report
-[bold]  history                      [/]Show past scans
-[bold]  compare                      [/]Diff last two scans
-[bold]  secrets [path]               [/]Hunt for secrets
-[bold]  ports                        [/]Show open ports
-[bold]  modules                      [/]List all modules
-[bold]  score                        [/]Show last score
-[bold]  clear                        [/]Clear chat
-[bold]  quit                         [/]Exit NEXUS
-[dim]  Or just type any domain to scan it, or describe a goal in natural language.[/]""")
-        chat.write("")
-
-    def _generate_report(self):
-        chat = self.query_one("#chat-log", RichLog)
-        latest = get_latest()
-        if not latest:
-            chat.write("[msg-warning]No scan data. Run a scan first.[/]"); return
-        chat.write("[msg-nexus]\u25b8 NEXUS:[/] Generating HTML report...")
-        try:
-            path = generate_html_report(latest)
-            chat.write(f"[msg-success]\u2714 Report saved: [bold #aaaacc]{path}[/][/]")
-        except Exception as e:
-            chat.write(f"[msg-error]\u2718 Report error: {e}[/]")
-
-    def _show_history(self):
-        chat = self.query_one("#chat-log", RichLog)
-        scans = list_scans(limit=10)
-        if not scans:
-            chat.write("[msg-system]No scan history yet.[/]"); return
-        chat.write(f"[bold #00ffcc]\u2550\u2550 SCAN HISTORY ({len(scans)} recent)[/]")
-        for s in scans:
-            g = s.get("grade", "?")
-            gc = GRADE_COLORS_RICH.get(g, "white")
-            ts = s.get("_saved_at", "?")[:16]
-            t = s.get("target", "?")[:30]
-            sc = s.get("total_score", "?")
-            fc = len(s.get("findings", []))
-            chat.write(f"  [dim]{ts}[/]  [{gc}]{sc}/100 ({g})[/{gc}]  [#aaaacc]{t:30}[/]  [dim]{fc} findings[/]")
-        chat.write("")
-
-    def _compare_scans(self):
-        chat = self.query_one("#chat-log", RichLog)
-        scans = list_scans(limit=2)
-        if len(scans) < 2:
-            chat.write("[msg-warning]Need at least 2 scans to compare.[/]"); return
-        try:
-            d = diff_scans(scans[0]["_file"], scans[1]["_file"])
-            chat.write("[bold #00ffcc]\u2550\u2550 COMPARISON[/]")
-            chat.write(f"  [dim]A:[/] [#aaaacc]{d['scan_a']['target']}[/] [{GRADE_COLORS_RICH.get(d['scan_a']['grade'],'white')}]{d['scan_a']['score']}/100 ({d['scan_a']['grade']})[/]")
-            chat.write(f"  [dim]B:[/] [#aaaacc]{d['scan_b']['target']}[/] [{GRADE_COLORS_RICH.get(d['scan_b']['grade'],'white')}]{d['scan_b']['score']}/100 ({d['scan_b']['grade']})[/]")
-            change = d['score_change']
-            color = "msg-success" if change > 0 else ("msg-error" if change < 0 else "msg-system")
-            chat.write(f"  [{color}]Change: {'+' if change > 0 else ''}{change} pts[/]")
-            if d['new']: chat.write(f"  [finding-critical]New ({len(d['new'])}):[/] {', '.join(d['new'][:5])}")
-            if d['fixed']: chat.write(f"  [msg-success]Fixed ({len(d['fixed'])}):[/] {', '.join(d['fixed'][:5])}")
-        except Exception as e:
-            chat.write(f"[msg-error]\u2718 Compare error: {e}[/]")
-        chat.write("")
-
-    def _hunt_secrets(self):
-        chat = self.query_one("#chat-log", RichLog)
-        feed = self.query_one("#feed-log", RichLog)
-        chat.write("[msg-nexus]\u25b8 NEXUS:[/] Hunting for secrets...")
-        try:
-            from .modules.host import _check_env_secrets
-            from .modules.dev import _check_env_files, _check_hardcoded_secrets
-            all_f = _check_env_secrets() + _check_env_files(os.path.abspath(".")) + _check_hardcoded_secrets(os.path.abspath("."))
-            if not all_f:
-                chat.write("[msg-success]\u2714 Clean. No secrets found.[/]")
+            dot = self.query_one("#status-dot", StatusDot)
+            dot.scanning = new
+            scan_label = self.query_one("#header-scanning", Label)
+            if new:
+                scan_label.update(f"[{YELLOW} bold]SCANNING[/]")
+                self.scan_start_time = time.monotonic()
             else:
-                chat.write(f"[msg-warning]\u26a0 Found {len(all_f)} secret(s):[/]")
-                for f in all_f[:20]:
-                    sev = f.severity; c = SEV_COLORS.get(sev, "white")
-                    chat.write(f"  [{c}]{sev.upper():8}[/{c}] {f.title}")
-                    feed.write(f"[finding-{sev}]\u25cf {sev.upper():8}  {f.title}")
-                    self.findings_count += 1
-        except Exception as e:
-            chat.write(f"[msg-error]\u2718 Error: {e}[/]")
+                scan_label.update(f"[{GREEN}]DONE[/]")
+                self.scan_start_time = None
+        except NoMatches:
+            pass
 
-    def _check_ports(self):
-        chat = self.query_one("#chat-log", RichLog)
-        feed = self.query_one("#feed-log", RichLog)
-        chat.write("[msg-nexus]\u25b8 NEXUS:[/] Checking open ports...")
+    def watch_current_target(self, old: str, new: str) -> None:
         try:
-            from .modules.host import _check_open_ports
-            findings = _check_open_ports()
-            if not findings:
-                chat.write("[msg-success]\u2714 No risky ports found.[/]")
+            el = self.query_one("#header-target", Label)
+            if new:
+                el.update(f"[{DIM_CYAN}]▸ {new}[/]")
             else:
-                chat.write(f"[msg-warning]\u26a0 Found {len(findings)} port issue(s):[/]")
-                for f in findings:
-                    c = SEV_COLORS.get(f.severity, "white")
-                    chat.write(f"  [{c}]{f.severity.upper():8}[/{c}] {f.title}")
-                    feed.write(f"[finding-{f.severity}]\u25cf {f.severity.upper():8}  {f.title}")
-                    self.findings_count += 1
-        except Exception as e:
-            chat.write(f"[msg-error]\u2718 Error: {e}[/]")
+                el.update("")
+        except NoMatches:
+            pass
 
-    def _discover_subdomains(self, domain):
-        chat = self.query_one("#chat-log", RichLog)
-        feed = self.query_one("#feed-log", RichLog)
-        chat.write(f"[msg-nexus]\u25b8 NEXUS:[/] Discovering subdomains of [bold #aaaacc]{domain}[/]...")
-        try:
-            subs = discover_subdomains(domain)
-            if not subs:
-                chat.write("[msg-system]No subdomains found.[/]")
-            else:
-                chat.write(f"[msg-success]\u2714 Found {len(subs)} subdomain(s):[/]")
-                for s in subs[:30]:
-                    chat.write(f"  [#aaaacc]  {s}[/]")
-                    feed.write(f"[#00ffcc]\u25cf SUBDOMAIN[/]  {s}")
-        except Exception as e:
-            chat.write(f"[msg-error]\u2718 Error: {e}[/]")
+    def _update_elapsed(self) -> None:
+        if self.is_scanning and self.scan_start_time:
+            elapsed = time.monotonic() - self.scan_start_time
+            mins, secs = divmod(int(elapsed), 60)
+            try:
+                scan_label = self.query_one("#header-scanning", Label)
+                scan_label.update(f"[{YELLOW} bold]SCANNING {mins:02d}:{secs:02d}[/]")
+            except NoMatches:
+                pass
 
-    def _take_screenshot(self, url):
-        chat = self.query_one("#chat-log", RichLog)
-        chat.write(f"[msg-nexus]\u25b8 NEXUS:[/] Taking screenshot of [bold #aaaacc]{url}[/]...")
-        try:
-            from .browser_mod import take_screenshot
-            path = take_screenshot(url)
-            chat.write(f"[msg-success]\u2714 Screenshot saved: [bold #aaaacc]{path}[/][/]")
-        except ImportError:
-            chat.write("[msg-warning]Install browser support: pip install reconpro[browser] && playwright install[/]")
-        except Exception as e:
-            chat.write(f"[msg-error]\u2718 Error: {e}[/]")
+    # ── Input handling ─────────────────────────────────────────────────────
 
-    def _open_browser(self, url):
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle user command input."""
+        raw = event.value.strip()
+        event.input.value = ""
+
+        if not raw:
+            return
+
+        # Update history
+        if self._command_history and self._command_history[-1] != raw:
+            self._command_history.append(raw)
+        elif not self._command_history:
+            self._command_history.append(raw)
+        self._history_index = len(self._command_history)
+
+        self._process_command(raw)
+
+    def on_key(self, event: Key) -> None:
+        """Handle key events for history navigation."""
+        if event.key == "up" and self._history_index > 0:
+            try:
+                inp = self.query_one("#command-input", Input)
+                if inp.has_focus:
+                    self._history_index -= 1
+                    inp.value = self._command_history[self._history_index]
+            except NoMatches:
+                pass
+        elif event.key == "down":
+            try:
+                inp = self.query_one("#command-input", Input)
+                if inp.has_focus:
+                    if self._history_index < len(self._command_history) - 1:
+                        self._history_index += 1
+                        inp.value = self._command_history[self._history_index]
+                    else:
+                        self._history_index = len(self._command_history)
+                        inp.value = ""
+            except NoMatches:
+                pass
+
+    def action_cycle_focus(self) -> None:
+        """Tab cycles focus between panels and input."""
+        self._focus_idx = (self._focus_idx + 1) % len(self._focus_order)
+        selector = self._focus_order[self._focus_idx]
         try:
-            from .browser_mod import open_browser
-            open_browser(url)
+            widget = self.query_one(selector, Widget)
+            widget.focus()
+        except NoMatches:
+            pass
+
+    def action_clear_feed(self) -> None:
+        """Ctrl+L: clear findings feed."""
+        try:
+            feed = self.query_one("#findings-feed", RichLog)
+            feed.clear()
+        except NoMatches:
+            pass
+
+    def action_rescan(self) -> None:
+        """Ctrl+S: re-scan the last target."""
+        if self.current_target:
+            self._run_scan_worker(self.current_target)
             chat = self.query_one("#chat-log", RichLog)
-            chat.write(f"[msg-system]Opened {url} in browser.[/]")
-        except Exception as e:
-            chat = self.query_one("#chat-log", RichLog)
-            chat.write(f"[msg-error]\u2718 Error: {e}[/]")
-
-    def _show_last_score(self):
-        chat = self.query_one("#chat-log", RichLog)
-        latest = get_latest()
-        if latest:
-            g = latest.get("grade", "?")
-            gc = GRADE_COLORS_RICH.get(g, "white")
-            chat.write(f"  [{gc}]{latest.get('total_score', '?')}/100 ({g})[/{gc}] \u2014 {latest.get('target', '?')}")
+            chat.write(f"[{CYAN}]► Re-scanning [bold]{self.current_target}[/][/]...")
         else:
-            chat.write("  [msg-system]No scans yet. Run a scan first.[/]")
+            chat = self.query_one("#chat-log", RichLog)
+            chat.write(f"[{RED}]No previous target to re-scan.[/]")
 
-    def _list_modules(self):
-        chat = self.query_one("#chat-log", RichLog)
-        chat.write("[bold #00ffcc]\u2550\u2550 REMOTE MODULES[/]")
-        for mid, entry in MODULE_REGISTRY.items():
-            chat.write(f"  [#00ffcc]{mid:12}[/] [#aaaacc]{entry['name']}[/]")
-        chat.write("")
-        chat.write("[bold #00ffcc]\u2550\u2550 LOCAL MODULES[/]")
-        for mid, entry in LOCAL_MODULES.items():
-            chat.write(f"  [#00ffcc]{mid:12}[/] [#aaaacc]{entry['name']}[/]")
-        chat.write("")
+    # ── Command Processing ──────────────────────────────────────────────────
 
-    def action_quick_scan(self):
-        self.query_one("#cmd-input", Input).focus()
-    def action_quick_audit(self):
-        self._run_audit()
-    def action_quick_doctor(self):
-        self._run_doctor()
-    def action_clear_chat(self):
-        self.clear_chat()
-    def action_quick_report(self):
-        self._generate_report()
-    def action_show_history(self):
-        self._show_history()
-    def action_quit_app(self):
-        self.quit()
-    def action_show_help(self):
-        self._show_help()
-
-    def clear_chat(self):
+    def _chat(self, text: str) -> None:
+        """Write a line to the chat log."""
         try:
+            chat = self.query_one("#chat-log", RichLog)
+            chat.write(text)
+        except NoMatches:
+            pass
+
+    def _feed(self, text: str) -> None:
+        """Write a line to the findings feed."""
+        try:
+            feed = self.query_one("#findings-feed", RichLog)
+            feed.write(text)
+        except NoMatches:
+            pass
+
+    def _set_all_modules_status(self, status: str, count: int = 0) -> None:
+        """Set all module cells to a given status."""
+        for cell in self._module_cells.values():
+            cell.set_status(status, count)
+
+    def _process_command(self, raw: str) -> None:
+        """Parse and execute a user command."""
+        self._chat(f"[{CYAN} bold]▸ {raw}[/]")
+
+        parts = raw.split()
+        cmd = parts[0].lower()
+        args = parts[1:]
+
+        if cmd in ("quit", "q", "exit"):
+            self.exit()
+            return
+
+        if cmd == "clear":
+            self._clear_all_feeds()
+            return
+
+        if cmd == "help":
+            self._show_help()
+            return
+
+        if cmd == "scan":
+            self._handle_scan(args)
+            return
+
+        if cmd == "audit":
+            self._handle_audit(args)
+            return
+
+        if cmd == "dev":
+            self._handle_dev(args)
+            return
+
+        if cmd == "doctor":
+            self._handle_doctor()
+            return
+
+        if cmd == "blitz":
+            self._handle_blitz(args)
+            return
+
+        if cmd == "subdomains":
+            self._handle_subdomains(args)
+            return
+
+        if cmd == "agent":
+            self._handle_agent(args)
+            return
+
+        if cmd == "swarm":
+            self._handle_swarm(args)
+            return
+
+        if cmd == "adversarial":
+            self._handle_adversarial(args)
+            return
+
+        if cmd == "graph":
+            self._handle_graph()
+            return
+
+        if cmd == "export":
+            self._handle_export(args)
+            return
+
+        if cmd == "history":
+            self._handle_history()
+            return
+
+        self._chat(f"[{RED}]Unknown command: {cmd}[/]")
+        self._chat(f"[{DIM_CYAN}]Type [cyan]help[/] for available commands.[/]")
+
+    def _clear_all_feeds(self) -> None:
+        try:
+            self.query_one("#findings-feed", RichLog).clear()
             self.query_one("#chat-log", RichLog).clear()
         except NoMatches:
             pass
+        self._findings_list.clear()
+        self.finding_count = 0
+        self.score = 100
+        self.grade = "A+"
+        self._set_all_modules_status("idle")
+        self._chat(f"[{DIM_CYAN}]Cleared.[/]")
+
+    def _show_help(self) -> None:
+        help_lines = [
+            ("[bold cyan]COMMANDS[/]", ""),
+            ("[cyan]scan <target>[/]", "Remote security scan"),
+            ("[cyan]scan <target> with <mods>[/]", "Scan specific modules"),
+            ("[cyan]audit[/]", "Local machine audit"),
+            ("[cyan]dev [path][/]", "Dev project scan"),
+            ("[cyan]doctor[/]", "Health check"),
+            ("[cyan]blitz <t1> <t2> ...[/]", "Parallel multi-target"),
+            ("[cyan]subdomains <domain>[/]", "Subdomain discovery"),
+            ("[cyan]agent <goal>[/]", "Autonomous agent"),
+            ("[cyan]swarm <target>[/]", "Multi-agent swarm"),
+            ("[cyan]adversarial <target>[/]", "Adversarial loop"),
+            ("[cyan]graph[/]", "Knowledge graph stats"),
+            ("[cyan]export <format>[/]", "Export last scan"),
+            ("[cyan]history[/]", "Scan history"),
+            ("[cyan]clear[/]", "Clear all feeds"),
+            ("[cyan]quit[/]", "Exit"),
+            ("", ""),
+            ("[bold cyan]KEYS[/]", ""),
+            (f"[{DIM_CYAN}]Tab[/]   Cycle focus", ""),
+            (f"[{DIM_CYAN}]Ctrl+L[/]  Clear findings", ""),
+            (f"[{DIM_CYAN}]Ctrl+S[/]  Re-scan last target", ""),
+            (f"[{DIM_CYAN}]↑/↓[/]  Command history", ""),
+        ]
+        for line in help_lines:
+            self._chat(f"  {line[0]}  {line[1]}")
+
+    # ── Command Handlers ───────────────────────────────────────────────────
+
+    def _handle_scan(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: scan <target> [with <mod1> <mod2> ...][/]")
+            return
+
+        # Parse "with" clause
+        modules: Optional[List[str]] = None
+        target_parts: List[str] = []
+        found_with = False
+        mod_parts: List[str] = []
+        for a in args:
+            if a.lower() == "with":
+                found_with = True
+                continue
+            if found_with:
+                mod_parts.append(a)
+            else:
+                target_parts.append(a)
+
+        target = " ".join(target_parts)
+        if not target:
+            self._chat(f"[{RED}]No target specified.[/]")
+            return
+
+        if mod_parts:
+            modules = [m.strip().lower() for m in mod_parts]
+            self._chat(f"[{DIM_CYAN}]Scanning [cyan bold]{target}[/] with modules: {', '.join(modules)}[/]")
+        else:
+            self._chat(f"[{DIM_CYAN}]Scanning [cyan bold]{target}[/]...[/]")
+
+        self.current_target = target
+        self._run_scan_worker(target, modules=modules)
+
+    def _handle_audit(self, args: List[str]) -> None:
+        target = args[0] if args else "."
+        self.current_target = target if target != "." else "local-audit"
+        self._chat(f"[{DIM_CYAN}]Auditing local machine ({target})...[/]")
+        self._run_scan_worker(target, is_local=True)
+
+    def _handle_dev(self, args: List[str]) -> None:
+        path = args[0] if args else "."
+        self.current_target = f"dev:{path}"
+        self._chat(f"[{DIM_CYAN}]Scanning dev project at [cyan]{path}[/]...[/]")
+        self._run_scan_worker(path, is_local=True, modules=["dev"])
+
+    def _handle_doctor(self) -> None:
+        self.current_target = "doctor"
+        self._chat(f"[{DIM_CYAN}]Running health check...[/]")
+        self._run_scan_worker("localhost", is_local=True, modules=["doctor"])
+
+    def _handle_blitz(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: blitz <target1> <target2> ...[/]")
+            return
+        self._chat(f"[{DIM_CYAN}]Blitz scanning {len(args)} targets...[/]")
+        self._run_blitz_worker(args)
+
+    def _handle_subdomains(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: subdomains <domain>[/]")
+            return
+        domain = args[0]
+        self._chat(f"[{DIM_CYAN}]Discovering subdomains of [cyan bold]{domain}[/]...[/]")
+        self._run_subdomain_worker(domain)
+
+    def _handle_agent(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: agent <goal>[/]")
+            return
+        goal = " ".join(args)
+        self._chat(f"[{YELLOW} bold]🤖 Agent:[/] [dim]Goal: {goal}[/]")
+        self._run_agent_worker(goal)
+
+    def _handle_swarm(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: swarm <target>[/]")
+            return
+        target = args[0]
+        self.current_target = target
+        self._chat(f"[{RED} bold]⚡ Swarm:[/] [dim]Deploying agents against {target}...[/]")
+        self._run_swarm_worker(target)
+
+    def _handle_adversarial(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: adversarial <target>[/]")
+            return
+        target = args[0]
+        self.current_target = target
+        self._chat(f"[{RED} bold]⚔  Adversarial:[/] [dim]Starting loop against {target}...[/]")
+        self._run_adversarial_worker(target)
+
+    def _handle_graph(self) -> None:
+        self._chat(f"[{DIM_CYAN}]Loading knowledge graph...[/]")
+        self._run_graph_worker()
+
+    def _handle_export(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: export <format>  (sarif, md, json, html)[/]")
+            return
+        fmt = args[0].lower()
+        if self.last_scan_data is None:
+            self._chat(f"[{RED}]No scan data to export. Run a scan first.[/]")
+            return
+        self._run_export_worker(fmt)
+
+    def _handle_history(self) -> None:
+        self._run_history_worker()
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Background Workers (concurrent)
+    # ════════════════════════════════════════════════════════════════════════
+
+    @work(exclusive=False, thread=True)
+    def _run_scan_worker(
+        self,
+        target: str,
+        modules: Optional[List[str]] = None,
+        is_local: bool = False,
+    ) -> None:
+        """Run a scan in a background thread."""
+        self.call_from_thread(self.is_scanning.set, True)
+
+        # Set modules to scanning
+        if modules:
+            for m in modules:
+                if m in self._module_cells:
+                    self.call_from_thread(self._module_cells[m].set_status, "scanning")
+        else:
+            all_mods = (
+                list(MODULE_NAMES.keys())
+                if is_local
+                else [k for k in MODULE_NAMES if k not in ("host", "dev", "doctor")]
+            )
+            for m in all_mods:
+                if m in self._module_cells:
+                    self.call_from_thread(self._module_cells[m].set_status, "scanning")
+
+        try:
+            from .scanner import scan, audit_scan
+            from .history import save_scan
+
+            self.call_from_thread(
+                self._chat, f"[{DIM_CYAN}]  ⏳ Scan in progress...[/]"
+            )
+
+            if is_local:
+                result = audit_scan(target=target, modules=modules)
+            else:
+                result = scan(target=target, modules=modules)
+
+            # Process findings
+            data = result.to_dict()
+            self.call_from_thread(self._on_scan_complete, data, modules, is_local)
+
+            # Save to history
+            try:
+                save_scan(data, label="nexus")
+            except Exception:
+                pass
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  ✗ Scan error: {e}[/]")
+            if modules:
+                for m in modules:
+                    if m in self._module_cells:
+                        self.call_from_thread(self._module_cells[m].set_status, "error")
+            else:
+                self.call_from_thread(self._set_all_modules_status, "error")
+
+        finally:
+            self.call_from_thread(self.is_scanning.set, False)
+
+    @work(exclusive=False, thread=True)
+    def _run_blitz_worker(self, targets: List[str]) -> None:
+        """Run parallel blitz scan."""
+        self.call_from_thread(self.is_scanning.set, True)
+        self.call_from_thread(self._set_all_modules_status, "scanning")
+
+        try:
+            from .parallel import blitz_scan
+
+            self.call_from_thread(
+                self._chat, f"[{DIM_CYAN}]  ⏳ Blitz scanning {len(targets)} targets...[/]"
+            )
+
+            result = blitz_scan(targets, save=True)
+
+            self.call_from_thread(
+                self._chat,
+                f"[{GREEN}]  ✓ Blitz complete. {result['successful']}/{result['targets_scanned']} successful, "
+                f"{result['total_findings']} findings, avg score: {result['average_score']} ({result['average_grade']})[/]",
+            )
+
+            for t, r in result.get("results", {}).items():
+                self.call_from_thread(self._process_scan_data, r, modules_list=None)
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  ✗ Blitz error: {e}[/]")
+            self.call_from_thread(self._set_all_modules_status, "error")
+
+        finally:
+            self.call_from_thread(self.is_scanning.set, False)
+
+    @work(exclusive=False, thread=True)
+    def _run_subdomain_worker(self, domain: str) -> None:
+        """Discover subdomains in background."""
+        self.call_from_thread(self.is_scanning.set, True)
+
+        try:
+            from .subdomains import discover_subdomains
+
+            self.call_from_thread(
+                self._chat, f"[{DIM_CYAN}]  ⏳ Discovering subdomains...[/]"
+            )
+
+            subs = discover_subdomains(domain)
+
+            self.call_from_thread(
+                self._chat,
+                f"[{GREEN}]  ✓ Found {len(subs)} subdomain(s) for {domain}[/]",
+            )
+
+            for sub in subs:
+                self.call_from_thread(
+                    self._feed, f"  [{CYAN}]SUB[/] [{DIM_CYAN}]{sub}[/]"
+                )
+                self.call_from_thread(self.finding_count.set, self.finding_count + 1)
+
+            if subs:
+                self.call_from_thread(
+                    self._chat, f"[{DIM_CYAN}]  Use [cyan]blitz {' '.join(subs[:10])}[/] to scan them.[/]"
+                )
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  ✗ Subdomain error: {e}[/]")
+
+        finally:
+            self.call_from_thread(self.is_scanning.set, False)
+
+    @work(exclusive=False, thread=True)
+    def _run_agent_worker(self, goal: str) -> None:
+        """Run autonomous agent."""
+        self.call_from_thread(self.is_scanning.set, True)
+        self.call_from_thread(self._set_all_modules_status, "scanning")
+
+        try:
+            from .agent import run_agent
+
+            self.call_from_thread(
+                self._chat, f"[{YELLOW}]  🤖 Agent thinking...[/]"
+            )
+
+            result = run_agent(goal, save=True)
+
+            self.call_from_thread(
+                self._chat,
+                f"[{GREEN}]  ✓ Agent complete. {result['total_findings']} findings across {len(result['targets'])} target(s).[/]",
+            )
+
+            for step in result.get("steps", []):
+                self.call_from_thread(
+                    self._chat, f"    [{YELLOW}]▸[/] [{DIM_CYAN}]{step}[/]"
+                )
+
+            for r in result.get("results", []):
+                self.call_from_thread(self._process_scan_data, r, modules_list=None)
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  ✗ Agent error: {e}[/]")
+            self.call_from_thread(self._set_all_modules_status, "error")
+
+        finally:
+            self.call_from_thread(self.is_scanning.set, False)
+
+    @work(exclusive=False, thread=True)
+    def _run_swarm_worker(self, target: str) -> None:
+        """Run swarm."""
+        self.call_from_thread(self.is_scanning.set, True)
+
+        # Map swarm agents to module cells
+        swarm_modules = ["recon", "auth", "chain", "gorgon", "oblivion", "vibesec", "nhi"]
+        for m in swarm_modules:
+            if m in self._module_cells:
+                self.call_from_thread(self._module_cells[m].set_status, "scanning")
+
+        try:
+            from .swarm import run_swarm
+
+            self.call_from_thread(
+                self._chat, f"[{RED}]  ⚡ Deploying swarm...[/]"
+            )
+
+            result = run_swarm(target, mode="full")
+
+            self.call_from_thread(
+                self._chat, f"[{GREEN}]  ✓ Swarm complete.[/]"
+            )
+
+            # Process each agent's findings
+            for agent_name, agent_msg in result.agents.items():
+                agent_findings = agent_msg.findings if agent_msg else []
+                for f in agent_findings:
+                    self.call_from_thread(self._add_finding_to_feed, f)
+
+            for m in swarm_modules:
+                if m in self._module_cells:
+                    self.call_from_thread(self._module_cells[m].set_status, "done")
+
+            summary = result.summary() if hasattr(result, "summary") else "Swarm finished"
+            self.call_from_thread(self._chat, f"[{DIM_CYAN}]  {summary}[/]")
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  ✗ Swarm error: {e}[/]")
+            for m in swarm_modules:
+                if m in self._module_cells:
+                    self.call_from_thread(self._module_cells[m].set_status, "error")
+
+        finally:
+            self.call_from_thread(self.is_scanning.set, False)
+
+    @work(exclusive=False, thread=True)
+    def _run_adversarial_worker(self, target: str) -> None:
+        """Run adversarial loop."""
+        self.call_from_thread(self.is_scanning.set, True)
+        self.call_from_thread(self._set_all_modules_status, "scanning")
+
+        try:
+            from .adversarial import run_adversarial
+
+            self.call_from_thread(
+                self._chat, f"[{RED}]  ⚔  Starting adversarial loop...[/]"
+            )
+
+            result = run_adversarial(target, max_rounds=3)
+
+            self.call_from_thread(
+                self._chat,
+                f"[{GREEN}]  ✓ Adversarial complete. {result.findings_fixed} fixed, {result.findings_unfixed} remaining.[/]"
+            )
+            self.call_from_thread(
+                self._chat,
+                f"[{DIM_CYAN}]    Score: {result.initial_grade} ({result.initial_score}) → {result.final_grade} ({result.final_score})[/]"
+            )
+
+            if result.remediation_report:
+                for line in result.remediation_report.split("\n")[:20]:
+                    self.call_from_thread(self._chat, f"    [{DIM_CYAN}]{line}[/]")
+
+            self.call_from_thread(self._set_all_modules_status, "done")
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  ✗ Adversarial error: {e}[/]")
+            self.call_from_thread(self._set_all_modules_status, "error")
+
+        finally:
+            self.call_from_thread(self.is_scanning.set, False)
+
+    @work(exclusive=False, thread=True)
+    def _run_graph_worker(self) -> None:
+        """Show knowledge graph stats."""
+        try:
+            from .knowledge_graph import SecurityKnowledgeGraph
+
+            graph = SecurityKnowledgeGraph()
+            stats = graph.stats()
+
+            self.call_from_thread(
+                self._chat,
+                f"[{CYAN} bold]  Knowledge Graph Stats[/]"
+            )
+            for key, val in stats.items():
+                self.call_from_thread(
+                    self._chat, f"    [{DIM_CYAN}]{key}:[/] {val}"
+                )
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  Graph error: {e}[/]")
+
+    @work(exclusive=False, thread=True)
+    def _run_export_worker(self, fmt: str) -> None:
+        """Export last scan data."""
+        try:
+            from .formats import export
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target_name = self.last_scan_data.get("target", "scan") if self.last_scan_data else "scan"
+            filename = f"reconpro_{target_name}_{timestamp}.{fmt}"
+
+            self.call_from_thread(
+                self._chat, f"[{DIM_CYAN}]  Exporting as {fmt}...[/]"
+            )
+
+            path = export(self.last_scan_data, filename, format=fmt)
+
+            self.call_from_thread(
+                self._chat, f"[{GREEN}]  ✓ Exported to: {path}[/]"
+            )
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  ✗ Export error: {e}[/]")
+
+    @work(exclusive=False, thread=True)
+    def _run_history_worker(self) -> None:
+        """Show scan history."""
+        try:
+            from .history import list_scans
+
+            scans = list_scans(limit=15)
+
+            if not scans:
+                self.call_from_thread(self._chat, f"[{DIM_CYAN}]  No scan history found.[/]")
+                return
+
+            self.call_from_thread(
+                self._chat, f"[{CYAN} bold]  Recent Scans ({len(scans)})[/]"
+            )
+
+            for s in scans:
+                target = s.get("target", "?")
+                score = s.get("total_score", "?")
+                grade = s.get("grade", "?")
+                n_findings = len(s.get("findings", []))
+                gc = GRADE_COLORS.get(grade, "#ccccdd")
+                saved = s.get("_saved_at", "?")[:19]
+                self.call_from_thread(
+                    self._chat,
+                    f"    [{gc}]{grade}[/] [{DIM_CYAN}]{score}[/] {n_findings}f  [cyan]{target}[/]  [dim]{saved}[/]"
+                )
+
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  History error: {e}[/]")
+
+    # ── Scan Data Processing ───────────────────────────────────────────────
+
+    def _on_scan_complete(
+        self,
+        data: Dict[str, Any],
+        modules: Optional[List[str]],
+        is_local: bool,
+    ) -> None:
+        """Process completed scan data on the main thread."""
+        self._process_scan_data(data, modules)
+
+        # Update score
+        new_score = data.get("total_score", 100)
+        new_grade = data.get("grade", "A+")
+        self.score = new_score
+        self.grade = new_grade
+        self.last_scan_data = data
+
+        # Summary in chat
+        n = len(data.get("findings", []))
+        sc = data.get("severity_counts", {})
+        mods_run = data.get("modules_run", [])
+        gc = GRADE_COLORS.get(new_grade, "#ccccdd")
+
+        self._chat(f"[{gc} bold]  ✓ Scan complete[/]")
+        self._chat(
+            f"    [{gc}]{new_grade}[/] [{DIM_CYAN}]{new_score}/100 | {n} findings[/]"
+        )
+        if sc.get("critical"):
+            self._chat(f"    [{RED}]{sc['critical']} critical[/] [{RED}]{sc.get('high', 0)} high[/] [{YELLOW}]{sc.get('medium', 0)} medium[/] [{GREEN}]{sc.get('low', 0)} low[/]")
+        self._chat(
+            f"    [{DIM_CYAN}]Modules: {', '.join(mods_run)}[/]"
+        )
+
+        # Set module statuses to done
+        for m in mods_run:
+            if m in self._module_cells:
+                mod_findings = sum(
+                    1 for f in data.get("findings", []) if f.get("module") == m
+                )
+                self._module_cells[m].set_status("done", mod_findings)
+
+    def _process_scan_data(
+        self,
+        data: Dict[str, Any],
+        modules_list: Optional[List[str]],
+    ) -> None:
+        """Add findings from scan data to the feed."""
+        findings = data.get("findings", [])
+        for f in findings:
+            self._add_finding_to_feed(f)
+
+        # Update score if not already set
+        new_score = data.get("total_score")
+        new_grade = data.get("grade")
+        if new_score is not None:
+            self.score = new_score
+        if new_grade is not None:
+            self.grade = new_grade
+        self.last_scan_data = data
+
+    def _add_finding_to_feed(self, finding: Dict[str, Any]) -> None:
+        """Add a single finding to the feed and update counters."""
+        self._findings_list.append(finding)
+        self._last_finding = finding
+        self.finding_count = len(self._findings_list)
+
+        sev = finding.get("severity", "info").lower()
+        sev_style = SEV_STYLES.get(sev, "white")
+        module = finding.get("module", "?").upper()
+        title = finding.get("title", "Unknown finding")
+        pts = finding.get("points_deducted", 0)
+
+        # Truncate long titles
+        if len(title) > 60:
+            title = title[:57] + "..."
+
+        idx = len(self._findings_list)
+        sev_tag = f"[{sev_style} bold]{sev.upper()[0:4]}[/]"
+        module_tag = f"[{CYAN}]{module}[/]"
+
+        self._feed(f"  [{DIM_CYAN}]{idx:>3}[/] {sev_tag} {module_tag}: {title} [{DIM_CYAN}](-{pts})[/]")
+
+        # Also show in chat if critical or high
+        if sev in ("critical", "high"):
+            self._chat(f"    {sev_tag} [{RED}]{title}[/] [{DIM_CYAN}](-{pts})[/]")
+            # Pulse the findings header for visual emphasis
+            self._pulse_findings_header()
+
+    # ── Finding Detail Modal & Pulse ──────────────────────────────────────
+
+    def on_click(self, event: Click) -> None:
+        """Open finding detail modal when findings feed is clicked."""
+        try:
+            if (
+                isinstance(event.widget, RichLog)
+                and event.widget.id == "findings-feed"
+                and self._last_finding
+            ):
+                self.push_screen(FindingDetailModal(self._last_finding))
+        except (NoMatches, Exception):
+            pass
+
+    def action_show_last_finding(self) -> None:
+        """Show detail modal for the last finding (bound to 'd' key)."""
+        if self._findings_list:
+            self.push_screen(FindingDetailModal(self._findings_list[-1]))
+        else:
+            self._chat(f"[{DIM_CYAN}]No findings to inspect. Run a scan first.[/]")
+
+    def _pulse_findings_header(self) -> None:
+        """Flash the findings header border red for critical/high findings."""
+        try:
+            header = self.query_one("#findings-header", Label)
+            header.update(f"[{RED} bold]► FINDINGS ⚠[/]")
+            self.set_timer(0.3, lambda: self._restore_findings_header())
+        except NoMatches:
+            pass
+
+    def _restore_findings_header(self) -> None:
+        """Restore findings header to normal state."""
+        try:
+            header = self.query_one("#findings-header", Label)
+            header.update(f"[{RED}]► FINDINGS[/]")
+        except NoMatches:
+            pass
 
 
-def run_nexus():
+# ════════════════════════════════════════════════════════════════════════════════
+# Public Entry Point
+# ════════════════════════════════════════════════════════════════════════════════
+
+
+def start_nexus() -> None:
+    """Launch the ReconPro NEXUS TUI."""
     app = NexusApp()
     app.run()
