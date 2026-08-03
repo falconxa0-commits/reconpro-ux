@@ -1,0 +1,854 @@
+    50→class UnifiedMemoryStore:
+    51→    """Single source of truth for all ReconPro memory.
+    52→
+    53→    Combines four sub-systems behind a thread-safe, unified API:
+    54→
+    55→    * **Knowledge Graph** — delegated to ``SecurityKnowledgeGraph``
+    56→    * **Finding Store** — per-target time-series on disk
+    57→    * **Agent Blackboard** — in-memory, session-only shared state
+    58→    * **Credential Vault** — obfuscated JSON on disk
+    59→    """
+    60→
+    61→    def __init__(self) -> None:
+    62→        self._lock = threading.RLock()
+    63→
+    64→        # ── a) Knowledge Graph ────────────────────────────────────────
+    65→        self._graph = KnowledgeGraph()
+    66→
+    67→        # ── b) Finding Store (in-memory index; flushed to disk) ───────
+    68→        self._findings: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    69→        self._findings_loaded: bool = False
+    70→
+    71→        # ── c) Agent Blackboard (session-only, in-memory) ─────────────
+    72→        self._blackboard: Dict[str, Dict[str, Any]] = {}
+    73→
+    74→        # ── d) Credential Vault ──────────────────────────────────────
+    75→        self._vault: List[Dict[str, str]] = []
+    76→        self._vault_loaded: bool = False
+    77→
+    78→    # ==================================================================
+    79→    #  a) Knowledge Graph sub-system  (~200 lines)
+    80→    # ==================================================================
+    81→
+    82→    def add_target(self, target: str, **attrs: Any) -> None:
+    83→        """Add or update a target node in the knowledge graph."""
+    84→        with self._lock:
+    85→            nid = self._graph._add_indexed_node("target", target, **attrs)
+    86→
+    87→    def add_vulnerability(
+    88→        self,
+    89→        name: str,
+    90→        target: str,
+    91→        severity: str = "info",
+    92→        **attrs: Any,
+    93→    ) -> None:
+    94→        """Add a vulnerability/finding node linked to *target*."""
+    95→        with self._lock:
+    96→            self._graph.add_finding({
+    97→                "title": name,
+    98→                "target": target,
+    99→                "severity": severity,
+   100→                **attrs,
+   101→            })
+   102→
+   103→    def add_asset(self, label: str, **attrs: Any) -> None:
+   104→        """Add an asset node."""
+   105→        with self._lock:
+   106→            self._graph._add_indexed_node("asset", label, **attrs)
+   107→
+   108→    def add_cve(
+   109→        self,
+   110→        cve_id: str,
+   111→        severity: str = "info",
+   112→        description: str = "",
+   113→        affected: str = "",
+   114→    ) -> None:
+   115→        """Add a CVE node (idempotent)."""
+   116→        with self._lock:
+   117→            self._graph.add_cve(cve_id, severity, description, affected)
+   118→
+   119→    def add_endpoint(
+   120→        self,
+   121→        path: str,
+   122→        target: str,
+   123→        method: str = "GET",
+   124→        **attrs: Any,
+   125→    ) -> None:
+   126→        """Add an endpoint node linked to *target*."""
+   127→        with self._lock:
+   128→            self._graph._add_indexed_node("target", target)
+   129→            ep_id = self._graph._add_indexed_node(
+   130→                "endpoint",
+   131→                f"{target}:{method}:{path}",
+   132→                path=path,
+   133→                method=method,
+   134→                **attrs,
+   135→            )
+   136→            target_id = self._graph._node_id("target", target)
+   137→            self._graph._add_indexed_edge(target_id, ep_id, "exposes")
+   138→
+   139→    def add_technology(self, name: str, **attrs: Any) -> None:
+   140→        """Add a technology node."""
+   141→        with self._lock:
+   142→            self._graph._add_indexed_node("technology", name, **attrs)
+   143→
+   144→    def add_relation(
+   145→        self,
+   146→        from_node: str,
+   147→        to_node: str,
+   148→        edge_type: str,
+   149→        **attrs: Any,
+   150→    ) -> None:
+   151→        """Add an edge between two existing or new nodes.
+   152→
+   153→        *from_node* / *to_node* may be full node ids (``type:label``) or
+   154→        plain labels.  If a plain label does not match any existing node
+   155→        it is created as a generic node.
+   156→        """
+   157→        with self._lock:
+   158→            # Try to resolve to existing nodes
+   159→            src = self._graph._resolve_node(from_node)
+   160→            if src is None:
+   161→                # Use as-is or create a generic node
+   162→                if ":" in from_node:
+   163→                    src = from_node
+   164→                else:
+   165→                    src = self._graph._add_indexed_node("asset", from_node)
+   166→
+   167→            dst = self._graph._resolve_node(to_node)
+   168→            if dst is None:
+   169→                if ":" in to_node:
+   170→                    dst = to_node
+   171→                else:
+   172→                    dst = self._graph._add_indexed_node("asset", to_node)
+   173→
+   174→            if edge_type not in EDGE_TYPES:
+   175→                edge_type = "links_to"
+   176→            self._graph._add_indexed_edge(src, dst, edge_type, **attrs)
+   177→
+   178→    def get_attack_surface(self, target: str) -> Dict[str, List[Dict[str, Any]]]:
+   179→        """Return endpoints, ports, vulnerabilities, and technologies for *target*."""
+   180→        with self._lock:
+   181→            return self._graph.get_attack_surface(target)
+   182→
+   183→    def get_blast_radius(self, node: str) -> List[Dict[str, Any]]:
+   184→        """BFS from *node* to find all connected vulnerabilities/CVEs."""
+   185→        with self._lock:
+   186→            return self._graph.get_blast_radius(node)
+   187→
+   188→    def find_chains(
+   189→        self, source: str, target: Optional[str] = None
+   190→    ) -> List[List[Dict[str, Any]]]:
+   191→        """Find attack chains originating from *source*.
+   192→
+   193→        If *target* is provided, only chains that reach *target* (or a
+   194→        node belonging to *target*) are returned.
+   195→        """
+   196→        with self._lock:
+   197→            all_chains = self._graph.find_chains(source)
+   198→            if target is None:
+   199→                return all_chains
+   200→            target_id = self._graph._resolve_node(target)
+   201→            if target_id is None:
+   202→                return all_chains
+   203→            filtered: List[List[Dict[str, Any]]] = []
+   204→            for chain in all_chains:
+   205→                if chain and chain[-1].get("node_id") == target_id:
+   206→                    filtered.append(chain)
+   207→                elif chain and target_id in [
+   208→                    step.get("node_id", "") for step in chain
+   209→                ]:
+   210→                    filtered.append(chain)
+   211→            return filtered
+   212→
+   213→    def shortest_path(
+   214→        self, source: str, target: str
+   215→    ) -> Optional[List[Dict[str, Any]]]:
+   216→        """BFS shortest path between *source* and *target* nodes.
+   217→
+   218→        Returns a list of node-data dicts, or ``None`` if no path exists.
+   219→        """
+   220→        with self._lock:
+   221→            src_id = self._graph._resolve_node(source)
+   222→            tgt_id = self._graph._resolve_node(target)
+   223→            if src_id is None or tgt_id is None:
+   224→                return None
+   225→            if src_id == tgt_id:
+   226→                if src_id in (self._graph._g.nodes() if hasattr(self._graph._g, 'has_node') else []):
+   227→                    return []
+   228→                return None
+   229→
+   230→            # BFS
+   231→            from collections import deque
+   232→            visited: Set[str] = set()
+   233→            parent: Dict[str, Optional[str]] = {}
+   234→            queue: deque = deque()
+   235→            queue.append(src_id)
+   236→            visited.add(src_id)
+   237→            parent[src_id] = None
+   238→            found = False
+   239→            while queue and not found:
+   240→                current = queue.popleft()
+   241→                for neighbour in self._graph._g.successors(current):
+   242→                    if neighbour not in visited:
+   243→                        visited.add(neighbour)
+   244→                        parent[neighbour] = current
+   245→                        if neighbour == tgt_id:
+   246→                            found = True
+   247→                            break
+   248→                        queue.append(neighbour)
+   249→
+   250→            if not found:
+   251→                return None
+   252→
+   253→            # Reconstruct path
+   254→            path_ids: List[str] = []
+   255→            cur: Optional[str] = tgt_id
+   256→            while cur is not None:
+   257→                path_ids.append(cur)
+   258→                cur = parent.get(cur)
+   259→            path_ids.reverse()
+   260→
+   261→            result: List[Dict[str, Any]] = []
+   262→            for nid in path_ids:
+   263→                try:
+   264→                    data = dict(self._graph._g.nodes[nid])
+   265→                except Exception:
+   266→                    data = self._graph._g.get_node_data(nid)
+   267→                result.append(data)
+   268→
+   269→            return result
+   270→
+   271→    def graph_stats(self) -> Dict[str, Any]:
+   272→        """Return summary statistics for the knowledge graph."""
+   273→        with self._lock:
+   274→            return self._graph.stats()
+   275→
+   276→    # Pass-through access to the underlying graph for advanced usage
+   277→    @property
+   278→    def graph(self) -> KnowledgeGraph:
+   279→        """Direct access to the wrapped ``SecurityKnowledgeGraph`` instance."""
+   280→        return self._graph
+   281→
+   282→    # ==================================================================
+   283→    #  b) FindingStore sub-system  (~150 lines)
+   284→    # ==================================================================
+   285→
+   286→    @staticmethod
+   287→    def _target_hash(target: str) -> str:
+   288→        """Deterministic hash for a target string (used as filename)."""
+   289→        return hashlib.sha256(target.encode("utf-8")).hexdigest()[:16]
+   290→
+   291→    def _ensure_findings_loaded(self) -> None:
+   292→        """Lazily load all findings from disk on first access."""
+   293→        if self._findings_loaded:
+   294→            return
+   295→        with self._lock:
+   296→            if self._findings_loaded:
+   297→                return
+   298→            self._findings_loaded = True
+   299→            if not FINDINGS_DIR.is_dir():
+   300→                return
+   301→            for fname in FINDINGS_DIR.glob("findings_*.json"):
+   302→                try:
+   303→                    data = json.loads(fname.read_text("utf-8"))
+   304→                    target_key = data.get("_target", "")
+   305→                    if target_key:
+   306→                        entries = data.get("entries", [])
+   307→                        self._findings[target_key] = entries
+   308→                except Exception:
+   309→                    continue
+   310→
+   311→    def _findings_path(self, target: str) -> Path:
+   312→        """Return the JSON file path for *target*'s findings."""
+   313→        h = self._target_hash(target)
+   314→        return FINDINGS_DIR / f"findings_{h}.json"
+   315→
+   316→    def save_finding(self, target: str, finding_dict: Dict[str, Any]) -> None:
+   317→        """Append a finding to *target*'s time-series and persist."""
+   318→        with self._lock:
+   319→            self._ensure_findings_loaded()
+   320→            entry = dict(finding_dict)
+   321→            entry.setdefault("_ts", datetime.now(timezone.utc).isoformat())
+   322→            entry["_target"] = target
+   323→            self._findings[target].append(entry)
+   324→            # Flush this target's file
+   325→            self._flush_findings_target(target)
+   326→
+   327→    def _flush_findings_target(self, target: str) -> None:
+   328→        """Write one target's findings to its JSON file."""
+   329→        path = self._findings_path(target)
+   330→        FINDINGS_DIR.mkdir(parents=True, exist_ok=True)
+   331→        payload = {
+   332→            "_target": target,
+   333→            "entries": self._findings[target],
+   334→        }
+   335→        path.write_text(json.dumps(payload, indent=2, default=str), "utf-8")
+   336→
+   337→    def _flush_all_findings(self) -> None:
+   338→        """Write every target's findings to disk."""
+   339→        FINDINGS_DIR.mkdir(parents=True, exist_ok=True)
+   340→        for target, entries in self._findings.items():
+   341→            path = self._findings_path(target)
+   342→            payload = {
+   343→                "_target": target,
+   344→                "entries": entries,
+   345→            }
+   346→            path.write_text(json.dumps(payload, indent=2, default=str), "utf-8")
+   347→
+   348→    def get_findings(
+   349→        self,
+   350→        target: str,
+   351→        since: Optional[str] = None,
+   352→        severity: Optional[str] = None,
+   353→        module: Optional[str] = None,
+   354→    ) -> List[Dict[str, Any]]:
+   355→        """Retrieve findings for *target* with optional filters.
+   356→
+   357→        Parameters
+   358→        ----------
+   359→        target:
+   360→            The target hostname / IP to query.
+   361→        since:
+   362→            ISO-8601 timestamp; only findings after this time are returned.
+   363→        severity:
+   364→            If set, only findings matching this severity (case-insensitive).
+   365→        module:
+   366→            If set, only findings whose ``module`` field matches.
+   367→        """
+   368→        with self._lock:
+   369→            self._ensure_findings_loaded()
+   370→            entries = list(self._findings.get(target, []))
+   371→
+   372→            if since is not None:
+   373→                try:
+   374→                    since_dt = datetime.fromisoformat(since)
+   375→                except (ValueError, TypeError):
+   376→                    since_dt = None
+   377→                if since_dt is not None:
+   378→                    entries = [
+   379→                        e for e in entries
+   380→                        if "_ts" in e
+   381→                        and datetime.fromisoformat(e["_ts"]) >= since_dt
+   382→                    ]
+   383→
+   384→            if severity is not None:
+   385→                sev_lower = severity.strip().lower()
+   386→                entries = [
+   387→                    e for e in entries
+   388→                    if str(e.get("severity", "")).strip().lower() == sev_lower
+   389→                ]
+   390→
+   391→            if module is not None:
+   392→                mod_lower = module.strip().lower()
+   393→                entries = [
+   394→                    e for e in entries
+   395→                    if str(e.get("module", "")).strip().lower() == mod_lower
+   396→                ]
+   397→
+   398→            return entries
+   399→
+   400→    def get_latest_findings(
+   401→        self, target: str, limit: int = 50
+   402→    ) -> List[Dict[str, Any]]:
+   403→        """Return the most recent *limit* findings for *target*."""
+   404→        with self._lock:
+   405→            self._ensure_findings_loaded()
+   406→            entries = list(self._findings.get(target, []))
+   407→            entries.sort(key=lambda e: e.get("_ts", ""), reverse=True)
+   408→            return entries[:limit]
+   409→
+   410→    def finding_count(self, target: str, severity: Optional[str] = None) -> int:
+   411→        """Count findings for *target*, optionally filtered by *severity*."""
+   412→        with self._lock:
+   413→            self._ensure_findings_loaded()
+   414→            entries = self._findings.get(target, [])
+   415→            if severity is None:
+   416→                return len(entries)
+   417→            sev_lower = severity.strip().lower()
+   418→            return sum(
+   419→                1 for e in entries
+   420→                if str(e.get("severity", "")).strip().lower() == sev_lower
+   421→            )
+   422→
+   423→    def trend(self, target: str, days: int = 30) -> List[Dict[str, Any]]:
+   424→        """Daily severity breakdown for *target* over the last *days* days.
+   425→
+   426→        Returns a list of dicts, one per day that has findings::
+   427→
+   428→            [{"date": "2025-01-15", "critical": 0, "high": 1, "medium": 3, "low": 0, "score": 7.0}, ...]
+   429→        """
+   430→        with self._lock:
+   431→            self._ensure_findings_loaded()
+   432→            entries = self._findings.get(target, [])
+   433→
+   434→            now = datetime.now(timezone.utc)
+   435→            cutoff = now - timedelta(days=days)
+   436→
+   437→            daily: Dict[str, Dict[str, int]] = defaultdict(
+   438→                lambda: {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+   439→            )
+   440→
+   441→            for entry in entries:
+   442→                ts = entry.get("_ts", "")
+   443→                if not ts:
+   444→                    continue
+   445→                try:
+   446→                    dt = datetime.fromisoformat(ts)
+   447→                except (ValueError, TypeError):
+   448→                    continue
+   449→                if dt < cutoff:
+   450→                    continue
+   451→                day_str = dt.strftime("%Y-%m-%d")
+   452→                sev = str(entry.get("severity", "info")).strip().lower()
+   453→                if sev in daily[day_str]:
+   454→                    daily[day_str][sev] += 1
+   455→                else:
+   456→                    daily[day_str]["info"] += 1
+   457→
+   458→            # Build result sorted by date
+   459→            result: List[Dict[str, Any]] = []
+   460→            for day in sorted(daily.keys()):
+   461→                counts = daily[day]
+   462→                score = (
+   463→                    counts.get("critical", 0) * 10.0
+   464→                    + counts.get("high", 0) * 5.0
+   465→                    + counts.get("medium", 0) * 2.0
+   466→                    + counts.get("low", 0) * 0.5
+   467→                )
+   468→                result.append({
+   469→                    "date": day,
+   470→                    "critical": counts.get("critical", 0),
+   471→                    "high": counts.get("high", 0),
+   472→                    "medium": counts.get("medium", 0),
+   473→                    "low": counts.get("low", 0),
+   474→                    "score": round(score, 1),
+   475→                })
+   476→
+   477→            # Fill in missing days
+   478→            if result:
+   479→                start_date = datetime.strptime(result[0]["date"], "%Y-%m-%d").date()
+   480→                end_date = now.date()
+   481→                filled: List[Dict[str, Any]] = []
+   482→                idx = 0
+   483→                current = start_date
+   484→                while current <= end_date:
+   485→                    day_str = current.isoformat()
+   486→                    if idx < len(result) and result[idx]["date"] == day_str:
+   487→                        filled.append(result[idx])
+   488→                        idx += 1
+   489→                    else:
+   490→                        filled.append({
+   491→                            "date": day_str,
+   492→                            "critical": 0,
+   493→                            "high": 0,
+   494→                            "medium": 0,
+   495→                            "low": 0,
+   496→                            "score": 0.0,
+   497→                        })
+   498→                    current += timedelta(days=1)
+   499→                return filled
+   500→
+   501→            return result
+   502→
+   503→    # ==================================================================
+   504→    #  c) AgentBlackboard sub-system  (~100 lines)
+   505→    # ==================================================================
+   506→
+   507→    def bb_set(
+   508→        self,
+   509→        key: str,
+   510→        value: Any,
+   511→        agent_id: str,
+   512→        ttl: int = 3600,
+   513→    ) -> None:
+   514→        """Store *value* on the blackboard with *agent_id* attribution and *ttl*.
+   515→
+   516→        The entry is automatically expired after *ttl* seconds (default 1 hour).
+   517→        """
+   518→        with self._lock:
+   519→            self._blackboard[key] = {
+   520→                "value": value,
+   521→                "agent_id": agent_id,
+   522→                "set_at": time.time(),
+   523→                "expires_at": time.time() + ttl,
+   524→            }
+   525→
+   526→    def bb_get(self, key: str) -> Optional[Any]:
+   527→        """Retrieve a value from the blackboard.
+   528→
+   529→        Returns ``None`` if the key does not exist or has expired.
+   530→        """
+   531→        with self._lock:
+   532→            entry = self._blackboard.get(key)
+   533→            if entry is None:
+   534→                return None
+   535→            if time.time() > entry.get("expires_at", 0):
+   536→                del self._blackboard[key]
+   537→                return None
+   538→            return entry["value"]
+   539→
+   540→    def bb_get_all(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
+   541→        """Return all active (non-expired) blackboard entries.
+   542→
+   543→        If *agent_id* is given, only entries from that agent are returned.
+   544→
+   545→        Returns a dict of ``{key: value}``.
+   546→        """
+   547→        with self._lock:
+   548→            now = time.time()
+   549→            # Prune expired entries first
+   550→            expired_keys = [
+   551→                k for k, v in self._blackboard.items()
+   552→                if now > v.get("expires_at", 0)
+   553→            ]
+   554→            for k in expired_keys:
+   555→                del self._blackboard[k]
+   556→
+   557→            result: Dict[str, Any] = {}
+   558→            for key, entry in self._blackboard.items():
+   559→                if agent_id is not None and entry.get("agent_id") != agent_id:
+   560→                    continue
+   561→                result[key] = entry["value"]
+   562→            return result
+   563→
+   564→    def bb_clear(self) -> None:
+   565→        """Wipe all blackboard entries."""
+   566→        with self._lock:
+   567→            self._blackboard.clear()
+   568→
+   569→    # ==================================================================
+   570→    #  d) CredentialVault sub-system  (~100 lines)
+   571→    # ==================================================================
+   572→
+   573→    @staticmethod
+   574→    def _machine_key() -> bytes:
+   575→        """Derive a deterministic obfuscation key from machine identity."""
+   576→        raw = f"reconpro-vault:{platform.node()}:{platform.system()}"
+   577→        return hashlib.sha256(raw.encode("utf-8")).digest()
+   578→
+   579→    @staticmethod
+   580→    def _obfuscate(plaintext: str, key: bytes) -> str:
+   581→        """XOR + base64 obfuscation (NOT cryptographic encryption)."""
+   582→        data = plaintext.encode("utf-8")
+   583→        xored = bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+   584→        return base64.b64encode(xored).decode("ascii")
+   585→
+   586→    @staticmethod
+   587→    def _deobfuscate(ciphertext: str, key: bytes) -> str:
+   588→        """Reverse the XOR + base64 obfuscation."""
+   589→        try:
+   590→            xored = base64.b64decode(ciphertext.encode("ascii"))
+   591→            key_bytes = key
+   592→            data = bytes(b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(xored))
+   593→            return data.decode("utf-8")
+   594→        except Exception:
+   595→            return ""
+   596→
+   597→    def _ensure_vault_loaded(self) -> None:
+   598→        """Lazily load vault from disk on first access."""
+   599→        if self._vault_loaded:
+   600→            return
+   601→        with self._lock:
+   602→            if self._vault_loaded:
+   603→                return
+   604→            self._vault_loaded = True
+   605→            if not VAULT_PATH.is_file():
+   606→                return
+   607→            try:
+   608→                raw = json.loads(VAULT_PATH.read_text("utf-8"))
+   609→                self._vault = raw if isinstance(raw, list) else []
+   610→            except Exception:
+   611→                self._vault = []
+   612→
+   613→    def _flush_vault(self) -> None:
+   614→        """Persist vault to disk."""
+   615→        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+   616→        VAULT_PATH.write_text(
+   617→            json.dumps(self._vault, indent=2, default=str), "utf-8"
+   618→        )
+   619→
+   620→    def vault_store(
+   621→        self,
+   622→        source: str,
+   623→        username: str,
+   624→        password: str,
+   625→        url: Optional[str] = None,
+   626→        notes: str = "",
+   627→    ) -> None:
+   628→        """Store a credential in the vault.
+   629→
+   630→        Passwords are obfuscated with a machine-specific key before storage.
+   631→        """
+   632→        with self._lock:
+   633→            self._ensure_vault_loaded()
+   634→            key = self._machine_key()
+   635→            entry: Dict[str, str] = {
+   636→                "source": source,
+   637→                "username": username,
+   638→                "password": self._obfuscate(password, key),
+   639→                "_ts": datetime.now(timezone.utc).isoformat(),
+   640→            }
+   641→            if url is not None:
+   642→                entry["url"] = url
+   643→            if notes:
+   644→                entry["notes"] = notes
+   645→            self._vault.append(entry)
+   646→            self._flush_vault()
+   647→
+   648→    def vault_get_all(self, source: Optional[str] = None) -> List[Dict[str, str]]:
+   649→        """Retrieve all credentials, optionally filtered by *source*.
+   650→
+   651→        Passwords are deobfuscated before returning.
+   652→        """
+   653→        with self._lock:
+   654→            self._ensure_vault_loaded()
+   655→            key = self._machine_key()
+   656→            results: List[Dict[str, str]] = []
+   657→            for entry in self._vault:
+   658→                if source is not None and entry.get("source") != source:
+   659→                    continue
+   660→                decrypted = dict(entry)
+   661→                decrypted["password"] = self._deobfuscate(
+   662→                    entry.get("password", ""), key
+   663→                )
+   664→                decrypted.pop("_ts", None)
+   665→                results.append(decrypted)
+   666→            return results
+   667→
+   668→    def vault_search(self, query: str) -> List[Dict[str, str]]:
+   669→        """Search credentials by *query* (matches username, url, notes, source).
+   670→
+   671→        Case-insensitive substring match.
+   672→        """
+   673→        with self._lock:
+   674→            self._ensure_vault_loaded()
+   675→            key = self._machine_key()
+   676→            q_lower = query.lower()
+   677→            results: List[Dict[str, str]] = []
+   678→            for entry in self._vault:
+   679→                searchable = " ".join([
+   680→                    entry.get("source", ""),
+   681→                    entry.get("username", ""),
+   682→                    entry.get("url", ""),
+   683→                    entry.get("notes", ""),
+   684→                ]).lower()
+   685→                if q_lower in searchable:
+   686→                    decrypted = dict(entry)
+   687→                    decrypted["password"] = self._deobfuscate(
+   688→                        entry.get("password", ""), key
+   689→                    )
+   690→                    decrypted.pop("_ts", None)
+   691→                    results.append(decrypted)
+   692→            return results
+   693→
+   694→    def vault_purge(self) -> None:
+   695→        """Securely clear all credentials from memory and disk."""
+   696→        with self._lock:
+   697→            # Overwrite in-memory data
+   698→            for entry in self._vault:
+   699→                for k in list(entry.keys()):
+   700→                    entry[k] = "\x00" * len(str(entry[k]))
+   701→            self._vault.clear()
+   702→            self._vault_loaded = True
+   703→
+   704→            # Remove or overwrite file
+   705→            if VAULT_PATH.is_file():
+   706→                try:
+   707→                    size = VAULT_PATH.stat().st_size
+   708→                    VAULT_PATH.write_bytes(b"\x00" * size)
+   709→                    VAULT_PATH.unlink()
+   710→                except Exception:
+   711→                    pass
+   712→
+   713→    # ==================================================================
+   714→    #  e) Integration methods  (~50 lines)
+   715→    # ==================================================================
+   716→
+   717→    def add_scan_result(self, scan_dict: Dict[str, Any]) -> None:
+   718→        """Ingest a full scan result dict.
+   719→
+   720→        Populates both the knowledge graph and the finding store.
+   721→
+   722→        Expected keys (all optional)::
+   723→            target, host, subdomains, ports, technologies,
+   724→            findings, certificates, endpoints, module, scan_time
+   725→        """
+   726→        with self._lock:
+   727→            # ── Feed the knowledge graph ──
+   728→            self._graph.add_scan_result(scan_dict)
+   729→
+   730→            # ── Feed the finding store ──
+   731→            target = scan_dict.get("target") or scan_dict.get("host", "unknown")
+   732→            module = scan_dict.get("module", "")
+   733→            scan_time = scan_dict.get("scan_time", "")
+   734→
+   735→            for finding in scan_dict.get("findings", []):
+   736→                entry = dict(finding)
+   737→                entry["_target"] = target
+   738→                if module:
+   739→                    entry["module"] = module
+   740→                if scan_time and "_ts" not in entry:
+   741→                    entry["_ts"] = scan_time
+   742→                self._findings[target].append(entry)
+   743→
+   744→            # Also record a summary entry for the scan itself
+   745→            summary: Dict[str, Any] = {
+   746→                "_target": target,
+   747→                "title": f"Scan completed: {module or 'general'}",
+   748→                "severity": "info",
+   749→                "module": module,
+   750→                "finding_count": len(scan_dict.get("findings", [])),
+   751→                "port_count": len(scan_dict.get("ports", [])),
+   752→                "tech_count": len(scan_dict.get("technologies", [])),
+   753→            }
+   754→            if scan_time:
+   755→                summary["_ts"] = scan_time
+   756→            self._findings[target].append(summary)
+   757→
+   758→            # Flush findings for this target
+   759→            self._flush_findings_target(target)
+   760→
+   761→    def export_all(self) -> Dict[str, Any]:
+   762→        """Export everything for backup.
+   763→
+   764→        Returns a dict with keys ``graph``, ``findings``, ``vault``.
+   765→        """
+   766→        with self._lock:
+   767→            # Graph
+   768→            try:
+   769→                graph_data = self._graph.save()
+   770→                with open(graph_data, "r") as fh:
+   771→                    graph_json = json.load(fh)
+   772→            except Exception:
+   773→                graph_json = {}
+   774→
+   775→            # Findings
+   776→            self._ensure_findings_loaded()
+   777→            findings_data = {
+   778→                target: list(entries)
+   779→                for target, entries in self._findings.items()
+   780→            }
+   781→
+   782→            # Vault (export obfuscated — caller can deobfuscate if needed)
+   783→            self._ensure_vault_loaded()
+   784→            vault_data = list(self._vault)
+   785→
+   786→            return {
+   787→                "graph": graph_json,
+   788→                "findings": findings_data,
+   789→                "vault": vault_data,
+   790→                "exported_at": datetime.now(timezone.utc).isoformat(),
+   791→            }
+   792→
+   793→    def clear_all(self) -> None:
+   794→        """Wipe all memory: graph, findings, blackboard, and vault."""
+   795→        with self._lock:
+   796→            # Graph
+   797→            self._graph = KnowledgeGraph()
+   798→
+   799→            # Findings
+   800→            self._findings.clear()
+   801→            self._findings_loaded = True
+   802→            if FINDINGS_DIR.is_dir():
+   803→                for f in FINDINGS_DIR.glob("findings_*.json"):
+   804→                    try:
+   805→                        f.unlink()
+   806→                    except Exception:
+   807→                        pass
+   808→
+   809→            # Blackboard
+   810→            self._blackboard.clear()
+   811→
+   812→            # Vault
+   813→            self.vault_purge()
+   814→
+   815→    def save(self) -> None:
+   816→        """Persist graph + findings + vault to disk."""
+   817→        with self._lock:
+   818→            # Graph
+   819→            try:
+   820→                self._graph.save()
+   821→            except Exception:
+   822→                pass
+   823→
+   824→            # Findings
+   825→            self._flush_all_findings()
+   826→
+   827→            # Vault
+   828→            if self._vault:
+   829→                self._flush_vault()
+   830→
+   831→    def load(self) -> None:
+   832→        """Restore graph + findings + vault from disk."""
+   833→        with self._lock:
+   834→            # Graph
+   835→            try:
+   836→                self._graph.load()
+   837→            except Exception:
+   838→                pass
+   839→
+   840→            # Findings
+   841→            self._findings_loaded = False
+   842→            self._ensure_findings_loaded()
+   843→
+   844→            # Vault
+   845→            self._vault_loaded = False
+   846→            self._ensure_vault_loaded()
+   847→
+   848→    # ==================================================================
+   849→    #  Convenience / stats
+   850→    # ==================================================================
+   851→
+   852→    def stats(self) -> Dict[str, Any]:
+   853→        """Return a unified stats dict across all sub-systems."""
+   854→        with self._lock:
+   855→            self._ensure_findings_loaded()
+   856→            self._ensure_vault_loaded()
+   857→
+   858→            total_findings = sum(len(v) for v in self._findings.values())
+   859→            target_count = len(self._findings)
+   860→
+   861→            # Severity breakdown from findings
+   862→            sev_counts: Dict[str, int] = defaultdict(int)
+   863→            for entries in self._findings.values():
+   864→                for e in entries:
+   865→                    s = str(e.get("severity", "info")).strip().lower()
+   866→                    sev_counts[s] += 1
+   867→
+   868→            return {
+   869→                "graph": self._graph.stats(),
+   870→                "findings": {
+   871→                    "total_findings": total_findings,
+   872→                    "targets_tracked": target_count,
+   873→                    "severity_distribution": dict(sev_counts),
+   874→                },
+   875→                "blackboard": {
+   876→                    "active_entries": len(self._blackboard),
+   877→                },
+   878→                "vault": {
+   879→                    "total_credentials": len(self._vault),
+   880→                },
+   881→            }
+   882→
+   883→
+   884→# ======================================================================
+   885→#  Module-level singleton
+   886→# ======================================================================
+   887→
+   888→_MEMORY_INSTANCE: Optional[UnifiedMemoryStore] = None
+   889→_MEMORY_LOCK = threading.Lock()
+   890→
+   891→
+   892→def get_memory() -> UnifiedMemoryStore:
+   893→    """Return the module-level ``UnifiedMemoryStore`` singleton.
+   894→
+   895→    Thread-safe: only one instance is ever created per process.
+   896→    """
+   897→    global _MEMORY_INSTANCE
+   898→    if _MEMORY_INSTANCE is None:
+   899→        with _MEMORY_LOCK:
+   900→            if _MEMORY_INSTANCE is None:
+   901→                _MEMORY_INSTANCE = UnifiedMemoryStore()
+   902→    return _MEMORY_INSTANCE
+   903→

@@ -198,14 +198,16 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="reconpro",
         description=(
-            "ReconPro Nexus v6 — Eleven Blades. Swarm Intelligence. Agentic AI.\n"
-            "The full-spectrum security platform with AI agent, swarm, and knowledge graph.\n\n"
+            "ReconPro Nexus v7 — Async Engine. Evasion. Swarm. Knowledge Graph. 40+ Subcommands.\n"
+            "The next-gen security platform with AI agent, swarm, and attack-path chaining.\n\n"
             "Quick Start:  reconpro nexus           (mind-blowing agent TUI)\n"
             "AI Agent:     reconpro agent <goal>   (LLM-powered, 18 tools)\n"
             "Swarm:        reconpro swarm <target>  (SCOUT→HACKER→CODER→GUARDIAN)\n"
             "Adversarial:  reconpro adversarial <target>  (hacker vs coder self-play)\n"
-            "Intel:        cve, graph (threat intel + knowledge graph)\n"
-            "Export:       export (SARIF/MD/JSON/HTML)"
+            "Intel:        cve, graph, compliance, passive (threat intel + knowledge graph)\n"
+            "Export:       export (SARIF/MD/JSON/HTML)\n"
+            "Cloud:        iac, container, cloud-recon, delta (infra security)\n"
+            "Defense:      defense, fuzzer, profile, benchmark (auto-fix + scoring)"
         ),
         epilog="""Examples:
   # NEXUS (recommended)
@@ -393,7 +395,65 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--action", "-a", type=str, default="stats",
                      choices=["stats", "chains", "surface", "blast", "export"])
 
-    # ── export ──────────────────────────────────────────────────────
+    # ── iac ──────────────────────────────────────────────────────────
+    p = sub.add_parser("iac", help="Infrastructure-as-Code audit (Terraform/CF/Docker/K8s)")
+    p.add_argument("path", nargs="?", default=".", help="Directory to scan")
+    p.add_argument("--json", dest="json_output", action="store_true")
+
+    # ── container ──────────────────────────────────────────────────────
+    p = sub.add_parser("container", help="Container escape analysis (Dockerfile + K8s)")
+    p.add_argument("path", nargs="?", default=".", help="Directory to scan")
+    p.add_argument("--json", dest="json_output", action="store_true")
+
+    # ── cloud-recon ─────────────────────────────────────────────────────
+    p = sub.add_parser("cloud-recon", help="Cloud infrastructure recon (AWS/Azure/GCP metadata + assets)")
+    p.add_argument("target", help="Target domain or 'local' for metadata probe")
+    p.add_argument("--json", dest="json_output", action="store_true")
+
+    # ── defense ────────────────────────────────────────────────────────
+    p = sub.add_parser("defense", help="Generate deployable fixes (WAF rules, patches, IaC fixes)")
+    p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+
+    # ── fuzzer ──────────────────────────────────────────────────────────
+    p = sub.add_parser("fuzzer", help="Context-aware payload fuzzing")
+    p.add_argument("url", help="Target URL to fuzz")
+    p.add_argument("--param", "-p", type=str, help="Specific parameter to fuzz")
+    p.add_argument("--category", "-c", type=str, help="Payload category (sqli, xss, ssti, ...)")
+
+    # ── profile ─────────────────────────────────────────────────────────
+    p = sub.add_parser("profile", help="Target fingerprinting + auto scan plan")
+    p.add_argument("target", help="Target domain or URL")
+
+    # ── compliance ───────────────────────────────────────────────────────
+    p = sub.add_parser("compliance", help="Compliance mapping (SOC2/ISO/PCI/HIPAA/GDPR/CIS)")
+    p.add_argument("--frameworks", "-f", type=str, default="soc2,pci-dss",
+                     help="Comma-separated frameworks")
+    p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+
+    # ── delta ───────────────────────────────────────────────────────────
+    p = sub.add_parser("delta", help="Dynamic delta report (compare scans with git blame)")
+    p.add_argument("target", nargs="?", default=None, help="Target (default: use last scan)")
+    p.add_argument("--format", "-f", type=str, default="markdown", choices=["markdown", "sarif"])
+
+    # ── benchmark ───────────────────────────────────────────────────────
+    p = sub.add_parser("benchmark", help="Score tracking + competitive leaderboard")
+    p.add_argument("targets", nargs="*", help="Targets to benchmark")
+    p.add_argument("--days", "-d", type=int, default=30)
+    p.add_argument("--leaderboard", action="store_true", help="Show leaderboard")
+
+    # ── graph-visual ────────────────────────────────────────────────────
+    p = sub.add_parser("graph-visual", help="Interactive D3.js knowledge graph visualization")
+    p.add_argument("-o", "--output", type=str, default="reconpro_graph.html", help="Output HTML file")
+
+    # ── netmap ──────────────────────────────────────────────────────────
+    p = sub.add_parser("netmap", help="Network topology + trust mapping + lateral paths")
+    p.add_argument("--subnet", "-s", type=str, help="Subnet to scan (e.g. 192.168.1.0/24)")
+
+    # ── passive ─────────────────────────────────────────────────────────
+    p = sub.add_parser("passive", help="Passive DNS + historical intel (VirusTotal, Wayback)")
+    p.add_argument("domain", help="Domain to query")
+
+    # ── export ──────────────────────────────────────────────────────────
     p = sub.add_parser("export", help="Export last scan to SARIF/MD/JSON/HTML")
     p.add_argument("output", nargs="?", default="reconpro_report.sarif",
                      help="Output path (format auto-detected from extension)")
@@ -417,6 +477,179 @@ def main(argv: list[str] | None = None) -> None:
                 d = " (default)" if mid in DEFAULT_MODULES else ""
                 console.print(f"  [cyan]{mid:12}[/] {e['name']:18}{d}")
         console.print(f"\n  [dim]Total: {len(ALL_MODULES)} modules[/]\n")
+        return
+
+    # ── IAC ─────────────────────────────────────────────────────────
+    if cmd == "iac":
+        console.print(BANNER)
+        result = _spinner_wrap(f"Auditing IaC at {args.path}...", audit_scan, target=args.path, modules=["iac_audit"])
+        _output_result(result, args, title="IAC AUDIT", show_remediation=True)
+        return
+
+    # ── CONTAINER ─────────────────────────────────────────────────
+    if cmd == "container":
+        console.print(BANNER)
+        result = _spinner_wrap(f"Analyzing containers at {args.path}...", audit_scan, target=args.path, modules=["container_sec"])
+        _output_result(result, args, title="CONTAINER SECURITY", show_remediation=True)
+        return
+
+    # ── CLOUD-RECON ──────────────────────────────────────────────────
+    if cmd == "cloud-recon":
+        console.print(BANNER)
+        target = args.target
+        from .modules.cloud_recon import run_cloud_recon
+        findings = _spinner_wrap(f"Cloud recon on {target}...", run_cloud_recon, target, target if target.startswith("http") else f"https://{target}")
+        if findings:
+            for f in findings:
+                c = SEV_COLORS.get(f.severity, "white")
+                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+            console.print(f"  [bold]{len(findings)} cloud finding(s).[/]")
+        else:
+            console.print("  [dim]No cloud findings.[/]")
+        console.print()
+        return
+
+    # ── DEFENSE ────────────────────────────────────────────────────
+    if cmd == "defense":
+        data = None
+        if getattr(args, "input", None):
+            with open(args.input) as f:
+                data = json.load(f)
+        if not data:
+            data = get_latest()
+        if not data:
+            console.print("  [yellow]No scan data. Run a scan first.[/]")
+            sys.exit(1)
+        from .defense import generate_defense_bundle
+        bundle = _spinner_wrap("Generating defenses...", generate_defense_bundle, data.get("target", "unknown"), data.get("findings", []))
+        console.print(Panel(bundle.to_report(), border_style="green", title="[bold]DEFENSE BUNDLE[/bold]", padding=(1, 2)))
+        console.print()
+        return
+
+    # ── FUZZER ────────────────────────────────────────────────────
+    if cmd == "fuzzer":
+        console.print(BANNER)
+        from .fuzzer import FuzzSession, TechDetector
+        url = args.url
+        base = url if url.startswith("http") else f"https://{url}"
+        profile = _spinner_wrap(f"Detecting tech on {base}...", TechDetector().analyze, base)
+        console.print(f"  [cyan]Detected:[/] {', '.join(profile.frameworks) or 'unknown'}")
+        console.print(f"  [cyan]Language:[/] {profile.language or 'unknown'}")
+        console.print(f"  [cyan]WAF:[/] {profile.waf or 'none'}")
+        category = getattr(args, "category", None) or "sqli"
+        session = FuzzSession(base, profile)
+        payloads = session.select_payloads(category)
+        console.print(f"  [yellow]{len(payloads)} {category} payloads loaded (tech-aware selection)[/]")
+        console.print()
+        return
+
+    # ── PROFILE ────────────────────────────────────────────────────
+    if cmd == "profile":
+        console.print(BANNER)
+        from .profiler import profile_target, get_scan_plan
+        target = args.target
+        profile = _spinner_wrap(f"Profiling {target}...", profile_target, target)
+        plan = get_scan_plan(target)
+        console.print(f"  [cyan]Frameworks:[/] {', '.join(profile.frameworks) or 'none'}")
+        console.print(f"  [cyan]Language:[/] {profile.language or 'unknown'}")
+        console.print(f"  [cyan]Server:[/] {profile.server or 'unknown'}")
+        console.print(f"  [cyan]WAF:[/] {profile.waf or 'none'}")
+        console.print(f"  [cyan]App Type:[/] {profile.app_type}")
+        console.print(f"  [bold]Recommended:[/] {', '.join(plan.get('recommended_modules', []))}")
+        console.print(f"  [dim]{plan.get('reasoning', '')}[/]")
+        console.print()
+        return
+
+    # ── COMPLIANCE ───────────────────────────────────────────────────
+    if cmd == "compliance":
+        console.print(BANNER)
+        data = None
+        if getattr(args, "input", None):
+            with open(args.input) as f:
+                data = json.load(f)
+        if not data:
+            data = get_latest()
+        if not data:
+            console.print("  [yellow]No scan data. Run a scan first.[/]")
+            sys.exit(1)
+        frameworks = [f.strip() for f in args.frameworks.split(",")]
+        from .compliance import ComplianceMapper
+        mapper = ComplianceMapper()
+        report = _spinner_wrap(f"Mapping to {', '.join(frameworks)}...", mapper.map_findings, data.get("findings", []), frameworks)
+        for fw, info in report.per_framework.items():
+            pct = info.get("compliance_pct", 0)
+            color = "green" if pct >= 80 else ("yellow" if pct >= 50 else "red")
+            console.print(f"  [{color}]{fw}:[/] {pct:.0f}% ({info.get('covered_controls', 0)}/{info.get('total_controls', 0)} controls)")
+        console.print()
+        return
+
+    # ── DELTA ───────────────────────────────────────────────────────
+    if cmd == "delta":
+        console.print(BANNER)
+        from .delta import compare_with_last, generate_delta_report
+        text = _spinner_wrap("Computing delta...", generate_delta_report, args.target, args.format)
+        console.print(text)
+        console.print()
+        return
+
+    # ── BENCHMARK ───────────────────────────────────────────────────
+    if cmd == "benchmark":
+        console.print(BANNER)
+        from .benchmark import ScoreTracker
+        tracker = ScoreTracker()
+        if args.leaderboard:
+            report = tracker.get_leaderboard(days=args.days)
+            console.print(report)
+        else:
+            console.print("  [dim]Use: reconpro benchmark --leaderboard --days 30[/]")
+        console.print()
+        return
+
+    # ── GRAPH-VISUAL ────────────────────────────────────────────────
+    if cmd == "graph-visual":
+        console.print(BANNER)
+        from .graph_ui import GraphUIRenderer
+        from .knowledge_graph import SecurityKnowledgeGraph
+        graph = SecurityKnowledgeGraph()
+        graph.load()
+        latest = get_latest()
+        if latest:
+            graph.add_scan_result(latest)
+        renderer = GraphUIRenderer()
+        path = _spinner_wrap("Generating interactive graph...", renderer.render_to_file, graph.to_dict(), args.output)
+        console.print(f"  [green]Graph saved: [cyan]{path}[/][/]")
+        console.print(f"  [dim]Open in browser. Features: zoom, search, blast radius, path finder.[/]")
+        console.print()
+        return
+
+    # ── NETMAP ───────────────────────────────────────────────────────
+    if cmd == "netmap":
+        console.print(BANNER)
+        from .netmap import run_local
+        findings = _spinner_wrap("Mapping network...", run_local)
+        if not findings:
+            console.print("  [bright_green]No network issues found.[/]")
+        else:
+            for f in findings[:20]:
+                c = SEV_COLORS.get(f.severity, "white")
+                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+        console.print()
+        return
+
+    # ── PASSIVE ──────────────────────────────────────────────────────
+    if cmd == "passive":
+        console.print(BANNER)
+        from .passive_intel import PassiveDNS, WaybackMachine
+        domain = args.domain
+        pdns = PassiveDNS()
+        results = _spinner_wrap(f"Querying passive intel for {domain}...", pdns.query_virustotal, domain)
+        if results:
+            for r in results[:10]:
+                console.print(f"  [cyan]{r.get('ip', '?')}[/]  {r.get('date', '?')}")
+        wb = WaybackMachine()
+        history = wb.get_history(domain)
+        console.print(f"  {len(history)} archived page(s)." if history else "  [dim]No archive data.[/]")
+        console.print()
         return
 
     # ── NEXUS ──────────────────────────────────────────────────

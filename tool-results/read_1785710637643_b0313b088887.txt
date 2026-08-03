@@ -1,0 +1,1542 @@
+     1→"""Autonomous Defense Generation for ReconPro v8.0.
+     2→
+     3→Given vulnerability findings from ReconPro scanners, this module generates
+     4→deployable fixes: WAF rules, code patches, infrastructure fixes, and CI/CD
+     5→additions.
+     6→
+     7→Exports:
+     8→    PatchGenerator    - single-finding defense generator
+     9→    DefenseBundle     - batch defense orchestrator
+    10→    CATEGORY_PATCH_MAP - category -> fix template registry
+    11→    generate_defense       - convenience: single finding
+    12→    generate_defense_bundle - convenience: batch findings
+    13→"""
+    14→from __future__ import annotations
+    15→
+    16→import hashlib
+    17→import json
+    18→import textwrap
+    19→import uuid
+    20→from datetime import datetime, timezone
+    21→from typing import Any
+    22→
+    23→
+    24→# ---------------------------------------------------------------------------
+    25→# CATEGORY_PATCH_MAP  —  vulnerability category  →  fix templates
+    26→# ---------------------------------------------------------------------------
+    27→
+    28→CATEGORY_PATCH_MAP: dict[str, dict[str, Any]] = {
+    29→    "sqli": {
+    30→        "waf_rules": [
+    31→            # ModSecurity SecRule
+    32→            'SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_COOKIES_NAMES '
+    33→            '"@rx (?i)(\b(union\\s+select|or\\s+1\\s*=\\s*1|\\'\\s*or\\s*\\'|'
+    34→            '--\\s*$|;\\s*drop\\s+|;\\s*delete\\s+|sleep\\s*\\(|'
+    35→            'benchmark\\s*\\(|extractvalue\\s*\\(|updatexml\\s*\\()"
+    36→            '
+    37→    "id:900001,phase:2,deny,status:403,msg:\'SQL Injection detected\','
+    38→            'logdata:\'Matched Data: %{MATCHED_VAR} found within '
+    39→            '%{MATCHED_VAR_NAME}\',severity:CRITICAL,t:none,t:urlDecodeUni,"'
+    40→            'ctl:auditLogParts=+E',
+    41→            # Nginx deny
+    42→            'location / {\n'
+    43→            '    if ($args ~* "(union.*select|or.*1.*=.*1|sleep\\s*\\(|benchmark\\s*\\(|;
+    44→            'drop\\s|;\\s*delete\\s)") {\n'
+    45→            '        return 403;\n'
+    46→            '    }\n'
+    47→            '}',
+    48→            # Cloudflare WAF expression
+    49→            '(cf.request.uri.args contains "union" and cf.request.uri.args contains "select") '
+    50→            'or (cf.request.uri.args contains "sleep(") '
+    51→            'or (cf.request.uri.args contains "benchmark(") '
+    52→            'or (cf.request.uri.args contains "drop table")',
+    53→        ],
+    54→        "code_fix": textwrap.dedent("""\
+    55→            # BEFORE:
+    56→            #   cursor.execute(f"SELECT * FROM users WHERE id = {user_input}")
+    57→            #
+    58→            # AFTER (parameterized query):
+    59→            cursor.execute("SELECT * FROM users WHERE id = %s", (user_input,))
+    60→        """),
+    61→        "infra_fix": textwrap.dedent("""\
+    62→            # Terraform: enable RDS parameter group with strict mode
+    63→            resource "aws_db_parameter_group" "secure" {
+    64→              name   = "secure-pg"
+    65→              family = "postgres15"
+    66→              parameter {
+    67→                name  = "log_min_duration_statement"
+    68→                value = "0"
+    69→              }
+    70→            }
+    71→        """),
+    72→        "remediation": "Replace all string-formatted SQL with parameterized queries. "
+    73→        "Enable WAF rules to block common SQLi patterns. Validate and sanitize "
+    74→        "all user inputs before using in database queries.",
+    75→    },
+    76→    "xss": {
+    77→        "waf_rules": [
+    78→            'SecRule ARGS|ARGS_NAMES|REQUEST_COOKIES|REQUEST_COOKIES_NAMES '
+    79→            '"@rx (?i)(<script[^>]*>|javascript\\s*:|on(error|load|click|mouseover)\\s*=|'
+    80→            'alert\\s*\\(|document\\.cookie|document\\.location|eval\\s*\\(|'
+    81→            '<iframe[^>]*>|<img[^>]+onerror\\s*=|<svg[^>]+onload\\s*=|'
+    82→            'expression\\s*\\(|vbscript\\s*:|data\\s*:\\s*text/html)"
+    83→            '
+    84→    "id:900002,phase:2,deny,status:403,msg:\'XSS Attack detected\','
+    85→            'severity:CRITICAL,t:none,t:urlDecodeUni,t:htmlEntityDecode,'
+    86→            'ctl:auditLogParts=+E',
+    87→            'location / {\n'
+    88→            '    if ($args ~* "(<script|javascript:|onerror\\s*=|onload\\s*=|alert\\s*\\()") {\n'
+    89→            '        return 403;\n'
+    90→            '    }\n'
+    91→            '}',
+    92→            '(cf.request.uri.args contains "<script") '
+    93→            'or (cf.request.uri.args contains "javascript:") '
+    94→            'or (cf.request.uri.args contains "onerror=") '
+    95→            'or (cf.request.uri.args contains "onload=")',
+    96→        ],
+    97→        "code_fix": textwrap.dedent("""\
+    98→            # BEFORE:
+    99→            #   return f"<div>Hello, {user_input}</div>"
+   100→            #
+   101→            # AFTER (HTML-escaped output):
+   102→            from html import escape
+   103→            return f"<div>Hello, {escape(user_input)}</div>"
+   104→        """),
+   105→        "infra_fix": textwrap.dedent("""\
+   106→            # Nginx: add Content-Security-Policy header
+   107→            add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" always;
+   108→            add_header X-XSS-Protection "1; mode=block" always;
+   109→        """),
+   110→        "remediation": "Escape all user-supplied data before rendering in HTML. "
+   111→        "Implement Content-Security-Policy headers. Use modern frameworks that "
+   112→        "auto-escape by default (Django, Jinja2, React).",
+   113→    },
+   114→    "ssti": {
+   115→        "waf_rules": [
+   116→            'SecRule ARGS|ARGS_NAMES|REQUEST_BODY '
+   117→            '"@rx (?i)(\\{\\{.*\\}\\}|\\$\\{.*\\}|<%.*%>|'
+   118→            '__class__|__mro__|__subclasses__|__builtins__|'
+   119→            '__import__|os\\.popen|subprocess\\.Popen)"
+   120→            '
+   121→    "id:900003,phase:2,deny,status:403,msg:\'SSTI detected\','
+   122→            'severity:CRITICAL,t:none,t:urlDecodeUni',
+   123→            'location / {\n'
+   124→            '    if ($args ~* "(\\{\\{|\\$\\{|__class__|__mro__|__subclasses__|__import__)") {\n'
+   125→            '        return 403;\n'
+   126→            '    }\n'
+   127→            '}',
+   128→            '(cf.request.uri.args contains "{{" and cf.request.uri.args contains "}}") '
+   129→            'or (cf.request.uri.args contains "__class__") '
+   130→            'or (cf.request.uri.args contains "__import__")',
+   131→        ],
+   132→        "code_fix": textwrap.dedent("""\
+   133→            # BEFORE:
+   134→            #   template.render(user_input=raw_input)
+   135→            #
+   136→            # AFTER (use auto-escaping sandboxed environment):
+   137→            from jinja2.sandbox import ImmutableSandboxedEnvironment
+   138→            env = ImmutableSandboxedEnvironment(autoescape=True)
+   139→            template = env.from_string(tpl_source)
+   140→        """),
+   141→        "infra_fix": textwrap.dedent("""\
+   142→            # Dockerfile: run app as non-root, limit capabilities
+   143→            RUN useradd -r -s /bin/false appuser
+   144→            USER appuser
+   145→        """),
+   146→        "remediation": "Use sandboxed template environments (Jinja2 Sandbox). "
+   147→        "Never render user input directly in templates. Apply principle of least "
+   148→        "privilege to template rendering processes.",
+   149→    },
+   150→    "ssrf": {
+   151→        "waf_rules": [
+   152→            'SecRule REQUEST_URI|REQUEST_BODY|ARGS '
+   153→            '"@rx (?i)(https?://(127\\.0\\.0\\.1|localhost|10\\.\\d+\\.\\d+\\.\\d+|'
+   154→            '172\\.(1[6-9]|2\\d|3[01])\\.\\d+\\.\\d+|'
+   155→            '192\\.168\\.\\d+\\.\\d+|0\\.0\\.0\\.0|169\\.254\\.\\d+\\.\\d+|'
+   156→            '\\[::1\\])|http://metadata\\.google|http://169\\.254\\.169\\.254)"
+   157→            '
+   158→    "id:900004,phase:1,deny,status:403,msg:\'SSRF detected\','
+   159→            'severity:CRITICAL,t:none',
+   160→            'location / {\n'
+   161→            '    if ($args ~* "(127\\.0\\.0\\.1|localhost|10\\.\\d+\\.\\d+\\.\\d+|'
+   162→            '192\\.168\\.\\d+\\.\\d+|169\\.254\\.169\\.254)") {\n'
+   163→            '        return 403;\n'
+   164→            '    }\n'
+   165→            '}',
+   166→            '(cf.request.uri contains "127.0.0.1") '
+   167→            'or (cf.request.uri contains "localhost") '
+   168→            'or (cf.request.uri contains "169.254.169.254") '
+   169→            'or (cf.request.uri contains "10.") '
+   170→            'or (cf.request.uri contains "192.168.")',
+   171→        ],
+   172→        "code_fix": textwrap.dedent("""\
+   173→            # BEFORE:
+   174→            #   resp = requests.get(user_url)
+   175→            #
+   176→            # AFTER (URL validation + allowlist):
+   177→            from urllib.parse import urlparse
+   178→            import ipaddress
+   179→
+   180→            ALLOWED_HOSTS = {"api.example.com", "cdn.example.com"}
+   181→
+   182→            def is_safe_url(url: str) -> bool:
+   183→                parsed = urlparse(url)
+   184→                if parsed.hostname not in ALLOWED_HOSTS:
+   185→                    return False
+   186→                try:
+   187→                    addr = ipaddress.ip_address(parsed.hostname)
+   188→                    return not (addr.is_private or addr.is_loopback or addr.is_link_local)
+   189→                except ValueError:
+   190→                    return True  # hostname, not IP
+   191→
+   192→            if is_safe_url(user_url):
+   193→                resp = requests.get(user_url, timeout=5)
+   194→        """),
+   195→        "infra_fix": textwrap.dedent("""\
+   196→            # VPC network ACL: block egress to metadata endpoint
+   197→            resource "aws_network_acl" "ssrf_block" {
+   198→              vpc_id     = aws_vpc.main.id
+   199→              subnet_ids = aws_subnet.private[*].id
+   200→              egress {
+   201→                rule_no    = 100
+   202→                action     = "deny"
+   203→                from_port  = 80
+   204→                to_port    = 80
+   205→                protocol   = "tcp"
+   206→                cidr_block = "169.254.169.254/32"
+   207→              }
+   208→            }
+   209→        """),
+   210→        "remediation": "Validate and allowlist all URLs fetched server-side. Block requests to "
+   211→        "private/internal IP ranges. Disable URL schema handling beyond http/https. "
+   212→        "Use network-level egress filtering.",
+   213→    },
+   214→    "path_traversal": {
+   215→        "waf_rules": [
+   216→            'SecRule ARGS|ARGS_NAMES|REQUEST_URI '
+   217→            '"@rx (\\.\\./|\\.\\.\\\\|%2e%2e[/%5c\\\\]|%c0%ae)"
+   218→            '
+   219→    "id:900005,phase:2,deny,status:403,msg:\'Path Traversal detected\','
+   220→            'severity:CRITICAL,t:none,t:urlDecodeUni,t:normalizePath',
+   221→            'location / {\n'
+   222→            '    if ($args ~* "(\\.\\./|%2e%2e|\\.\\.\\\\)") {\n'
+   223→            '        return 403;\n'
+   224→            '    }\n'
+   225→            '}',
+   226→            '(cf.request.uri contains "../") '
+   227→            'or (cf.request.uri contains "..\\\\") '
+   228→            'or (cf.request.uri contains "%2e%2e")',
+   229→        ],
+   230→        "code_fix": textwrap.dedent("""\
+   231→            # BEFORE:
+   232→            #   filepath = os.path.join(BASE_DIR, user_filename)
+   233→            #   return open(filepath).read()
+   234→            #
+   235→            # AFTER (resolve and verify):?
+   236→            import os
+   237→
+   238→            def safe_read(base: str, filename: str) -> bytes:
+   239→                filepath = os.path.realpath(os.path.join(base, filename))
+   240→                if not filepath.startswith(os.path.realpath(base)):
+   241→                    raise ValueError("Path traversal detected")
+   242→                with open(filepath, "rb") as f:
+   243→                    return f.read()
+   244→        """),
+   245→        "infra_fix": textwrap.dedent("""\
+   246→            # Dockerfile: read-only root filesystem
+   247→            FROM python:3.12-slim
+   248→            RUN useradd -r -s /bin/false appuser
+   249→            USER appuser
+   250→            READONLY_ROOT_FS=true
+   251→        """),
+   252→        "remediation": "Always resolve paths with os.path.realpath() and verify they remain "
+   253→        "within the intended base directory. Run services with least privilege. "
+   254→        "Use chroot or container isolation.",
+   255→    },
+   256→    "command_injection": {
+   257→        "waf_rules": [
+   258→            'SecRule ARGS|ARGS_NAMES|REQUEST_BODY '
+   259→            '"@rx (;|\\||&|\\$\\(|\\`|&&|\\|\\|)\\s*('
+   260→            'cat|ls|id|whoami|uname|pwd|wget|curl|bash|sh|nc|ncat|python|perl|ruby|'
+   261→            'ping|nmap|ifconfig|netstat|ps|kill|chmod|chown|rm|mv|cp)\\b"
+   262→            '
+   263→    "id:900006,phase:2,deny,status:403,msg:\'Command Injection detected\','
+   264→            'severity:CRITICAL,t:none,t:urlDecodeUni,t:cmdLine',
+   265→            'location / {\n'
+   266→            '    if ($args ~* "(;\\s*(cat|ls|id|whoami|uname|wget|curl|bash|sh|nc|ping|nmap)) " '
+   267→            'or ($args ~* "(\\|\\s*(cat|ls|id|whoami|bash|sh)) " '
+   268→            'or ($args ~* "(\\`.*\\`)") {
+   269→'
+   270→            '        return 403;\n'
+   271→            '    }\n'
+   272→            '}',
+   273→            '(cf.request.uri.args contains ";" and cf.request.uri.args contains "bash") '
+   274→            'or (cf.request.uri.args contains "|" and cf.request.uri.args contains "cat") '
+   275→            'or (cf.request.uri.args contains "`")',
+   276→        ],
+   277→        "code_fix": textwrap.dedent("""\
+   278→            # BEFORE:
+   279→            #   os.system(f"ping -c 3 {user_input}")
+   280→            #
+   281→            # AFTER (subprocess with list args):
+   282→            import subprocess
+   283→            import shlex
+   284→
+   285→            def safe_ping(host: str) -> str:
+   286→                if not all(c.isalnum() or c in ".-" for c in host):
+   287→                    raise ValueError("Invalid hostname")
+   288→                result = subprocess.run(
+   289→                    ["ping", "-c", "3", host],
+   290→                    capture_output=True, text=True, timeout=10,
+   291→                )
+   292→                return result.stdout
+   293→        """),
+   294→        "infra_fix": textwrap.dedent("""\
+   295→            # K8s: drop all capabilities, run as non-root
+   296→            spec:
+   297→              securityContext:
+   298→                runAsNonRoot: true
+   299→                runAsUser: 1000
+   300→                readOnlyRootFilesystem: true
+   301→                capabilities:
+   302→                  drop:
+   303→                    - ALL
+   304→        """),
+   305→        "remediation": "Never pass user input to os.system(), os.popen(), or subprocess with "
+   306→            "shell=True. Use subprocess.run() with a list of arguments. Validate "
+   307→            "input against a strict allowlist.",
+   308→    },
+   309→    "security_headers": {
+   310→        "waf_rules": [],
+   311→        "code_fix": textwrap.dedent("""\
+   312→            # Add security headers via middleware (Django example):
+   313→            # settings.py
+   314→            SECURITY_HEADERS = {
+   315→                "X-Content-Type-Options": "nosniff",
+   316→                "X-Frame-Options": "DENY",
+   317→                "X-XSS-Protection": "1; mode=block",
+   318→                "Referrer-Policy": "strict-origin-when-cross-origin",
+   319→                "Content-Security-Policy": "default-src 'self'",
+   320→                "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+   321→                "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+   322→            }
+   323→        """),
+   324→        "infra_fix": textwrap.dedent("""\
+   325→            # Nginx: comprehensive security headers
+   326→            add_header X-Content-Type-Options "nosniff" always;
+   327→            add_header X-Frame-Options "DENY" always;
+   328→            add_header X-XSS-Protection "1; mode=block" always;
+   329→            add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+   330→            add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+   331→            add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+   332→            add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" always;
+   333→        """),
+   334→        "remediation": "Add all recommended security headers. Enable HSTS with long max-age. "
+   335→        "Set X-Frame-Options to DENY. Implement a strict Content-Security-Policy.",
+   336→    },
+   337→    "cors": {
+   338→        "waf_rules": [],
+   339→        "code_fix": textwrap.dedent("""\
+   340→            # BEFORE:
+   341→            #   @app.after_request
+   342→            #   def add_cors(response):
+   343→            #       response.headers["Access-Control-Allow-Origin"] = "*"
+   344→            #
+   345→            # AFTER (restrictive CORS):
+   346→            @app.after_request
+   347→            def add_cors(response):
+   348→                origin = request.headers.get("Origin", "")
+   349→                allowed = {"https://app.example.com", "https://admin.example.com"}
+   350→                if origin in allowed:
+   351→                    response.headers["Access-Control-Allow-Origin"] = origin
+   352→                    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+   353→                    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+   354→                    response.headers["Access-Control-Allow-Credentials"] = "true"
+   355→                    response.headers["Vary"] = "Origin"
+   356→                return response
+   357→        """),
+   358→        "infra_fix": textwrap.dedent("""\
+   359→            # Nginx: restrictive CORS configuration
+   360→            map $http_origin $cors_origin {
+   361→                default         "";
+   362→                "https://app.example.com"  $http_origin;
+   363→                "https://admin.example.com" $http_origin;
+   364→            }
+   365→            server {
+   366→                location / {
+   367→                    if ($cors_origin != "") {
+   368→                        add_header Access-Control-Allow-Origin $cors_origin always;
+   369→                        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+   370→                        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+   371→                        add_header Access-Control-Allow-Credentials "true" always;
+   372→                        add_header Vary "Origin" always;
+   373→                    }
+   374→                    if ($request_method = OPTIONS) {
+   375→                        return 204;
+   376→                    }
+   377→                }
+   378→            }
+   379→        """),
+   380→        "remediation": "Replace wildcard CORS origins with an explicit allowlist. "
+   381→        "Restrict allowed methods and headers to only what is needed. "
+   382→        "Never use Access-Control-Allow-Origin: * with credentials.",
+   383→    },
+   384→    "csrf": {
+   385→        "waf_rules": [
+   386→            'SecRule &REQUEST_HEADERS:Origin "@eq 0" '
+   387→            'SecRule &REQUEST_HEADERS:Referer "@eq 0" '
+   388→            'SecRule REQUEST_METHOD "@streq POST" '
+   389→            'SecRule REQUEST_URI "!@rx ^/api/webhook" '
+   390→            '
+   391→    "id:900007,phase:2,deny,status:403,msg:\'CSRF: missing Origin/Referer\','
+   392→            'severity:HIGH,t:none,chain',
+   393→        ],
+   394→        "code_fix": textwrap.dedent("""\
+   395→            # BEFORE:
+   396→            #   @csrf_exempt
+   397→            #   @app.route('/transfer', methods=['POST'])
+   398→            #   def transfer():
+   399→            #       ...
+   400→            #
+   401→            # AFTER (remove csrf_exempt, ensure CSRF token):
+   402→            from django.views.decorators.csrf import csrf_protect
+   403→
+   404→            @csrf_protect
+   405→            @app.route('/transfer', methods=['POST'])
+   406→            def transfer():
+   407→                ...
+   408→            # Ensure all forms include: <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+   409→        """),
+   410→        "infra_fix": textwrap.dedent("""\
+   411→            # Nginx: double-submit cookie pattern + SameSite
+   412→            proxy_cookie_path / "/; SameSite=Strict; Secure; HttpOnly";
+   413→        """),
+   414→        "remediation": "Remove all csrf_exempt decorators from state-changing endpoints. "
+   415→        "Ensure all forms include CSRF tokens. Set SameSite=Strict on session cookies. "
+   416→        "Verify Origin/Referer headers on sensitive requests.",
+   417→    },
+   418→    "debug_mode": {
+   419→        "waf_rules": [],
+   420→        "code_fix": textwrap.dedent("""\
+   421→            # BEFORE:
+   422→            #   DEBUG = True
+   423→            #   ALLOWED_HOSTS = ['*']
+   424→            #
+   425→            # AFTER:
+   426→            DEBUG = False
+   427→            ALLOWED_HOSTS = ['app.example.com', 'admin.example.com']
+   428→        """),
+   429→        "infra_fix": textwrap.dedent("""\
+   430→            # Dockerfile: set env var for production
+   431→            ENV DEBUG=false
+   432→            ENV DJANGO_SETTINGS_MODULE=myproject.settings.production
+   433→        """),
+   434→        "remediation": "Set DEBUG = False in all production settings. Restrict ALLOWED_HOSTS. "
+   435→        "Disable detailed error pages and stack traces in production.",
+   436→    },
+   437→    "hardcoded_secret": {
+   438→        "waf_rules": [],
+   439→        "code_fix": textwrap.dedent("""\
+   440→            # BEFORE:
+   441→            #   SECRET_KEY = "my-super-secret-key-12345"
+   442→            #   DB_PASSWORD = "admin123"
+   443→            #
+   444→            # AFTER:
+   445→            import os
+   446→            SECRET_KEY = os.environ.get("SECRET_KEY")
+   447→            DB_PASSWORD = os.environ.get("DB_PASSWORD")
+   448→            if not SECRET_KEY:
+   449→                raise RuntimeError("SECRET_KEY environment variable is not set")
+   450→        """),
+   451→        "infra_fix": textwrap.dedent("""\
+   452→            # Dockerfile / K8s: use secrets
+   453→            # K8s Secret
+   454→            apiVersion: v1
+   455→            kind: Secret
+   456→            metadata:
+   457→              name: app-secrets
+   458→            type: Opaque
+   459→            data:
+   460→              secret-key: <base64-encoded>
+   461→              db-password: <base64-encoded>
+   462→            #
+   463→            # K8s Pod env reference:
+   464→            #   env:
+   465→            #     - name: SECRET_KEY
+   466→            #       valueFrom:
+   467→            #         secretKeyRef:
+   468→            #           name: app-secrets
+   469→            #           key: secret-key
+   470→        """),
+   471→        "remediation": "Move all secrets to environment variables or a secrets manager. "
+   472→        "Add .env files to .gitignore. Rotate any leaked credentials immediately.",
+   473→    },
+   474→    "weak_crypto": {
+   475→        "waf_rules": [],
+   476→        "code_fix": textwrap.dedent("""\
+   477→            # BEFORE:
+   478→            #   from hashlib import md5
+   479→            #   hashed = md5(password.encode()).hexdigest()
+   480→            #
+   481→            # AFTER:
+   482→            import hashlib, os
+   483→            salt = os.urandom(32)
+   484→            hashed = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 600_000)
+   485→        """),
+   486→        "infra_fix": textwrap.dedent("""\
+   487→            # TLS config: enforce TLS 1.2+ with strong ciphers
+   488→            ssl_protocols TLSv1.2 TLSv1.3;
+   489→            ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+   490→            ssl_prefer_server_ciphers on;
+   491→        """),
+   492→        "remediation": "Replace MD5/SHA1 with PBKDF2, bcrypt, or argon2 for passwords. "
+   493→        "Use AES-256-GCM for encryption. Enforce TLS 1.2+ with strong cipher suites.",
+   494→    },
+   495→    "information_disclosure": {
+   496→        "waf_rules": [
+   497→            'SecRule RESPONSE_BODY "@rx (Stack Trace|Traceback \\(most recent|"
+   498→            'Fatal error|Warning\\:.+in \\.+/|mysql_fetch|Microsoft OLE DB|"
+   499→            'ORA-\\d{5}|java\\.lang\\.)" '
+   500→            '
+   501→    "id:900008,phase:4,pass,nolog,msg:\'Information Disclosure in response\','
+   502→            'ctl:auditLogParts=+E',
+   503→        ],
+   504→        "code_fix": textwrap.dedent("""\
+   505→            # Add global error handler that hides stack traces in production
+   506→            # Flask example:
+   507→            @app.errorhandler(Exception)
+   508→            def handle_error(e):
+   509→                if not app.debug:
+   510→                    return "An internal error occurred.", 500
+   511→                raise e
+   512→        """),
+   513→        "infra_fix": textwrap.dedent("""\
+   514→            # Nginx: suppress version and server header
+   515→            server_tokens off;
+   516→            proxy_hide_header X-Powered-By;
+   517→            proxy_hide_header Server;
+   518→        """),
+   519→        "remediation": "Disable verbose error messages in production. Remove server version headers. "
+   520→        "Implement generic error pages. Configure frameworks to suppress debug output.",
+   521→    },
+   522→    "open_port": {
+   523→        "waf_rules": [],
+   524→        "code_fix": "",
+   525→        "infra_fix": textwrap.dedent("""\
+   526→            # AWS Security Group: restrict to known CIDRs
+   527→            resource "aws_security_group" "app" {
+   528→              name        = "app-sg"
+   529→              description = "Application security group"
+   530→              ingress {
+   531→                description     = "HTTPS from ALB only"
+   532→                from_port       = 443
+   533→                to_port         = 443
+   534→                protocol        = "tcp"
+   535→                security_groups = [aws_security_group.alb.id]
+   536→              }
+   537→              egress {
+   538→                from_port   = 0
+   539→                to_port     = 0
+   540→                protocol    = "-1"
+   541→                cidr_blocks = ["0.0.0.0/0"]
+   542→              }
+   543→            }
+   544→        """),
+   545→        "remediation": "Close unnecessary ports. Apply security groups or firewall rules to "
+   546→        "restrict access to only required sources. Use VPN or bastion hosts for admin access.",
+   547→    },
+   548→    "dangerous_eval": {
+   549→        "waf_rules": [
+   550→            'SecRule ARGS|REQUEST_BODY "@rx (?i)(\\beval\\s*\\(|\\bexec\\s*\\(|'
+   551→            'compile\\s*\\(|__import__\\s*\\()" '
+   552→            '
+   553→    "id:900009,phase:2,deny,status:403,msg:\'Dangerous eval/exec detected\','
+   554→            'severity:CRITICAL,t:none',
+   555→        ],
+   556→        "code_fix": textwrap.dedent("""\
+   557→            # BEFORE:
+   558→            #   result = eval(user_input)
+   559→            #   exec(user_code)
+   560→            #
+   561→            # AFTER (use ast.literal_eval for data, remove exec entirely):
+   562→            import ast
+   563→
+   564→            # If parsing literal data:
+   565→            result = ast.literal_eval(user_input)
+   566→
+   567→            # If dynamic logic is needed, use a proper expression parser
+   568→            # or restrict to a whitelist of safe operations.
+   569→        """),
+   570→        "infra_fix": textwrap.dedent("""\
+   571→            # Dockerfile / K8s: use seccomp profile to block dangerous syscalls
+   572→            # K8s PodSecurityContext:
+   573→            #   seccompProfile:
+   574→            #     type: RuntimeDefault
+   575→        """),
+   576→        "remediation": "Never use eval() or exec() with user input. Use ast.literal_eval() for "
+   577→        "data deserialization. If dynamic code execution is required, use a sandboxed "
+   578→        "environment with strict allowlists.",
+   579→    },
+   580→    "unsafe_deserialization": {
+   581→        "waf_rules": [
+   582→            'SecRule ARGS|REQUEST_HEADERS:Content-Type "@rx (?i)(pickle|yaml\\.load|'
+   583→            'marshal\\.loads|shelve\\.open)" '
+   584→            '
+   585→    "id:900010,phase:2,deny,status:403,msg:\'Unsafe deserialization attempt\','
+   586→            'severity:CRITICAL,t:none',
+   587→        ],
+   588→        "code_fix": textwrap.dedent("""\
+   589→            # BEFORE:
+   590→            #   import pickle
+   591→            #   obj = pickle.loads(user_data)
+   592→            #
+   593→            #   import yaml
+   594→            #   obj = yaml.load(user_data)
+   595→            #
+   596→            # AFTER:
+   597→            import json
+   598→            obj = json.loads(user_data)  # Use JSON instead of pickle
+   599→
+   600→            # If YAML is required:
+   601→            import yaml
+   602→            obj = yaml.safe_load(user_data)  # NEVER yaml.load()
+   603→        """),
+   604→        "infra_fix": "",
+   605→        "remediation": "Replace pickle with JSON for data serialization. If YAML is required, "
+   606→        "always use yaml.safe_load(). Never deserialize untrusted data with pickle.",
+   607→    },
+   608→}
+   609→
+   610→
+   611→# ---------------------------------------------------------------------------
+   612→# PatchGenerator  —  single-finding defense generator
+   613→# ---------------------------------------------------------------------------
+   614→
+   615→class PatchGenerator:
+   616→    """Generate deployable security fixes from a single vulnerability finding."""
+   617→
+   618→    def __init__(self) -> None:
+   619→        self._rule_counter = 900100  # offset for generated rules
+   620→
+   621→    # -- WAF rule generation -----------------------------------------------
+   622→
+   623→    def generate_waf_rules(self, finding: dict) -> list[str]:
+   624→        """Return a list of WAF rules for *finding*.
+   625→
+   626→        Each rule is a string in one of these formats:
+   627→        - ModSecurity ``SecRule`` directive
+   628→        - Nginx ``location`` block with deny/return 403
+   629→        - Cloudflare WAF expression
+   630→        - AWS WAF JSON rule (prefixed with ``AWS_WAF_JSON:``)
+   631→        """
+   632→        category = finding.get("category", "").lower()
+   633→        severity = finding.get("severity", "high").upper()
+   634→        target_uri = finding.get("uri", finding.get("path", "*"))
+   635→
+   636→        rules: list[str] = []
+   637→
+   638→        # 1. Category-mapped rules from CATEGORY_PATCH_MAP
+   639→        cat_entry = CATEGORY_PATCH_MAP.get(category, {})
+   640→        for tmpl in cat_entry.get("waf_rules", []):
+   641→            rules.append(tmpl)
+   642→
+   643→        # 2. Generate AWS WAF JSON rule for categories that have WAF applicability
+   644→        if category in ("sqli", "xss", "command_injection", "path_traversal", "ssrf"):
+   645→            rules.append(self._aws_waf_rule(category, severity, target_uri))
+   646→
+   647→        # 3. Generate category-specific Nginx rules not already in the map
+   648→        if category == "security_headers":
+   649→            rules.append(self._nginx_security_headers())
+   650→        elif category == "cors":
+   651→            rules.append(self._nginx_cors_config(finding))
+   652→        elif category == "csrf":
+   653→            rules.append(self._nginx_csrf_check())
+   654→
+   655→        return rules
+   656→
+   657→    def _aws_waf_rule(self, category: str, severity: str, uri: str) -> str:
+   658→        """Generate an AWS WAF JSON rule statement."""
+   659→        visual_filters: dict[str, list[str]] = {
+   660→            "sqli": [
+   661→                {
+   662→                    "filter": {
+   663→                        "type": "SQL_INJECTION_MATCHING_STATEMENT",
+   664→                    }
+   665→                }
+   666→            ],
+   667→            "xss": [
+   668→                {
+   669→                    "filter": {
+   670→                        "type": "XSS_MATCHING_STATEMENT",
+   671→                    }
+   672→                }
+   673→            ],
+   674→            "command_injection": [
+   675→                {
+   676→                    "filter": {
+   677→                        "type": "REGEX_MATCH",
+   678→                        "regexString": ";.*\\b(cat|ls|id|whoami|bash|sh|wget|curl|nc|ping|nmap)\\b",
+   679→                        "fieldToMatch": {"type": "QUERY_STRING"},
+   680→                        "textTransformations": ["NONE"],
+   681→                    }
+   682→                }
+   683→            ],
+   684→            "path_traversal": [
+   685→                {
+   686→                    "filter": {
+   687→                        "type": "REGEX_MATCH",
+   688→                        "regexString": "(\\.\\./|%2e%2e|%252e%252e)",
+   689→                        "fieldToMatch": {"type": "URI"},
+   690→                        "textTransformations": ["URL_DECODE", "HTML_ENTITY_DECODE"],
+   691→                    }
+   692→                }
+   693→            ],
+   694→            "ssrf": [
+   695→                {
+   696→                    "filter": {
+   697→                        "type": "REGEX_MATCH",
+   698→                        "regexString": "(127\\.0\\.0\\.1|localhost|10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}|169\\.254\\.169\\.254)",
+   699→                        "fieldToMatch": {"type": "QUERY_STRING"},
+   700→                        "textTransformations": ["NONE"],
+   701→                    }
+   702→                }
+   703→            ],
+   704→        }
+   705→
+   706→        filters = visual_filters.get(category, [])
+   707→        priority_map = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+   708→        priority = priority_map.get(severity, 1)
+   709→
+   710→        rule: dict[str, Any] = {
+   711→            "Name": f"ReconPro-{category}-{uuid.uuid4().hex[:8]}",
+   712→            "Priority": priority,
+   713→            "Statement": {
+   714→                "ManagedRuleGroupStatement": {
+   715→                    "VendorName": "AWS",
+   716→                    "Name": f"{category.upper() if category != 'sqli' else 'SQLInjection'}_Prevention",
+   717→                    "ExcludedRules": [],
+   718→                }
+   719→            } if category in ("sqli", "xss") else {
+   720→                "RateBasedStatement": {
+   721→                    "Limit": 100,
+   722→                    "AggregateKeyType": "IP",
+   723→                }
+   724→            } if not filters else {
+   725→                "OrStatement": {
+   726→                    "Statements": [
+   727→                        {
+   728→                            "ByteMatchStatement": {
+   729→                                "SearchString": f.get("filter", {}).get("regexString", "").encode() if "regexString" in f.get("filter", {}) else b"",
+   730→                                "FieldToMatch": f.get("filter", {}).get("fieldToMatch", {"type": "QUERY_STRING"}),
+   731→                                "TextTransformations": f.get("filter", {}).get("textTransformations", [{"type": "NONE"}]),
+   732→                                "PositionalConstraint": "CONTAINS",
+   733→                            }
+   734→                        }
+   735→                        for f in filters
+   736→                    ],
+   737→                }
+   738→            },
+   739→            "Action": {
+   740→                "Block": {
+   741→                    "CustomResponse": {
+   742→                        "ResponseCode": 403,
+   743→                        "ResponseBody": {"Text": "Request blocked by ReconPro WAF rule."},
+   744→                    }
+   745→                }
+   746→            },
+   747→            "VisibilityConfig": {
+   748→                "SampledRequestsEnabled": True,
+   749→                "CloudWatchMetricsEnabled": True,
+   750→                "MetricName": f"ReconPro{category.capitalize()}Rule",
+   751→            },
+   752→        }
+   753→
+   754→        # For SQLi and XSS, use managed rule groups (cleaner and more complete)
+   755→        if category == "sqli":
+   756→            rule["Statement"] = {
+   757→                "ManagedRuleGroupStatement": {
+   758→                    "VendorName": "AWS",
+   759→                    "Name": "SQLInjectionRuleSet",
+   760→                }
+   761→            }
+   762→        elif category == "xss":
+   763→            rule["Statement"] = {
+   764→                "ManagedRuleGroupStatement": {
+   765→                    "VendorName": "AWS",
+   766→                    "Name": "XSSRuleSet",
+   767→                }
+   768→            }
+   769→
+   770→        return "AWS_WAF_JSON:" + json.dumps(rule, indent=2)
+   771→
+   772→    def _nginx_security_headers(self) -> str:
+   773→        return (
+   774→            "# Nginx security headers (add to server block)\n"
+   775→            "add_header X-Content-Type-Options 'nosniff' always;\n"
+   776→            "add_header X-Frame-Options 'DENY' always;\n"
+   777→            "add_header X-XSS-Protection '1; mode=block' always;\n"
+   778→            "add_header Referrer-Policy 'strict-origin-when-cross-origin' always;\n"
+   779→            "add_header Strict-Transport-Security 'max-age=31536000; includeSubDomains; preload' always;\n"
+   780→            "add_header Permissions-Policy 'camera=(), microphone=(), geolocation=()' always;\n"
+   781→            "add_header Content-Security-Policy \"default-src 'self'; script-src 'self';\n"
+   782→            "style-src 'self' 'unsafe-inline'; img-src 'self' data:;\" always;\n"
+   783→            "server_tokens off;"
+   784→        )
+   785→
+   786→    def _nginx_cors_config(self, finding: dict) -> str:
+   787→        origin = finding.get("origin", "https://app.example.com")
+   788→        return (
+   789→            f"# Nginx CORS configuration (restrictive)\n"
+   790→            f"map $http_origin $cors_origin {{\n"
+   791→            f"    default         \"\";\n"
+   792→            f'    "{origin}"  $http_origin;\n'
+   793→            f"}}\n"
+   794→            f"server {{\n"
+   795→            f"    location / {{\n"
+   796→            f"        if ($cors_origin != \"\") {{\n"
+   797→            f'            add_header Access-Control-Allow-Origin $cors_origin always;\n'
+   798→            f'            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;\n'
+   799→            f'            add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;\n'
+   800→            f'            add_header Access-Control-Allow-Credentials "true" always;\n'
+   801→            f'            add_header Vary "Origin" always;\n'
+   802→            f"        }}\n"
+   803→            f"        if ($request_method = OPTIONS) {{\n"
+   804→            f"            return 204;\n"
+   805→            f"        }}\n"
+   806→            f"    }}\n"
+   807→            f"}}"
+   808→        )
+   809→
+   810→    def _nginx_csrf_check(self) -> str:
+   811→        return (
+   812→            "# Nginx CSRF mitigation (origin/referer check)\n"
+   813→            "map $http_origin $csrf_valid_origin {\n"
+   814→            "    default         0;\n"
+   815→            "    ~^https://app\.example\.com$  1;\n"
+   816→            "    ~^https://admin\.example\.com$  1;\n"
+   817→            "}\n"
+   818→            "server {\n"
+   819→            "    location / {\n"
+   820→            "        if ($request_method = POST) {\n"
+   821→            "            if ($csrf_valid_origin = 0) {\n"
+   822→            "                return 403;\n"
+   823→            "            }\n"
+   824→            "        }\n"
+   825→            "    }\n"
+   826→            "}"
+   827→        )
+   828→
+   829→    # -- Code patch generation ---------------------------------------------
+   830→
+   831→    def generate_code_patch(self, finding: dict) -> str:
+   832→        """Generate a unified diff patch for *finding*.
+   833→
+   834→        The finding must contain at least ``file`` (path) and ``line`` (1-based
+   835→        line number).  If ``original_line`` is provided it is used as the
+   836→        removed line; otherwise a placeholder is shown.
+   837→        """
+   838→        filepath = finding.get("file", "unknown.py")
+   839→        line_no = finding.get("line", 1)
+   840→        category = finding.get("category", "").lower()
+   841→        original = finding.get("original_line", "")
+   842→        severity = finding.get("severity", "high").upper()
+   843→
+   844→        # Determine the fix based on category or a pattern match
+   845→        fix = self._resolve_code_fix(finding)
+   846→
+   847→        # Build unified diff
+   848→        ctx_before = 3
+   849→        start = max(1, line_no - ctx_before)
+   850→        end = line_no + ctx_before
+   851→
+   852→        lines: list[str] = []
+   853→        for i in range(start, end + 1):
+   854→            if i == line_no:
+   855→                if original:
+   856→                    lines.append(f"-{original}")
+   857→                else:
+   858→                    lines.append(f"-# [REMOVED] vulnerable code at line {line_no}")
+   859→                for fix_line in fix.split("\n"):
+   860→                    lines.append(f"+{fix_line}")
+   861→            else:
+   862→                lines.append(f" # (context line {i})")
+   863→
+   864→        hunk_header = f"@@ -{start},{end - start + 1} +{start},{end - start + 1 + max(fix.count('\n'), 0)} @@"
+   865→
+   866→        diff = f"--- a/{filepath}\n"
+   867→        diff += f"+++ b/{filepath}\n"
+   868→        diff += f"{hunk_header}\n"
+   869→        diff += "\n".join(lines) + "\n"
+   870→        return diff
+   871→
+   872→    def _resolve_code_fix(self, finding: dict) -> str:
+   873→        """Return the replacement code lines for a finding."""
+   874→        category = finding.get("category", "").lower()
+   875→        original = finding.get("original_line", "")
+   876→
+   877→        # Pattern-based detection on the original line
+   878→        if "eval(" in original:
+   879→            return (
+   880→                "import ast\n"
+   881→                "result = ast.literal_eval(sanitized_input)  # safe alternative to eval()"
+   882→            )
+   883→        if "exec(" in original:
+   884→            return (
+   885→                "# exec() removed — use a proper task queue, plugin system, or\n"
+   886→                "# sandboxed interpreter for dynamic code execution"
+   887→            )
+   888→        if "shell=True" in original:
+   889→            # Convert to list-based subprocess call
+   890→            return (
+   891→                "subprocess.run(\n"
+   892→                "    [\"command\", \"arg1\", \"arg2\"],\n"
+   893→                "    capture_output=True,\n"
+   894→                "    text=True,\n"
+   895→                "    shell=False,\n"
+   896→                ")"
+   897→            )
+   898→        if any(kw in original.lower() for kw in ("select", "insert", "update", "delete")) and ("f\"" in original or "f'" in original):
+   899→            return (
+   900→                "cursor.execute(\n"
+   901→                "    \"SELECT ... WHERE col = %s\",\n"
+   902→                "    (user_input,),\n"
+   903→                ")  # parameterized query"
+   904→            )
+   905→        if category == "hardcoded_secret" or any(s in original for s in ('"' in original and any(k in original.lower() for k in ("secret", "password", "key", "token", "api_key")),)):
+   906→            # Check for hardcoded string that looks like a secret
+   907→            import re
+   908→            if re.search(r'("[^"]{8,}")\s*$', original.strip()):
+   909→                var_match = re.match(r'(\w+)\s*=\s*'["\']', original)
+   910→                var_name = var_match.group(1) if var_match else "CONFIG_VALUE"
+   911→                env_key = var_name.upper()
+   912→                return (
+   913→                    f"import os\n"
+   914→                    f"{var_name} = os.environ.get(\"{env_key}\")\n"
+   915→                    f"if not {var_name}:\n"
+   916→                    f"    raise RuntimeError(\"{env_key} environment variable is not set\")"
+   917→                )
+   918→        if "DEBUG = True" in original or "DEBUG=True" in original:
+   919→            return "DEBUG = False"
+   920→        if "csrf_exempt" in original:
+   921→            return "# @csrf_exempt removed — CSRF protection is required for this endpoint"
+   922→        if category == "security_headers":
+   923→            return (
+   924→                "response.headers['X-Content-Type-Options'] = 'nosniff'\n"
+   925→                "response.headers['X-Frame-Options'] = 'DENY'\n"
+   926→                "response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'"
+   927→            )
+   928→
+   929→        # Fall back to category-based template from CATEGORY_PATCH_MAP
+   930→        cat_entry = CATEGORY_PATCH_MAP.get(category, {})
+   931→        code_fix = cat_entry.get("code_fix", "")
+   932→        if code_fix:
+   933→            return code_fix.strip()
+   934→
+   935→        return "# Apply manual fix: review the vulnerability description and remediation guidance"
+   936→
+   937→    # -- Infrastructure fix generation -------------------------------------
+   938→
+   939→    def generate_infra_fix(self, finding: dict) -> str:
+   940→        """Generate an infrastructure fix for *finding*.
+   941→
+   942→        Returns HCL (Terraform), YAML (CloudFormation / K8s), or a
+   943→        Dockerfile / Nginx config snippet depending on the finding.
+   944→        """
+   945→        category = finding.get("category", "").lower()
+   946→        infra_type = finding.get("infra_type", "terraform")
+   947→
+   948→        cat_entry = CATEGORY_PATCH_MAP.get(category, {})
+   949→        base_fix = cat_entry.get("infra_fix", "")
+   950→
+   951→        if base_fix:
+   952→            return self._wrap_infra(base_fix.strip(), infra_type, category, finding)
+   953→
+   954→        # Generic infrastructure hardening when no specific template exists
+   955→        return self._generic_infra_fix(finding)
+   956→
+   957→    def _wrap_infra(self, content: str, infra_type: str, category: str, finding: dict) -> str:
+   958→        """Wrap a fix snippet in the appropriate infrastructure format."""
+   959→        target = finding.get("target", "app")
+   960→
+   961→        if infra_type == "cloudformation":
+   962→            return textwrap.dedent(f"""\
+   963→                # CloudFormation fix for {category}
+   964→                # Apply to: {finding.get('file', 'N/A')}
+   965→                Resources:
+   966→                  {target}SecurityPatch:
+   967→                    Type: AWS::CloudFormation::CustomResource
+   968→                    Properties:
+   969→                      ServiceToken: !Sub 'arn:aws:lambda:${{AWS::Region}}:${{AWS::AccountId}}:function/SecurityPatchFn'
+   970→                      Category: {category}
+   971→                
+   972→                # Manual steps:
+   973→                {content}
+   974→            """)
+   975→
+   976→        if infra_type == "dockerfile":
+   977→            return textwrap.dedent(f"""\
+   978→                # Dockerfile hardening for {category}
+   979→                # Apply to: {finding.get('file', 'Dockerfile')}
+   980→                FROM python:3.12-slim AS base
+   981→                
+   982→                # Security: run as non-root
+   983→                RUN useradd -r -s /bin/false appuser
+   984→                USER appuser
+   985→                
+   986→                # Security: read-only root filesystem hint
+   987→                ENV READONLY_ROOT_FS=true
+   988→                
+   989→                {content}
+   990→            """)
+   991→
+   992→        if infra_type == "k8s":
+   993→            return textwrap.dedent(f"""\
+   994→                # Kubernetes manifest fix for {category}
+   995→                apiVersion: v1
+   996→                kind: Pod
+   997→                metadata:
+   998→                  name: {target}
+   999→                  labels:
+  1000→                    app: {target}
+  1001→                spec:
+  1002→                  securityContext:
+  1003→                    runAsNonRoot: true
+  1004→                    runAsUser: 1000
+  1005→                    readOnlyRootFilesystem: true
+  1006→                    fsGroup: 1000
+  1007→                  containers:
+  1008→                    - name: {target}
+  1009→                      image: {target}:latest
+  1010→                      securityContext:
+  1011→                        allowPrivilegeEscalation: false
+  1012→                        readOnlyRootFilesystem: true
+  1013→                        capabilities:
+  1014→                          drop:
+  1015→                            - ALL
+  1016→                      resources:
+  1017→                        limits:
+  1018→                          memory: "256Mi"
+  1019→                          cpu: "500m"
+  1020→                # ---
+  1021→                {content}
+  1022→            """)
+  1023→
+  1024→        if infra_type == "nginx":
+  1025→            return textwrap.dedent(f"""\
+  1026→                # Nginx configuration fix for {category}
+  1027→                # Apply to: {finding.get('file', 'nginx.conf')}
+  1028→                server {{
+  1029→                    listen 443 ssl http2;
+  1030→                    server_name {finding.get('target', 'app.example.com')};
+  1031→                
+  1032→                    # --- Security fix for {category} ---
+  1033→                {content}
+  1034→                    # --- End fix ---
+  1035→                }}
+  1036→            """)
+  1037→
+  1038→        # Default: Terraform
+  1039→        return textwrap.dedent(f"""\
+  1040→            # Terraform fix for {category}
+  1041→            # Apply to: {finding.get('file', 'N/A')}
+  1042→            {content}
+  1043→        """)
+  1044→
+  1045→    def _generic_infra_fix(self, finding: dict) -> str:
+  1046→        """Generate a generic infrastructure hardening fix."""
+  1047→        target = finding.get("target", "app")
+  1048→        category = finding.get("category", "unknown")
+  1049→        port = finding.get("port", 443)
+  1050→        severity = finding.get("severity", "high").upper()
+  1051→
+  1052→        return textwrap.dedent(f"""\
+  1053→            # Generic infrastructure hardening for {category}
+  1054→            # Severity: {severity} | Target: {target}
+  1055→            
+  1056→            # Terraform: restrict security group ingress
+  1057→            resource "aws_security_group" "{target}_hardened" {{
+  1058→              name        = "{target}-hardened-sg"
+  1059→              description = "Hardened security group for {category} remediation"
+  1060→              
+  1061→              ingress {{
+  1062→                description = "HTTPS only"
+  1063→                from_port   = {port}
+  1064→                to_port     = {port}
+  1065→                protocol    = "tcp"
+  1066→                cidr_blocks = ["0.0.0.0/0"]
+  1067→              }}
+  1068→              
+  1069→              egress {{
+  1070→                from_port   = 0
+  1071→                to_port     = 0
+  1072→                protocol    = "-1"
+  1073→                cidr_blocks = ["0.0.0.0/0"]
+  1074→              }}
+  1075→            }}
+  1076→        """)
+  1077→
+  1078→    # -- CI/CD additions ---------------------------------------------------
+  1079→
+  1080→    def generate_cicd_additions(self, findings: list[dict]) -> str:
+  1081→        """Generate CI/CD pipeline additions for a list of findings.
+  1082→
+  1083→        Returns a combined string containing:
+  1084→        - A pre-commit hook script
+  1085→        - A GitHub Actions workflow
+  1086→        - A GitLab CI stage
+  1087→        """
+  1088→        categories = {f.get("category", "").lower() for f in findings}
+  1089→        has_secrets = "hardcoded_secret" in categories
+  1090→        has_sast = any(c in categories for c in ("sqli", "xss", "command_injection", "path_traversal", "ssrf", "ssti", "dangerous_eval", "unsafe_deserialization"))
+  1091→        has_docker = any(c in categories for c in ("debug_mode", "open_port"))
+  1092→        has_deps = any(c in categories for c in ("weak_crypto", "information_disclosure"))
+  1093→
+  1094→        parts: list[str] = []
+  1095→
+  1096→        # --- Pre-commit hook ---
+  1097→        pre_commit = textwrap.dedent("""\
+  1098→            #!/usr/bin/env bash
+  1099→            # ReconPro auto-generated pre-commit hook
+  1100→            # Install: cp .pre-commit-hook.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+  1101→            set -euo pipefail
+  1102→        """)
+  1103→        if has_secrets:
+  1104→            pre_commit += textwrap.dedent("""\
+  1105→                # --- Secret detection ---
+  1106→                if git diff --cached --name-only | xargs rg -l '(?i)(password|secret|api_key|token)\s*=\s*["\'][^"\']{8,}' 2>/dev/null; then
+  1107→                    echo "[RECONPRO] ERROR: Hardcoded secret detected in staged files."
+  1108→                    echo "[RECONPRO] Use environment variables instead."
+  1109→                    exit 1
+  1110→                fi
+  1111→            """)
+  1112→        if has_sast:
+  1113→            pre_commit += textwrap.dedent("""\
+  1114→                # --- Dangerous pattern detection ---
+  1115→                DANGEROUS_PATTERNS='eval\(|exec\(|shell=True|os\.system\(|subprocess\.call\(.*shell'
+  1116→                if git diff --cached -U0 | grep -qE "$DANGEROUS_PATTERNS"; then
+  1117→                    echo "[RECONPRO] WARNING: Potentially dangerous code pattern detected in staged changes."
+  1118→                    echo "[RECONPRO] Patterns: $DANGEROUS_PATTERNS"
+  1119→                    echo "[RECONPRO] Review before committing."
+  1120→                fi
+  1121→            """)
+  1122→        pre_commit += 'echo "[RECONPRO] Pre-commit checks passed.\n"
+  1123→        parts.append(pre_commit)
+  1124→
+  1125→        # --- GitHub Actions workflow ---
+  1126→        gh_actions = textwrap.dedent("""\
+  1127→            # .github/workflows/security.yml
+  1128→            # ReconPro auto-generated security workflow
+  1129→            name: Security Scan
+  1130→            on:
+  1131→              push:
+  1132→                branches: [main, develop]
+  1133→              pull_request:
+  1134→                branches: [main]
+  1135→            jobs:
+  1136→        """)
+  1137→        if has_secrets:
+  1138→            gh_actions += textwrap.dedent("""\
+  1139→                secret-scan:
+  1140→                  runs-on: ubuntu-latest
+  1141→                  steps:
+  1142→                    - uses: actions/checkout@v4
+  1143→                      with:
+  1144→                        fetch-depth: 0
+  1145→                    - name: TruffleHog Secret Scan
+  1146→                      uses: trufflesecurity/trufflehog@main
+  1147→                      with:
+  1148→                        extra_args: --only-verified
+  1149→            """)
+  1150→        if has_sast:
+  1151→            gh_actions += textwrap.dedent("""\
+  1152→                sast-scan:
+  1153→                  runs-on: ubuntu-latest
+  1154→                  steps:
+  1155→                    - uses: actions/checkout@v4
+  1156→                    - name: Python SAST (Bandit)
+  1157→                      run: |
+  1158→                        pip install bandit
+  1159→                        bandit -r . -f json -o bandit-report.json || true
+  1160→                        bandit -r . -ll
+  1161→                    - name: Upload Bandit Report
+  1162→                      uses: actions/upload-artifact@v4
+  1163→                      if: always()
+  1164→                      with:
+  1165→                        name: bandit-report
+  1166→                        path: bandit-report.json
+  1167→            """)
+  1168→        if has_docker:
+  1169→            gh_actions += textwrap.dedent("""\
+  1170→                docker-scan:
+  1171→                  runs-on: ubuntu-latest
+  1172→                  steps:
+  1173→                    - uses: actions/checkout@v4
+  1174→                    - name: Dockerfile Lint
+  1175→                      uses: hadolint/hadolint-action@v3.1.0
+  1176→                      with:
+  1177→                        dockerfile: Dockerfile
+  1178→            """)
+  1179→        if has_deps:
+  1180→            gh_actions += textwrap.dedent("""\
+  1181→                dependency-scan:
+  1182→                  runs-on: ubuntu-latest
+  1183→                  steps:
+  1184→                    - uses: actions/checkout@v4
+  1185→                    - name: Dependency Audit (pip-audit)
+  1186→                      run: |
+  1187→                        pip install pip-audit
+  1188→                        pip-audit -r requirements.txt || true
+  1189→            """)
+  1190→        if not any([has_secrets, has_sast, has_docker, has_deps]):
+  1191→            gh_actions += textwrap.dedent("""\
+  1192→                security-check:
+  1193→                  runs-on: ubuntu-latest
+  1194→                  steps:
+  1195→                    - uses: actions/checkout@v4
+  1196→                    - name: ReconPro Security Check
+  1197→                      run: echo "No specific security jobs generated for these findings."
+  1198→            """)
+  1199→        parts.append(gh_actions)
+  1200→
+  1201→        # --- GitLab CI ---
+  1202→        gitlab_ci = textwrap.dedent("""\
+  1203→            # .gitlab-ci.yml — security stage additions
+  1204→            # ReconPro auto-generated
+  1205→            stages:
+  1206→              - test
+  1207→              - security
+  1208→        """)
+  1209→        if has_secrets:
+  1210→            gitlab_ci += textwrap.dedent("""\
+  1211→                secret-scan:
+  1212→                  stage: security
+  1213→                  image: python:3.12-slim
+  1214→                  script:
+  1215→                    - pip install trufflehog
+  1216→                    - trufflehog git file://. --only-verified
+  1217→                  allow_failure: false
+  1218→            """)
+  1219→        if has_sast:
+  1220→            gitlab_ci += textwrap.dedent("""\
+  1221→                sast-bandit:
+  1222→                  stage: security
+  1223→                  image: python:3.12-slim
+  1224→                  script:
+  1225→                    - pip install bandit
+  1226→                    - bandit -r . -ll -f json -o bandit-report.json
+  1227→                  artifacts:
+  1228→                    reports:
+  1229→                      sast: bandit-report.json
+  1230→                    paths:
+  1231→                      - bandit-report.json
+  1232→                  allow_failure: false
+  1233→            """)
+  1234→        if has_deps:
+  1235→            gitlab_ci += textwrap.dedent("""\
+  1236→                dependency-audit:
+  1237→                  stage: security
+  1238→                  image: python:3.12-slim
+  1239→                  script:
+  1240→                    - pip install pip-audit
+  1241→                    - pip-audit -r requirements.txt
+  1242→                  allow_failure: true
+  1243→            """)
+  1244→        parts.append(gitlab_ci)
+  1245→
+  1246→        return "\n\n".join(parts) + "\n"
+  1247→
+  1248→
+  1249→# ---------------------------------------------------------------------------
+  1250→# DefenseBundle  —  batch defense orchestrator
+  1251→# ---------------------------------------------------------------------------
+  1252→
+  1253→class DefenseBundle:
+  1254→    """Orchestrate defense generation across all findings for a target."""
+  1255→
+  1256→    def __init__(self, target: str, findings: list[dict]) -> None:
+  1257→        self.target = target
+  1258→        self.findings = findings
+  1259→        self._generator = PatchGenerator()
+  1260→        self._bundle_id = uuid.uuid4().hex[:12]
+  1261→        self._generated_at = datetime.now(timezone.utc).isoformat()
+  1262→
+  1263→    def generate_all(self) -> dict[str, str | list[str] | dict[str, str]]:
+  1264→        """Generate all defense artifacts.
+  1265→
+  1266→        Returns:
+  1267→            {
+  1268→                "waf_rules": [...],
+  1269→                "code_patches": {...},
+  1270→                "infra_fixes": {...},
+  1271→                "cicd_additions": str,
+  1272→                "apply_script": str,
+  1273→                "rollback_script": str,
+  1274→            }
+  1275→        """
+  1276→        waf_rules: list[str] = []
+  1277→        code_patches: dict[str, str] = {}
+  1278→        infra_fixes: dict[str, str] = {}
+  1279→
+  1280→        for finding in self.findings:
+  1281→            cat = finding.get("category", "unknown")
+  1282→            fid = finding.get("id", hashlib.sha256(str(finding).encode()).hexdigest()[:8])
+  1283→
+  1284→            # WAF rules
+  1285→            rules = self._generator.generate_waf_rules(finding)
+  1286→            waf_rules.extend(rules)
+  1287→
+  1288→            # Code patches (only if file is specified)
+  1289→            if finding.get("file"):
+  1290→                patch = self._generator.generate_code_patch(finding)
+  1291→                key = f"{cat}:{fid}"
+  1292→                code_patches[key] = patch
+  1293→
+  1294→            # Infrastructure fixes
+  1295→            infra = self._generator.generate_infra_fix(finding)
+  1296→            if infra:
+  1297→                infra_fixes[f"{cat}:{fid}"] = infra
+  1298→
+  1299→        # CI/CD additions (generated once for all findings)
+  1300→        cicd = self._generator.generate_cicd_additions(self.findings)
+  1301→
+  1302→        # Apply and rollback scripts
+  1303→        apply_script = self.generate_apply_script()
+  1304→        rollback_script = self.generate_rollback_script()
+  1305→
+  1306→        return {
+  1307→            "waf_rules": waf_rules,
+  1308→            "code_patches": code_patches,
+  1309→            "infra_fixes": infra_fixes,
+  1310→            "cicd_additions": cicd,
+  1311→            "apply_script": apply_script,
+  1312→            "rollback_script": rollback_script,
+  1313→        }
+  1314→
+  1315→    def generate_apply_script(self) -> str:
+  1316→        """Generate a bash script that applies all generated fixes."""
+  1317→        all_defenses = self.generate_all()
+  1318→
+  1319→        script = textwrap.dedent(f"""\
+  1320→            #!/usr/bin/env bash
+  1321→            # ReconPro Defense Apply Script
+  1322→            # Bundle ID: {self._bundle_id}
+  1323→            # Target:   {self.target}
+  1324→            # Generated: {self._generated_at}
+  1325→            #
+  1326→            # USAGE: bash apply_defenses.sh [--dry-run]
+  1327→            #
+  1328→            set -euo pipefail
+  1329→
+  1330→            DRY_RUN=false
+  1331→            [[ "${{1:-}}" == "--dry-run" ]] && DRY_RUN=true
+  1332→
+  1333→            BACKUP_DIR=".reconpro-backups/{self._bundle_id}"
+  1334→            WAF_DIR=".reconpro-waf"
+  1335→            PATCH_DIR=".reconpro-patches"
+  1336→            CICD_DIR=".reconpro-cicd"
+  1337→
+  1338→            echo "========================================="
+  1339→            echo " ReconPro Defense Application"
+  1340→            echo " Target: {self.target}"
+  1341→            echo " Bundle: {self._bundle_id}"
+  1342→            echo "========================================="
+  1343→
+  1344→            # --- Create directories ---
+  1345→            mkdir -p "$BACKUP_DIR" "$WAF_DIR" "$PATCH_DIR" "$CICD_DIR"
+  1346→
+  1347→            # --- 1. Apply code patches ---
+  1348→            echo ""
+  1349→            echo "[1/4] Applying code patches..."
+  1350→            {self._bash_apply_patches(all_defenses.get("code_patches", {}), dry_run_var="DRY_RUN")}
+  1351→
+  1352→            # --- 2. Write WAF rules ---
+  1353→            echo ""
+  1354→            echo "[2/4] Writing WAF rules to $WAF_DIR/ ..."
+  1355→            {self._bash_write_waf(all_defenses.get("waf_rules", []))}
+  1356→
+  1357→            # --- 3. Write infrastructure fixes ---
+  1358→            echo ""
+  1359→            echo "[3/4] Writing infrastructure fixes to $PATCH_DIR/infra/ ..."
+  1360→            mkdir -p "$PATCH_DIR/infra"
+  1361→            {self._bash_write_infra(all_defenses.get("infra_fixes", {}))}
+  1362→
+  1363→            # --- 4. Write CI/CD additions ---
+  1364→            echo ""
+  1365→            echo "[4/4] Writing CI/CD additions to $CICD_DIR/ ..."
+  1366→            {self._bash_write_cicd(all_defenses.get("cicd_additions", ""), cicd_dir="$CICD_DIR")}
+  1367→
+  1368→            echo ""
+  1369→            echo "========================================="
+  1370→            echo " Defense application complete!"
+  1371→            echo " Review changes before committing."
+  1372→            echo " Backups stored in: $BACKUP_DIR"
+  1373→            echo "========================================="
+  1374→        """)
+  1375→        return script
+  1376→
+  1377→    def generate_rollback_script(self) -> str:
+  1378→        """Generate a bash script that reverts all applied fixes."""
+  1379→        script = textwrap.dedent(f"""\
+  1380→            #!/usr/bin/env bash
+  1381→            # ReconPro Defense Rollback Script
+  1382→            # Bundle ID: {self._bundle_id}
+  1383→            # Target:   {self.target}
+  1384→            #
+  1385→            # USAGE: bash rollback_defenses.sh
+  1386→            #
+  1387→            set -euo pipefail
+  1388→
+  1389→            BACKUP_DIR=".reconpro-backups/{self._bundle_id}"
+  1390→            WAF_DIR=".reconpro-waf"
+  1391→            PATCH_DIR=".reconpro-patches"
+  1392→            CICD_DIR=".reconpro-cicd"
+  1393→
+  1394→            echo "========================================="
+  1395→            echo " ReconPro Defense Rollback"
+  1396→            echo " Target: {self.target}"
+  1397→            echo " Bundle: {self._bundle_id}"
+  1398→            echo "========================================="
+  1399→
+  1400→            # --- 1. Restore code patches ---
+  1401→            if [[ -d "$BACKUP_DIR" ]]; then
+  1402→                echo "[1/3] Restoring files from backups..."
+  1403→                for backup_file in "$BACKUP_DIR"/*.bak; do
+  1404→                    [[ -f "$backup_file" ]] || continue
+  1405→                    original="${{backup_file%.bak}}"
+  1406→                    original="${{original#$BACKUP_DIR/}}"
+  1407→                    if [[ -f "$original" ]]; then
+  1408→                        cp "$backup_file" "$original"
+  1409→                        echo "  Restored: $original"
+  1410→                    fi
+  1411→                done
+  1412→            else
+  1413→                echo "[1/3] No backup directory found. Skipping file restore."
+  1414→            fi
+  1415→
+  1416→            # --- 2. Remove generated WAF/infra/CICD files ---
+  1417→            echo ""
+  1418→            echo "[2/3] Removing generated defense files..."
+  1419→            for d in "$WAF_DIR" "$PATCH_DIR" "$CICD_DIR"; do
+  1420→                if [[ -d "$d" ]]; then
+  1421→                    rm -rf "$d"
+  1422→                    echo "  Removed: $d"
+  1423→                fi
+  1424→            done
+  1425→
+  1426→            # --- 3. Clean up backup ---
+  1427→            echo ""
+  1428→            echo "[3/3] Cleaning up..."
+  1429→            if [[ -d "$BACKUP_DIR" ]]; then
+  1430→                rm -rf "$BACKUP_DIR"
+  1431→                echo "  Removed: $BACKUP_DIR"
+  1432→            fi
+  1433→
+  1434→            echo ""
+  1435→            echo "========================================="
+  1436→            echo " Rollback complete!"
+  1437→            echo " Review git diff for remaining changes."
+  1438→            echo "========================================="
+  1439→        """)
+  1440→        return script
+  1441→
+  1442→    def to_report(self) -> str:
+  1443→        """Generate a human-readable summary of all generated defenses."""
+  1444→        all_defenses = self.generate_all()
+  1445→
+  1446→        lines = [
+  1447→            "=" * 60,
+  1448→            f"  ReconPro Defense Report",
+  1449→            f"  Target: {self.target}",
+  1450→            f"  Bundle: {self._bundle_id}",
+  1451→            f"  Generated: {self._generated_at}",
+  1452→            f"  Findings processed: {len(self.findings)}",
+  1453→            "=" * 60,
+  1454→            "",
+  1455→        ]
+  1456→
+  1457→        # WAF rules summary
+  1458→        waf_rules = all_defenses.get("waf_rules", [])
+  1459→        lines.append(f"[WAF Rules]  {len(waf_rules)} rule(s) generated")
+  1460→        modsec_count = sum(1 for r in waf_rules if r.startswith("SecRule"))
+  1461→        nginx_count = sum(1 for r in waf_rules if r.startswith("location") or r.startswith("# Nginx") or r.startswith("map "))
+  1462→        aws_count = sum(1 for r in waf_rules if r.startswith("AWS_WAF_JSON:"))
+  1463→        cf_count = len(waf_rules) - modsec_count - nginx_count - aws_count
+  1464→        if modsec_count:
+  1465→            lines.append(f"    ModSecurity: {modsec_count}")
+  1466→        if nginx_count:
+  1467→            lines.append(f"    Nginx:       {nginx_count}")
+  1468→        if aws_count:
+  1469→            lines.append(f"    AWS WAF:     {aws_count}")
+  1470→        if cf_count:
+  1471→            lines.append(f"    Cloudflare:  {cf_count}")
+  1472→        lines.append("")
+  1473→
+  1474→        # Code patches summary
+  1475→        patches = all_defenses.get("code_patches", {})
+  1476→        lines.append(f"[Code Patches]  {len(patches)} patch(es) generated")
+  1477→        for key, patch in patches.items():
+  1478→            patch_lines = patch.strip().split("\n")
+  1479→            lines.append(f"    {key}: {len(patch_lines)} lines")
+  1480→        lines.append("")
+  1481→
+  1482→        # Infrastructure fixes summary
+  1483→        infras = all_defenses.get("infra_fixes", {})
+  1484→        lines.append(f"[Infra Fixes]  {len(infras)} fix(es) generated")
+  1485→        for key in infras:
+  1486→            lines.append(f"    {key}")
+  1487→        lines.append("")
+  1488→
+  1489→        # CI/CD summary
+  1490→        cicd = all_defenses.get("cicd_additions", "")
+  1491→        has_precommit = "pre-commit" in cicd.lower()
+  1492→        has_ghactions = "github" in cicd.lower()
+  1493→        has_gitlabci = "gitlab" in cicd.lower()
+  1494→        lines.append("[CI/CD Additions]")
+  1495→        if has_precommit:
+  1496→            lines.append("    Pre-commit hook:       YES")
+  1497→        if has_ghactions:
+  1498→            lines.append("    GitHub Actions:        YES")
+  1499→        if has_gitlabci:
+  1500→            lines.append("    GitLab CI:             YES")
+  1501→        if not any([has_precommit, has_ghactions, has_gitlabci]):
+  1502→            lines.append("    (none generated)")
+  1503→        lines.append("")
+  1504→
+  1505→        # Severity breakdown
+  1506→        sev_counts: dict[str, int] = {}
+  1507→        for f in self.findings:
+  1508→            s = f.get("severity", "unknown").upper()
+  1509→            sev_counts[s] = sev_counts.get(s, 0) + 1
+  1510→        lines.append("[Severity Breakdown]")
+  1511→        for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+  1512→            if sev in sev_counts:
+  1513→                lines.append(f"    {sev}: {sev_counts[sev]}")
+  1514→        lines.append("")
+  1515→
+  1516→        # Remediation summary
+  1517→        lines.append("[Remediation Guidance]")
+  1518→        seen: set[str] = set()
+  1519→        for f in self.findings:
+  1520→            cat = f.get("category", "")
+  1521→            if cat in seen:
+  1522→                continue
+  1523→            seen.add(cat)
+  1524→            entry = CATEGORY_PATCH_MAP.get(cat, {})
+  1525→            remediation = entry.get("remediation", "Review finding and apply manual fix.")
+  1526→            lines.append(f"    {cat}: {remediation}")
+  1527→
+  1528→        lines.append("")
+  1529→        lines.append("=" * 60)
+  1530→        lines.append("  Apply:  bash apply_defenses.sh [--dry-run]")
+  1531→        lines.append("  Revert: bash rollback_defenses.sh")
+  1532→        lines.append("=" * 60)
+  1533→
+  1534→        return "\n".join(lines)
+  1535→
+  1536→    # -- Helper methods for bash script generation --------------------------
+  1537→
+  1538→    @staticmethod
+  1539→    def _bash_apply_patches(patches: dict[str, str], dry_run_var: str = "DRY_RUN") -> str:
+  1540→        """Generate bash code to apply unified diff patches."""
+  1541→        if not patches:
+  1542→            return 'echo 
