@@ -59,3 +59,30 @@ Stage Summary:
 - 5 module-specific scanning hint pools (recon, auth, chain, gorgon, oblivion)
 - Total hint pools: 7→13, total hints: ~40→~65
 - All syntax and import checks pass
+---
+Task ID: 2
+Agent: main
+Task: Phase D — Responsive Grid + Panel Scaling + Collapse
+
+Work Log:
+- Analyzed existing CSS layout: left-panel 40%/right-panel 60% split, module-grid 3-col
+- Added modules-wrapper Vertical container for collapsible module section
+- Implemented on_resize handler with 150ms debounce
+- 3 responsive tiers: COMPACT (<80 cols, 2-col grid), STD (80-119, 3-col), WIDE (>=160, 4-col)
+- Added CSS classes: .compact, .grid-cols-2, .grid-cols-4, .collapsed, .expanded, .expanded-modules
+- Implemented panel scaling: Ctrl+Left/Ctrl+Right adjusts split ratio 20-70% in 5% steps
+- Implemented panel collapse: [ toggles chat panel, ] and = toggle module grid, Ctrl+Up toggles modules
+- Tab/Shift+Tab focus cycle now skips collapsed panels
+- Quick jump (0/1/2/3) redirects away from collapsed panels
+- Added _flash_split_indicator for brief layout mode display (1.5s)
+- Added 'layout' hint pool (6 hints) and updated focus tips with layout keys
+- Updated _show_help with 4 new keybinding entries
+- All files pass py_compile
+
+Stage Summary:
+- nexus_tui.py: 2533 → 2749 lines (+216 lines)
+- hint_bar.py: 332 → 340 lines (+8 lines, layout pool + updated focus tips)
+- 3 responsive layout tiers with automatic detection
+- Panel split ratio adjustable 20-70% via Ctrl+Arrow keys
+- 3 collapse toggles: [ (chat), ] (modules), = (modules), Ctrl+Up (modules)
+- Focus cycle smart-skips collapsed panels

@@ -525,6 +525,11 @@ class NexusApp(App):
     }}
 
     /* ── Module Grid ─────────────────────────────────────── */
+    #modules-wrapper {{
+        width: 100%;
+        height: 2fr;
+        transition: height 200ms in 100ms;
+    }}
     #modules-header {{
         height: 1;
         background: {HEADER_BG};
@@ -545,6 +550,7 @@ class NexusApp(App):
         grid-gutter: 0 2;
         grid-columns: 1fr 1fr 1fr;
         overflow-y: auto;
+        transition: height 300ms in 200ms;
     }}
     .module-cell {{
         height: 3;
@@ -553,6 +559,63 @@ class NexusApp(App):
         margin-bottom: 1;
         background: {BG};
         overflow: hidden;
+    }}
+
+    /* ── Phase D: Responsive Layout ────────────────────────── */
+    #content.compact {{
+        /* When terminal < 80 cols: stack panels vertically */
+    }}
+    #content.compact #left-panel {{
+        width: 100%;
+        height: 50%;
+        dock: top;
+        border-right: none;
+        border-bottom: solid {BORDER_COLOR};
+    }}
+    #content.compact #right-panel {{
+        width: 100%;
+        height: 50%;
+    }}
+    #module-grid.grid-cols-2 {{
+        grid-size: 2;
+        grid-columns: 1fr 1fr;
+    }}
+    #module-grid.grid-cols-4 {{
+        grid-size: 4;
+        grid-columns: 1fr 1fr 1fr 1fr;
+    }}
+
+    /* ── Phase D: Panel Collapse ───────────────────────────── */
+    #left-panel.collapsed {{
+        width: 0;
+        overflow: hidden;
+        border: none;
+    }}
+    #left-panel.collapsed * {{
+        display: none;
+    }}
+    #right-panel.expanded {{
+        width: 100%;
+    }}
+    #modules-wrapper.collapsed {{
+        height: 0;
+        overflow: hidden;
+    }}
+    #modules-wrapper.collapsed * {{
+        display: none;
+    }}
+    #modules-header.collapsed {{
+        display: none;
+    }}
+    #findings-feed.expanded-modules {{
+        height: 5fr;
+    }}
+
+    /* ── Panel Split Indicator (shown briefly on resize) ──── */
+    .split-indicator {{
+        text-align: center;
+        color: {ACCENT};
+        text-style: bold;
     }}
 
     /* ── Hint Bar ──────────────────────────────────────── */
@@ -654,6 +717,10 @@ class NexusApp(App):
         Binding("ctrl+c", "quit", "Quit"),
         Binding("d", "show_last_finding", "Detail"),
         Binding("escape", "dismiss_completer", "Dismiss"),
+        # Phase D: layout bindings
+        Binding("ctrl+left", "narrow_left", "Narrow left"),
+        Binding("ctrl+right", "widen_left", "Widen left"),
+        Binding("ctrl+up", "modules_collapse", "Toggle modules"),
     ]
 
     # ── Reactive state ──
@@ -685,6 +752,13 @@ class NexusApp(App):
         self._completer_active: bool = False
         self._findings_cursor: int = -1  # j/k navigation index
         self._first_scan_done: bool = False  # tracks onboarding hint
+        # ── Phase D: responsive layout state ──
+        self._split_ratio: int = 40  # left panel width %
+        self._left_collapsed: bool = False
+        self._modules_collapsed: bool = False
+        self._resize_timer: Optional[Timer] = None
+        self._compact_mode: bool = False
+        self._split_flash_timer: Optional[Timer] = None
 
     # ── Compose ──────────────────────────────────────────────────────────────
 
@@ -735,13 +809,15 @@ class NexusApp(App):
                         max_lines=1000,
                         wrap=True,
                     )
-                    yield Label("⬡ MODULES", id="modules-header")
-                    with Container(id="module-grid"):
-                        for mod_id, mod_name in MODULE_NAMES.items():
-                            cell = ModuleCell(mod_id, mod_name)
-                            cell.set_class(True, "module-cell")
-                            self._module_cells[mod_id] = cell
-                            yield cell
+                    # Phase D: modules-wrapper for collapse/expand
+                    with Vertical(id="modules-wrapper"):
+                        yield Label("⬡ MODULES", id="modules-header")
+                        with Container(id="module-grid"):
+                            for mod_id, mod_name in MODULE_NAMES.items():
+                                cell = ModuleCell(mod_id, mod_name)
+                                cell.set_class(True, "module-cell")
+                                self._module_cells[mod_id] = cell
+                                yield cell
 
             # Velocity meter
             yield VelocityMeter(id="velocity-meter")
@@ -779,7 +855,27 @@ class NexusApp(App):
         # ── Number keys: quick jump to panels (0=input, 1=chat, 2=findings, 3=modules) ──
         if event.key in ("0", "1", "2", "3") and not self._input_focused():
             jump_map = {"0": "#command-input", "1": "#chat-log", "2": "#findings-feed", "3": "#module-grid"}
-            self._focus_widget(jump_map[event.key])
+            # Skip panel jump to collapsed panels
+            target_sel = jump_map[event.key]
+            if event.key == "1" and self._left_collapsed:
+                target_sel = "#findings-feed"
+            if event.key == "3" and self._modules_collapsed:
+                target_sel = "#findings-feed"
+            self._focus_widget(target_sel)
+            event.stop()
+            return
+
+        # ── Phase D: [ and ] to toggle panel collapse ──
+        if event.key == "[" and not self._input_focused():
+            self._toggle_left_panel()
+            event.stop()
+            return
+        if event.key == "]" and not self._input_focused():
+            self._toggle_right_panel()
+            event.stop()
+            return
+        if event.key == "=" and not self._input_focused():
+            self._toggle_modules()
             event.stop()
             return
 
@@ -1390,16 +1486,229 @@ class NexusApp(App):
             pass
 
     def action_cycle_focus(self) -> None:
-        """Tab cycles focus between panels and input."""
-        self._focus_idx = (self._focus_idx + 1) % len(self._focus_order)
-        selector = self._focus_order[self._focus_idx]
-        self._focus_widget(selector)
+        """Tab cycles focus between panels and input.
+
+        Phase D: skips collapsed panels in the focus cycle.
+        """
+        # Build effective focus order excluding collapsed panels
+        effective = ["#command-input"]
+        if not self._left_collapsed:
+            effective.append("#chat-log")
+        effective.append("#findings-feed")
+        if not self._modules_collapsed:
+            effective.append("#module-grid")
+
+        # Find current position in effective order
+        current_focused = None
+        for sel in effective:
+            try:
+                if self.query_one(sel, Widget).has_focus:
+                    current_focused = sel
+                    break
+            except NoMatches:
+                pass
+
+        if current_focused and current_focused in effective:
+            idx = effective.index(current_focused)
+            next_idx = (idx + 1) % len(effective)
+        else:
+            next_idx = 0
+
+        self._focus_widget(effective[next_idx])
 
     def action_cycle_focus_reverse(self) -> None:
-        """Shift+Tab cycles focus in reverse."""
-        self._focus_idx = (self._focus_idx - 1) % len(self._focus_order)
-        selector = self._focus_order[self._focus_idx]
-        self._focus_widget(selector)
+        """Shift+Tab cycles focus in reverse. Skips collapsed panels."""
+        effective = ["#command-input"]
+        if not self._left_collapsed:
+            effective.append("#chat-log")
+        effective.append("#findings-feed")
+        if not self._modules_collapsed:
+            effective.append("#module-grid")
+
+        current_focused = None
+        for sel in effective:
+            try:
+                if self.query_one(sel, Widget).has_focus:
+                    current_focused = sel
+                    break
+            except NoMatches:
+                pass
+
+        if current_focused and current_focused in effective:
+            idx = effective.index(current_focused)
+            prev_idx = (idx - 1) % len(effective)
+        else:
+            prev_idx = 0
+
+        self._focus_widget(effective[prev_idx])
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Phase D: Responsive Layout + Panel Scaling + Collapse
+    # ════════════════════════════════════════════════════════════════════════
+
+    def on_resize(self, event) -> None:
+        """Adapt layout to terminal size changes.
+
+        - < 80 cols: compact mode (stack panels vertically, 2-col grid)
+        - 80–119 cols: standard (3-col grid)
+        - >= 120 cols: wide (4-col grid)
+        """
+        # Debounce to avoid flicker during rapid resize
+        if self._resize_timer is not None:
+            self._resize_timer.stop()
+        self._resize_timer = self.set_timer(0.15, lambda: self._apply_responsive_layout(event.width, event.height))
+
+    def _apply_responsive_layout(self, width: int, height: int) -> None:
+        """Apply layout changes based on terminal dimensions."""
+        try:
+            content = self.query_one("#content", Widget)
+            grid = self.query_one("#module-grid", Container)
+        except NoMatches:
+            return
+
+        # Compact mode: < 80 cols
+        if width < 80:
+            if not self._compact_mode:
+                content.set_class(True, "compact")
+                grid.set_class(True, "grid-cols-2")
+                grid.remove_class("grid-cols-4")
+                self._compact_mode = True
+                self._flash_split_indicator("COMPACT")
+            return
+
+        # Wide mode: >= 120 cols
+        if width >= 120:
+            if self._compact_mode:
+                content.remove_class("compact")
+                self._compact_mode = False
+            if width >= 160:
+                grid.set_class(True, "grid-cols-4")
+                grid.remove_class("grid-cols-2")
+            else:
+                grid.remove_class("grid-cols-4")
+                grid.remove_class("grid-cols-2")
+            self._flash_split_indicator("WIDE" if width >= 160 else "STD")
+            return
+
+        # Standard mode: 80-119 cols
+        if self._compact_mode:
+            content.remove_class("compact")
+            self._compact_mode = False
+        grid.remove_class("grid-cols-4")
+        grid.remove_class("grid-cols-2")
+        self._flash_split_indicator("STD")
+
+    def _flash_split_indicator(self, label: str) -> None:
+        """Briefly show the layout mode in bottom-info."""
+        try:
+            el = self.query_one("#bottom-info", Label)
+            el.update(f"[{ACCENT}]{label} {self._split_ratio}:{100 - self._split_ratio}[/{ACCENT}]")
+            if self._split_flash_timer:
+                self._split_flash_timer.stop()
+            self._split_flash_timer = self.set_timer(1.5, self._clear_split_indicator)
+        except NoMatches:
+            pass
+
+    def _clear_split_indicator(self) -> None:
+        """Clear the split ratio indicator."""
+        self._split_flash_timer = None
+        try:
+            el = self.query_one("#bottom-info", Label)
+            el.update("")
+        except NoMatches:
+            pass
+
+    def action_narrow_left(self) -> None:
+        """Ctrl+Left: narrow the left panel (min 20%)."""
+        if self._left_collapsed:
+            return
+        self._split_ratio = max(20, self._split_ratio - 5)
+        self._apply_split_ratio()
+
+    def action_widen_left(self) -> None:
+        """Ctrl+Right: widen the left panel (max 70%)."""
+        if self._left_collapsed:
+            return
+        self._split_ratio = min(70, self._split_ratio + 5)
+        self._apply_split_ratio()
+
+    def _apply_split_ratio(self) -> None:
+        """Apply the current split ratio to panel widths."""
+        try:
+            left = self.query_one("#left-panel", Widget)
+            right = self.query_one("#right-panel", Widget)
+            left.styles.width = f"{self._split_ratio}%"
+            right.styles.width = f"{100 - self._split_ratio}%"
+        except NoMatches:
+            pass
+        self._flash_split_indicator(f"{self._split_ratio}:{100 - self._split_ratio}")
+
+    def action_modules_collapse(self) -> None:
+        """Ctrl+Up: toggle module grid visibility."""
+        self._toggle_modules()
+
+    def _toggle_left_panel(self) -> None:
+        """Toggle left (chat) panel collapse with [ key."""
+        try:
+            left = self.query_one("#left-panel", Widget)
+            right = self.query_one("#right-panel", Widget)
+            if self._left_collapsed:
+                left.remove_class("collapsed")
+                right.remove_class("expanded")
+                left.styles.width = f"{self._split_ratio}%"
+                right.styles.width = f"{100 - self._split_ratio}%"
+                self._left_collapsed = False
+            else:
+                left.set_class(True, "collapsed")
+                right.set_class(True, "expanded")
+                self._left_collapsed = True
+                # Focus jumps to findings if chat was focused
+                try:
+                    chat = self.query_one("#chat-log", RichLog)
+                    if chat.has_focus:
+                        self.query_one("#findings-feed", RichLog).focus()
+                except NoMatches:
+                    pass
+            mode = "CHAT ON" if not self._left_collapsed else "CHAT OFF"
+            self._flash_split_indicator(mode)
+        except NoMatches:
+            pass
+
+    def _toggle_right_panel(self) -> None:
+        """Toggle right panel — collapses modules section with ] key.
+
+        In the TUI context, ] toggles the modules grid to maximize findings space.
+        """
+        # ] key actually toggles modules (more useful than hiding findings)
+        self._toggle_modules()
+
+    def _toggle_modules(self) -> None:
+        """Toggle module grid visibility."""
+        try:
+            wrapper = self.query_one("#modules-wrapper", Widget)
+            header = self.query_one("#modules-header", Label)
+            feed = self.query_one("#findings-feed", RichLog)
+            if self._modules_collapsed:
+                wrapper.remove_class("collapsed")
+                header.remove_class("collapsed")
+                feed.remove_class("expanded-modules")
+                self._modules_collapsed = False
+            else:
+                wrapper.set_class(True, "collapsed")
+                header.set_class(True, "collapsed")
+                feed.set_class(True, "expanded-modules")
+                self._modules_collapsed = True
+                # Focus jumps to findings if module-grid was focused
+                try:
+                    grid = self.query_one("#module-grid", Container)
+                    if grid.has_focus:
+                        feed.focus()
+                except NoMatches:
+                    pass
+            mode = "MODS ON" if not self._modules_collapsed else "MODS OFF"
+            self._flash_split_indicator(mode)
+        except NoMatches:
+            pass
 
     def action_clear_feed(self) -> None:
         """Ctrl+L: clear findings feed."""
@@ -1660,6 +1969,10 @@ class NexusApp(App):
             (f"[{DIM_CYAN}]Shift+Tab[/]     Reverse focus cycle", ""),
             (f"[{DIM_CYAN}]0/1/2/3[/]       Quick jump: input/chat/findings/modules", ""),
             (f"[{DIM_CYAN}]d[/]            Inspect last finding", ""),
+            (f"[{DIM_CYAN}]Ctrl+←/→[/]     Resize left/right panel split", ""),
+            (f"[{DIM_CYAN}]Ctrl+↑[/]       Toggle module grid", ""),
+            (f"[{DIM_CYAN}][[/]            Toggle chat panel", ""),
+            (f"[{DIM_CYAN}]]=[/]            Toggle module grid", ""),
         ]
         for line in help_lines:
             self._chat(f"  {line[0]}  {line[1]}")

@@ -136,14 +136,22 @@ HINTS: Dict[str, List[str]] = {
     "focused_panel": [
         "Focused: [cyan]{focus}[/] · [cyan]Esc[/] back to input",
     ],
+    "layout": [
+        "[cyan]Ctrl+←/→[/] resizes left/right split (20-70%)",
+        "[cyan][[/] toggles chat panel · [cyan]=[/] toggles module grid",
+        "[cyan]Ctrl+↑[/] toggles module grid visibility",
+        "Layout adapts automatically when you resize the terminal",
+        "Narrow terminals (< 80 cols) switch to compact stacked mode",
+        "Wide terminals (>= 160 cols) show 4-column module grid",
+    ],
 }
 
 # ── Keybinding tips per focused widget ──
 _FOCUS_TIPS: Dict[str, str] = {
-    "command-input": "[dim]Tab complete · ↑↓ history · Ctrl+K clear · Ctrl+U clear-left[/]",
-    "chat-log": "[dim]↑↓ scroll · j/k navigate · 0 jump to input · Esc back[/]",
-    "findings-feed": "[dim]j/k navigate findings · Enter detail · d last finding · 0 input[/]",
-    "module-grid": "[dim]↑↓←→ navigate cells · 0 jump to input · Esc back[/]",
+    "command-input": "[dim]Tab complete · ↑↓ history · Ctrl+←→ resize · [ toggle chat[/]",
+    "chat-log": "[dim]↑↓ scroll · j/k navigate · 0 jump to input · Esc back · [ collapse[/]",
+    "findings-feed": "[dim]j/k navigate findings · Enter detail · d last finding · 0 input · = toggle mods[/]",
+    "module-grid": "[dim]↑↓←→ navigate cells · 0 jump to input · Esc back · = collapse mods[/]",
 }
 
 
