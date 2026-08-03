@@ -57,6 +57,7 @@ HEADER_BG = Theme.current().HEADER_BG
 INPUT_BG = Theme.current().INPUT_BG
 TEXT_DIM = Theme.current().TEXT_DIM
 MUTED = Theme.current().MUTED
+ACCENT = Theme.current().ACCENT
 
 SEV_STYLES: Dict[str, str] = {
     "critical": Theme.current().sev_style("critical"),
@@ -387,6 +388,21 @@ class NexusApp(App):
         width: 100%;
         height: 100%;
     }}
+
+    /* ── Phase C: Focused panel glow ──────────────────────── */
+    #left-panel.panel-focused {{
+        border-right: solid {ACCENT};
+    }}
+    #right-panel.panel-focused {{
+        border: solid {ACCENT};
+    }}
+    #chat-log.panel-focused,
+    #findings-feed.panel-focused {{
+        border: solid {ACCENT};
+    }}
+    .panel-focused-border {{
+        border: solid {ACCENT} !important;
+    }}
     #main-container.visible {{
         display: block;
     }}
@@ -634,6 +650,7 @@ class NexusApp(App):
         Binding("ctrl+l", "clear_feed", "Clear feed"),
         Binding("ctrl+s", "rescan", "Re-scan"),
         Binding("tab", "cycle_focus", "Cycle focus"),
+        Binding("shift+tab", "cycle_focus_reverse", "Focus back"),
         Binding("ctrl+c", "quit", "Quit"),
         Binding("d", "show_last_finding", "Detail"),
         Binding("escape", "dismiss_completer", "Dismiss"),
@@ -664,8 +681,10 @@ class NexusApp(App):
         # ── Phase B: findings-per-minute tracker ──
         self._finding_timestamps: List[float] = []
         self._fpm_timer: Optional[Timer] = None
-        # ── Phase C: completer state ──
+        # ── Phase C: completer + navigation state ──
         self._completer_active: bool = False
+        self._findings_cursor: int = -1  # j/k navigation index
+        self._first_scan_done: bool = False  # tracks onboarding hint
 
     # ── Compose ──────────────────────────────────────────────────────────────
 
@@ -744,7 +763,7 @@ class NexusApp(App):
     # ── Mount ───────────────────────────────────────────────────────────────
 
     def on_key(self, event: Key) -> None:
-        """Handle key events — boot skip + completer + history navigation."""
+        """Handle key events — boot skip + completer + history + vim-nav."""
         # Skip boot on ANY key press during boot sequence
         if not self._boot_done and not self._boot_skipped:
             self._boot_skipped = True
@@ -757,6 +776,13 @@ class NexusApp(App):
             self._finish_boot()
             return
 
+        # ── Number keys: quick jump to panels (0=input, 1=chat, 2=findings, 3=modules) ──
+        if event.key in ("0", "1", "2", "3") and not self._input_focused():
+            jump_map = {"0": "#command-input", "1": "#chat-log", "2": "#findings-feed", "3": "#module-grid"}
+            self._focus_widget(jump_map[event.key])
+            event.stop()
+            return
+
         # ── Tab: completer accept/cycle (when input focused + completer visible) ──
         if event.key == "tab":
             try:
@@ -765,11 +791,7 @@ class NexusApp(App):
                 if inp.has_focus and comp.visible:
                     accepted = comp.accept_top()
                     if accepted:
-                        # Replace the first word with the accepted command
-                        parts = inp.value.split()
-                        rest = parts[1:] if len(parts) > 1 else []
-                        inp.value = accepted + (" " + " ".join(rest) if rest else "")
-                        inp.cursor_position = len(inp.value)
+                        self._apply_completion(inp, comp, accepted)
                     event.stop()
                     return
             except NoMatches:
@@ -777,7 +799,7 @@ class NexusApp(App):
             # Fall through to default Tab behavior (cycle focus)
             return
 
-        # ── Escape: dismiss completer ──
+        # ── Escape: dismiss completer, close modal, or jump to input ──
         if event.key == "escape":
             try:
                 comp = self.query_one("#cmd-completer", CommandCompleter)
@@ -787,6 +809,12 @@ class NexusApp(App):
                     return
             except NoMatches:
                 pass
+            # If any modal screen is open, Escape will dismiss it via Textual
+            # Otherwise jump back to input
+            if not self._input_focused():
+                self._focus_input()
+                event.stop()
+                return
 
         # ── Up/Down in completer: cycle suggestions ──
         if event.key in ("up", "down"):
@@ -796,6 +824,29 @@ class NexusApp(App):
                 if comp.visible and inp.has_focus:
                     direction = -1 if event.key == "up" else 1
                     comp.cycle_selection(direction)
+                    event.stop()
+                    return
+            except NoMatches:
+                pass
+
+        # ── j/k vim-style navigation in findings feed ──
+        if event.key in ("j", "k"):
+            try:
+                feed = self.query_one("#findings-feed", RichLog)
+                if feed.has_focus and self._findings_list:
+                    self._vim_navigate_findings(event.key)
+                    event.stop()
+                    return
+            except NoMatches:
+                pass
+
+        # ── Enter on findings: open detail modal ──
+        if event.key == "enter":
+            try:
+                feed = self.query_one("#findings-feed", RichLog)
+                if feed.has_focus and self._findings_list:
+                    idx = self._findings_cursor if 0 <= self._findings_cursor < len(self._findings_list) else len(self._findings_list) - 1
+                    self.push_screen(FindingDetailModal(self._findings_list[idx]))
                     event.stop()
                     return
             except NoMatches:
@@ -835,6 +886,152 @@ class NexusApp(App):
         except NoMatches:
             pass
 
+    def _input_focused(self) -> bool:
+        """Check if the command input currently has focus."""
+        try:
+            return self.query_one("#command-input", Input).has_focus
+        except NoMatches:
+            return False
+
+    def _focus_widget(self, selector: str) -> None:
+        """Focus a widget by selector and update panel glow + hint tip."""
+        try:
+            widget = self.query_one(selector, Widget)
+            widget.focus()
+            self._update_panel_focus(selector)
+            # Show focus-specific keybinding tip
+            try:
+                self.query_one("#hint-bar", HintBar).push_focus_tip(selector)
+            except NoMatches:
+                pass
+        except NoMatches:
+            pass
+
+    def _update_panel_focus(self, focused_selector: str) -> None:
+        """Update the panel-focused CSS class on panels.
+
+        Only one panel should be highlighted at a time.
+        """
+        # Map selectors to their parent panel ids
+        panel_map = {
+            "#command-input": None,  # input is in bottom bar, no panel
+            "#chat-log": "#left-panel",
+            "#findings-feed": "#right-panel",
+            "#module-grid": "#right-panel",
+        }
+        panel_id = panel_map.get(focused_selector)
+
+        # Clear all panel-focused classes
+        for pid in ("#left-panel", "#right-panel"):
+            try:
+                self.query_one(pid, Widget).set_class(False, "panel-focused")
+            except NoMatches:
+                pass
+
+        # Set focused panel
+        if panel_id:
+            try:
+                self.query_one(panel_id, Widget).set_class(True, "panel-focused")
+            except NoMatches:
+                pass
+
+    def _apply_completion(self, inp: Input, comp: CommandCompleter, accepted: str) -> None:
+        """Apply a completion suggestion to the input field.
+
+        Phase C: handles both command-level and arg-level completions.
+        For arg mode, appends/replaces the last word instead of the first.
+        """
+        parts = inp.value.split()
+
+        if comp._mode == "command":
+            # Replace the first word with the accepted command
+            rest = parts[1:] if len(parts) > 1 else []
+            inp.value = accepted + (" " + " ".join(rest) if rest else "")
+        else:
+            # Arg-level: replace the last word
+            if len(parts) >= 2:
+                parts[-1] = accepted
+                inp.value = " ".join(parts)
+            else:
+                inp.value = accepted
+
+        inp.cursor_position = len(inp.value)
+
+    def _vim_navigate_findings(self, direction: str) -> None:
+        """j/k vim-style navigation through the findings list.
+
+        Scrolls the findings feed and updates the cursor position.
+        """
+        if not self._findings_list:
+            return
+
+        if direction == "j":
+            self._findings_cursor = min(self._findings_cursor + 1, len(self._findings_list) - 1)
+        else:  # k
+            self._findings_cursor = max(self._findings_cursor - 1, 0)
+
+        # Scroll the feed to keep the cursor visible
+        try:
+            feed = self.query_one("#findings-feed", RichLog)
+            feed.scroll_to(y=self._findings_cursor, animate=False)
+        except NoMatches:
+            pass
+
+        # Show cursor position in bottom-info
+        try:
+            el = self.query_one("#bottom-info", Label)
+            total = len(self._findings_list)
+            cursor = self._findings_cursor + 1
+            finding = self._findings_list[self._findings_cursor]
+            sev = finding.get("severity", "info").lower()
+            title = finding.get("title", "?")[:40]
+            sev_style = SEV_STYLES.get(sev, "white")
+            el.update(f"[{sev_style}]{cursor}/{total}[/{sev_style}] [{DIM_CYAN}]{title}[/{DIM_CYAN}]")
+        except NoMatches:
+            pass
+
+    def _push_error_hint(self) -> None:
+        """Push error_state context hints to the hint bar."""
+        try:
+            self.query_one("#hint-bar", HintBar).push_context("error_state")
+        except NoMatches:
+            pass
+
+    def _get_target_history(self) -> List[str]:
+        """Extract unique targets from command history."""
+        targets: List[str] = []
+        seen: set = set()
+        for cmd in reversed(self._command_history):
+            parts = cmd.split()
+            if len(parts) >= 2 and parts[0] in ("scan", "blitz", "swarm", "subdomains", "adversarial"):
+                t = parts[1]
+                if t not in seen:
+                    seen.add(t)
+                    targets.append(t)
+        return targets[:10]
+
+    def _get_module_name_list(self) -> List[str]:
+        """Return list of module id strings for completion."""
+        return list(MODULE_NAMES.keys())
+
+    def _update_severity_hints(self) -> None:
+        """Push severity-aware hints if critical/high findings exist."""
+        if not self._findings_list:
+            return
+        crit = sum(1 for f in self._findings_list if f.get("severity", "").lower() == "critical")
+        high = sum(1 for f in self._findings_list if f.get("severity", "").lower() == "high")
+        med = sum(1 for f in self._findings_list if f.get("severity", "").lower() == "medium")
+        if crit > 0:
+            try:
+                self.query_one("#hint-bar", HintBar).push_dynamic_context(
+                    "critical_findings",
+                    critical=crit, high=high, medium=med,
+                    total=len(self._findings_list),
+                    score=self.score, target=self.current_target,
+                )
+            except NoMatches:
+                pass
+
     def _finish_boot(self) -> None:
         """Called from boot screen when animation completes."""
         try:
@@ -858,7 +1055,15 @@ class NexusApp(App):
         chat.write(f"[{DIM_CYAN}]──────────────────────────────────────[/]")
         chat.write(f"[{GREEN}]●[/] [{DIM_CYAN}]System ready. {len(MODULE_NAMES)} modules loaded.[/]")
         chat.write(f"[{DIM_CYAN}]  Type [cyan bold]help[/] for commands, or start with [cyan bold]scan <target>[/][/]")
+        chat.write(f"[{DIM_CYAN}]  Quick jump: [cyan]0[/] input · [cyan]1[/] chat · [cyan]2[/] findings · [cyan]3[/] modules[/]")
         chat.write("")
+
+        # Phase C: show first_scan onboarding hints
+        if not self._first_scan_done:
+            try:
+                self.query_one("#hint-bar", HintBar).push_context("first_scan")
+            except NoMatches:
+                pass
 
     # ── Reactive watchers ──────────────────────────────────────────────────
 
@@ -981,18 +1186,24 @@ class NexusApp(App):
                     self.query_one("#spark-findings", Sparkline).push(0.0)
                 except NoMatches:
                     pass
-                # Switch hints to has_findings if we have data
-                try:
-                    if self.finding_count > 0:
+                # Switch hints: severity-aware if critical, else has_findings/has_target
+                self._update_severity_hints()
+                if self.finding_count > 0 and not any(
+                    f.get("severity", "").lower() == "critical" for f in self._findings_list
+                ):
+                    try:
                         self.query_one("#hint-bar", HintBar).push_context(
                             "has_findings", target=self.current_target
                         )
-                    elif self.current_target:
+                    except NoMatches:
+                        pass
+                elif not self._findings_list and self.current_target:
+                    try:
                         self.query_one("#hint-bar", HintBar).push_context(
                             "has_target", target=self.current_target
                         )
-                except NoMatches:
-                    pass
+                    except NoMatches:
+                        pass
         except NoMatches:
             pass
         # Update hint bar context
@@ -1082,6 +1293,8 @@ class NexusApp(App):
             comp.configure_context(
                 has_target=bool(self.current_target),
                 is_scanning=self.is_scanning,
+                target_history=self._get_target_history(),
+                module_names=self._get_module_name_list(),
             )
             comp.show_suggestions(event.value)
             self._completer_active = comp.visible
@@ -1100,11 +1313,13 @@ class NexusApp(App):
         """Tab cycles focus between panels and input."""
         self._focus_idx = (self._focus_idx + 1) % len(self._focus_order)
         selector = self._focus_order[self._focus_idx]
-        try:
-            widget = self.query_one(selector, Widget)
-            widget.focus()
-        except NoMatches:
-            pass
+        self._focus_widget(selector)
+
+    def action_cycle_focus_reverse(self) -> None:
+        """Shift+Tab cycles focus in reverse."""
+        self._focus_idx = (self._focus_idx - 1) % len(self._focus_order)
+        selector = self._focus_order[self._focus_idx]
+        self._focus_widget(selector)
 
     def action_clear_feed(self) -> None:
         """Ctrl+L: clear findings feed."""
@@ -1294,6 +1509,11 @@ class NexusApp(App):
             (f"[{DIM_CYAN}]Ctrl+L[/]     Clear findings", ""),
             (f"[{DIM_CYAN}]Ctrl+S[/]     Re-scan last target", ""),
             (f"[{DIM_CYAN}]↑/↓[/]         Completer nav / history", ""),
+            (f"[{DIM_CYAN}]j/k[/]         Navigate findings (vim)", ""),
+            (f"[{DIM_CYAN}]Enter[/]       Open finding detail in findings", ""),
+            (f"[{DIM_CYAN}]Shift+Tab[/]   Reverse focus cycle", ""),
+            (f"[{DIM_CYAN}]0/1/2/3[/]     Quick jump: input/chat/findings/modules", ""),
+            (f"[{DIM_CYAN}]Esc[/]         Back to input (from any panel)", ""),
             (f"[{DIM_CYAN}]d[/]          Inspect last finding", ""),
             (f"[{DIM_CYAN}]Any key[/]    Skip boot animation", ""),
         ]
@@ -1333,6 +1553,7 @@ class NexusApp(App):
             self._chat(f"[{DIM_CYAN}]Scanning [cyan bold]{target}[/]...[/]")
 
         self.current_target = target
+        self._first_scan_done = True
         self._run_scan_worker(target, modules=modules)
 
     def _handle_audit(self, args: List[str]) -> None:
@@ -1464,6 +1685,8 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ Scan error: {e}[/]")
+            # Phase C: push error_state hints
+            self.call_from_thread(self._push_error_hint)
             if modules:
                 for m in modules:
                     if m in self._module_cells:
@@ -1751,6 +1974,9 @@ class NexusApp(App):
         self.score = new_score
         self.grade = new_grade
         self.last_scan_data = data
+
+        # Phase C: trigger severity-aware hints after scan data loaded
+        self._update_severity_hints()
 
         # Summary in chat
         n = len(data.get("findings", []))

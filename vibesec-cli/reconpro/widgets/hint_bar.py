@@ -1,25 +1,32 @@
 """HintBar — Adaptive contextual hint strip below the command input.
 
+Phase C enhancements:
+  - 4 new context pools: ``first_scan``, ``critical_findings``, ``error_state``,
+    ``focused_panel``
+  - Severity-aware hints: dynamically injects critical/high counts
+  - Dynamic keybinding tips that change based on the focused widget
+  - Faster 6-second rotation interval (was 8)
+  - ``push_dynamic_context()`` for parameterized hints (counts, focus name)
+  - Smooth fade-in on context switch
+
 Shows context-sensitive tips that rotate based on:
   - Current app state (idle, scanning, has findings, has target)
-  - Time-based rotation every 8 seconds
+  - Severity breakdown (critical_findings context)
+  - Focused panel (focused_panel context)
+  - Time-based rotation every 6 seconds
   - Command-specific hints after failed commands
-  - Keyboard shortcut reminders
-
-The hints are subtle — rendered in TEXT_DIM so they don't
-compete with the main UI, but they make the app feel alive
-and guide new users naturally.
 
 Usage::
     hint = HintBar(id="hint-bar")
-    hint.push_context("idle")       # switch hint pool
-    hint.show_once("Press Tab for auto-complete")  # one-shot hint
+    hint.push_context("idle")
+    hint.show_once("Press Tab for auto-complete")
+    hint.push_dynamic_context("critical_findings", critical=3, high=7)
 """
 from __future__ import annotations
 
 import random
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from textual.reactive import reactive
 from textual.timer import Timer
@@ -29,6 +36,7 @@ from ..theme import Theme
 
 
 # ── Hint pools by context ──
+# Templates can use {target}, {critical}, {high}, {medium}, {total}, {focus}
 HINTS: Dict[str, List[str]] = {
     "idle": [
         "Type [cyan]scan <target>[/] to begin reconnaissance",
@@ -39,6 +47,14 @@ HINTS: Dict[str, List[str]] = {
         "[cyan]theme list[/] to browse 6 built-in themes",
         "[cyan]audit[/] runs a local security health check",
         "[cyan]doctor[/] diagnoses your ReconPro installation",
+    ],
+    "first_scan": [
+        "Welcome! Type [cyan]scan example.com[/] to begin",
+        "Try [cyan]scan <target> with recon auth[/] for selective modules",
+        "Press [cyan]Tab[/] while typing to auto-complete commands",
+        "Use [cyan]↑/↓[/] to navigate command history",
+        "Press [cyan]?[/] or type [cyan]help[/] to see all commands",
+        "Quick jump: [cyan]0[/] input · [cyan]1[/] chat · [cyan]2[/] findings · [cyan]3[/] modules",
     ],
     "scanning": [
         "Scan in progress... [cyan]clear[/] to reset feeds",
@@ -51,8 +67,22 @@ HINTS: Dict[str, List[str]] = {
         "[cyan]export html[/] to generate a styled report",
         "[cyan]d[/] to inspect the last finding in detail",
         "Click findings on the right panel for details",
-        "[cyan]adversarial <target>[/] runs fix-verify loops",
+        "[cyan]adversarial[/] runs fix-verify loops",
         "[cyan]history[/] to see past scan results",
+    ],
+    "critical_findings": [
+        "{critical} critical finding{s_crit} detected — try [cyan]adversarial {target}[/] to fix them",
+        "[cyan]defense[/] can generate remediation code for {critical} critical issue{s_crit}",
+        "Score dropped to {score} — [cyan]adversarial[/] runs iterative hardening loops",
+        "Export with [cyan]export html[/] to share findings with your team",
+        "Use [cyan]d[/] to inspect the most critical finding in detail",
+        "{critical}C {high}H {medium}M — run [cyan]adversarial[/] for auto-remediation",
+    ],
+    "error_state": [
+        "Scan encountered an error — check the command log above",
+        "Try [cyan]doctor[/] to diagnose your ReconPro installation",
+        "Reduce scope with [cyan]scan <target> with <module>[/]",
+        "Use [cyan]clear[/] to reset and try a different target",
     ],
     "has_target": [
         "[cyan]Ctrl+S[/] to re-scan [cyan]{target}[/]",
@@ -60,11 +90,27 @@ HINTS: Dict[str, List[str]] = {
         "[cyan]adversarial {target}[/] for iterative hardening",
         "[cyan]scan {target} with recon auth[/] for selective modules",
     ],
+    "focused_panel": [
+        "Focused: [cyan]{focus}[/] · [cyan]Esc[/] back to input",
+    ],
+}
+
+# ── Keybinding tips per focused widget ──
+_FOCUS_TIPS: Dict[str, str] = {
+    "command-input": "[dim]Tab complete · ↑↓ history · Ctrl+K clear · Ctrl+U clear-left[/]",
+    "chat-log": "[dim]↑↓ scroll · j/k navigate · 0 jump to input · Esc back[/]",
+    "findings-feed": "[dim]j/k navigate findings · Enter detail · d last finding · 0 input[/]",
+    "module-grid": "[dim]↑↓←→ navigate cells · 0 jump to input · Esc back[/]",
 }
 
 
 class HintBar(Widget):
     """Single-line contextual hint that rotates periodically.
+
+    Phase C additions:
+    - ``push_dynamic_context(context, **params)`` for parameterized hints
+    - Severity-aware hint injection
+    - Focus-aware keybinding tips
 
     Reactive attributes:
         text  — current hint text (with markup)
@@ -85,10 +131,12 @@ class HintBar(Widget):
         self._pool: List[str] = []
         self._pool_idx: int = 0
         self._timer: Optional[Timer] = None
-        self._rotate_interval: float = 8.0
+        self._rotate_interval: float = 6.0  # Phase C: faster rotation
         self._once_text: Optional[str] = None
         self._once_until: float = 0.0
         self._target_name: str = ""
+        # Phase C: dynamic template variables
+        self._template_vars: Dict[str, Any] = {}
 
     def on_mount(self) -> None:
         self._refresh_pool("idle")
@@ -99,15 +147,47 @@ class HintBar(Widget):
         """Switch to a different hint pool.
 
         Args:
-            context: one of "idle", "scanning", "has_findings", "has_target"
-            target: optional target name for template substitution
+            context: one of the defined hint pool names
+            target: optional target name for {target} template substitution
         """
         if context != self._current_context:
             self._current_context = context
             self._target_name = target
+            self._template_vars = {"target": target}
             self._refresh_pool(context)
             self._pool_idx = 0
             self._render()
+
+    def push_dynamic_context(self, context: str, **params: Any) -> None:
+        """Switch hint pool with dynamic template variables.
+
+        Use this for severity-aware hints that need counts injected.
+
+        Example::
+            hint.push_dynamic_context(
+                "critical_findings",
+                critical=3, high=7, medium=12, total=22,
+                score=42, target="example.com",
+            )
+        """
+        if context != self._current_context or params != self._template_vars:
+            self._current_context = context
+            self._template_vars = params
+            self._target_name = params.get("target", "")
+            self._refresh_pool(context)
+            self._pool_idx = 0
+            self._render()
+
+    def push_focus_tip(self, widget_id: str) -> None:
+        """Show a one-shot keybinding tip for the focused widget.
+
+        Falls back to the generic tip if widget_id is not recognized.
+        """
+        # Map DOM ids to tip keys
+        tip_key = widget_id.replace("#", "")
+        tip = _FOCUS_TIPS.get(tip_key, _FOCUS_TIPS.get("command-input", ""))
+        if tip:
+            self.show_once(tip, duration=3.0)
 
     def show_once(self, text: str, duration: float = 4.0) -> None:
         """Show a one-shot hint that overrides rotation temporarily."""
@@ -118,6 +198,7 @@ class HintBar(Widget):
     def set_target(self, target: str) -> None:
         """Update the target name for hint templates."""
         self._target_name = target
+        self._template_vars["target"] = target
 
     def _refresh_pool(self, context: str) -> None:
         """Load and shuffle the hint pool for the given context."""
@@ -132,10 +213,30 @@ class HintBar(Widget):
         self._render()
 
     def _substitute(self, text: str) -> str:
-        """Replace {target} in hint templates."""
+        """Replace template variables in hint text."""
+        result = text
+        # Static {target} substitution
         if self._target_name:
-            return text.replace("{target}", self._target_name)
-        return text
+            result = result.replace("{target}", self._target_name)
+
+        # Dynamic template variables from push_dynamic_context
+        for key, val in self._template_vars.items():
+            placeholder = "{" + key + "}"
+            if placeholder in result:
+                result = result.replace(placeholder, str(val))
+
+        # Plural helpers: {s_crit} → "s" if critical != 1, else ""
+        crit_count = self._template_vars.get("critical", 0)
+        result = result.replace("{s_crit}", "s" if crit_count != 1 else "")
+
+        # If {target} still in result (no target set), replace gracefully
+        result = result.replace("{target}", "<target>")
+
+        # Replace any remaining {var} with empty
+        import re
+        result = re.sub(r"\{[^}]+\}", "", result)
+
+        return result
 
     def _render(self) -> None:
         """Render the current hint."""
