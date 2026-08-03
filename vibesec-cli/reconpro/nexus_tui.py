@@ -38,7 +38,10 @@ from textual.widgets import (
 # ════════════════════════════════════════════════════════════════════════════════
 
 from .theme import Theme, THEMES
-from .widgets import ScoreGauge, Sparkline, StatCounter, VelocityMeter
+from .widgets import (
+    ScoreGauge, Sparkline, StatCounter, VelocityMeter,
+    CommandCompleter, HintBar,
+)
 
 VERSION = "7.0.0"
 BG = Theme.current().BG
@@ -536,6 +539,25 @@ class NexusApp(App):
         overflow: hidden;
     }}
 
+    /* ── Hint Bar ──────────────────────────────────────── */
+    #hint-bar {{
+        dock: bottom;
+        width: 100%;
+        height: 1;
+        background: {BG};
+        padding: 0 2;
+    }}
+
+    /* ── Command Completer (popup overlay) ──────────────────── */
+    #cmd-completer {{
+        offset-x: 2;
+        offset-y: -1;
+        width: 52;
+        background: {HEADER_BG};
+        border: solid {BORDER_COLOR};
+        padding: 0 1;
+    }}
+
     /* ── Bottom Bar ──────────────────────────────────────── */
     #bottom-bar {{
         dock: bottom;
@@ -614,6 +636,7 @@ class NexusApp(App):
         Binding("tab", "cycle_focus", "Cycle focus"),
         Binding("ctrl+c", "quit", "Quit"),
         Binding("d", "show_last_finding", "Detail"),
+        Binding("escape", "dismiss_completer", "Dismiss"),
     ]
 
     # ── Reactive state ──
@@ -641,6 +664,8 @@ class NexusApp(App):
         # ── Phase B: findings-per-minute tracker ──
         self._finding_timestamps: List[float] = []
         self._fpm_timer: Optional[Timer] = None
+        # ── Phase C: completer state ──
+        self._completer_active: bool = False
 
     # ── Compose ──────────────────────────────────────────────────────────────
 
@@ -702,6 +727,12 @@ class NexusApp(App):
             # Velocity meter
             yield VelocityMeter(id="velocity-meter")
 
+            # Hint bar (contextual tips)
+            yield HintBar(id="hint-bar")
+
+            # Command completer (popup layer)
+            yield CommandCompleter(id="cmd-completer")
+
             # Bottom bar
             with Horizontal(id="bottom-bar"):
                 yield Input(
@@ -713,7 +744,7 @@ class NexusApp(App):
     # ── Mount ───────────────────────────────────────────────────────────────
 
     def on_key(self, event: Key) -> None:
-        """Handle key events — boot skip + history navigation."""
+        """Handle key events — boot skip + completer + history navigation."""
         # Skip boot on ANY key press during boot sequence
         if not self._boot_done and not self._boot_skipped:
             self._boot_skipped = True
@@ -725,6 +756,50 @@ class NexusApp(App):
                 pass
             self._finish_boot()
             return
+
+        # ── Tab: completer accept/cycle (when input focused + completer visible) ──
+        if event.key == "tab":
+            try:
+                inp = self.query_one("#command-input", Input)
+                comp = self.query_one("#cmd-completer", CommandCompleter)
+                if inp.has_focus and comp.visible:
+                    accepted = comp.accept_top()
+                    if accepted:
+                        # Replace the first word with the accepted command
+                        parts = inp.value.split()
+                        rest = parts[1:] if len(parts) > 1 else []
+                        inp.value = accepted + (" " + " ".join(rest) if rest else "")
+                        inp.cursor_position = len(inp.value)
+                    event.stop()
+                    return
+            except NoMatches:
+                pass
+            # Fall through to default Tab behavior (cycle focus)
+            return
+
+        # ── Escape: dismiss completer ──
+        if event.key == "escape":
+            try:
+                comp = self.query_one("#cmd-completer", CommandCompleter)
+                if comp.visible:
+                    comp.hide()
+                    event.stop()
+                    return
+            except NoMatches:
+                pass
+
+        # ── Up/Down in completer: cycle suggestions ──
+        if event.key in ("up", "down"):
+            try:
+                comp = self.query_one("#cmd-completer", CommandCompleter)
+                inp = self.query_one("#command-input", Input)
+                if comp.visible and inp.has_focus:
+                    direction = -1 if event.key == "up" else 1
+                    comp.cycle_selection(direction)
+                    event.stop()
+                    return
+            except NoMatches:
+                pass
 
         # Command history navigation
         if event.key == "up" and self._history_index > 0:
@@ -906,6 +981,24 @@ class NexusApp(App):
                     self.query_one("#spark-findings", Sparkline).push(0.0)
                 except NoMatches:
                     pass
+                # Switch hints to has_findings if we have data
+                try:
+                    if self.finding_count > 0:
+                        self.query_one("#hint-bar", HintBar).push_context(
+                            "has_findings", target=self.current_target
+                        )
+                    elif self.current_target:
+                        self.query_one("#hint-bar", HintBar).push_context(
+                            "has_target", target=self.current_target
+                        )
+                except NoMatches:
+                    pass
+        except NoMatches:
+            pass
+        # Update hint bar context
+        try:
+            if new:
+                self.query_one("#hint-bar", HintBar).push_context("scanning")
         except NoMatches:
             pass
 
@@ -929,6 +1022,17 @@ class NexusApp(App):
                 el.update("")
         except NoMatches:
             pass
+        # Update hint bar with target context
+        try:
+            hint = self.query_one("#hint-bar", HintBar)
+            hint.set_target(new)
+            if new and not self.is_scanning:
+                hint.push_context("has_target", target=new)
+                hint.show_once(f"Target set: [cyan]{new}[/] · [cyan]Ctrl+S[/] to rescan")
+            elif not new:
+                hint.push_context("idle")
+        except NoMatches:
+            pass
 
     def _update_elapsed(self) -> None:
         if self.is_scanning and self.scan_start_time:
@@ -947,6 +1051,12 @@ class NexusApp(App):
         raw = event.value.strip()
         event.input.value = ""
 
+        # Dismiss completer on submit
+        try:
+            self.query_one("#cmd-completer", CommandCompleter).hide()
+        except NoMatches:
+            pass
+
         if not raw:
             return
 
@@ -964,6 +1074,27 @@ class NexusApp(App):
         self._history_index = len(self._command_history)
 
         self._process_command(raw)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Live fuzzy completion as user types."""
+        try:
+            comp = self.query_one("#cmd-completer", CommandCompleter)
+            comp.configure_context(
+                has_target=bool(self.current_target),
+                is_scanning=self.is_scanning,
+            )
+            comp.show_suggestions(event.value)
+            self._completer_active = comp.visible
+        except NoMatches:
+            pass
+
+    def action_dismiss_completer(self) -> None:
+        """Escape: dismiss the completer popup."""
+        try:
+            self.query_one("#cmd-completer", CommandCompleter).hide()
+            self._completer_active = False
+        except NoMatches:
+            pass
 
     def action_cycle_focus(self) -> None:
         """Tab cycles focus between panels and input."""
@@ -1090,6 +1221,12 @@ class NexusApp(App):
 
         self._chat(f"[{RED}]Unknown command: {cmd}[/]")
         self._chat(f"[{DIM_CYAN}]Type [cyan]help[/] for available commands.[/]")
+        try:
+            self.query_one("#hint-bar", HintBar).show_once(
+                f"Tip: [cyan]Tab[/] auto-completes commands while typing"
+            )
+        except NoMatches:
+            pass
 
     def _handle_theme(self, args: List[str]) -> None:
         """Handle theme switching command."""
@@ -1152,11 +1289,13 @@ class NexusApp(App):
             ("[cyan]quit[/]", "Exit"),
             ("", ""),
             ("[bold cyan]KEYS[/]", ""),
-            (f"[{DIM_CYAN}]Tab[/]      Cycle focus", ""),
-            (f"[{DIM_CYAN}]Ctrl+L[/]   Clear findings", ""),
-            (f"[{DIM_CYAN}]Ctrl+S[/]   Re-scan last target", ""),
-            (f"[{DIM_CYAN}]↑/↓[/]     Command history", ""),
-            (f"[{DIM_CYAN}]Any key[/]  Skip boot animation", ""),
+            (f"[{DIM_CYAN}]Tab[/]        Auto-complete / cycle focus", ""),
+            (f"[{DIM_CYAN}]Esc[/]        Dismiss suggestions", ""),
+            (f"[{DIM_CYAN}]Ctrl+L[/]     Clear findings", ""),
+            (f"[{DIM_CYAN}]Ctrl+S[/]     Re-scan last target", ""),
+            (f"[{DIM_CYAN}]↑/↓[/]         Completer nav / history", ""),
+            (f"[{DIM_CYAN}]d[/]          Inspect last finding", ""),
+            (f"[{DIM_CYAN}]Any key[/]    Skip boot animation", ""),
         ]
         for line in help_lines:
             self._chat(f"  {line[0]}  {line[1]}")

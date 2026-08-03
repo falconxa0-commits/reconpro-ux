@@ -69,3 +69,36 @@ Stage Summary:
 - Phase B is COMPLETE with all 4 widgets fully integrated
 - Files touched: score_gauge.py (delta fix), nexus_tui.py (medium counter, FPM tracking, velocity wiring, sparkline reset, bar_width 18)
 - New behaviors: true findings-per-minute sparkline, velocity meter feeds from findings, medium severity counter, periodic FPM decay
+---
+Task ID: 2
+Agent: main
+Task: Phase C — Fuzzy completion, keyboard nav, contextual hints
+
+Work Log:
+- Created widgets/command_completer.py — fuzzy auto-complete dropdown with 16 commands + aliases
+  - _fuzzy_score: prefix=1.0, alias prefix=0.95, substring=0.7, fuzzy=0.5*ratio, threshold 0.25
+  - _highlight_match: character-by-character fuzzy highlighting with cyan bold
+  - Context-aware: filters out export without target, audit/dev/doctor during scan
+  - Top 5 suggestions with ▸ selection indicator and dimmed descriptions
+  - cycle_selection() for up/down, accept_top() returns command name
+- Created widgets/hint_bar.py — contextual hint strip with 4 context pools
+  - idle (8 hints), scanning (5), has_findings (5), has_target (4 with {target} template)
+  - 8-second rotation timer, one-shot hints (show_once) override temporarily
+  - Subtle TEXT_DIM rendering, doesn't compete with main UI
+- Updated widgets/__init__.py to export CommandCompleter, HintBar
+- Added CSS for #hint-bar (dock bottom, 1 line) and #cmd-completer (popup overlay)
+- Rewrote on_key: Tab accepts/cycles completer, Escape dismisses, Up/Down navigates when visible
+- Added on_input_changed: live fuzzy completion on every keystroke
+- Added action_dismiss_completer: Escape binding handler
+- Updated on_input_submitted: dismisses completer on submit
+- Wired hints into watch_is_scanning (scanning→has_findings/has_target transitions)
+- Wired hints into watch_current_target (one-shot hint on target set)
+- Unknown command handler shows Tab tip via hint bar
+- Updated help text with new keys (Tab auto-complete, Esc dismiss, d detail)
+- Added Escape binding to BINDINGS list
+
+Stage Summary:
+- Phase C is COMPLETE with 2 new widgets + full keyboard navigation
+- New files: command_completer.py (~230 lines), hint_bar.py (~160 lines)
+- Files touched: __init__.py, nexus_tui.py (compose, CSS, on_key, on_input_changed, on_input_submitted, watchers, help)
+- All tests pass: fuzzy scoring, highlighting, context filtering, rendering, NexusApp integration
