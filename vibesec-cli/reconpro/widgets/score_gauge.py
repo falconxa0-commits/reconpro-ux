@@ -201,10 +201,10 @@ class ScoreGauge(Widget):
             fade = min(1.0, (self._delta_until - now) / 1.0)
             if self._delta > 0:
                 dc = t.GREEN if fade > 0.5 else dim
-                delta_str = f" [{dc}]\u2191{self._delta:+d}[/{dc}]"
+                delta_str = f" [{dc}]\u2191{self._delta}[/{dc}]"
             else:
                 dc = t.RED if fade > 0.5 else dim
-                delta_str = f" [{dc}]{self._delta:+d}[/{dc}]"
+                delta_str = f" [{dc}]\u2193{abs(self._delta)}[/{dc}]"
 
         # ── Bar ──
         filled_chars, empty_chars = self._build_bar(score, color, dim)

@@ -436,6 +436,7 @@ class NexusApp(App):
     #stat-findings {{ margin-right: 2; }}
     #stat-critical {{ margin-right: 2; }}
     #stat-high {{ margin-right: 2; }}
+    #stat-medium {{ margin-right: 2; }}
     #spark-findings {{ margin-right: 2; }}
     #spark-score {{ margin-right: 0; }}
 
@@ -637,6 +638,9 @@ class NexusApp(App):
         self._focus_order = ["#command-input", "#chat-log", "#findings-feed", "#module-grid"]
         self._focus_idx = 0
         self._finding_severity_filter: Optional[str] = None
+        # ── Phase B: findings-per-minute tracker ──
+        self._finding_timestamps: List[float] = []
+        self._fpm_timer: Optional[Timer] = None
 
     # ── Compose ──────────────────────────────────────────────────────────────
 
@@ -653,13 +657,14 @@ class NexusApp(App):
                 yield Label("", id="header-target")
                 yield StatusDot(id="status-dot")
                 yield Label("", id="header-scanning")
-                yield ScoreGauge(bar_width=14, id="score-gauge")
+                yield ScoreGauge(bar_width=18, id="score-gauge")
 
             # Stats bar — living data
             with Horizontal(id="stats-bar"):
                 yield StatCounter(label="findings", icon="●", id="stat-findings")
                 yield StatCounter(label="critical", icon="◆", color=RED, id="stat-critical")
                 yield StatCounter(label="high", icon="◆", color=YELLOW, id="stat-high")
+                yield StatCounter(label="medium", icon="◆", color="#ff9500", id="stat-medium")
                 yield Sparkline(max_points=30, title="FIND/MIN", color=CYAN, id="spark-findings")
                 yield Sparkline(max_points=30, title="SCORE", color=GREEN, id="spark-score")
 
@@ -812,6 +817,10 @@ class NexusApp(App):
             1 for f in self._findings_list
             if f.get("severity", "").lower() == "high"
         )
+        med = sum(
+            1 for f in self._findings_list
+            if f.get("severity", "").lower() == "medium"
+        )
 
         # Update stat counters
         try:
@@ -826,11 +835,32 @@ class NexusApp(App):
             self.query_one("#stat-high", StatCounter).set(high)
         except NoMatches:
             pass
+        try:
+            self.query_one("#stat-medium", StatCounter).set(med)
+        except NoMatches:
+            pass
 
-        # Push to findings sparkline (findings per minute approximation)
+        # Track finding timestamps for true per-minute rate
+        now = time.monotonic()
+        for _ in range(delta):
+            self._finding_timestamps.append(now)
+
+        # Push to findings sparkline (true findings-per-minute)
         try:
             spark = self.query_one("#spark-findings", Sparkline)
-            spark.push(float(delta))
+            # Calculate actual FPM from timestamps in the last 60s
+            cutoff = now - 60.0
+            self._finding_timestamps = [t for t in self._finding_timestamps if t > cutoff]
+            fpm = len(self._finding_timestamps)
+            spark.push(float(fpm))
+        except NoMatches:
+            pass
+
+        # Wire into velocity meter
+        try:
+            vm = self.query_one("#velocity-meter", VelocityMeter)
+            if delta > 0:
+                vm.record_finding(delta)
         except NoMatches:
             pass
 
@@ -838,7 +868,7 @@ class NexusApp(App):
         try:
             el = self.query_one("#bottom-info", Label)
             el.update(
-                f"[{GREEN}]●[/] {new} findings  [{RED}]{crit}[/]C [{YELLOW}]{high}[/]H"
+                f"[{GREEN}]●[/] {new} findings  [{RED}]{crit}[/]C [{YELLOW}]{high}[/]H [{MUTED}]{med}[/]M"
             )
         except NoMatches:
             pass
@@ -856,6 +886,9 @@ class NexusApp(App):
                     self.query_one("#velocity-meter", VelocityMeter).start()
                 except NoMatches:
                     pass
+                # Start periodic FPM sparkline push
+                if self._fpm_timer is None:
+                    self._fpm_timer = self.set_interval(5.0, self._push_fpm_to_sparkline)
             else:
                 scan_label.update(f"[{GREEN}]DONE[/]")
                 self.scan_start_time = None
@@ -864,6 +897,26 @@ class NexusApp(App):
                     self.query_one("#velocity-meter", VelocityMeter).stop()
                 except NoMatches:
                     pass
+                # Stop periodic FPM timer
+                if self._fpm_timer is not None:
+                    self._fpm_timer.stop()
+                    self._fpm_timer = None
+                # Push final 0 to show decay
+                try:
+                    self.query_one("#spark-findings", Sparkline).push(0.0)
+                except NoMatches:
+                    pass
+        except NoMatches:
+            pass
+
+    def _push_fpm_to_sparkline(self) -> None:
+        """Periodically push true findings-per-minute to sparkline."""
+        now = time.monotonic()
+        cutoff = now - 60.0
+        self._finding_timestamps = [t for t in self._finding_timestamps if t > cutoff]
+        fpm = len(self._finding_timestamps)
+        try:
+            self.query_one("#spark-findings", Sparkline).push(float(fpm))
         except NoMatches:
             pass
 
@@ -1065,8 +1118,15 @@ class NexusApp(App):
             pass
         self._findings_list.clear()
         self.finding_count = 0
+        self._finding_timestamps.clear()
         self.score = 100
         self.grade = "A+"
+        # Reset sparklines
+        try:
+            self.query_one("#spark-findings", Sparkline).clear()
+            self.query_one("#spark-score", Sparkline).clear()
+        except NoMatches:
+            pass
         self._set_all_modules_status("idle")
         self._chat(f"[{DIM_CYAN}]Cleared.[/]")
 

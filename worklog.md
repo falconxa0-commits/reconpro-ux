@@ -46,3 +46,26 @@ Stage Summary:
 - 1 test suite created (5 test functions, all pass)
 - All 6 themes verified compatible
 - Phase B complete, ready for Phase C (fuzzy completion + keyboard nav)
+---
+Task ID: 1
+Agent: main
+Task: Phase B — Score ring, sparklines, living stats, velocity meter widgets
+
+Work Log:
+- Read all existing widget files (score_gauge.py, sparkline.py, stat_counter.py, velocity_meter.py) — all were scaffolded from previous session
+- Read full nexus_tui.py integration (compose, CSS, watchers, scan flow)
+- Fixed ScoreGauge delta sign bug: `↑+12` → `↑12`, `↓-5` → `↓5` (removed redundant +/- with arrow)
+- Added medium severity StatCounter to stats bar (compose + CSS `#stat-medium`)
+- Increased ScoreGauge bar_width from 14 to 18 for better visual fill
+- Added `_finding_timestamps` list + `_fpm_timer` to NexusApp.__init__
+- Rewrote `watch_finding_count` to: count medium severity, track timestamps, push true FPM to sparkline, wire velocity meter
+- Added `_push_fpm_to_sparkline()` periodic method (every 5s during scan)
+- Updated `watch_is_scanning` to start/stop FPM timer and push final 0 on scan end
+- Updated clear handler to also clear `_finding_timestamps` and both sparklines
+- Updated bottom-info label to show medium count
+- All tests pass: imports, CSS coverage, delta display, widget instantiation, FPM tracking
+
+Stage Summary:
+- Phase B is COMPLETE with all 4 widgets fully integrated
+- Files touched: score_gauge.py (delta fix), nexus_tui.py (medium counter, FPM tracking, velocity wiring, sparkline reset, bar_width 18)
+- New behaviors: true findings-per-minute sparkline, velocity meter feeds from findings, medium severity counter, periodic FPM decay
