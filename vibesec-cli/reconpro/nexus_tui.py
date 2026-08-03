@@ -740,6 +740,12 @@ class NexusApp(App):
         scrollbar-size: 1 1;
         scrollbar-color: {DIM_CYAN} {BG};
     }}
+
+    /* ── Phase E: Toast Overlay z-index ────────────────── */
+    #toast-container {{
+        layer: overlay;
+        z-index: 100;
+    }}
     """
 
     BINDINGS = [
@@ -794,6 +800,10 @@ class NexusApp(App):
         self._split_flash_timer: Optional[Timer] = None
         self._user_manually_resized: bool = False  # True after Ctrl+←/→
         self._left_collapsed_before_compact: bool = False  # auto-collapse tracker
+        # ── Phase E: error recovery state ──
+        self._retry_count: int = 0
+        self._max_retries: int = 2
+        self._last_scan_args: Optional[Tuple] = None  # (target, modules, is_local) for retry
 
     # ── Compose ──────────────────────────────────────────────────────────────
 
@@ -1284,6 +1294,27 @@ class NexusApp(App):
         label = f"{context}: " if context else ""
         action = "Ctrl+S to retry" if self.current_target else ""
         self._toast(f"{label}{msg}", severity="error", action=action)
+
+    def _toast_success(self, message: str, action: str = "") -> int:
+        """Shortcut: show a success toast."""
+        return self._toast(message, severity="success", action=action)
+
+    def _toast_warning(self, message: str, action: str = "") -> int:
+        """Shortcut: show a warning toast."""
+        return self._toast(message, severity="warning", action=action)
+
+    def _toast_info(self, message: str, action: str = "") -> int:
+        """Shortcut: show an info toast."""
+        return self._toast(message, severity="info", action=action)
+
+    def _toast_scan_retry(self, attempt: int, max_retries: int) -> None:
+        """Show a retry toast with attempt count."""
+        self._toast(
+            f"Retrying scan ({attempt}/{max_retries})...",
+            severity="warning",
+            action="Esc to cancel",
+            duration=4.0,
+        )
 
     def _show_help_overlay(self) -> None:
         """Open the visual help overlay modal."""
@@ -1864,6 +1895,10 @@ class NexusApp(App):
                     pass
             mode = "CHAT ON" if not self._left_collapsed else "CHAT OFF"
             self._flash_split_indicator(mode)
+            self._toast_info(
+                f"Chat panel {'shown' if not self._left_collapsed else 'hidden'}",
+                action="[ to toggle back",
+            )
         except NoMatches:
             pass
 
@@ -1900,6 +1935,10 @@ class NexusApp(App):
                     pass
             mode = "MODS ON" if not self._modules_collapsed else "MODS OFF"
             self._flash_split_indicator(mode)
+            self._toast_info(
+                f"Module grid {'shown' if not self._modules_collapsed else 'hidden'}",
+                action="= to toggle back",
+            )
         except NoMatches:
             pass
 
@@ -1917,9 +1956,11 @@ class NexusApp(App):
             self._run_scan_worker(self.current_target)
             chat = self.query_one("#chat-log", RichLog)
             chat.write(f"[{CYAN}]► Re-scanning [bold]{self.current_target}[/][/]...")
+            self._toast_info(f"Re-scanning {self.current_target}...")
         else:
             chat = self.query_one("#chat-log", RichLog)
             chat.write(f"[{RED}]No previous target to re-scan.[/]")
+            self._toast_warning("No previous target to re-scan", action="scan <target>")
 
     # ── Command Processing ──────────────────────────────────────────────────
 
@@ -2075,6 +2116,7 @@ class NexusApp(App):
 
         self._chat(f"[{RED}]Unknown command: {cmd}[/]")
         self._chat(f"[{DIM_CYAN}]Type [cyan]help[/] for available commands · Press [cyan]Tab[/] on empty input to browse[/]")
+        self._toast_warning(f"Unknown command: {cmd}", action="Tab to browse commands")
         try:
             self.query_one("#hint-bar", HintBar).show_once(
                 f"Tip: [cyan]Tab[/] on empty input shows all commands"
@@ -2098,6 +2140,7 @@ class NexusApp(App):
         try:
             Theme.set_theme(name)
             self._chat(f"[{GREEN}]  ✓ Theme changed to [bold]{name}[/]. Restart nexus to apply fully.[/]")
+            self._toast_success(f"Theme: {name}", action="restart nexus to apply fully")
         except ValueError as e:
             self._chat(f"[{RED}]  {e}[/]")
 
@@ -2120,6 +2163,7 @@ class NexusApp(App):
             pass
         self._set_all_modules_status("idle")
         self._chat(f"[{DIM_CYAN}]Cleared.[/]")
+        self._toast_info("All feeds cleared")
 
     def _show_help(self) -> None:
         """Open visual help overlay. Falls back to chat dump.
@@ -2447,6 +2491,7 @@ class NexusApp(App):
     ) -> None:
         """Run a scan in a background thread."""
         self.call_from_thread(self.is_scanning.set, True)
+        self._retry_count = 0  # Phase E: reset retry counter on new scan
 
         # Set modules to scanning + push module-specific hints
         if modules:
@@ -2488,17 +2533,52 @@ class NexusApp(App):
                 pass
 
         except Exception as e:
-            self.call_from_thread(self._chat, f"[{RED}]  ✗ Scan error: {e}[/]")
-            # Phase E: error toast with recovery hint
-            self.call_from_thread(self._toast_error, e, context="Scan")
-            # Phase C: push error_state hints
-            self.call_from_thread(self._push_error_hint)
-            if modules:
-                for m in modules:
-                    if m in self._module_cells:
-                        self.call_from_thread(self._module_cells[m].set_status, "error")
+            # Phase E: auto-retry with exponential backoff
+            self._retry_count += 1
+            if self._retry_count <= self._max_retries:
+                self.call_from_thread(
+                    self._toast_scan_retry, self._retry_count, self._max_retries,
+                )
+                # Exponential backoff: 1s, 2s
+                import time as _time
+                _time.sleep(1.0 * self._retry_count)
+                # Retry: recurse into a fresh scan attempt
+                try:
+                    from .scanner import scan, audit_scan
+                    if is_local:
+                        result = audit_scan(target=target, modules=modules)
+                    else:
+                        result = scan(target=target, modules=modules)
+                    data = result.to_dict()
+                    self._retry_count = 0  # reset on success
+                    self.call_from_thread(self._on_scan_complete, data, modules, is_local)
+                    try:
+                        from .history import save_scan
+                        save_scan(data, label="nexus")
+                    except Exception:
+                        pass
+                except Exception as retry_e:
+                    # Retry also failed — final error
+                    self.call_from_thread(self._chat, f"[{RED}]  ✗ Scan failed after {self._retry_count} retries: {retry_e}[/]")
+                    self.call_from_thread(self._toast_error, retry_e, context="Scan (retries exhausted)")
+                    self.call_from_thread(self._push_error_hint)
+                    if modules:
+                        for m in modules:
+                            if m in self._module_cells:
+                                self.call_from_thread(self._module_cells[m].set_status, "error")
+                    else:
+                        self.call_from_thread(self._set_all_modules_status, "error")
             else:
-                self.call_from_thread(self._set_all_modules_status, "error")
+                # Max retries exceeded
+                self.call_from_thread(self._chat, f"[{RED}]  ✗ Scan error: {e}[/]")
+                self.call_from_thread(self._toast_error, e, context="Scan (retries exhausted)")
+                self.call_from_thread(self._push_error_hint)
+                if modules:
+                    for m in modules:
+                        if m in self._module_cells:
+                            self.call_from_thread(self._module_cells[m].set_status, "error")
+                else:
+                    self.call_from_thread(self._set_all_modules_status, "error")
 
         finally:
             self.call_from_thread(self.is_scanning.set, False)
@@ -2522,6 +2602,11 @@ class NexusApp(App):
                 self._chat,
                 f"[{GREEN}]  ✓ Blitz complete. {result['successful']}/{result['targets_scanned']} successful, "
                 f"{result['total_findings']} findings, avg score: {result['average_score']} ({result['average_grade']})[/]",
+            )
+            self.call_from_thread(
+                self._toast_success,
+                f"Blitz: {result['total_findings']} findings across {result['targets_scanned']} targets",
+                action="d to inspect",
             )
 
             for t, r in result.get("results", {}).items():
@@ -2596,6 +2681,11 @@ class NexusApp(App):
                 self._chat,
                 f"[{YELLOW}]  ⚠ {label} requires additional modules. Use [cyan]pip install reconpro[full][/][/]",
             )
+            self.call_from_thread(
+                self._toast_warning,
+                f"{label}: missing modules",
+                action="pip install reconpro[full]",
+            )
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ {label} error: {e}[/]")
             self.call_from_thread(self._toast_error, e, context="Generic")
@@ -2629,6 +2719,11 @@ class NexusApp(App):
             self.call_from_thread(
                 self._chat,
                 f"[{GREEN}]  ✓ Found {len(subs)} subdomain(s) for {domain}[/]",
+            )
+            self.call_from_thread(
+                self._toast_success,
+                f"{len(subs)} subdomain(s) found for {domain}",
+                action="blitz " + " ".join(subs[:5]) if len(subs) > 0 else "",
             )
 
             for sub in subs:
@@ -2667,6 +2762,10 @@ class NexusApp(App):
             self.call_from_thread(
                 self._chat,
                 f"[{GREEN}]  ✓ Agent complete. {result['total_findings']} findings across {len(result['targets'])} target(s).[/]",
+            )
+            self.call_from_thread(
+                self._toast_success,
+                f"Agent: {result['total_findings']} findings across {len(result['targets'])} target(s)",
             )
 
             for step in result.get("steps", []):
@@ -2707,6 +2806,9 @@ class NexusApp(App):
 
             self.call_from_thread(
                 self._chat, f"[{GREEN}]  ✓ Swarm complete.[/]"
+            )
+            self.call_from_thread(
+                self._toast_success, f"Swarm complete against {target}",
             )
 
             # Process each agent's findings
@@ -2750,6 +2852,10 @@ class NexusApp(App):
             self.call_from_thread(
                 self._chat,
                 f"[{GREEN}]  ✓ Adversarial complete. {result.findings_fixed} fixed, {result.findings_unfixed} remaining.[/]"
+            )
+            self.call_from_thread(
+                self._toast_success,
+                f"Adversarial: {result.findings_fixed} fixed, score {result.initial_grade}→{result.final_grade}",
             )
             self.call_from_thread(
                 self._chat,
@@ -2810,6 +2916,9 @@ class NexusApp(App):
 
             self.call_from_thread(
                 self._chat, f"[{GREEN}]  ✓ Exported to: {path}[/]"
+            )
+            self.call_from_thread(
+                self._toast_success, f"Exported {fmt.upper()} to {path}",
             )
 
         except Exception as e:

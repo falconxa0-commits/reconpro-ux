@@ -114,12 +114,13 @@ HINTS: Dict[str, List[str]] = {
         "{critical}C {high}H {medium}M — run [cyan]adversarial[/] for auto-remediation",
     ],
     "error_state": [
-        "Scan encountered an error — check the command log above",
+        "Scan encountered an error — auto-retry is active (up to 2 attempts)",
         "Try [cyan]doctor[/] to diagnose your ReconPro installation",
         "Reduce scope with [cyan]scan <target> with <module>[/]",
         "Use [cyan]clear[/] to reset and try a different target",
         "Check your network connection and target reachability",
         "[cyan]profile <target>[/] to verify target is accessible",
+        "Failed scans auto-retry with exponential backoff (1s, 2s)",
     ],
     "has_target": [
         "[cyan]Ctrl+S[/] to re-scan [cyan]{target}[/]",

@@ -8,6 +8,7 @@ category, keybindings, and layout controls. Closes on Escape or click.
 from __future__ import annotations
 
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.events import Key
 from textual.screen import ModalScreen
 from textual.widgets import Static, Label, Button
 
@@ -194,3 +195,9 @@ class HelpOverlay(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "close-help":
             self.dismiss()
+
+    def on_key(self, event: Key) -> None:
+        """Dismiss on Escape or q."""
+        if event.key in ("escape", "q"):
+            self.dismiss()
+            event.stop()

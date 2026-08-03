@@ -157,3 +157,28 @@ Stage Summary:
 - 11 error toast integration points across all worker types
 - 1 success toast on scan completion
 - 1 visual help overlay with 30 commands + 15 keybindings
+---
+Task ID: 1
+Agent: main
+Task: Phase E - Toast Notifications + Error Recovery + Help Overlay integration
+
+Work Log:
+- Audited full codebase: found toast.py (211 lines) and nexus_help.py (197 lines) already existed but were only partially integrated
+- Fixed HelpOverlay: added missing closing [/] on keybinding line 186, added Key import, added on_key() for Esc/q dismiss
+- Added 4 toast shortcut methods to NexusApp: _toast_success(), _toast_warning(), _toast_info(), _toast_scan_retry()
+- Added _retry_count, _max_retries, _last_scan_args fields to NexusApp.__init__
+- Added success toasts on: blitz complete, subdomain found, agent complete, swarm complete, adversarial complete, export complete, theme change, clear feeds, panel toggles
+- Added warning toasts on: unknown command, missing pip modules (ImportError), no target on rescan
+- Added info toasts on: rescan triggered, chat panel toggle, module grid toggle
+- Added error recovery with auto-retry (2 retries, exponential backoff 1s/2s) to _run_scan_worker
+- Added toast CSS (#toast-container z-index: 100) to nexus_tui.py main CSS
+- Updated hint_bar.py error_state hints with auto-retry info
+
+Stage Summary:
+- nexus_tui.py: 3030 -> 3138 lines (+108)
+- nexus_help.py: 197 -> 203 lines (+6) 
+- toast.py: 211 lines (unchanged)
+- hint_bar.py: 344 -> 345 lines (+1)
+- Total toast calls: 39 (8 success, 12 error, 4 warning, 5 info, 2 retry, 8 base _toast)
+- Error recovery: auto-retry with exponential backoff on scan worker (2 max retries)
+- All files pass syntax check
