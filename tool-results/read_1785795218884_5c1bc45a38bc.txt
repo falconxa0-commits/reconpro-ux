@@ -1,0 +1,1301 @@
+     1→"""Report generation — Chart.js-powered HTML reports.
+     2→
+     3→Phase F: Complete overhaul with interactive Chart.js visualizations.
+     4→Generates a single self-contained HTML file with CDN-loaded Chart.js.
+     5→
+     6→Charts included:
+     7→  - Score gauge (doughnut with animated center text)
+     8→  - Severity breakdown (doughnut with legend)
+     9→  - DREAD radar chart (aggregated risk dimensions)
+    10→  - Findings per module (vertical bar)
+    11→  - Points deducted per module (horizontal bar)
+    12→  - Category distribution (horizontal bar)
+    13→  - Severity stacked per module (stacked bar)
+    14→  - DREAD per top finding (grouped bar)
+    15→
+    16→Visual features:
+    17→  - Glassmorphism cards with backdrop-blur
+    18→  - Gradient accent lines
+    19→  - Animated stat counters
+    20→  - Smooth scroll navigation
+    21→  - Executive summary panel
+    22→  - Responsive design
+    23→
+    24→Colors pulled from unified theme system for consistency.
+    25→"""
+    26→from __future__ import annotations
+    27→
+    28→import json
+    29→import math
+    30→import os
+    31→from collections import Counter
+    32→from datetime import datetime
+    33→from pathlib import Path
+    34→from typing import Any, Dict, List, Optional, Tuple
+    35→
+    36→from .theme import Theme
+    37→
+    38→
+    39→_report_theme = Theme.current()
+    40→
+    41→
+    42→# ── Chart.js CDN ────────────────────────────────────────────────────────
+    43→
+    44→_CHARTJS_CDN = '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>'
+    45→_CHARTJS_DATE_ADAPTER = '<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>'
+    46→
+    47→
+    48→# ── DREAD Labels ───────────────────────────────────────────────────────
+    49→
+    50→_DREAD_LABELS = ("damage", "reproducibility", "exploitability", "affected_users", "discoverability")
+    51→_DREAD_SHORT = ("Dmg", "Repro", "Exploit", "Users", "Disc")
+    52→
+    53→
+    54→# ── Helpers ─────────────────────────────────────────────────────────────
+    55→
+    56→
+    57→def _module_breakdown(findings: List[Dict[str, Any]]) -> Dict[str, int]:
+    58→    """Count findings per module."""
+    59→    counts: Dict[str, int] = {}
+    60→    for f in findings:
+    61→        m = f.get("module", "unknown")
+    62→        counts[m] = counts.get(m, 0) + 1
+    63→    return counts
+    64→
+    65→
+    66→def _category_breakdown(findings: List[Dict[str, Any]]) -> Dict[str, int]:
+    67→    """Count findings per category."""
+    68→    counts: Dict[str, int] = {}
+    69→    for f in findings:
+    70→        c = f.get("category", "general")
+    71→        counts[c] = counts.get(c, 0) + 1
+    72→    return counts
+    73→
+    74→
+    75→def _points_per_module(findings: List[Dict[str, Any]]) -> Dict[str, int]:
+    76→    """Sum points deducted per module."""
+    77→    pts: Dict[str, int] = {}
+    78→    for f in findings:
+    79→        m = f.get("module", "unknown")
+    80→        pts[m] = pts.get(m, 0) + f.get("points_deducted", 0)
+    81→    return pts
+    82→
+    83→
+    84→def _severity_per_module(
+    85→    findings: List[Dict[str, Any]],
+    86→) -> Dict[str, Dict[str, int]]:
+    87→    """Count findings per module per severity."""
+    88→    matrix: Dict[str, Dict[str, int]] = {}
+    89→    for f in findings:
+    90→        m = f.get("module", "unknown")
+    91→        s = f.get("severity", "info").lower()
+    92→        matrix.setdefault(m, {})
+    93→        matrix[m][s] = matrix[m].get(s, 0) + 1
+    94→    return matrix
+    95→
+    96→
+    97→def _aggregate_dread(findings: List[Dict[str, Any]]) -> List[float]:
+    98→    """Aggregate DREAD components across all findings.
+    99→
+   100→    Some modules store dread as a float (average score), others as a dict
+   101→    with component breakdowns. We handle both cases.
+   102→
+   103→    Returns list of 5 floats: [damage, reproducibility, exploitability, affected_users, discoverability]
+   104→    Averaged across all findings that have dread data.
+   105→    """
+   106→    sums = [0.0] * 5
+   107→    counts = [0] * 5
+   108→
+   109→    for f in findings:
+   110→        dread = f.get("dread")
+   111→        if dread is None:
+   112→            continue
+   113→
+   114→        if isinstance(dread, dict):
+   115→            # Dict form: {"damage": 10, "reproducibility": 9, ...}
+   116→            for i, key in enumerate(_DREAD_LABELS):
+   117→                v = dread.get(key)
+   118→                if v is not None and isinstance(v, (int, float)):
+   119→                    sums[i] += float(v)
+   120→                    counts[i] += 1
+   121→        elif isinstance(dread, (int, float)):
+   122→            # Float form: overall DREAD score — distribute evenly
+   123→            val = float(dread)
+   124→            if val > 0:
+   125→                for i in range(5):
+   126→                    sums[i] += val
+   127→                    counts[i] += 1
+   128→
+   129→    # Average each component
+   130→    avg = []
+   131→    for i in range(5):
+   132→        avg.append(round(sums[i] / counts[i], 1) if counts[i] > 0 else 0.0)
+   133→    return avg
+   134→
+   135→
+   136→def _top_finding_dread(findings: List[Dict[str, Any]], n: int = 8) -> List[Dict[str, Any]]:
+   137→    """Get top N findings with their DREAD breakdowns for grouped bar chart."""
+   138→    # Sort by severity, then by points deducted
+   139→    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+   140→    sorted_f = sorted(
+   141→        findings,
+   142→        key=lambda f: (sev_order.get(f.get("severity", "info").lower(), 99), -f.get("points_deducted", 0)),
+   143→    )
+   144→
+   145→    result = []
+   146→    for f in sorted_f[:n]:
+   147→        dread = f.get("dread")
+   148→        if isinstance(dread, dict):
+   149→            components = [dread.get(key, 0) for key in _DREAD_LABELS]
+   150→        elif isinstance(dread, (int, float)) and float(dread) > 0:
+   151→            # Distribute evenly
+   152→            val = float(dread)
+   153→            components = [val] * 5
+   154→        else:
+   155→            components = None
+   156→
+   157→        if components:
+   158→            result.append({
+   159→                "title": f.get("title", "")[:30],
+   160→                "severity": f.get("severity", "info").lower(),
+   161→                "components": components,
+   162→            })
+   163→    return result
+   164→
+   165→
+   166→def _chart_colors(n: int, palette: str = "severity") -> List[str]:
+   167→    """Generate n distinct colors for charts."""
+   168→    if palette == "severity":
+   169→        base = [
+   170→            _report_theme.sev_hex("critical"),
+   171→            _report_theme.sev_hex("high"),
+   172→            _report_theme.sev_hex("medium"),
+   173→            _report_theme.sev_hex("low"),
+   174→            _report_theme.sev_hex("info"),
+   175→            "#8b5cf6",
+   176→            "#ec4899",
+   177→            "#14b8a6",
+   178→            "#f97316",
+   179→            "#6366f1",
+   180→            "#a3e635",
+   181→            "#22d3ee",
+   182→        ]
+   183→    elif palette == "dread":
+   184→        base = [
+   185→            "#ef4444",  # damage - red
+   186→            "#f97316",  # reproducibility - orange
+   187→            "#eab308",  # exploitability - yellow
+   188→            "#8b5cf6",  # affected users - purple
+   189→            "#06b6d4",  # discoverability - cyan
+   190→        ]
+   191→    else:
+   192→        base = [
+   193→            "#06b6d4", "#8b5cf6", "#f59e0b", "#10b981",
+   194→            "#ef4444", "#ec4899", "#6366f1", "#14b8a6",
+   195→            "#f97316", "#a3e635", "#22d3ee", "#e879f9",
+   196→        ]
+   197→    return [base[i % len(base)] for i in range(n)]
+   198→
+   199→
+   200→def _escape_js(s: str) -> str:
+   201→    """Escape a string for safe embedding in JS/JSON."""
+   202→    return json.dumps(s)
+   203→
+   204→
+   205→def _risk_posture(score: int, grade: str, sc: Dict[str, int]) -> Tuple[str, str]:
+   206→    """Determine executive risk posture label and description."""
+   207→    crit = sc.get("critical", 0)
+   208→    high = sc.get("high", 0)
+   209→
+   210→    if score >= 90 and crit == 0 and high == 0:
+   211→        return ("Excellent", "Target demonstrates strong security posture with no critical or high-severity findings. Minor informational items may be addressed opportunistically.")
+   212→    elif score >= 75 and crit == 0:
+   213→        return ("Good", "Overall security posture is sound. A small number of high-severity findings should be prioritized for remediation to reach best-in-class standing.")
+   214→    elif score >= 50 and crit <= 2:
+   215→        return ("Moderate", "Target presents a moderate attack surface. Critical and high findings require immediate attention. A structured remediation plan is recommended.")
+   216→    elif score >= 25:
+   217→        return ("Elevated", "Significant security weaknesses detected across multiple categories. Exploit chain potential exists. Prioritize critical findings and conduct a focused remediation sprint.")
+   218→    else:
+   219→        return ("Critical", "Severe security posture with widespread vulnerabilities. Immediate containment and remediation is required before any production exposure. Consider a dedicated security engagement.")
+   220→
+   221→
+   222→# ── Chart Generators (return <script> blocks) ───────────────────────────
+   223→
+   224→
+   225→def _chart_score_gauge(score: int, grade: str, grade_color: str) -> str:
+   226→    """Doughnut chart showing score with animated center label."""
+   227→    remain = 100 - score
+   228→    return f'''
+   229→    <script>
+   230→      (function() {{
+   231→        const ctx = document.getElementById('chart-score-gauge').getContext('2d');
+   232→        new Chart(ctx, {{
+   233→          type: 'doughnut',
+   234→          data: {{
+   235→            labels: ['Score', 'Remaining'],
+   236→            datasets: [{{
+   237→              data: [{score}, {remain}],
+   238→              backgroundColor: ['{grade_color}', 'rgba(255,255,255,0.04)'],
+   239→              borderWidth: 0,
+   240→              cutout: '82%',
+   241→              borderRadius: 6,
+   242→            }}]
+   243→          }},
+   244→          options: {{
+   245→            responsive: true,
+   246→            maintainAspectRatio: true,
+   247→            animation: {{ animateRotate: true, duration: 1200, easing: 'easeOutQuart' }},
+   248→            plugins: {{
+   249→              legend: {{ display: false }},
+   250→              tooltip: {{ enabled: false }}
+   251→            }}
+   252→          }},
+   253→          plugins: [{{
+   254→            id: 'centerText',
+   255→            afterDraw(chart) {{
+   256→              const {{ ctx, width, height }} = chart;
+   257→              ctx.save();
+   258→              ctx.textAlign = 'center';
+   259→              ctx.textBaseline = 'middle';
+   260→              const cy = height / 2;
+   261→              // Glow effect
+   262→              ctx.shadowColor = '{grade_color}';
+   263→              ctx.shadowBlur = 20;
+   264→              ctx.font = '800 48px "Inter", "SF Mono", system-ui, sans-serif';
+   265→              ctx.fillStyle = '#ffffff';
+   266→              ctx.fillText('{score}', width / 2, cy - 14);
+   267→              ctx.shadowBlur = 0;
+   268→              ctx.font = '700 20px "Inter", "SF Mono", system-ui, sans-serif';
+   269→              ctx.fillStyle = '{grade_color}';
+   270→              ctx.fillText('{grade}', width / 2, cy + 20);
+   271→              ctx.restore();
+   272→            }}
+   273→          }}]
+   274→        }});
+   275→      }})();
+   276→    </script>'''
+   277→
+   278→
+   279→def _chart_severity_doughnut(sc: Dict[str, int]) -> str:
+   280→    """Doughnut chart of severity distribution with custom center text."""
+   281→    labels = []
+   282→    values = []
+   283→    colors = []
+   284→    for sev in ("critical", "high", "medium", "low", "info"):
+   285→        v = sc.get(sev, 0)
+   286→        if v > 0:
+   287→            labels.append(sev.capitalize())
+   288→            values.append(v)
+   289→            colors.append(_report_theme.sev_hex(sev))
+   290→
+   291→    if not values:
+   292→        return '<p style="color:{h_muted};text-align:center;padding:40px;font-size:13px">No findings to visualize.</p>'.format(h_muted="#555")
+   293→
+   294→    total = sum(values)
+   295→    return f'''
+   296→    <script>
+   297→      (function() {{
+   298→        const ctx = document.getElementById('chart-severity').getContext('2d');
+   299→        new Chart(ctx, {{
+   300→          type: 'doughnut',
+   301→          data: {{
+   302→            labels: {json.dumps(labels)},
+   303→            datasets: [{{
+   304→              data: {json.dumps(values)},
+   305→              backgroundColor: {json.dumps(colors)},
+   306→              borderWidth: 0,
+   307→              cutout: '62%',
+   308→              borderRadius: 4,
+   309→              hoverOffset: 8,
+   310→            }}]
+   311→          }},
+   312→          options: {{
+   313→            responsive: true,
+   314→            maintainAspectRatio: true,
+   315→            cutout: '62%',
+   316→            animation: {{ animateRotate: true, duration: 1000, easing: 'easeOutQuart' }},
+   317→            plugins: {{
+   318→              legend: {{
+   319→                position: 'bottom',
+   320→                labels: {{
+   321→                  color: '#888', padding: 14, usePointStyle: true, pointStyleWidth: 8,
+   322→                  font: {{ size: 11, family: '"Inter", "SF Mono", system-ui, sans-serif' }}
+   323→                }}
+   324→              }},
+   325→              tooltip: {{
+   326→                backgroundColor: 'rgba(0,0,0,0.85)',
+   327→                titleFont: {{ family: '"Inter", system-ui', size: 12 }},
+   328→                bodyFont: {{ family: '"Inter", system-ui', size: 11 }},
+   329→                padding: 12, cornerRadius: 8, displayColors: true,
+   330→                callbacks: {{
+   331→                  label: function(ctx) {{
+   332→                    const pct = ((ctx.parsed / {total}) * 100).toFixed(1);
+   333→                    return ' ' + ctx.label + ': ' + ctx.parsed + ' (' + pct + '%)';
+   334→                  }}
+   335→                }}
+   336→              }}
+   337→            }}
+   338→          }},
+   339→          plugins: [{{
+   340→            id: 'severityCenter',
+   341→            afterDraw(chart) {{
+   342→              const {{ ctx, width, height }} = chart;
+   343→              ctx.save();
+   344→              ctx.textAlign = 'center';
+   345→              ctx.textBaseline = 'middle';
+   346→              ctx.font = '800 28px "Inter", system-ui, sans-serif';
+   347→              ctx.fillStyle = '#ffffff';
+   348→              ctx.fillText('{total}', width / 2, height / 2 - 8);
+   349→              ctx.font = '500 11px "Inter", system-ui, sans-serif';
+   350→              ctx.fillStyle = '#666';
+   351→              ctx.fillText('TOTAL', width / 2, height / 2 + 14);
+   352→              ctx.restore();
+   353→            }}
+   354→          }}]
+   355→        }});
+   356→      }})();
+   357→    </script>'''
+   358→
+   359→
+   360→def _chart_dread_radar(dread_avg: List[float]) -> str:
+   361→    """Radar chart of aggregated DREAD scores."""
+   362→    has_data = any(v > 0 for v in dread_avg)
+   363→    if not has_data:
+   364→        return '<p style="color:#555;text-align:center;padding:40px;font-size:13px">No DREAD data available.</p>'
+   365→
+   366→    return f'''
+   367→    <script>
+   368→      (function() {{
+   369→        const ctx = document.getElementById('chart-dread-radar').getContext('2d');
+   370→        new Chart(ctx, {{
+   371→          type: 'radar',
+   372→          data: {{
+   373→            labels: {json.dumps(list(_DREAD_SHORT))},
+   374→            datasets: [{{
+   375→              label: 'DREAD Average',
+   376→              data: {json.dumps(dread_avg)},
+   377→              backgroundColor: 'rgba(239, 68, 68, 0.12)',
+   378→              borderColor: '#ef4444',
+   379→              borderWidth: 2,
+   380→              pointBackgroundColor: '#ef4444',
+   381→              pointBorderColor: '#fff',
+   382→              pointBorderWidth: 1,
+   383→              pointRadius: 4,
+   384→              pointHoverRadius: 7,
+   385→              fill: true,
+   386→            }}]
+   387→          }},
+   388→          options: {{
+   389→            responsive: true,
+   390→            maintainAspectRatio: true,
+   391→            animation: {{ duration: 1000, easing: 'easeOutQuart' }},
+   392→            scales: {{
+   393→              r: {{
+   394→                beginAtZero: true,
+   395→                max: 10,
+   396→                ticks: {{
+   397→                  stepSize: 2, color: '#444', backdropColor: 'transparent',
+   398→                  font: {{ size: 9, family: '"SF Mono", monospace' }}
+   399→                }},
+   400→                grid: {{ color: 'rgba(255,255,255,0.06)' }},
+   401→                angleLines: {{ color: 'rgba(255,255,255,0.06)' }},
+   402→                pointLabels: {{
+   403→                  color: '#999', font: {{ size: 11, family: '"Inter", system-ui, sans-serif', weight: '500' }}
+   404→                }}
+   405→              }}
+   406→            }},
+   407→            plugins: {{
+   408→              legend: {{ display: false }},
+   409→              tooltip: {{
+   410→                backgroundColor: 'rgba(0,0,0,0.85)',
+   411→                titleFont: {{ family: '"Inter", system-ui', size: 12 }},
+   412→                bodyFont: {{ family: '"Inter", system-ui', size: 11 }},
+   413→                padding: 12, cornerRadius: 8,
+   414→                callbacks: {{
+   415→                  label: function(ctx) {{
+   416→                    return ' ' + ctx.label + ': ' + ctx.parsed.r + ' / 10';
+   417→                  }}
+   418→                }}
+   419→              }}
+   420→            }}
+   421→          }}
+   422→        }});
+   423→      }})();
+   424→    </script>'''
+   425→
+   426→
+   427→def _chart_module_bar(module_breakdown: Dict[str, int]) -> str:
+   428→    """Vertical bar chart of findings per module."""
+   429→    if not module_breakdown:
+   430→        return '<p style="color:#555;text-align:center;padding:40px;font-size:13px">No module data.</p>'
+   431→
+   432→    sorted_mods = sorted(module_breakdown.items(), key=lambda x: x[1], reverse=True)[:12]
+   433→    labels = [m.upper() for m, _ in sorted_mods]
+   434→    values = [c for _, c in sorted_mods]
+   435→    colors = _chart_colors(len(labels))
+   436→
+   437→    return f'''
+   438→    <script>
+   439→      (function() {{
+   440→        const ctx = document.getElementById('chart-modules').getContext('2d');
+   441→        new Chart(ctx, {{
+   442→          type: 'bar',
+   443→          data: {{
+   444→            labels: {json.dumps(labels)},
+   445→            datasets: [{{
+   446→              label: 'Findings',
+   447→              data: {json.dumps(values)},
+   448→              backgroundColor: {json.dumps(colors)},
+   449→              borderRadius: 6,
+   450→              borderSkipped: false,
+   451→              maxBarThickness: 40,
+   452→            }}]
+   453→          }},
+   454→          options: {{
+   455→            responsive: true,
+   456→            maintainAspectRatio: true,
+   457→            indexAxis: 'x',
+   458→            animation: {{ duration: 800, easing: 'easeOutQuart' }},
+   459→            scales: {{
+   460→              x: {{ ticks: {{ color: '#555', font: {{ size: 10, family: '"SF Mono", monospace' }} }}, grid: {{ display: false }} }},
+   461→              y: {{ beginAtZero: true, ticks: {{ color: '#555', stepSize: 1, font: {{ size: 10 }} }}, grid: {{ color: 'rgba(255,255,255,0.04)' }} }}
+   462→            }},
+   463→            plugins: {{
+   464→              legend: {{ display: false }},
+   465→              tooltip: {{
+   466→                backgroundColor: 'rgba(0,0,0,0.85)',
+   467→                titleFont: {{ family: '"Inter", system-ui', size: 12 }},
+   468→                bodyFont: {{ family: '"Inter", system-ui', size: 11 }},
+   469→                padding: 12, cornerRadius: 8,
+   470→              }}
+   471→            }}
+   472→          }}
+   473→        }});
+   474→      }})();
+   475→    </script>'''
+   476→
+   477→
+   478→def _chart_points_hbar(pts_per_mod: Dict[str, int]) -> str:
+   479→    """Horizontal bar chart of points deducted per module."""
+   480→    if not pts_per_mod:
+   481→        return ''
+   482→
+   483→    sorted_mods = sorted(pts_per_mod.items(), key=lambda x: x[1], reverse=True)[:10]
+   484→    labels = [m.upper() for m, _ in sorted_mods]
+   485→    values = [p for _, p in sorted_mods]
+   486→    colors = [
+   487→        _report_theme.sev_hex("critical") if p > 20
+   488→        else _report_theme.sev_hex("high") if p > 10
+   489→        else _report_theme.sev_hex("medium") if p > 5
+   490→        else _report_theme.sev_hex("low")
+   491→        for p in values
+   492→    ]
+   493→
+   494→    return f'''
+   495→    <script>
+   496→      (function() {{
+   497→        const ctx = document.getElementById('chart-points').getContext('2d');
+   498→        new Chart(ctx, {{
+   499→          type: 'bar',
+   500→          data: {{
+   501→            labels: {json.dumps(labels)},
+   502→            datasets: [{{
+   503→              label: 'Points Deducted',
+   504→              data: {json.dumps(values)},
+   505→              backgroundColor: {json.dumps(colors)},
+   506→              borderRadius: 6,
+   507→              borderSkipped: false,
+   508→              maxBarThickness: 24,
+   509→            }}]
+   510→          }},
+   511→          options: {{
+   512→            responsive: true,
+   513→            maintainAspectRatio: false,
+   514→            indexAxis: 'y',
+   515→            animation: {{ duration: 800, easing: 'easeOutQuart' }},
+   516→            scales: {{
+   517→              x: {{ beginAtZero: true, ticks: {{ color: '#555', font: {{ size: 10 }} }}, grid: {{ color: 'rgba(255,255,255,0.04)' }} }},
+   518→              y: {{ ticks: {{ color: '#888', font: {{ size: 11, family: '"SF Mono", monospace' }} }}, grid: {{ display: false }} }}
+   519→            }},
+   520→            plugins: {{
+   521→              legend: {{ display: false }},
+   522→              tooltip: {{
+   523→                backgroundColor: 'rgba(0,0,0,0.85)',
+   524→                padding: 12, cornerRadius: 8,
+   525→                callbacks: {{
+   526→                  label: function(ctx) {{ return ' -' + ctx.parsed.x + ' points'; }}
+   527→                }}
+   528→              }}
+   529→            }}
+   530→          }}
+   531→        }});
+   532→      }})();
+   533→    </script>'''
+   534→
+   535→
+   536→def _chart_category_hbar(cat_breakdown: Dict[str, int]) -> str:
+   537→    """Horizontal bar chart of findings per category."""
+   538→    if not cat_breakdown:
+   539→        return ''
+   540→
+   541→    sorted_cats = sorted(cat_breakdown.items(), key=lambda x: x[1], reverse=True)[:10]
+   542→    labels = [c.replace("_", " ").title() for c, _ in sorted_cats]
+   543→    values = [v for _, v in sorted_cats]
+   544→    colors = _chart_colors(len(labels), palette="module")
+   545→
+   546→    return f'''
+   547→    <script>
+   548→      (function() {{
+   549→        const ctx = document.getElementById('chart-categories').getContext('2d');
+   550→        new Chart(ctx, {{
+   551→          type: 'bar',
+   552→          data: {{
+   553→            labels: {json.dumps(labels)},
+   554→            datasets: [{{
+   555→              label: 'Findings',
+   556→              data: {json.dumps(values)},
+   557→              backgroundColor: {json.dumps(colors)},
+   558→              borderRadius: 6,
+   559→              borderSkipped: false,
+   560→              maxBarThickness: 24,
+   561→            }}]
+   562→          }},
+   563→          options: {{
+   564→            responsive: true,
+   565→            maintainAspectRatio: false,
+   566→            indexAxis: 'y',
+   567→            animation: {{ duration: 800, easing: 'easeOutQuart' }},
+   568→            scales: {{
+   569→              x: {{ beginAtZero: true, ticks: {{ color: '#555', stepSize: 1, font: {{ size: 10 }} }}, grid: {{ color: 'rgba(255,255,255,0.04)' }} }},
+   570→              y: {{ ticks: {{ color: '#888', font: {{ size: 11, family: '"Inter", system-ui' }} }}, grid: {{ display: false }} }}
+   571→            }},
+   572→            plugins: {{
+   573→              legend: {{ display: false }},
+   574→              tooltip: {{
+   575→                backgroundColor: 'rgba(0,0,0,0.85)',
+   576→                padding: 12, cornerRadius: 8,
+   577→              }}
+   578→            }}
+   579→          }}
+   580→        }});
+   581→      }})();
+   582→    </script>'''
+   583→
+   584→
+   585→def _chart_severity_stacked_bar(sev_matrix: Dict[str, Dict[str, int]]) -> str:
+   586→    """Stacked bar chart: severity breakdown per module."""
+   587→    if not sev_matrix:
+   588→        return ''
+   589→
+   590→    all_modules = sorted(sev_matrix.keys(), key=lambda m: sum(sev_matrix[m].values()), reverse=True)[:10]
+   591→    severities = ["critical", "high", "medium", "low", "info"]
+   592→    sev_colors = {s: _report_theme.sev_hex(s) for s in severities}
+   593→
+   594→    datasets = []
+   595→    for sev in severities:
+   596→        data = [sev_matrix.get(m, {}).get(sev, 0) for m in all_modules]
+   597→        if any(d > 0 for d in data):
+   598→            datasets.append({
+   599→                "label": sev.capitalize(),
+   600→                "data": data,
+   601→                "backgroundColor": sev_colors[sev],
+   602→                "borderRadius": 3,
+   603→                "borderSkipped": False,
+   604→            })
+   605→
+   606→    if not datasets:
+   607→        return ''
+   608→
+   609→    labels = [m.upper() for m in all_modules]
+   610→    return f'''
+   611→    <script>
+   612→      (function() {{
+   613→        const ctx = document.getElementById('chart-stacked').getContext('2d');
+   614→        new Chart(ctx, {{
+   615→          type: 'bar',
+   616→          data: {{
+   617→            labels: {json.dumps(labels)},
+   618→            datasets: {json.dumps(datasets)}
+   619→          }},
+   620→          options: {{
+   621→            responsive: true,
+   622→            maintainAspectRatio: true,
+   623→            animation: {{ duration: 800, easing: 'easeOutQuart' }},
+   624→            scales: {{
+   625→              x: {{ stacked: true, ticks: {{ color: '#555', font: {{ size: 10, family: '"SF Mono", monospace' }} }}, grid: {{ display: false }} }},
+   626→              y: {{ stacked: true, beginAtZero: true, ticks: {{ color: '#555', stepSize: 1, font: {{ size: 10 }} }}, grid: {{ color: 'rgba(255,255,255,0.04)' }} }}
+   627→            }},
+   628→            plugins: {{
+   629→              legend: {{
+   630→                position: 'bottom',
+   631→                labels: {{ color: '#888', padding: 12, usePointStyle: true, pointStyleWidth: 8, font: {{ size: 11, family: '"Inter", system-ui' }} }}
+   632→              }},
+   633→              tooltip: {{
+   634→                backgroundColor: 'rgba(0,0,0,0.85)',
+   635→                padding: 12, cornerRadius: 8,
+   636→              }}
+   637→            }}
+   638→          }}
+   639→        }});
+   640→      }})();
+   641→    </script>'''
+   642→
+   643→
+   644→def _chart_dread_grouped_bar(top_dread: List[Dict[str, Any]]) -> str:
+   645→    """Grouped bar chart showing DREAD breakdown per top finding."""
+   646→    if not top_dread:
+   647→        return ''
+   648→
+   649→    labels = [item["title"] for item in top_dread]
+   650→    dread_colors = _chart_colors(5, palette="dread")
+   651→
+   652→    datasets = []
+   653→    for i, short_label in enumerate(_DREAD_SHORT):
+   654→        data = [item["components"][i] for item in top_dread]
+   655→        datasets.append({
+   656→            "label": short_label,
+   657→            "data": data,
+   658→            "backgroundColor": dread_colors[i],
+   659→            "borderRadius": 3,
+   660→            "borderSkipped": False,
+   661→            "maxBarThickness": 12,
+   662→        })
+   663→
+   664→    return f'''
+   665→    <script>
+   666→      (function() {{
+   667→        const ctx = document.getElementById('chart-dread-grouped').getContext('2d');
+   668→        new Chart(ctx, {{
+   669→          type: 'bar',
+   670→          data: {{
+   671→            labels: {json.dumps(labels)},
+   672→            datasets: {json.dumps(datasets)}
+   673→          }},
+   674→          options: {{
+   675→            responsive: true,
+   676→            maintainAspectRatio: false,
+   677→            animation: {{ duration: 800, easing: 'easeOutQuart' }},
+   678→            scales: {{
+   679→              x: {{
+   680→                ticks: {{ color: '#888', font: {{ size: 10, family: '"Inter", system-ui', weight: '500' }}, maxRotation: 45, minRotation: 0 }},
+   681→                grid: {{ display: false }}
+   682→              }},
+   683→              y: {{
+   684→                beginAtZero: true, max: 10,
+   685→                ticks: {{ color: '#555', stepSize: 2, font: {{ size: 10 }} }},
+   686→                grid: {{ color: 'rgba(255,255,255,0.04)' }}
+   687→              }}
+   688→            }},
+   689→            plugins: {{
+   690→              legend: {{
+   691→                position: 'bottom',
+   692→                labels: {{ color: '#888', padding: 12, usePointStyle: true, pointStyleWidth: 8, font: {{ size: 10, family: '"Inter", system-ui' }} }}
+   693→              }},
+   694→              tooltip: {{
+   695→                backgroundColor: 'rgba(0,0,0,0.85)',
+   696→                padding: 12, cornerRadius: 8,
+   697→                callbacks: {{
+   698→                  label: function(ctx) {{ return ' ' + ctx.dataset.label + ': ' + ctx.parsed.y + ' / 10'; }}
+   699→                }}
+   700→              }}
+   701→            }}
+   702→          }}
+   703→        }});
+   704→      }})();
+   705→    </script>'''
+   706→
+   707→
+   708→# ── Main Report Generator ───────────────────────────────────────────────
+   709→
+   710→
+   711→def generate_html_report(data: Dict[str, Any], output_path: str = "") -> str:
+   712→    """Generate a Chart.js-powered HTML report. Returns file path.
+   713→
+   714→    Phase F: Complete overhaul with interactive charts:
+   715→    - Score gauge (doughnut with animated center text)
+   716→    - Severity breakdown (doughnut with total center)
+   717→    - DREAD radar chart (aggregated risk dimensions)
+   718→    - Findings per module (vertical bar)
+   719→    - Points deducted per module (horizontal bar)
+   720→    - Category distribution (horizontal bar)
+   721→    - Severity stacked per module (stacked bar)
+   722→    - DREAD per top finding (grouped bar)
+   723→    - Executive summary panel with risk posture
+   724→    - Animated stat counters
+   725→    - Glassmorphism card design
+   726→    - Smooth scroll navigation
+   727→    """
+   728→    if not output_path:
+   729→        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+   730→        target = data.get("target", "scan").replace("/", "_").replace(":", "")[:30]
+   731→        output_path = f"reconpro_report_{target}_{ts}.html"
+   732→
+   733→    score = data.get("total_score", 0)
+   734→    grade = data.get("grade", "N/A")
+   735→    target = data.get("target", "Unknown")
+   736→    findings = data.get("findings", [])
+   737→    sc = data.get("severity_counts", {})
+   738→    modules = data.get("modules_run", [])
+   739→    badge = data.get("badge_markdown", "")
+   740→    scan_time = data.get("scan_time", "")
+   741→
+   742→    # Version
+   743→    try:
+   744→        from . import __version__ as _v
+   745→        version_str = _v
+   746→    except Exception:
+   747→        version_str = "7.0.0"
+   748→
+   749→    # Theme colors
+   750→    grade_color = _report_theme.grade_color(grade)
+   751→    html_style = _report_theme.html_style()
+   752→    h_body_bg = html_style.get("body_bg", "#0a0a0f")
+   753→    h_card_bg = html_style.get("card_bg", "#111118")
+   754→    h_border = html_style.get("border", "#1a1a2e")
+   755→    h_text = html_style.get("text", "#e0e0e0")
+   756→    h_muted = html_style.get("muted", "#666666")
+   757→    h_crit_color = _report_theme.sev_hex("critical")
+   758→    h_high_color = _report_theme.sev_hex("high")
+   759→    h_med_color = _report_theme.sev_hex("medium")
+   760→    h_low_color = _report_theme.sev_hex("low")
+   761→    h_info_color = _report_theme.sev_hex("info")
+   762→    h_accent = _report_theme.CYAN if hasattr(_report_theme, 'CYAN') else "#06b6d4"
+   763→
+   764→    # Data processing
+   765→    mod_counts = _module_breakdown(findings)
+   766→    cat_counts = _category_breakdown(findings)
+   767→    pts_mod = _points_per_module(findings)
+   768→    sev_matrix = _severity_per_module(findings)
+   769→    dread_avg = _aggregate_dread(findings)
+   770→    top_dread = _top_finding_dread(findings, n=8)
+   771→    total_findings = len(findings)
+   772→    total_pts = sum(f.get("points_deducted", 0) for f in findings)
+   773→    risk_label, risk_desc = _risk_posture(score, grade, sc)
+   774→
+   775→    # ── Chart scripts ──
+   776→    chart_score = _chart_score_gauge(score, grade, grade_color)
+   777→    chart_severity = _chart_severity_doughnut(sc)
+   778→    chart_dread_radar = _chart_dread_radar(dread_avg)
+   779→    chart_modules = _chart_module_bar(mod_counts)
+   780→    chart_points = _chart_points_hbar(pts_mod)
+   781→    chart_categories = _chart_category_hbar(cat_counts)
+   782→    chart_stacked = _chart_severity_stacked_bar(sev_matrix)
+   783→    chart_dread_grouped = _chart_dread_grouped_bar(top_dread)
+   784→
+   785→    # ── Findings table rows ──
+   786→    _sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+   787→    sorted_findings = sorted(
+   788→        findings,
+   789→        key=lambda f: _sev_order.get(
+   790→            f.get("severity", "info").lower(), 99
+   791→        ),
+   792→    )
+   793→    findings_rows = ""
+   794→    for i, f in enumerate(sorted_findings, 1):
+   795→        sev = f.get("severity", "info").lower()
+   796→        color = _report_theme.sev_hex(sev)
+   797→        evidence = f.get("evidence", "")
+   798→        evidence_short = (evidence[:80] + "..." if len(evidence) > 80 else evidence) if evidence else ""
+   799→        dread_val = f.get("dread", 0)
+   800→        dread_display = f"{dread_val:.1f}" if isinstance(dread_val, float) else (f"{sum(dread_val.values())/5:.1f}" if isinstance(dread_val, dict) else "-")
+   801→        evidence_cell = f'<td style="color:{h_muted};font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{evidence_short}</td>' if evidence_short else '<td></td>'
+   802→        findings_rows += f'''
+   803→        <tr>
+   804→          <td style="color:#555;width:36px;font-size:11px">{i}</td>
+   805→          <td style="color:{color};font-weight:700;text-transform:uppercase;font-size:10px;width:65px;letter-spacing:0.5px">{sev}</td>
+   806→          <td style="color:{h_muted};font-size:11px;width:80px">{f.get("module", "")}</td>
+   807→          <td style="color:{h_text};font-size:12px">{f.get("title", "")}</td>
+   808→          <td style="color:{h_muted};font-size:11px;width:110px">{f.get("category", "")}</td>
+   809→          <td style="text-align:center;color:{h_med_color};width:36px;font-size:12px;font-weight:600">-{f.get("points_deducted", 0)}</td>
+   810→          <td style="text-align:center;color:{h_accent};width:40px;font-size:11px">{dread_display}</td>
+   811→          {evidence_cell}
+   812→        </tr>'''
+   813→
+   814→    if not findings_rows:
+   815→        findings_rows = f'<tr><td colspan="8" style="text-align:center;color:{h_low_color};padding:60px 20px;font-size:14px">No findings detected. Target appears clean.</td></tr>'
+   816→
+   817→    # ── Module tags ──
+   818→    module_tags = "".join(f'<span class="module-tag">{m}</span>' for m in modules)
+   819→
+   820→    # ── Top risk findings (critical + high) ──
+   821→    top_risk = [f for f in sorted_findings if f.get("severity", "").lower() in ("critical", "high")]
+   822→    risk_items = ""
+   823→    for f in top_risk[:6]:
+   824→        sev = f.get("severity", "").lower()
+   825→        color = _report_theme.sev_hex(sev)
+   826→        pts = f.get("points_deducted", 0)
+   827→        risk_items += f'''
+   828→        <div class="risk-item">
+   829→          <span class="risk-sev" style="background:{color}">{sev.upper()[:1]}</span>
+   830→          <span class="risk-title">{f.get("title", "")}</span>
+   831→          <span class="risk-module">{f.get("module", "")}</span>
+   832→          <span class="risk-pts" style="color:{color}">-{pts}</span>
+   833→        </div>'''
+   834→    if not risk_items:
+   835→        risk_items = f'<p style="color:{h_low_color};padding:20px;text-align:center;font-size:13px">No critical or high findings detected.</p>'
+   836→
+   837→    # ── Show/hide chart containers based on data availability ──
+   838→    has_modules = bool(mod_counts)
+   839→    has_points = bool(pts_mod)
+   840→    has_categories = bool(cat_counts) and len(cat_counts) > 1
+   841→    has_stacked = bool(sev_matrix)
+   842→    has_dread_radar = any(v > 0 for v in dread_avg)
+   843→    has_dread_grouped = bool(top_dread)
+   844→
+   845→    # ── DREAD average display ──
+   846→    dread_overall = round(sum(dread_avg) / 5, 1) if any(v > 0 for v in dread_avg) else 0.0
+   847→
+   848→    html = f'''<!DOCTYPE html>
+   849→<html lang="en">
+   850→<head>
+   851→<meta charset="UTF-8">
+   852→<meta name="viewport" content="width=device-width, initial-scale=1.0">
+   853→<title>ReconPro Report \u2014 {target}</title>
+   854→<link rel="preconnect" href="https://fonts.googleapis.com">
+   855→<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+   856→<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+   857→{_CHARTJS_CDN}
+   858→{_CHARTJS_DATE_ADAPTER}
+   859→<style>
+   860→  :root {{
+   861→    --bg: {h_body_bg};
+   862→    --card: {h_card_bg};
+   863→    --border: {h_border};
+   864→    --text: {h_text};
+   865→    --muted: {h_muted};
+   866→    --accent: {h_accent};
+   867→    --grade: {grade_color};
+   868→    --critical: {h_crit_color};
+   869→    --high: {h_high_color};
+   870→    --medium: {h_med_color};
+   871→    --low: {h_low_color};
+   872→    --info: {h_info_color};
+   873→    --glass: rgba(255, 255, 255, 0.03);
+   874→    --glass-border: rgba(255, 255, 255, 0.06);
+   875→  }}
+   876→
+   877→  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+   878→
+   879→  html {{ scroll-behavior: smooth; }}
+   880→
+   881→  body {{
+   882→    background: var(--bg);
+   883→    color: var(--text);
+   884→    font-family: 'Inter', 'SF Mono', system-ui, -apple-system, sans-serif;
+   885→    padding: 0;
+   886→    line-height: 1.6;
+   887→    min-height: 100vh;
+   888→    -webkit-font-smoothing: antialiased;
+   889→  }}
+   890→
+   891→  .container {{ max-width: 1280px; margin: 0 auto; padding: 24px 32px 60px; }}
+   892→
+   893→  /* ── Navigation ─────────────────────────────────────── */
+   894→  .nav {{
+   895→    position: sticky; top: 0; z-index: 50;
+   896→    background: rgba(10, 10, 15, 0.8);
+   897→    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+   898→    border-bottom: 1px solid var(--glass-border);
+   899→    padding: 12px 32px;
+   900→    display: flex; align-items: center; gap: 24px;
+   901→    font-size: 12px;
+   902→  }}
+   903→  .nav-brand {{ font-weight: 800; font-size: 13px; color: #fff; letter-spacing: 2px; flex-shrink: 0; }}
+   904→  .nav-brand span {{ color: var(--accent); }}
+   905→  .nav-links {{ display: flex; gap: 4px; flex-wrap: wrap; }}
+   906→  .nav-links a {{
+   907→    color: var(--muted); text-decoration: none; padding: 4px 10px;
+   908→    border-radius: 6px; font-size: 11px; font-weight: 500;
+   909→    transition: all 0.2s;
+   910→  }}
+   911→  .nav-links a:hover {{ color: #fff; background: var(--glass); }}
+   912→
+   913→  /* ── Header ──────────────────────────────────────────── */
+   914→  .report-header {{
+   915→    display: flex; align-items: center; justify-content: space-between;
+   916→    padding: 36px 40px;
+   917→    background: var(--card);
+   918→    border: 1px solid var(--border);
+   919→    border-radius: 20px;
+   920→    margin-top: 24px;
+   921→    margin-bottom: 24px;
+   922→    gap: 32px;
+   923→    position: relative;
+   924→    overflow: hidden;
+   925→  }}
+   926→  .report-header::before {{
+   927→    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+   928→    background: linear-gradient(90deg, var(--accent), var(--grade), var(--accent));
+   929→    opacity: 0.8;
+   930→  }}
+   931→  .brand {{ flex-shrink: 0; }}
+   932→  .brand h1 {{ font-size: 20px; color: #fff; letter-spacing: 3px; font-weight: 900; }}
+   933→  .brand .ver {{ color: var(--muted); font-size: 11px; margin-top: 4px; font-weight: 500; }}
+   934→  .header-center {{ flex: 1; text-align: center; min-width: 0; }}
+   935→  .target-name {{ font-size: 28px; color: #fff; font-weight: 800; margin-bottom: 6px; word-break: break-all; letter-spacing: -0.5px; }}
+   936→  .scan-meta {{ color: var(--muted); font-size: 12px; font-weight: 500; }}
+   937→  .header-right {{ flex-shrink: 0; width: 180px; height: 180px; }}
+   938→
+   939→  /* ── Stat cards ─────────────────────────────────────── */
+   940→  .stat-grid {{ display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; margin-bottom: 24px; }}
+   941→  .stat-card {{
+   942→    background: var(--card);
+   943→    border: 1px solid var(--border);
+   944→    border-radius: 14px;
+   945→    padding: 20px 14px;
+   946→    text-align: center;
+   947→    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+   948→    position: relative;
+   949→    overflow: hidden;
+   950→  }}
+   951→  .stat-card::after {{
+   952→    content: ''; position: absolute; bottom: 0; left: 20%; right: 20%; height: 2px;
+   953→    background: currentColor; opacity: 0.3; border-radius: 2px;
+   954→    transition: all 0.3s;
+   955→  }}
+   956→  .stat-card:hover {{ transform: translateY(-3px); border-color: var(--glass-border); }}
+   957→  .stat-card:hover::after {{ left: 10%; right: 10%; opacity: 0.6; }}
+   958→  .stat-num {{ font-size: 30px; font-weight: 900; font-family: 'JetBrains Mono', 'SF Mono', monospace; line-height: 1; }}
+   959→  .stat-label {{ font-size: 10px; color: var(--muted); text-transform: uppercase; margin-top: 8px; letter-spacing: 1.2px; font-weight: 600; }}
+   960→
+   961→  /* ── Executive Summary ───────────────────────────────── */
+   962→  .exec-summary {{
+   963→    background: var(--card);
+   964→    border: 1px solid var(--border);
+   965→    border-radius: 16px;
+   966→    padding: 28px 32px;
+   967→    margin-bottom: 24px;
+   968→    display: flex;
+   969→    gap: 24px;
+   970→    align-items: flex-start;
+   971→    position: relative;
+   972→  }}
+   973→  .exec-badge {{
+   974→    flex-shrink: 0;
+   975→    width: 72px; height: 72px;
+   976→    border-radius: 16px;
+   977→    display: flex; align-items: center; justify-content: center;
+   978→    font-size: 13px; font-weight: 800;
+   979→    color: #fff;
+   980→    text-transform: uppercase;
+   981→    letter-spacing: 1px;
+   982→    line-height: 1.2;
+   983→    text-align: center;
+   984→    padding: 8px;
+   985→  }}
+   986→  .exec-content {{ flex: 1; min-width: 0; }}
+   987→  .exec-title {{ font-size: 16px; font-weight: 700; color: #fff; margin-bottom: 6px; }}
+   988→  .exec-desc {{ font-size: 13px; color: var(--muted); line-height: 1.7; }}
+   989→  .exec-desc strong {{ color: var(--text); }}
+   990→
+   991→  /* ── Chart grid ──────────────────────────────────────── */
+   992→  .chart-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }}
+   993→  .chart-card {{
+   994→    background: var(--card);
+   995→    border: 1px solid var(--border);
+   996→    border-radius: 16px;
+   997→    padding: 24px;
+   998→    transition: border-color 0.3s;
+   999→  }}
+  1000→  .chart-card:hover {{ border-color: var(--glass-border); }}
+  1001→  .chart-card.full-width {{ grid-column: 1 / -1; }}
+  1002→  .chart-title {{
+  1003→    font-size: 11px; color: var(--muted); text-transform: uppercase;
+  1004→    letter-spacing: 1.5px; margin-bottom: 20px; padding-bottom: 12px;
+  1005→    border-bottom: 1px solid var(--border);
+  1006→    font-weight: 700;
+  1007→    display: flex; align-items: center; gap: 8px;
+  1008→  }}
+  1009→  .chart-title::before {{
+  1010→    content: ''; width: 8px; height: 8px; border-radius: 2px;
+  1011→    background: var(--accent); flex-shrink: 0;
+  1012→  }}
+  1013→  .chart-wrap {{ position: relative; width: 100%; }}
+  1014→  .chart-wrap.tall {{ height: 320px; }}
+  1015→  .chart-wrap.medium {{ height: 280px; }}
+  1016→
+  1017→  /* ── Risk panel ──────────────────────────────────────── */
+  1018→  .risk-panel {{
+  1019→    background: var(--card);
+  1020→    border: 1px solid var(--border);
+  1021→    border-radius: 16px;
+  1022→    padding: 24px 28px;
+  1023→    margin-bottom: 24px;
+  1024→  }}
+  1025→  .risk-item {{
+  1026→    display: flex; align-items: center; gap: 14px;
+  1027→    padding: 12px 0;
+  1028→    border-bottom: 1px solid var(--border);
+  1029→    transition: background 0.2s;
+  1030→  }}
+  1031→  .risk-item:last-child {{ border-bottom: none; }}
+  1032→  .risk-item:hover {{ background: var(--glass); margin: 0 -12px; padding-left: 12px; padding-right: 12px; border-radius: 8px; }}
+  1033→  .risk-sev {{
+  1034→    width: 30px; height: 30px; border-radius: 8px;
+  1035→    display: flex; align-items: center; justify-content: center;
+  1036→    color: #fff; font-size: 12px; font-weight: 900; flex-shrink: 0;
+  1037→  }}
+  1038→  .risk-title {{ flex: 1; font-size: 13px; color: var(--text); font-weight: 500; }}
+  1039→  .risk-module {{ color: var(--muted); font-size: 11px; font-weight: 500; flex-shrink: 0; }}
+  1040→  .risk-pts {{ font-size: 12px; font-weight: 700; flex-shrink: 0; font-family: 'JetBrains Mono', monospace; }}
+  1041→
+  1042→  /* ── Findings table ──────────────────────────────────── */
+  1043→  .section-title {{
+  1044→    font-size: 13px; color: #fff; margin: 28px 0 14px;
+  1045→    padding-left: 14px;
+  1046→    border-left: 3px solid var(--grade);
+  1047→    text-transform: uppercase;
+  1048→    letter-spacing: 1.5px;
+  1049→    font-weight: 700;
+  1050→  }}
+  1051→  table {{
+  1052→    width: 100%; border-collapse: collapse;
+  1053→    background: var(--card);
+  1054→    border: 1px solid var(--border);
+  1055→    border-radius: 16px;
+  1056→    overflow: hidden;
+  1057→  }}
+  1058→  th {{
+  1059→    text-align: left; padding: 14px 16px;
+  1060→    font-size: 10px; text-transform: uppercase;
+  1061→    color: var(--muted); border-bottom: 1px solid var(--border);
+  1062→    background: var(--bg);
+  1063→    letter-spacing: 1.2px;
+  1064→    font-weight: 700;
+  1065→    position: sticky; top: 0;
+  1066→  }}
+  1067→  td {{ padding: 12px 16px; font-size: 12px; border-bottom: 1px solid var(--border); }}
+  1068→  tr:last-child td {{ border-bottom: none; }}
+  1069→  tr {{ transition: background 0.15s; }}
+  1070→  tr:hover {{ background: rgba(255,255,255,0.02); }}
+  1071→
+  1072→  /* ── Module tags ─────────────────────────────────────── */
+  1073→  .modules {{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; justify-content: center; }}
+  1074→  .module-tag {{
+  1075→    background: var(--glass);
+  1076→    border: 1px solid var(--glass-border);
+  1077→    color: var(--muted);
+  1078→    padding: 4px 12px;
+  1079→    border-radius: 20px;
+  1080→    font-size: 10px;
+  1081→    font-weight: 600;
+  1082→    letter-spacing: 0.5px;
+  1083→    text-transform: uppercase;
+  1084→  }}
+  1085→
+  1086→  /* ── Badge box ───────────────────────────────────────── */
+  1087→  .badge-box {{
+  1088→    margin-top: 28px; padding: 20px 24px;
+  1089→    background: var(--card);
+  1090→    border: 1px solid var(--border);
+  1091→    border-radius: 14px;
+  1092→  }}
+  1093→  .badge-box .label {{ color: var(--muted); font-size: 10px; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 1.5px; font-weight: 700; }}
+  1094→  .badge-box code {{ color: var(--accent); font-size: 13px; word-break: break-all; font-family: 'JetBrains Mono', monospace; }}
+  1095→
+  1096→  /* ── Footer ──────────────────────────────────────────── */
+  1097→  .footer {{
+  1098→    text-align: center; color: var(--muted);
+  1099→    font-size: 11px; margin-top: 48px; padding-top: 24px;
+  1100→    border-top: 1px solid var(--border);
+  1101→    font-weight: 500;
+  1102→    letter-spacing: 0.5px;
+  1103→  }}
+  1104→  .footer strong {{ color: #fff; font-weight: 700; }}
+  1105→
+  1106→  /* ── Animations ──────────────────────────────────────── */
+  1107→  @keyframes fadeInUp {{
+  1108→    from {{ opacity: 0; transform: translateY(16px); }}
+  1109→    to {{ opacity: 1; transform: translateY(0); }}
+  1110→  }}
+  1111→  .animate-in {{ animation: fadeInUp 0.5s ease-out forwards; opacity: 0; }}
+  1112→  .delay-1 {{ animation-delay: 0.05s; }}
+  1113→  .delay-2 {{ animation-delay: 0.10s; }}
+  1114→  .delay-3 {{ animation-delay: 0.15s; }}
+  1115→  .delay-4 {{ animation-delay: 0.20s; }}
+  1116→  .delay-5 {{ animation-delay: 0.25s; }}
+  1117→  .delay-6 {{ animation-delay: 0.30s; }}
+  1118→  .delay-7 {{ animation-delay: 0.35s; }}
+  1119→
+  1120→  /* ── Responsive ──────────────────────────────────────── */
+  1121→  @media (max-width: 1024px) {{
+  1122→    .stat-grid {{ grid-template-columns: repeat(4, 1fr); }}
+  1123→  }}
+  1124→  @media (max-width: 768px) {{
+  1125→    .container {{ padding: 16px; }}
+  1126→    .report-header {{ flex-direction: column; text-align: center; padding: 28px 20px; }}
+  1127→    .stat-grid {{ grid-template-columns: repeat(3, 1fr); gap: 8px; }}
+  1128→    .chart-grid {{ grid-template-columns: 1fr; }}
+  1129→    .header-right {{ width: 160px; height: 160px; }}
+  1130→    .nav {{ padding: 10px 16px; gap: 12px; }}
+  1131→    .nav-links {{ display: none; }}
+  1132→    .exec-summary {{ flex-direction: column; align-items: center; text-align: center; }}
+  1133→    .target-name {{ font-size: 22px; }}
+  1134→    table {{ font-size: 11px; }}
+  1135→    th, td {{ padding: 8px 10px; }}
+  1136→    .risk-module {{ display: none; }}
+  1137→  }}
+  1138→  @media (max-width: 480px) {{
+  1139→    .stat-grid {{ grid-template-columns: repeat(2, 1fr); }}
+  1140→  }}
+  1141→
+  1142→  /* ── Print styles ────────────────────────────────────── */
+  1143→  @media print {{
+  1144→    .nav {{ display: none; }}
+  1145→    body {{ background: #fff; color: #111; padding: 0; }}
+  1146→    .container {{ padding: 20px; }}
+  1147→    .stat-card, .chart-card, .risk-panel, .exec-summary, .report-header, table, .badge-box {{
+  1148→      background: #fff; border-color: #ddd; break-inside: avoid;
+  1149→    }}
+  1150→    .stat-num, .target-name, .brand h1, .exec-title {{ color: #111; }}
+  1151→    .stat-label, .scan-meta, .ver, .chart-title, .risk-module, .module-tag {{ color: #666; }}
+  1152→    .report-header::before {{ print-color-adjust: exact; -webkit-print-color-adjust: exact; }}
+  1153→  }}
+  1154→</style>
+  1155→</head>
+  1156→<body>
+  1157→
+  1158→<!-- Sticky Navigation -->
+  1159→<nav class="nav">
+  1160→  <div class="nav-brand">RECON<span>PRO</span></div>
+  1161→  <div class="nav-links">
+  1162→    <a href="#summary">Summary</a>
+  1163→    <a href="#charts">Charts</a>
+  1164→    <a href="#dread">DREAD</a>
+  1165→    <a href="#risk">Risk</a>
+  1166→    <a href="#findings">Findings</a>
+  1167→  </div>
+  1168→</nav>
+  1169→
+  1170→<div class="container">
+  1171→
+  1172→  <!-- Header -->
+  1173→  <div class="report-header animate-in">
+  1174→    <div class="brand">
+  1175→      <h1>RECONPRO</h1>
+  1176→      <div class="ver">v{version_str} \u00b7 Security Assessment</div>
+  1177→    </div>
+  1178→    <div class="header-center">
+  1179→      <div class="target-name">{target}</div>
+  1180→      <div class="scan-meta">{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} \u00b7 {total_findings} findings \u00b7 {len(modules)} modules \u00b7 -{total_pts} points</div>
+  1181→      <div class="modules">{module_tags}</div>
+  1182→    </div>
+  1183→    <div class="header-right">
+  1184→      <canvas id="chart-score-gauge"></canvas>
+  1185→    </div>
+  1186→  </div>
+  1187→  {chart_score}
+  1188→
+  1189→  <!-- Stat cards -->
+  1190→  <div class="stat-grid" id="summary">
+  1191→    <div class="stat-card animate-in delay-1"><div class="stat-num" style="color:var(--critical)">{sc.get("critical",0)}</div><div class="stat-label">Critical</div></div>
+  1192→    <div class="stat-card animate-in delay-2"><div class="stat-num" style="color:var(--high)">{sc.get("high",0)}</div><div class="stat-label">High</div></div>
+  1193→    <div class="stat-card animate-in delay-3"><div class="stat-num" style="color:var(--medium)">{sc.get("medium",0)}</div><div class="stat-label">Medium</div></div>
+  1194→    <div class="stat-card animate-in delay-4"><div class="stat-num" style="color:var(--low)">{sc.get("low",0)}</div><div class="stat-label">Low</div></div>
+  1195→    <div class="stat-card animate-in delay-5"><div class="stat-num" style="color:var(--info)">{sc.get("info",0)}</div><div class="stat-label">Info</div></div>
+  1196→    <div class="stat-card animate-in delay-6"><div class="stat-num" style="color:var(--grade)">{score}</div><div class="stat-label">Score</div></div>
+  1197→    <div class="stat-card animate-in delay-7"><div class="stat-num" style="color:var(--accent)">{dread_overall}</div><div class="stat-label">DREAD</div></div>
+  1198→  </div>
+  1199→
+  1200→  <!-- Executive Summary -->
+  1201→  <div class="exec-summary animate-in" id="exec">
+  1202→    <div class="exec-badge" style="background:linear-gradient(135deg, {grade_color}, {grade_color}88)">{risk_label}</div>
+  1203→    <div class="exec-content">
+  1204→      <div class="exec-title">Risk Posture: {risk_label}</div>
+  1205→      <div class="exec-desc">{risk_desc}</div>
+  1206→    </div>
+  1207→  </div>
+  1208→
+  1209→  <!-- Charts row 1: severity doughnut + module bar -->
+  1210→  <div class="chart-grid" id="charts">
+  1211→    <div class="chart-card animate-in delay-1">
+  1212→      <div class="chart-title">Severity Distribution</div>
+  1213→      <div class="chart-wrap"><canvas id="chart-severity"></canvas></div>
+  1214→      {chart_severity}
+  1215→    </div>
+  1216→    <div class="chart-card animate-in delay-2">
+  1217→      <div class="chart-title">Findings per Module</div>
+  1218→      <div class="chart-wrap"><canvas id="chart-modules"></canvas></div>
+  1219→      {chart_modules}
+  1220→    </div>
+  1221→  </div>
+  1222→
+  1223→  <!-- Charts row 2: DREAD radar + points hbar -->
+  1224→  <div class="chart-grid" id="dread">
+  1225→    {'<div class="chart-card animate-in delay-1"><div class="chart-title">DREAD Risk Radar</div><div class="chart-wrap medium"><canvas id="chart-dread-radar"></canvas></div>{chart_dread_radar}</div>' if has_dread_radar else ''}
+  1226→    {'<div class="chart-card animate-in delay-2"><div class="chart-title">Points Deducted per Module</div><div class="chart-wrap tall"><canvas id="chart-points"></canvas></div>{chart_points}</div>' if has_points else ''}
+  1227→  </div>
+  1228→
+  1229→  <!-- Top Risk -->
+  1230→  {f'<div class="risk-panel animate-in" id="risk"><div class="chart-title">Top Risk Findings</div>{risk_items}</div>' if top_risk else ''}
+  1231→
+  1232→  <!-- Charts row 3: categories + stacked -->
+  1233→  <div class="chart-grid">
+  1234→    {'<div class="chart-card animate-in delay-1"><div class="chart-title">Category Breakdown</div><div class="chart-wrap tall"><canvas id="chart-categories"></canvas></div>{chart_categories}</div>' if has_categories else ''}
+  1235→    {'<div class="chart-card animate-in delay-2"><div class="chart-title">Severity Breakdown by Module</div><div class="chart-wrap"><canvas id="chart-stacked"></canvas></div>{chart_stacked}</div>' if has_stacked else ''}
+  1236→  </div>
+  1237→
+  1238→  <!-- DREAD per top finding -->
+  1239→  {'<div class="chart-card full-width animate-in" style="margin-bottom:24px"><div class="chart-title">DREAD Breakdown by Top Findings</div><div class="chart-wrap tall"><canvas id="chart-dread-grouped"></canvas></div>{chart_dread_grouped}</div>' if has_dread_grouped else ''}
+  1240→
+  1241→  <!-- Findings table -->
+  1242→  <div class="section-title" id="findings">All Findings ({total_findings})</div>
+  1243→  <table>
+  1244→    <thead><tr><th>#</th><th>Sev</th><th>Module</th><th>Finding</th><th>Category</th><th>Pts</th><th>DREAD</th><th>Evidence</th></tr></thead>
+  1245→    <tbody>{findings_rows}</tbody>
+  1246→  </table>
+  1247→
+  1248→  <!-- Badge -->
+  1249→  <div class="badge-box">
+  1250→    <div class="label">GitHub README Badge</div>
+  1251→    <code>{badge}</code>
+  1252→  </div>
+  1253→
+  1254→  <div class="footer">Generated by <strong>ReconPro</strong> v{version_str} \u2014 Eleven Blades. One Target. One Verdict.</div>
+  1255→</div>
+  1256→
+  1257→<script>
+  1258→  // Animate stat counters on load
+  1259→  document.addEventListener('DOMContentLoaded', function() {{
+  1260→    document.querySelectorAll('.stat-num').forEach(function(el) {{
+  1261→      const target = parseFloat(el.textContent);
+  1262→      if (isNaN(target)) return;
+  1263→      const isFloat = el.textContent.includes('.');
+  1264→      const duration = 1200;
+  1265→      const start = performance.now();
+  1266→      el.textContent = '0';
+  1267→
+  1268→      function update(now) {{
+  1269→        const elapsed = now - start;
+  1270→        const progress = Math.min(elapsed / duration, 1);
+  1271→        // easeOutQuart
+  1272→        const eased = 1 - Math.pow(1 - progress, 4);
+  1273→        const current = target * eased;
+  1274→        el.textContent = isFloat ? current.toFixed(1) : Math.round(current);
+  1275→        if (progress < 1) requestAnimationFrame(update);
+  1276→      }}
+  1277→      requestAnimationFrame(update);
+  1278→    }});
+  1279→
+  1280→    // Intersection observer for scroll animations
+  1281→    const observer = new IntersectionObserver(function(entries) {{
+  1282→      entries.forEach(function(entry) {{
+  1283→        if (entry.isIntersecting) {{
+  1284→          entry.target.style.animationPlayState = 'running';
+  1285→        }}
+  1286→      }});
+  1287→    }}, {{ threshold: 0.1 }});
+  1288→
+  1289→    document.querySelectorAll('.animate-in').forEach(function(el) {{
+  1290→      observer.observe(el);
+  1291→    }});
+  1292→  }});
+  1293→</script>
+  1294→</body>
+  1295→</html>'''
+  1296→
+  1297→    with open(output_path, "w") as f:
+  1298→        f.write(html)
+  1299→
+  1300→    return os.path.abspath(output_path)
+  1301→

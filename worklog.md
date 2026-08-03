@@ -207,3 +207,37 @@ Stage Summary:
 - 6 interactive Chart.js charts in HTML reports
 - All files pass syntax check
 - Test report generated at /home/z/my-project/download/reconpro_phase_f_test.html
+---
+Task ID: F
+Agent: main
+Task: Phase F — HTML Report Overhaul with Chart.js
+
+Work Log:
+- Explored existing reports.py (657 lines, 6 charts) and formats.py export pipeline
+- Analyzed DREAD data structures: dict-form (cloud_recon) and float-form (oblivion, container_sec)
+- Designed and wrote complete reports.py overhaul (1308 lines, +651 from original)
+- Added 2 new chart types: DREAD radar chart + DREAD per-top-finding grouped bar chart
+- Added executive summary panel with 5-tier risk posture assessment
+- Added sticky navigation bar with smooth scroll anchors
+- Added animated stat counters (easeOutQuart via requestAnimationFrame)
+- Added IntersectionObserver for scroll-triggered fade-in animations
+- Added glassmorphism (backdrop-filter: blur) sticky nav
+- Added gradient accent line on header
+- Added Inter + JetBrains Mono web fonts via Google Fonts CDN
+- Added CSS custom properties (:root variables) for full theme integration
+- Added 7th stat card for DREAD overall score
+- Added DREAD column to findings table
+- Enhanced all chart options: animations, styled tooltips, borderRadius, hover effects
+- Fixed 4 f-string brace bugs: dict comprehensions outside f-strings, lambda dict literal, {i} interpolation
+- Fixed nested f-string in ternary conditional (variables not interpolated inside inner string literals) — refactored to pre-built block variables
+- Added print media styles and 3 responsive breakpoints (1024px, 768px, 480px)
+- Verified with 36-point HTML structure validation
+- Tested clean target edge case (0 findings, Excellent posture)
+- Total: 8 interactive Chart.js charts (was 6)
+
+Stage Summary:
+- reports.py: 657 → 1308 lines (+651, +99%)
+- Charts: 6 → 8 (added DREAD radar + DREAD grouped bar)
+- New features: executive summary, sticky nav, animated counters, scroll animations, glassmorphism, gradient accents, DREAD column, 7th stat card
+- Test reports: /home/z/my-project/download/reconpro_phase_f_test.html (52KB), reconpro_phase_f_clean.html (20KB)
+- All syntax checks pass, all 36 validation checks pass
