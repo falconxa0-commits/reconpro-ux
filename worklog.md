@@ -241,3 +241,33 @@ Stage Summary:
 - New features: executive summary, sticky nav, animated counters, scroll animations, glassmorphism, gradient accents, DREAD column, 7th stat card
 - Test reports: /home/z/my-project/download/reconpro_phase_f_test.html (52KB), reconpro_phase_f_clean.html (20KB)
 - All syntax checks pass, all 36 validation checks pass
+
+---
+Task ID: G
+Agent: main
+Task: Phase G — Session Persistence, Exit Animation, Polish Pass
+
+Work Log:
+- Added `json` import and `_SESSION_DIR` / `_SESSION_FILE` constants (~/.reconpro/session.json)
+- Implemented `_save_session()`: persists command history (last 200), split ratio, panel collapse states, target, score, grade, finding count, last scan args
+- Implemented `_load_session()`: loads with version-major guard (discards sessions from different major versions)
+- Implemented `_restore_session()`: applies saved state — command history, layout (split ratio, collapse states, manual resize flag), scan state (target header, score, grade), last scan args
+- Implemented `_graceful_exit()`: saves session, hides main container, mounts farewell Static with session summary (findings, score, commands, target), auto-exits after 1.2s
+- Implemented `_confirm_quit()`: if scanning, shows warning toast + sets `_quit_confirmed` flag (second Ctrl+C force-exits); if idle, calls `_graceful_exit()`
+- Implemented `action_quit()`: overrides Textual's default quit to route through `_confirm_quit()`
+- Implemented `_handle_session()`: manual save + display session state info (saved time, target, score, grade, findings, history count, layout, split, file path)
+- Added `session` command to command handler dispatch
+- Added `session` to COMMAND_DB and quick_cmds in command_completer.py
+- Enhanced `_finish_boot()`: loads and restores session before showing welcome, displays restore banner with session metadata
+- Enhanced `_initial_layout()`: respects `_user_manually_resized` flag — if True, applies saved split ratio + restores collapse states instead of auto-layout
+- Added auto-save on scan complete (`_on_scan_complete` calls `_save_session()`)
+- Added farewell screen CSS (#farewell-screen centered)
+- Added `_quit_confirmed` and `_session_restored` flags to __init__
+- Replaced bare `self.exit()` in quit/q/exit command with `self._confirm_quit()`
+
+Stage Summary:
+- nexus_tui.py: 3139 → 3357 lines (+218)
+- command_completer.py: 558 → 558 lines (+1 command entry)
+- New file: ~/.reconpro/session.json (auto-created on save)
+- New features: session persistence (save/restore/auto-save), farewell exit screen, quit-while-scanning confirmation, `session` command
+- All syntax checks pass

@@ -7,6 +7,7 @@ module status grid, score tracking, and animated boot sequence.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from datetime import datetime
@@ -92,6 +93,10 @@ MODULE_NAMES: Dict[str, str] = {
 }
 
 SPINNER_FRAMES = Theme.current().spinner_frames
+
+# Phase G: Session persistence path
+_SESSION_DIR = Path.home() / ".reconpro"
+_SESSION_FILE = _SESSION_DIR / "session.json"
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Finding Detail Modal
@@ -381,6 +386,15 @@ class NexusApp(App):
     .boot-line {{
         text-align: center;
         margin-bottom: 1;
+    }}
+
+    /* ── Phase G: Farewell Screen ──────────────────────────── */
+    #farewell-screen {{
+        width: 100%;
+        height: 100%;
+        align: center middle;
+        text-align: center;
+        padding: 4;
     }}
 
     /* ── Main Layout ─────────────────────────────────────── */
@@ -804,6 +818,9 @@ class NexusApp(App):
         self._retry_count: int = 0
         self._max_retries: int = 2
         self._last_scan_args: Optional[Tuple] = None  # (target, modules, is_local) for retry
+        # ── Phase G: quit confirmation ──
+        self._quit_confirmed: bool = False
+        self._session_restored: bool = False
 
     # ── Compose ──────────────────────────────────────────────────────────────
 
@@ -1355,6 +1372,155 @@ class NexusApp(App):
             except NoMatches:
                 pass
 
+    # ── Phase G: Session Persistence ─────────────────────────────────────
+
+    def _save_session(self) -> None:
+        """Persist session state to ~/.reconpro/session.json."""
+        try:
+            state = {
+                "version": VERSION,
+                "saved_at": datetime.now().isoformat(),
+                "command_history": self._command_history[-200:],  # last 200 cmds
+                "split_ratio": self._split_ratio,
+                "left_collapsed": self._left_collapsed,
+                "modules_collapsed": self._modules_collapsed,
+                "user_manually_resized": self._user_manually_resized,
+                "current_target": self.current_target,
+                "score": self.score,
+                "grade": self.grade,
+                "finding_count": self.finding_count,
+                "first_scan_done": self._first_scan_done,
+            }
+            # Store last scan args for retry-on-restart
+            if self._last_scan_args:
+                state["last_scan_args"] = list(self._last_scan_args)
+
+            _SESSION_DIR.mkdir(parents=True, exist_ok=True)
+            _SESSION_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        except Exception:
+            pass  # Silent fail — persistence is best-effort
+
+    def _load_session(self) -> Optional[Dict[str, Any]]:
+        """Load previous session state. Returns None if unavailable."""
+        try:
+            if not _SESSION_FILE.exists():
+                return None
+            raw = json.loads(_SESSION_FILE.read_text(encoding="utf-8"))
+            # Discard sessions from different major versions
+            if raw.get("version", "").split(".")[0] != VERSION.split(".")[0]:
+                return None
+            return raw
+        except Exception:
+            return None
+
+    def _restore_session(self, state: Dict[str, Any]) -> None:
+        """Apply saved session state to current instance."""
+        # Restore command history
+        self._command_history = state.get("command_history", [])
+        self._history_index = len(self._command_history)
+
+        # Restore layout
+        self._split_ratio = state.get("split_ratio", 40)
+        self._left_collapsed = state.get("left_collapsed", False)
+        self._modules_collapsed = state.get("modules_collapsed", False)
+        self._user_manually_resized = state.get("user_manually_resized", False)
+
+        # Restore scan state
+        target = state.get("current_target", "")
+        if target:
+            self.current_target = target
+            try:
+                self.query_one("#header-target", Label).update(
+                    f"[{CYAN}]◆ {target}[/]"
+                )
+            except NoMatches:
+                pass
+
+        score = state.get("score", 100)
+        grade = state.get("grade", "A+")
+        self.score = score
+        self.grade = grade
+        self.finding_count = state.get("finding_count", 0)
+        self._first_scan_done = state.get("first_scan_done", False)
+
+        # Restore last scan args
+        args = state.get("last_scan_args")
+        if args and len(args) == 3:
+            self._last_scan_args = tuple(args)
+
+    def _graceful_exit(self) -> None:
+        """Save session and exit with farewell animation."""
+        self._save_session()
+
+        # Phase G: Exit farewell overlay
+        try:
+            main = self.query_one("#main-container", Container)
+            main.set_class(False, "visible")
+        except NoMatches:
+            pass
+
+        # Show farewell screen
+        farewell = Static(
+            f"\n\n"
+            f"  [{CYAN} bold]RECONPRO NEXUS[/]  [{DIM_CYAN}]v{VERSION}[/]\n\n"
+            f"  [{GREEN}]●[/]  [{DIM_CYAN}]Session saved to [cyan]~/.reconpro/session.json[/][/]\n\n"
+            f"  [{DIM_CYAN}]  Findings this session:  [cyan bold]{self.finding_count}[/][/]\n"
+            f"  [{DIM_CYAN}]  Final score:  [{GREEN} bold]{self.score}[/] [{DIM_CYAN}]({self.grade})[/][/]\n"
+            f"  [{DIM_CYAN}]  Commands in history:  [cyan]{len(self._command_history)}[/][/]\n"
+            f"  [{DIM_CYAN}]  Target:  [cyan]{self.current_target or 'none'}[/][/]\n\n"
+            f"  [{DIM_CYAN}]  [dim]Eleven Blades. One Target. One Verdict.[/][/]\n",
+            id="farewell-screen",
+        )
+        self.mount(farewell)
+
+        # Auto-exit after brief display
+        self.set_timer(1.2, self._exit_after_farewell)
+
+    def _exit_after_farewell(self) -> None:
+        """Final exit after farewell screen."""
+        self.exit()
+
+    def _confirm_quit(self) -> None:
+        """Show quit confirmation — blocking modal approach."""
+        if self.is_scanning:
+            # Scan in progress — show warning and require confirmation
+            self._toast(
+                "Scan in progress — press Ctrl+C again to force quit",
+                severity="warning",
+                action="Ctrl+C to force",
+                duration=3.0,
+            )
+            # Set a flag so next Ctrl+C triggers actual exit
+            self._quit_confirmed = True
+        else:
+            self._graceful_exit()
+
+    def _initial_layout(self) -> None:
+        """Apply responsive layout (called after boot)."""
+        if not self._user_manually_resized:
+            self._apply_responsive_layout(self.size.width, self.size.height)
+        else:
+            self._apply_split_ratio()
+            # Restore collapse states
+            if self._left_collapsed:
+                try:
+                    self.query_one("#left-panel", Vertical).set_class(True, "collapsed")
+                except NoMatches:
+                    pass
+            if self._modules_collapsed:
+                try:
+                    self.query_one("#modules-wrapper", Vertical).set_class(True, "collapsed")
+                except NoMatches:
+                    pass
+
+    def action_quit(self) -> None:
+        """Override default quit — add confirmation + session save (Phase G)."""
+        if self._quit_confirmed:
+            # Second Ctrl+C while scanning — force exit without save
+            self.exit()
+            return
+        self._confirm_quit()
+
     def _finish_boot(self) -> None:
         """Called from boot screen when animation completes."""
         try:
@@ -1370,6 +1536,13 @@ class NexusApp(App):
             pass
 
         self._boot_done = True
+
+        # Phase G: Restore session before focusing input
+        session = self._load_session()
+        if session:
+            self._restore_session(session)
+            self._session_restored = True
+
         self._focus_input()
 
         # Phase D: trigger initial responsive layout
@@ -1380,6 +1553,17 @@ class NexusApp(App):
         chat.write(f"[{CYAN} bold]RECONPRO NEXUS v{VERSION}[/]")
         chat.write(f"[{DIM_CYAN}]──────────────────────────────────────[/]")
         chat.write(f"[{GREEN}]●[/] [{DIM_CYAN}]System ready. {len(MODULE_NAMES)} modules loaded.[/]")
+
+        # Phase G: Session restore banner
+        if self._session_restored:
+            saved_at = session.get("saved_at", "unknown")
+            hist_count = len(self._command_history)
+            chat.write(f"[{GREEN}]↻[/] [{DIM_CYAN}]Previous session restored[/]  [dim]{saved_at[:19]}[/]")
+            if self.current_target:
+                chat.write(f"  [{DIM_CYAN}]  Last target: [cyan]{self.current_target}[/]  Score: [{GREEN}]{self.score}[/] ({self.grade})  Findings: {self.finding_count}")
+            chat.write(f"  [{DIM_CYAN}]  Command history: [cyan]{hist_count} entries[/]  Layout: [cyan]{'custom' if self._user_manually_resized else 'auto'}[/]")
+            chat.write("")
+
         chat.write(f"[{DIM_CYAN}]  Type [cyan bold]help[/] for commands, or start with [cyan bold]scan <target>[/][/]")
         chat.write(f"[{DIM_CYAN}]  Press [cyan bold]Tab[/] on empty input to browse all commands[/]")
         chat.write(f"[{DIM_CYAN}]  Quick jump: [cyan]0[/] input · [cyan]1[/] chat · [cyan]2[/] findings · [cyan]3[/] modules[/]")
@@ -1994,7 +2178,7 @@ class NexusApp(App):
         args = parts[1:]
 
         if cmd in ("quit", "q", "exit"):
-            self.exit()
+            self._confirm_quit()
             return
 
         if cmd == "clear":
@@ -2043,6 +2227,11 @@ class NexusApp(App):
 
         if cmd == "graph":
             self._handle_graph()
+            return
+
+        # Phase G: session management
+        if cmd == "session":
+            self._handle_session()
             return
 
         if cmd == "export":
@@ -2330,6 +2519,33 @@ class NexusApp(App):
     def _handle_graph(self) -> None:
         self._chat(f"[{DIM_CYAN}]Loading knowledge graph...[/]")
         self._run_graph_worker()
+
+    # ── Phase G: Session Management ──────────────────────────────
+
+    def _handle_session(self) -> None:
+        """Display session state info and manual save."""
+        self._save_session()  # always save on explicit command
+        session = self._load_session()
+        if not session:
+            self._chat(f"[{DIM_CYAN}]No previous session found.[/]")
+            return
+        saved_at = session.get("saved_at", "unknown")
+        hist = len(session.get("command_history", []))
+        target = session.get("current_target", "none")
+        score = session.get("score", 100)
+        grade = session.get("grade", "A+")
+        findings = session.get("finding_count", 0)
+        layout = "custom" if session.get("user_manually_resized") else "auto"
+        split = session.get("split_ratio", 40)
+        self._chat(f"[{CYAN} bold]Session State[/]")
+        self._chat(f"[{DIM_CYAN}]  Saved:      [cyan]{saved_at[:19]}[/]")
+        self._chat(f"[{DIM_CYAN}]  Target:     [cyan]{target}[/]")
+        self._chat(f"[{DIM_CYAN}]  Score:      [{GREEN}]{score}[/] [{DIM_CYAN}]({grade})[/]")
+        self._chat(f"[{DIM_CYAN}]  Findings:   [cyan]{findings}[/]")
+        self._chat(f"[{DIM_CYAN}]  History:    [cyan]{hist} commands[/]")
+        self._chat(f"[{DIM_CYAN}]  Layout:     [cyan]{layout}[/] [{DIM_CYAN}](split {split}%)[/]")
+        self._chat(f"[{DIM_CYAN}]  File:       [cyan]~/.reconpro/session.json[/]")
+        self._toast_success("Session saved")
 
     def _handle_export(self, args: List[str]) -> None:
         if not args:
@@ -3017,6 +3233,9 @@ class NexusApp(App):
                     1 for f in data.get("findings", []) if f.get("module") == m
                 )
                 self._module_cells[m].set_status("done", mod_findings)
+
+        # Phase G: auto-save session after scan
+        self._save_session()
 
     def _process_scan_data(
         self,

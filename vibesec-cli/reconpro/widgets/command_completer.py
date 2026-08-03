@@ -57,6 +57,7 @@ COMMAND_DB: List[Tuple[str, List[str], str, bool, Optional[str]]] = [
     ("netmap",     [],       "Network topology map",                      False, "no_scan"),
     # ── Post-scan actions ──
     ("export",     ["exp"],  "Export last scan (sarif/md/json/html)",     True,  "needs_target"),
+    ("session",    [],       "View & save session state",                   False, None),
     ("history",    ["h"],    "Scan history",                              False, None),
     ("defense",    [],       "Generate remediation code",                  False, "needs_target"),
     ("compliance", [],       "Compliance framework mapping",              False, "needs_target"),
@@ -426,7 +427,7 @@ class CommandCompleter(Widget):
         quick_cmds = [
             "scan", "audit", "doctor", "blitz", "agent",
             "swarm", "subdomains", "adversarial", "export",
-            "theme", "help", "clear", "quit",
+            "session", "theme", "help", "clear", "quit",
         ]
         scored: List[Tuple[str, str, float, Optional[str]]] = []
         for cmd, aliases, desc, takes_args, ctx in COMMAND_DB:
