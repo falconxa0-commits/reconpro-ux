@@ -40,8 +40,9 @@ from textual.widgets import (
 from .theme import Theme, THEMES
 from .widgets import (
     ScoreGauge, Sparkline, StatCounter, VelocityMeter,
-    CommandCompleter, HintBar,
+    CommandCompleter, HintBar, ToastContainer,
 )
+from .nexus_help import HelpOverlay
 
 VERSION = "7.0.0"
 BG = Theme.current().BG
@@ -862,10 +863,13 @@ class NexusApp(App):
             # Command completer (popup layer)
             yield CommandCompleter(id="cmd-completer")
 
+            # Phase E: Toast notification overlay
+            yield ToastContainer(id="toast-container")
+
             # Bottom bar
             with Horizontal(id="bottom-bar"):
                 yield Input(
-                    placeholder="scan <target>  |  agent <goal>  |  fuzzer <url>  |  help  |  Tab",
+                    placeholder="scan <target>  |  agent <goal>  |  ?  |  Tab",
                     id="command-input",
                 )
                 yield Label("", id="bottom-info")
@@ -922,6 +926,12 @@ class NexusApp(App):
             self._user_manually_resized = True
             self._split_ratio = 50
             self._apply_split_ratio()
+            event.stop()
+            return
+
+        # ── Phase E: ? opens help overlay ──
+        if event.key == "question_mark" and not self._input_focused():
+            self._show_help_overlay()
             event.stop()
             return
 
@@ -1236,6 +1246,49 @@ class NexusApp(App):
         except NoMatches:
             pass
 
+    # ── Phase E: Toast convenience method ────────────────────────────────
+
+    def _toast(
+        self,
+        message: str,
+        severity: str = "info",
+        action: str = "",
+        duration: Optional[float] = None,
+    ) -> int:
+        """Show a toast notification.
+
+        Args:
+            message: Rich markup message.
+            severity: 'success', 'error', 'warning', 'info'.
+            action: Optional action hint shown dimmed.
+            duration: Auto-dismiss seconds (None = severity default).
+
+        Returns:
+            Toast id (can be used to dismiss early).
+        """
+        try:
+            tc = self.query_one("#toast-container", ToastContainer)
+            return tc.show(message, severity=severity, action=action, duration=duration)
+        except NoMatches:
+            return -1
+
+    def _toast_error(self, error: Exception, context: str = "") -> None:
+        """Show an error toast with recovery suggestion.
+
+        Phase E: wraps the toast + error hint + optional action hint.
+        Truncates long error messages for readability.
+        """
+        msg = str(error)
+        if len(msg) > 60:
+            msg = msg[:57] + "..."
+        label = f"{context}: " if context else ""
+        action = "Ctrl+S to retry" if self.current_target else ""
+        self._toast(f"{label}{msg}", severity="error", action=action)
+
+    def _show_help_overlay(self) -> None:
+        """Open the visual help overlay modal."""
+        self.push_screen(HelpOverlay())
+
     def _get_target_history(self) -> List[str]:
         """Extract unique targets from command history."""
         targets: List[str] = []
@@ -1300,6 +1353,7 @@ class NexusApp(App):
         chat.write(f"[{DIM_CYAN}]  Press [cyan bold]Tab[/] on empty input to browse all commands[/]")
         chat.write(f"[{DIM_CYAN}]  Quick jump: [cyan]0[/] input · [cyan]1[/] chat · [cyan]2[/] findings · [cyan]3[/] modules[/]")
         chat.write(f"[{DIM_CYAN}]  Layout: [cyan][[/]=[/] collapse panels · [cyan]Ctrl+←→[/] resize · [cyan]layout[/] status")
+        chat.write(f"[{DIM_CYAN}]  Press [cyan]?[/] for visual command reference")
         chat.write("")
 
         # Phase C: show first_scan onboarding hints
@@ -2068,6 +2122,17 @@ class NexusApp(App):
         self._chat(f"[{DIM_CYAN}]Cleared.[/]")
 
     def _show_help(self) -> None:
+        """Open visual help overlay. Falls back to chat dump.
+
+    Phase E: prefers the modal HelpOverlay. If a modal is already open,
+    dumps to chat instead.
+    """
+        if self.screen_stack:
+            self._show_help_chat_dump()
+            return
+        self._show_help_overlay()
+
+    def _show_help_chat_dump(self) -> None:
         help_lines = [
             ("[bold cyan]COMMANDS[/]", ""),
             ("[cyan]scan <target>[/]", "Remote security scan"),
@@ -2424,6 +2489,8 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ Scan error: {e}[/]")
+            # Phase E: error toast with recovery hint
+            self.call_from_thread(self._toast_error, e, context="Scan")
             # Phase C: push error_state hints
             self.call_from_thread(self._push_error_hint)
             if modules:
@@ -2462,6 +2529,7 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ Blitz error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="Blitz")
             self.call_from_thread(self._set_all_modules_status, "error")
 
         finally:
@@ -2530,6 +2598,7 @@ class NexusApp(App):
             )
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ {label} error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="Generic")
             self.call_from_thread(self._push_error_hint)
             if modules:
                 for m in modules:
@@ -2575,6 +2644,7 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ Subdomain error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="Subdomain")
 
         finally:
             self.call_from_thread(self.is_scanning.set, False)
@@ -2609,6 +2679,7 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ Agent error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="Agent")
             self.call_from_thread(self._set_all_modules_status, "error")
 
         finally:
@@ -2653,6 +2724,7 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ Swarm error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="Swarm")
             for m in swarm_modules:
                 if m in self._module_cells:
                     self.call_from_thread(self._module_cells[m].set_status, "error")
@@ -2692,6 +2764,7 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ Adversarial error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="Adversarial")
             self.call_from_thread(self._set_all_modules_status, "error")
 
         finally:
@@ -2717,6 +2790,7 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  Graph error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="Graph")
 
     @work(exclusive=False, thread=True)
     def _run_export_worker(self, fmt: str) -> None:
@@ -2740,6 +2814,7 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  ✗ Export error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="Export")
 
     @work(exclusive=False, thread=True)
     def _run_history_worker(self) -> None:
@@ -2771,6 +2846,7 @@ class NexusApp(App):
 
         except Exception as e:
             self.call_from_thread(self._chat, f"[{RED}]  History error: {e}[/]")
+            self.call_from_thread(self._toast_error, e, context="History")
 
     # ── Scan Data Processing ───────────────────────────────────────────────
 
@@ -2792,6 +2868,22 @@ class NexusApp(App):
 
         # Phase C: trigger severity-aware hints after scan data loaded
         self._update_severity_hints()
+
+        # Phase E: success toast with grade
+        n = len(data.get("findings", []))
+        crit_count = data.get("severity_counts", {}).get("critical", 0)
+        if crit_count > 0:
+            self._toast(
+                f"Scan done: {new_grade} ({new_score}) - {crit_count} CRITICAL",
+                severity="error",
+                action="d to inspect",
+            )
+        else:
+            self._toast(
+                f"Scan complete: {new_grade} ({new_score}) - {n} findings",
+                severity="success",
+                action="export html" if n > 0 else "",
+            )
 
         # Summary in chat
         n = len(data.get("findings", []))

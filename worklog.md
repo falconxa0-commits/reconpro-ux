@@ -119,3 +119,41 @@ Stage Summary:
 - hint_bar.py: 341 → 344 lines (+3, layout hints)
 - All 3 files py_compile clean, all method/existence checks pass
 - 30 commands in DB, 10 layout hints, 5 responsive breakpoints
+
+---
+Task ID: 5
+Agent: Super Z (main)
+Task: Phase E — Toast Notifications + Error Recovery + Help Overlay
+
+Work Log:
+- Created reconpro/widgets/toast.py: ToastContainer widget (173 lines)
+  - Stacked auto-dismissing toasts in top-right overlay layer
+  - 4 severity levels: success, error, warning, info
+  - Each has colored icon, border, auto-duration, progress indicator (*/. bar)
+  - max 4 visible, oldest silently removed
+  - 0.25s tick timer for expiry checks
+- Created reconpro/nexus_help.py: HelpOverlay ModalScreen (165 lines)
+  - 5 command groups: SCAN & ATTACK, RECON & INTEL, AUDIT & ANALYSIS, POST-SCAN, META & LAYOUT
+  - 15 keybindings section with descriptions
+  - Dark semi-transparent backdrop (0.88 opacity)
+  - Close button + Escape dismiss
+  - 80-column frame with scrollable content
+- Updated widgets/__init__.py: exported ToastContainer
+- Updated nexus_tui.py (2978 -> 3029 lines, +51 net + Phase D's changes):
+  - Added ToastContainer to compose (overlay layer)
+  - Added _toast() convenience method
+  - Added _toast_error(context) method with truncation + retry hint
+  - Added _show_help_overlay() method
+  - Rewrote _show_help() to prefer HelpOverlay modal, fallback to chat dump
+  - Added ? key binding to open help overlay when not in input
+  - Wired 11 _toast_error calls into all worker exception handlers
+  - Added success toast on scan completion (severity-based: error if critical, success otherwise)
+  - Updated welcome message with ? key hint
+  - Updated input placeholder: "scan <target>  |  agent <goal>  |  ?  |  Tab"
+
+Stage Summary:
+- New files: reconpro/widgets/toast.py (173 lines), reconpro/nexus_help.py (165 lines)
+- Modified: nexus_tui.py (3029 lines), widgets/__init__.py (28 lines)
+- 11 error toast integration points across all worker types
+- 1 success toast on scan completion
+- 1 visual help overlay with 30 commands + 15 keybindings
