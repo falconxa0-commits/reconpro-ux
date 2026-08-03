@@ -37,7 +37,7 @@ from textual.widgets import (
 # Theme — single source of truth for all colors
 # ════════════════════════════════════════════════════════════════════════════════
 
-from .theme import Theme
+from .theme import Theme, THEMES
 from .widgets import ScoreGauge, Sparkline, StatCounter, VelocityMeter
 
 VERSION = "7.0.0"
