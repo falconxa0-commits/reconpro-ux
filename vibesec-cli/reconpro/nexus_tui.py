@@ -38,6 +38,7 @@ from textual.widgets import (
 # ════════════════════════════════════════════════════════════════════════════════
 
 from .theme import Theme
+from .widgets import ScoreGauge, Sparkline, StatCounter, VelocityMeter
 
 VERSION = "7.0.0"
 BG = Theme.current().BG
@@ -418,16 +419,34 @@ class NexusApp(App):
         margin-left: 1;
         text-style: bold;
     }}
-    #header-score {{
+    #score-gauge {{
         margin-left: auto;
-        text-align: right;
     }}
-    #score-value {{
-        text-style: bold;
+
+    /* ── Stats Bar ────────────────────────────────────── */
+    #stats-bar {{
+        dock: top;
+        width: 100%;
+        height: 1;
+        background: {HEADER_BG};
+        border-bottom: solid {BORDER_COLOR};
+        padding: 0 2;
+        content-align: left middle;
     }}
-    #score-grade {{
-        text-style: bold;
-        margin-left: 1;
+    #stat-findings {{ margin-right: 2; }}
+    #stat-critical {{ margin-right: 2; }}
+    #stat-high {{ margin-right: 2; }}
+    #spark-findings {{ margin-right: 2; }}
+    #spark-score {{ margin-right: 0; }}
+
+    /* ── Velocity Meter ───────────────────────────────── */
+    #velocity-meter {{
+        dock: bottom;
+        width: 100%;
+        height: 1;
+        background: {HEADER_BG};
+        border-top: solid {BORDER_COLOR};
+        padding: 0 2;
     }}
 
     /* ── Content Area ────────────────────────────────────── */
@@ -634,9 +653,15 @@ class NexusApp(App):
                 yield Label("", id="header-target")
                 yield StatusDot(id="status-dot")
                 yield Label("", id="header-scanning")
-                with Horizontal(id="header-score"):
-                    yield Label("100", id="score-value")
-                    yield Label("(A+)", id="score-grade")
+                yield ScoreGauge(bar_width=14, id="score-gauge")
+
+            # Stats bar — living data
+            with Horizontal(id="stats-bar"):
+                yield StatCounter(label="findings", icon="●", id="stat-findings")
+                yield StatCounter(label="critical", icon="◆", color=RED, id="stat-critical")
+                yield StatCounter(label="high", icon="◆", color=YELLOW, id="stat-high")
+                yield Sparkline(max_points=30, title="FIND/MIN", color=CYAN, id="spark-findings")
+                yield Sparkline(max_points=30, title="SCORE", color=GREEN, id="spark-score")
 
             # Content area
             with Horizontal(id="content"):
@@ -668,6 +693,9 @@ class NexusApp(App):
                             cell.set_class(True, "module-cell")
                             self._module_cells[mod_id] = cell
                             yield cell
+
+            # Velocity meter
+            yield VelocityMeter(id="velocity-meter")
 
             # Bottom bar
             with Horizontal(id="bottom-bar"):
@@ -756,33 +784,59 @@ class NexusApp(App):
 
     def watch_score(self, old: int, new: int) -> None:
         try:
-            el = self.query_one("#score-value", Label)
-            el.update(f"{new}")
-            color = GRADE_COLORS.get(self.grade, "#ccccdd")
-            el.style = f"color: {color}; font-weight: bold"
+            gauge = self.query_one("#score-gauge", ScoreGauge)
+            gauge.set_score(new, self.grade)
+        except NoMatches:
+            pass
+        # Push to score sparkline
+        try:
+            spark = self.query_one("#spark-score", Sparkline)
+            spark.push(float(new))
         except NoMatches:
             pass
 
     def watch_grade(self, old: str, new: str) -> None:
         try:
-            el = self.query_one("#score-grade", Label)
-            el.update(f"({new})")
-            color = GRADE_COLORS.get(new, "#ccccdd")
-            el.style = f"color: {color}; font-weight: bold"
+            gauge = self.query_one("#score-gauge", ScoreGauge)
+            gauge.set_score(self.score, new)
         except NoMatches:
             pass
 
     def watch_finding_count(self, old: int, new: int) -> None:
+        delta = new - old if old > 0 else 0
+        crit = sum(
+            1 for f in self._findings_list
+            if f.get("severity", "").lower() == "critical"
+        )
+        high = sum(
+            1 for f in self._findings_list
+            if f.get("severity", "").lower() == "high"
+        )
+
+        # Update stat counters
+        try:
+            self.query_one("#stat-findings", StatCounter).set(new, delta=delta)
+        except NoMatches:
+            pass
+        try:
+            self.query_one("#stat-critical", StatCounter).set(crit)
+        except NoMatches:
+            pass
+        try:
+            self.query_one("#stat-high", StatCounter).set(high)
+        except NoMatches:
+            pass
+
+        # Push to findings sparkline (findings per minute approximation)
+        try:
+            spark = self.query_one("#spark-findings", Sparkline)
+            spark.push(float(delta))
+        except NoMatches:
+            pass
+
+        # Keep bottom-info label too (compact view)
         try:
             el = self.query_one("#bottom-info", Label)
-            crit = sum(
-                1 for f in self._findings_list
-                if f.get("severity", "").lower() == "critical"
-            )
-            high = sum(
-                1 for f in self._findings_list
-                if f.get("severity", "").lower() == "high"
-            )
             el.update(
                 f"[{GREEN}]●[/] {new} findings  [{RED}]{crit}[/]C [{YELLOW}]{high}[/]H"
             )
@@ -797,9 +851,19 @@ class NexusApp(App):
             if new:
                 scan_label.update(f"[{YELLOW} bold]SCANNING[/]")
                 self.scan_start_time = time.monotonic()
+                # Start velocity meter
+                try:
+                    self.query_one("#velocity-meter", VelocityMeter).start()
+                except NoMatches:
+                    pass
             else:
                 scan_label.update(f"[{GREEN}]DONE[/]")
                 self.scan_start_time = None
+                # Stop velocity meter
+                try:
+                    self.query_one("#velocity-meter", VelocityMeter).stop()
+                except NoMatches:
+                    pass
         except NoMatches:
             pass
 
