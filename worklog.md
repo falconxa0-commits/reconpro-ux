@@ -182,3 +182,28 @@ Stage Summary:
 - Total toast calls: 39 (8 success, 12 error, 4 warning, 5 info, 2 retry, 8 base _toast)
 - Error recovery: auto-retry with exponential backoff on scan worker (2 max retries)
 - All files pass syntax check
+---
+Task ID: 2
+Agent: main
+Task: Phase F - HTML Report overhaul with Chart.js
+
+Work Log:
+- Read existing reports.py (172 lines, SVG-only) and formats.py (441 lines)
+- Completely rewrote reports.py from 172 to 656 lines (+484)
+- Added 6 Chart.js interactive charts: score gauge (doughnut with center text), severity distribution (doughnut), findings per module (vertical bar), points deducted per module (horizontal bar), category breakdown (horizontal bar), severity stacked per module (stacked bar)
+- Added Top Risk Findings panel (critical/high findings highlighted)
+- Added responsive CSS grid layout (2-column charts, 3-column on mobile)
+- Added 6 helper functions: _module_breakdown, _category_breakdown, _points_per_module, _severity_per_module, _chart_colors, _escape_js
+- Each chart is an IIFE that auto-initializes on load
+- Chart.js loaded from CDN (chart.js@4.4.7)
+- Charts use theme system colors for consistency
+- Fixed formats.py import (reconpro.reports -> .reports for relative import)
+- Updated version strings from 4.0.0 to 7.0.0 in SARIF, Markdown, PDF templates
+- Generated test report (16864 bytes) and verified all 6 charts + data present
+
+Stage Summary:
+- reports.py: 172 -> 656 lines (+484)
+- formats.py: 441 -> 443 lines (+2, version fixes + import fix)
+- 6 interactive Chart.js charts in HTML reports
+- All files pass syntax check
+- Test report generated at /home/z/my-project/download/reconpro_phase_f_test.html
