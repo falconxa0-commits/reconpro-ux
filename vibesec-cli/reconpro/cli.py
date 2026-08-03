@@ -12,6 +12,7 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
+from .theme import Theme
 from .scanner import (
     scan, audit_scan, MODULE_REGISTRY, LOCAL_MODULES,
     ALL_MODULES, DEFAULT_MODULES, DEFAULT_LOCAL_MODULES,
@@ -32,6 +33,9 @@ BANNER = r"""[bold bright_white]
 [/bold bright_white][dim]          E L E V E N   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.[/dim]
 """
 
+# Colors from unified theme system
+_cli_theme = Theme.current()
+
 SEV_COLORS = {
     "critical": "bright_red",
     "high": "red",
@@ -41,8 +45,12 @@ SEV_COLORS = {
 }
 
 GRADE_COLORS = {
-    "A+": "bright_green", "A": "green", "B": "yellow",
-    "C": "red", "D": "bright_red", "F": "bold bright_red",
+    "A+": _cli_theme.grade_rich("A+"),
+    "A": _cli_theme.grade_rich("A"),
+    "B": _cli_theme.grade_rich("B"),
+    "C": _cli_theme.grade_rich("C"),
+    "D": _cli_theme.grade_rich("D"),
+    "F": _cli_theme.grade_rich("F"),
 }
 
 
@@ -667,8 +675,8 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── TUI ────────────────────────────────────────────────────────
     if cmd == "tui":
-        from .tui_app import start_tui
-        start_tui()
+        from .nexus_tui import start_nexus
+        start_nexus()
         return
 
     # ── BLITZ ──────────────────────────────────────────────────────

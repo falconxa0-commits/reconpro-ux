@@ -34,37 +34,41 @@ from textual.widgets import (
 )
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Constants
+# Theme — single source of truth for all colors
 # ════════════════════════════════════════════════════════════════════════════════
 
-VERSION = "4.0.0"
-BG = "#0a0a14"
-CYAN = "#00ffcc"
-RED = "#ff0044"
-YELLOW = "#ffdd00"
-GREEN = "#00ff88"
-DIM_CYAN = "#0a4a3a"
-DIM_RED = "#4a0a1a"
-PANEL_BG = "#0e0e1c"
-BORDER_COLOR = "#1a1a2e"
-HEADER_BG = "#0c0c18"
-INPUT_BG = "#0f0f1e"
+from .theme import Theme
+
+VERSION = "7.0.0"
+BG = Theme.current().BG
+CYAN = Theme.current().CYAN
+RED = Theme.current().RED
+YELLOW = Theme.current().YELLOW
+GREEN = Theme.current().GREEN
+DIM_CYAN = Theme.current().DIM_CYAN
+DIM_RED = Theme.current().DIM_RED
+PANEL_BG = Theme.current().PANEL_BG
+BORDER_COLOR = Theme.current().BORDER
+HEADER_BG = Theme.current().HEADER_BG
+INPUT_BG = Theme.current().INPUT_BG
+TEXT_DIM = Theme.current().TEXT_DIM
+MUTED = Theme.current().MUTED
 
 SEV_STYLES: Dict[str, str] = {
-    "critical": "bold " + RED,
-    "high": RED,
-    "medium": YELLOW,
-    "low": GREEN,
-    "info": "#666688",
+    "critical": Theme.current().sev_style("critical"),
+    "high": Theme.current().sev_style("high"),
+    "medium": Theme.current().sev_style("medium"),
+    "low": Theme.current().sev_style("low"),
+    "info": Theme.current().sev_style("info"),
 }
 
 GRADE_COLORS: Dict[str, str] = {
-    "A+": GREEN,
-    "A": "#44dd66",
-    "B": YELLOW,
-    "C": "#ff8800",
-    "D": "#ff4444",
-    "F": RED,
+    "A+": Theme.current().grade_color("A+"),
+    "A": Theme.current().grade_color("A"),
+    "B": Theme.current().grade_color("B"),
+    "C": Theme.current().grade_color("C"),
+    "D": Theme.current().grade_color("D"),
+    "F": Theme.current().grade_color("F"),
 }
 
 MODULE_NAMES: Dict[str, str] = {
@@ -81,7 +85,7 @@ MODULE_NAMES: Dict[str, str] = {
     "doctor": "DOCTOR",
 }
 
-SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+SPINNER_FRAMES = Theme.current().spinner_frames
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Finding Detail Modal
@@ -321,13 +325,20 @@ class StatusDot(Static):
     def on_mount(self) -> None:
         self.set_interval(0.3, self._pulse)
 
-    def watch_scanning(self) -> None:
-        pass
+    def watch_scanning(self, old: bool, new: bool) -> None:
+        # Update visual state based on scanning status
+        if new:
+            self.update(f"[{self._get_pulse_color()}]●[/]")
+        else:
+            self.update(f"[{GREEN}]●[/]")
+
+    def _get_pulse_color(self) -> str:
+        return ["#003322", "#006644", CYAN, "#006644"][self._phase] if self.scanning else GREEN
 
     def _pulse(self) -> None:
         self._phase = (self._phase + 1) % 4
         if self.scanning:
-            brightness = ["#003322", "#006644", CYAN, "#006644"][self._phase]
+            brightness = self._get_pulse_color()
             self.update(f"[{brightness}]●[/]")
         else:
             self.update(f"[{GREEN}]●[/]")
@@ -448,9 +459,6 @@ class NexusApp(App):
         border: none;
         background: {PANEL_BG};
         padding: 0 1;
-    }}
-    #chat-log::-webkit-scrollbar {{
-        width: 1;
     }}
 
     /* ── Right Panel ─────────────────────────────────────── */
@@ -605,9 +613,11 @@ class NexusApp(App):
         self._last_finding: Optional[Dict[str, Any]] = None
         self._module_cells: Dict[str, ModuleCell] = {}
         self._boot_done = False
+        self._boot_skipped = False
         self._elapsed_timer: Optional[Timer] = None
         self._focus_order = ["#command-input", "#chat-log", "#findings-feed", "#module-grid"]
         self._focus_idx = 0
+        self._finding_severity_filter: Optional[str] = None
 
     # ── Compose ──────────────────────────────────────────────────────────────
 
@@ -668,6 +678,42 @@ class NexusApp(App):
                 yield Label("", id="bottom-info")
 
     # ── Mount ───────────────────────────────────────────────────────────────
+
+    def on_key(self, event: Key) -> None:
+        """Handle key events — boot skip + history navigation."""
+        # Skip boot on ANY key press during boot sequence
+        if not self._boot_done and not self._boot_skipped:
+            self._boot_skipped = True
+            try:
+                boot = self.query_one("#boot-screen", BootScreen)
+                if boot._timer:
+                    boot._timer.stop()
+            except NoMatches:
+                pass
+            self._finish_boot()
+            return
+
+        # Command history navigation
+        if event.key == "up" and self._history_index > 0:
+            try:
+                inp = self.query_one("#command-input", Input)
+                if inp.has_focus:
+                    self._history_index -= 1
+                    inp.value = self._command_history[self._history_index]
+            except NoMatches:
+                pass
+        elif event.key == "down":
+            try:
+                inp = self.query_one("#command-input", Input)
+                if inp.has_focus:
+                    if self._history_index < len(self._command_history) - 1:
+                        self._history_index += 1
+                        inp.value = self._command_history[self._history_index]
+                    else:
+                        self._history_index = len(self._command_history)
+                        inp.value = ""
+            except NoMatches:
+                pass
 
     def on_mount(self) -> None:
         self._elapsed_timer = self.set_interval(1.0, self._update_elapsed)
@@ -787,6 +833,12 @@ class NexusApp(App):
         if not raw:
             return
 
+        # Handle theme command
+        parts = raw.split()
+        if parts[0].lower() == "theme":
+            self._handle_theme(parts[1:])
+            return
+
         # Update history
         if self._command_history and self._command_history[-1] != raw:
             self._command_history.append(raw)
@@ -795,29 +847,6 @@ class NexusApp(App):
         self._history_index = len(self._command_history)
 
         self._process_command(raw)
-
-    def on_key(self, event: Key) -> None:
-        """Handle key events for history navigation."""
-        if event.key == "up" and self._history_index > 0:
-            try:
-                inp = self.query_one("#command-input", Input)
-                if inp.has_focus:
-                    self._history_index -= 1
-                    inp.value = self._command_history[self._history_index]
-            except NoMatches:
-                pass
-        elif event.key == "down":
-            try:
-                inp = self.query_one("#command-input", Input)
-                if inp.has_focus:
-                    if self._history_index < len(self._command_history) - 1:
-                        self._history_index += 1
-                        inp.value = self._command_history[self._history_index]
-                    else:
-                        self._history_index = len(self._command_history)
-                        inp.value = ""
-            except NoMatches:
-                pass
 
     def action_cycle_focus(self) -> None:
         """Tab cycles focus between panels and input."""
@@ -938,8 +967,31 @@ class NexusApp(App):
             self._handle_history()
             return
 
+        if cmd == "theme":
+            # Already handled in on_input_submitted before _process_command
+            return
+
         self._chat(f"[{RED}]Unknown command: {cmd}[/]")
         self._chat(f"[{DIM_CYAN}]Type [cyan]help[/] for available commands.[/]")
+
+    def _handle_theme(self, args: List[str]) -> None:
+        """Handle theme switching command."""
+        if not args or args[0].lower() in ("list", "ls"):
+            available = Theme.available_themes()
+            current = Theme.current_name()
+            self._chat(f"[{CYAN} bold]  THEMES[/]")
+            for name in available:
+                marker = f" [{GREEN}]●[/]" if name == current else "  [{DIM_CYAN}]○[/]"
+                display_name = THEMES[name].get("name", name)
+                self._chat(f"  {marker} [{CYAN}]{name}[/] [{MUTED}]- {display_name}[/]")
+            return
+
+        name = args[0].lower()
+        try:
+            Theme.set_theme(name)
+            self._chat(f"[{GREEN}]  ✓ Theme changed to [bold]{name}[/]. Restart nexus to apply fully.[/]")
+        except ValueError as e:
+            self._chat(f"[{RED}]  {e}[/]")
 
     def _clear_all_feeds(self) -> None:
         try:
@@ -970,14 +1022,17 @@ class NexusApp(App):
             ("[cyan]graph[/]", "Knowledge graph stats"),
             ("[cyan]export <format>[/]", "Export last scan"),
             ("[cyan]history[/]", "Scan history"),
+            ("[cyan]theme [name][/]", "Switch theme (cyberpunk, midnight, matrix, solarized, blood, snow)"),
+            ("[cyan]theme list[/]", "List available themes"),
             ("[cyan]clear[/]", "Clear all feeds"),
             ("[cyan]quit[/]", "Exit"),
             ("", ""),
             ("[bold cyan]KEYS[/]", ""),
-            (f"[{DIM_CYAN}]Tab[/]   Cycle focus", ""),
-            (f"[{DIM_CYAN}]Ctrl+L[/]  Clear findings", ""),
-            (f"[{DIM_CYAN}]Ctrl+S[/]  Re-scan last target", ""),
-            (f"[{DIM_CYAN}]↑/↓[/]  Command history", ""),
+            (f"[{DIM_CYAN}]Tab[/]      Cycle focus", ""),
+            (f"[{DIM_CYAN}]Ctrl+L[/]   Clear findings", ""),
+            (f"[{DIM_CYAN}]Ctrl+S[/]   Re-scan last target", ""),
+            (f"[{DIM_CYAN}]↑/↓[/]     Command history", ""),
+            (f"[{DIM_CYAN}]Any key[/]  Skip boot animation", ""),
         ]
         for line in help_lines:
             self._chat(f"  {line[0]}  {line[1]}")
@@ -1508,14 +1563,37 @@ class NexusApp(App):
     # ── Finding Detail Modal & Pulse ──────────────────────────────────────
 
     def on_click(self, event: Click) -> None:
-        """Open finding detail modal when findings feed is clicked."""
+        """Open finding detail modal for the clicked finding.
+
+        Uses the vertical click position to determine which finding index
+        the user clicked on, mapping it to _findings_list.
+        """
         try:
             if (
                 isinstance(event.widget, RichLog)
                 and event.widget.id == "findings-feed"
-                and self._last_finding
+                and self._findings_list
             ):
-                self.push_screen(FindingDetailModal(self._last_finding))
+                # Get the line offset to determine which finding was clicked.
+                # Each finding entry is 1 line in the RichLog.
+                # We use the y coordinate relative to the widget to estimate the index.
+                region = event.widget.region
+                if region is not None:
+                    # Calculate which line was clicked relative to the scroll position
+                    scroll_offset = event.widget.scroll_y
+                    click_y = event.y - region.y
+                    # Each finding takes 1 line; estimate index from click position
+                    # Account for scroll position
+                    line_height = 1
+                    if hasattr(event.widget, "_line_height"):
+                        line_height = event.widget._line_height
+                    clicked_index = int((click_y + scroll_offset * line_height) / line_height)
+                    # Clamp to valid range
+                    clicked_index = max(0, min(clicked_index, len(self._findings_list) - 1))
+                    finding = self._findings_list[clicked_index]
+                else:
+                    finding = self._findings_list[-1]
+                self.push_screen(FindingDetailModal(finding))
         except (NoMatches, Exception):
             pass
 
