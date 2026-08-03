@@ -482,6 +482,7 @@ class NexusApp(App):
         height: 100%;
         dock: left;
         border-right: solid {BORDER_COLOR};
+        transition: width 250ms ease-in-out, border 200ms;
     }}
     #chat-header {{
         height: 1;
@@ -504,6 +505,7 @@ class NexusApp(App):
     #right-panel {{
         width: 60%;
         height: 100%;
+        transition: width 250ms ease-in-out;
     }}
 
     /* ── Findings Feed ───────────────────────────────────── */
@@ -590,6 +592,7 @@ class NexusApp(App):
         width: 0;
         overflow: hidden;
         border: none;
+        transition: width 200ms ease-in;
     }}
     #left-panel.collapsed * {{
         display: none;
@@ -597,9 +600,13 @@ class NexusApp(App):
     #right-panel.expanded {{
         width: 100%;
     }}
+    #modules-wrapper {{
+        transition: height 300ms ease-in-out;
+    }}
     #modules-wrapper.collapsed {{
         height: 0;
         overflow: hidden;
+        transition: height 200ms ease-in;
     }}
     #modules-wrapper.collapsed * {{
         display: none;
@@ -607,8 +614,33 @@ class NexusApp(App):
     #modules-header.collapsed {{
         display: none;
     }}
+    #findings-feed {{
+        transition: height 300ms ease-in-out;
+    }}
     #findings-feed.expanded-modules {{
         height: 5fr;
+    }}
+
+    /* ── Phase D: Panel Focus Zoom ──────────────────────── */
+    #left-panel.panel-zoom {{
+        border-right: solid {CYAN};
+        box-shadow: inset 0 0 6 {CYAN}44;
+    }}
+    #right-panel.panel-zoom {{
+        border: solid {CYAN};
+        box-shadow: inset 0 0 6 {CYAN}44;
+    }}
+    #module-grid.panel-zoom {{
+        box-shadow: inset 0 0 4 {GREEN}33;
+    }}
+
+    /* ── Phase D: Resize Divider Indicator ──────────────── */
+    #resize-indicator {{
+        color: {ACCENT};
+        text-style: bold;
+        text-align: center;
+        width: 100%;
+        height: 1;
     }}
 
     /* ── Panel Split Indicator (shown briefly on resize) ──── */
@@ -759,6 +791,8 @@ class NexusApp(App):
         self._resize_timer: Optional[Timer] = None
         self._compact_mode: bool = False
         self._split_flash_timer: Optional[Timer] = None
+        self._user_manually_resized: bool = False  # True after Ctrl+←/→
+        self._left_collapsed_before_compact: bool = False  # auto-collapse tracker
 
     # ── Compose ──────────────────────────────────────────────────────────────
 
@@ -876,6 +910,18 @@ class NexusApp(App):
             return
         if event.key == "=" and not self._input_focused():
             self._toggle_modules()
+            event.stop()
+            return
+        # ── Phase D: | resets split to auto, \\ resets to 50:50 ──
+        if event.key == "|" and not self._input_focused():
+            self._user_manually_resized = False
+            self._apply_responsive_layout(self.size.width, self.size.height)
+            event.stop()
+            return
+        if event.key == "\\" and not self._input_focused():
+            self._user_manually_resized = True
+            self._split_ratio = 50
+            self._apply_split_ratio()
             event.stop()
             return
 
@@ -1038,27 +1084,31 @@ class NexusApp(App):
         """Update the panel-focused CSS class on panels.
 
         Only one panel should be highlighted at a time.
+        Phase D: also applies panel-zoom glow effect.
         """
         # Map selectors to their parent panel ids
         panel_map = {
             "#command-input": None,  # input is in bottom bar, no panel
             "#chat-log": "#left-panel",
             "#findings-feed": "#right-panel",
-            "#module-grid": "#right-panel",
+            "#module-grid": "#module-grid",
         }
         panel_id = panel_map.get(focused_selector)
 
-        # Clear all panel-focused classes
-        for pid in ("#left-panel", "#right-panel"):
+        # Clear all panel-focused and panel-zoom classes
+        for pid in ("#left-panel", "#right-panel", "#module-grid"):
             try:
-                self.query_one(pid, Widget).set_class(False, "panel-focused")
+                w = self.query_one(pid, Widget)
+                w.set_class(False, "panel-focused")
+                w.set_class(False, "panel-zoom")
             except NoMatches:
                 pass
 
-        # Set focused panel
+        # Set focused panel with both highlight and zoom glow
         if panel_id:
             try:
                 self.query_one(panel_id, Widget).set_class(True, "panel-focused")
+                self.query_one(panel_id, Widget).set_class(True, "panel-zoom")
             except NoMatches:
                 pass
 
@@ -1158,6 +1208,20 @@ class NexusApp(App):
             except NoMatches:
                 pass
 
+    def _initial_layout(self) -> None:
+        """Apply the initial responsive layout after boot.
+
+        Ensures the grid columns and split ratio are set correctly for
+        the current terminal size on first launch.
+        """
+        try:
+            w = self.size.width
+            h = self.size.height
+            if w > 0 and h > 0:
+                self._apply_responsive_layout(w, h)
+        except Exception:
+            pass
+
     def _push_module_scanning_hint(self, module_id: str) -> None:
         """Push module-specific scanning hint to the hint bar."""
         try:
@@ -1224,6 +1288,9 @@ class NexusApp(App):
         self._boot_done = True
         self._focus_input()
 
+        # Phase D: trigger initial responsive layout
+        self.set_timer(0.05, self._initial_layout)
+
         # Welcome message in chat
         chat = self.query_one("#chat-log", RichLog)
         chat.write(f"[{CYAN} bold]RECONPRO NEXUS v{VERSION}[/]")
@@ -1232,6 +1299,7 @@ class NexusApp(App):
         chat.write(f"[{DIM_CYAN}]  Type [cyan bold]help[/] for commands, or start with [cyan bold]scan <target>[/][/]")
         chat.write(f"[{DIM_CYAN}]  Press [cyan bold]Tab[/] on empty input to browse all commands[/]")
         chat.write(f"[{DIM_CYAN}]  Quick jump: [cyan]0[/] input · [cyan]1[/] chat · [cyan]2[/] findings · [cyan]3[/] modules[/]")
+        chat.write(f"[{DIM_CYAN}]  Layout: [cyan][[/]=[/] collapse panels · [cyan]Ctrl+←→[/] resize · [cyan]layout[/] status")
         chat.write("")
 
         # Phase C: show first_scan onboarding hints
@@ -1549,9 +1617,12 @@ class NexusApp(App):
     def on_resize(self, event) -> None:
         """Adapt layout to terminal size changes.
 
-        - < 80 cols: compact mode (stack panels vertically, 2-col grid)
-        - 80–119 cols: standard (3-col grid)
-        - >= 120 cols: wide (4-col grid)
+        Responsive breakpoints:
+          - < 80 cols:  compact mode (stack panels vertically, 2-col grid)
+          - 80–119 cols: standard (3-col grid, default 40:60 split)
+          - 120–159 cols: wide (3-col grid, expanded stats)
+          - >= 160 cols:  ultra-wide (4-col grid, 35:65 split)
+          - >= 200 cols:  cinematic (4-col grid, 30:70 split)
         """
         # Debounce to avoid flicker during rapid resize
         if self._resize_timer is not None:
@@ -1559,44 +1630,100 @@ class NexusApp(App):
         self._resize_timer = self.set_timer(0.15, lambda: self._apply_responsive_layout(event.width, event.height))
 
     def _apply_responsive_layout(self, width: int, height: int) -> None:
-        """Apply layout changes based on terminal dimensions."""
+        """Apply layout changes based on terminal dimensions.
+
+        Dynamically syncs ``_GRID_COLS`` with the actual CSS grid columns
+        so arrow-key navigation on the module grid stays correct.
+        Adjusts split ratio defaults for wider terminals.
+        """
         try:
             content = self.query_one("#content", Widget)
             grid = self.query_one("#module-grid", Container)
         except NoMatches:
             return
 
-        # Compact mode: < 80 cols
+        # ── Compact mode: < 80 cols ──
         if width < 80:
             if not self._compact_mode:
                 content.set_class(True, "compact")
                 grid.set_class(True, "grid-cols-2")
                 grid.remove_class("grid-cols-4")
                 self._compact_mode = True
-                self._flash_split_indicator("COMPACT")
+                self._GRID_COLS = 2
+                # Force-collapse left panel in very narrow terminals
+                if width < 60 and not self._left_collapsed:
+                    self._left_collapsed_before_compact = True
+                    self._toggle_left_panel()
+                self._flash_split_indicator(f"COMPACT {width}x{height}")
             return
 
-        # Wide mode: >= 120 cols
+        # ── Ultra-wide: >= 160 cols ──
+        if width >= 160:
+            if self._compact_mode:
+                content.remove_class("compact")
+                self._compact_mode = False
+                # Restore auto-collapsed left panel
+                if getattr(self, '_left_collapsed_before_compact', False) and self._left_collapsed:
+                    self._toggle_left_panel()
+                    self._left_collapsed_before_compact = False
+            grid.set_class(True, "grid-cols-4")
+            grid.remove_class("grid-cols-2")
+            self._GRID_COLS = 4
+            # Auto-adjust split for cinematic widths
+            if width >= 200:
+                optimal_split = 30
+            else:
+                optimal_split = 35
+            # Only auto-adjust if user hasn't manually set split
+            if not self._user_manually_resized:
+                self._split_ratio = optimal_split
+                self._apply_split_ratio_silent()
+            label = "CINEMATIC" if width >= 200 else "ULTRA"
+            self._flash_split_indicator(f"{label} {width}x{height}")
+            return
+
+        # ── Wide: 120–159 cols ──
         if width >= 120:
             if self._compact_mode:
                 content.remove_class("compact")
                 self._compact_mode = False
-            if width >= 160:
-                grid.set_class(True, "grid-cols-4")
-                grid.remove_class("grid-cols-2")
-            else:
-                grid.remove_class("grid-cols-4")
-                grid.remove_class("grid-cols-2")
-            self._flash_split_indicator("WIDE" if width >= 160 else "STD")
+                if getattr(self, '_left_collapsed_before_compact', False) and self._left_collapsed:
+                    self._toggle_left_panel()
+                    self._left_collapsed_before_compact = False
+            grid.remove_class("grid-cols-4")
+            grid.remove_class("grid-cols-2")
+            self._GRID_COLS = 3
+            if not self._user_manually_resized:
+                self._split_ratio = 38
+                self._apply_split_ratio_silent()
+            self._flash_split_indicator(f"WIDE {width}x{height}")
             return
 
-        # Standard mode: 80-119 cols
+        # ── Standard: 80–119 cols ──
         if self._compact_mode:
             content.remove_class("compact")
             self._compact_mode = False
+            if getattr(self, '_left_collapsed_before_compact', False) and self._left_collapsed:
+                self._toggle_left_panel()
+                self._left_collapsed_before_compact = False
         grid.remove_class("grid-cols-4")
         grid.remove_class("grid-cols-2")
-        self._flash_split_indicator("STD")
+        self._GRID_COLS = 3
+        if not self._user_manually_resized:
+            self._split_ratio = 40
+            self._apply_split_ratio_silent()
+        self._flash_split_indicator(f"STD {width}x{height}")
+
+    def _apply_split_ratio_silent(self) -> None:
+        """Apply split ratio without flashing the indicator (used by auto-layout)."""
+        try:
+            left = self.query_one("#left-panel", Widget)
+            right = self.query_one("#right-panel", Widget)
+            if not self._left_collapsed:
+                left.styles.width = f"{self._split_ratio}%"
+            right.styles.width = f"{100 - self._split_ratio}%"
+        except NoMatches:
+            pass
 
     def _flash_split_indicator(self, label: str) -> None:
         """Briefly show the layout mode in bottom-info."""
@@ -1622,15 +1749,27 @@ class NexusApp(App):
         """Ctrl+Left: narrow the left panel (min 20%)."""
         if self._left_collapsed:
             return
+        self._user_manually_resized = True
         self._split_ratio = max(20, self._split_ratio - 5)
         self._apply_split_ratio()
+        # Push layout hint on first manual resize
+        try:
+            self.query_one("#hint-bar", HintBar).push_context("layout")
+        except NoMatches:
+            pass
 
     def action_widen_left(self) -> None:
         """Ctrl+Right: widen the left panel (max 70%)."""
         if self._left_collapsed:
             return
+        self._user_manually_resized = True
         self._split_ratio = min(70, self._split_ratio + 5)
         self._apply_split_ratio()
+        # Push layout hint on first manual resize
+        try:
+            self.query_one("#hint-bar", HintBar).push_context("layout")
+        except NoMatches:
+            pass
 
     def _apply_split_ratio(self) -> None:
         """Apply the current split ratio to panel widths."""
@@ -1875,6 +2014,10 @@ class NexusApp(App):
         if cmd == "cloud-recon":
             self._handle_cloud_recon(args)
             return
+        # ── Phase D: layout command ──
+        if cmd == "layout":
+            self._handle_layout()
+            return
 
         self._chat(f"[{RED}]Unknown command: {cmd}[/]")
         self._chat(f"[{DIM_CYAN}]Type [cyan]help[/] for available commands · Press [cyan]Tab[/] on empty input to browse[/]")
@@ -1947,6 +2090,7 @@ class NexusApp(App):
             ("[cyan]container [path][/]", "Container analysis"),
             ("[cyan]ast [path][/]", "AST code analysis"),
             ("[cyan]cloud-recon <target>[/]", "Cloud asset recon"),
+            ("[cyan]layout[/]", "Show layout status & controls"),
             ("[cyan]export <format>[/]", "Export last scan"),
             ("[cyan]defense[/]", "Remediation code"),
             ("[cyan]compliance[/]", "Framework mapping"),
@@ -1973,6 +2117,9 @@ class NexusApp(App):
             (f"[{DIM_CYAN}]Ctrl+↑[/]       Toggle module grid", ""),
             (f"[{DIM_CYAN}][[/]            Toggle chat panel", ""),
             (f"[{DIM_CYAN}]]=[/]            Toggle module grid", ""),
+            (f"[{DIM_CYAN}]|[/]            Reset split to auto", ""),
+            (f"[{DIM_CYAN}]\\[/]            Reset split to 50:50", ""),
+            (f"[{DIM_CYAN}]layout[/]        Show layout status", ""),
         ]
         for line in help_lines:
             self._chat(f"  {line[0]}  {line[1]}")
@@ -2180,6 +2327,47 @@ class NexusApp(App):
         self.current_target = target
         self._chat(f"[{DIM_CYAN}]Cloud asset recon for [cyan bold]{target}[/]...[/]")
         self._run_generic_worker(f"cloud-recon {target}", modules=["recon"], target=target)
+
+    def _handle_layout(self) -> None:
+        """Show current layout configuration and status."""
+        try:
+            w, h = self.size.width, self.size.height
+        except Exception:
+            w, h = 0, 0
+
+        # Determine current mode label
+        if self._compact_mode:
+            mode = f"[{YELLOW}]COMPACT[/]"
+        elif w >= 200:
+            mode = f"[{ACCENT}]CINEMATIC[/]"
+        elif w >= 160:
+            mode = f"[{CYAN}]ULTRA-WIDE[/]"
+        elif w >= 120:
+            mode = f"[{CYAN}]WIDE[/]"
+        elif w >= 80:
+            mode = f"[{GREEN}]STANDARD[/]"
+        else:
+            mode = f"[{YELLOW}]COMPACT[/]"
+
+        grid_cols = self._GRID_COLS
+        chat_st = f"[{RED}]OFF[/]" if self._left_collapsed else f"[{GREEN}]ON[/]"
+        mods_st = f"[{RED}]OFF[/]" if self._modules_collapsed else f"[{GREEN}]ON[/]"
+        manual = f"[{YELLOW}]yes[/]" if self._user_manually_resized else f"[{DIM_CYAN}]auto[/]"
+
+        self._chat(f"[{CYAN} bold]  LAYOUT STATUS[/]")
+        self._chat(f"    [{DIM_CYAN}]Terminal:[/]  {w}x{h}")
+        self._chat(f"    [{DIM_CYAN}]Mode:[/]      {mode}")
+        self._chat(f"    [{DIM_CYAN}]Split:[/]     {self._split_ratio}:{100 - self._split_ratio} [{DIM_CYAN}](manual: {manual})[/]")
+        self._chat(f"    [{DIM_CYAN}]Grid cols:[/] {grid_cols}")
+        self._chat(f"    [{DIM_CYAN}]Chat panel:[/] {chat_st}  [{DIM_CYAN}][{DIM_CYAN}][[/] to toggle[/]")
+        self._chat(f"    [{DIM_CYAN}]Modules:[/]    {mods_st}  [{DIM_CYAN}]=[/] or [{DIM_CYAN}]Ctrl+↑[/] to toggle[/]")
+        self._chat(f"    [{DIM_CYAN}]Resize:[/]    [{DIM_CYAN}]Ctrl+←/→[/] to adjust split")
+
+        # Push layout hints to hint bar
+        try:
+            self.query_one("#hint-bar", HintBar).push_context("layout")
+        except NoMatches:
+            pass
 
     # ════════════════════════════════════════════════════════════════════════
     # Background Workers (concurrent)

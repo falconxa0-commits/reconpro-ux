@@ -68,6 +68,7 @@ COMMAND_DB: List[Tuple[str, List[str], str, bool, Optional[str]]] = [
     ("ast",        [],       "AST code analysis",                         True,  "no_scan"),
     ("cloud-recon", [],      "Cloud asset recon",                         True,  None),
     # ── Meta ──
+    ("layout",     [],       "Show layout status & controls",              False, None),
     ("theme",      [],       "Switch theme",                               True,  None),
     ("clear",      ["c"],    "Clear all feeds",                            False, None),
     ("help",       ["?"],    "Show commands",                              False, None),

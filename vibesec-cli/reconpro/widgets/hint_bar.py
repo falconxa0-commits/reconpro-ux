@@ -143,6 +143,10 @@ HINTS: Dict[str, List[str]] = {
         "Layout adapts automatically when you resize the terminal",
         "Narrow terminals (< 80 cols) switch to compact stacked mode",
         "Wide terminals (>= 160 cols) show 4-column module grid",
+        "Cinematic terminals (>= 200 cols) use 30:70 split for max findings space",
+        "[cyan]|[/] resets split to auto · [cyan]\\[/] resets split to 50:50",
+        "[cyan]layout[/] command shows full layout status",
+        "Collapsed panels are skipped in Tab focus cycling",
     ],
 }
 

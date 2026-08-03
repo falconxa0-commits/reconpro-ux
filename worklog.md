@@ -86,3 +86,36 @@ Stage Summary:
 - Panel split ratio adjustable 20-70% via Ctrl+Arrow keys
 - 3 collapse toggles: [ (chat), ] (modules), = (modules), Ctrl+Up (modules)
 - Focus cycle smart-skips collapsed panels
+
+---
+Task ID: 4
+Agent: Super Z (main)
+Task: Phase D — Responsive Grid + Panel Scaling + Collapse
+
+Work Log:
+- Read full nexus_tui.py (2750→2937 lines), hint_bar.py (341→344), command_completer.py (556→557)
+- Discovered Phase D was partially scaffolded: on_resize, CSS classes, toggle methods existed but had issues
+- Enhanced _apply_responsive_layout: 5 breakpoints (COMPACT <80, STD 80-119, WIDE 120-159, ULTRA >=160, CINEMATIC >=200)
+- Fixed critical bug: _GRID_COLS (4) was out of sync with CSS default (3) — now dynamically synced
+- Added _user_manually_resized flag to prevent auto-layout from overriding user's manual split
+- Added _apply_split_ratio_silent() for auto-layout adjustments without indicator flash
+- Added _initial_layout() called after boot to set correct grid cols on startup
+- Enhanced CSS: width/height transitions on panels, modules-wrapper, findings-feed (200-300ms ease)
+- Added panel-zoom CSS: box-shadow inset glow on focused panels (CYAN for left/right, GREEN for module-grid)
+- Added resize-indicator CSS class
+- Enhanced _update_panel_focus to apply both panel-focused and panel-zoom classes, including #module-grid
+- Added | key (pipe): resets split to auto, re-triggers responsive layout
+- Added \\ key (backslash): resets split to 50:50 manually
+- Added `layout` command: shows terminal size, mode, split ratio, grid cols, panel states
+- Added `layout` to COMMAND_DB (now 30 commands) and help text (3 new keybinding lines)
+- Added layout hints to hint_bar.py (6 new hints for layout pool, total 10)
+- Auto-collapse left panel when terminal < 60 cols, auto-restore on grow
+- Ctrl+Left/Right now push 'layout' hint context on first use
+- Welcome message includes layout keybinding summary
+
+Stage Summary:
+- nexus_tui.py: 2750 → 2937 lines (+187)
+- command_completer.py: 556 → 557 lines (+1, layout cmd)
+- hint_bar.py: 341 → 344 lines (+3, layout hints)
+- All 3 files py_compile clean, all method/existence checks pass
+- 30 commands in DB, 10 layout hints, 5 responsive breakpoints
