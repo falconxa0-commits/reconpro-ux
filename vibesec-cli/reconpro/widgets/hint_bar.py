@@ -40,13 +40,17 @@ from ..theme import Theme
 HINTS: Dict[str, List[str]] = {
     "idle": [
         "Type [cyan]scan <target>[/] to begin reconnaissance",
+        "Press [cyan]Tab[/] on empty input to browse all commands",
         "[cyan]agent[/] deploys an autonomous AI hacker",
         "[cyan]swarm <target>[/] launches multi-agent assault",
         "[cyan]blitz t1 t2 t3[/] scans multiple targets in parallel",
-        "Press [cyan]Tab[/] for auto-complete · [cyan]?[/] for help",
+        "[cyan]fuzzer <url>[/] fuzzes parameters for vulnerabilities",
+        "[cyan]passive <domain>[/] for passive DNS / OSINT intel",
+        "[cyan]profile <target>[/] fingerprints the target",
         "[cyan]theme list[/] to browse 6 built-in themes",
         "[cyan]audit[/] runs a local security health check",
         "[cyan]doctor[/] diagnoses your ReconPro installation",
+        "[cyan]cve <query>[/] searches the NVD database",
     ],
     "first_scan": [
         "Welcome! Type [cyan]scan example.com[/] to begin",
@@ -62,6 +66,32 @@ HINTS: Dict[str, List[str]] = {
         "Findings appear in real-time on the right panel",
         "Click any finding for full details",
         "[cyan]Ctrl+S[/] will re-scan this target when done",
+        "Press [cyan]2[/] to jump to findings · [cyan]j/k[/] to navigate",
+        "Module grid below shows real-time progress per scanner",
+        "[cyan]0[/] jumps back to input for next command",
+    ],
+    "scanning_recon": [
+        "RECON module mapping attack surface... [cyan]2[/] to watch findings",
+        "Recon discovers open ports, services, and subdomains",
+        "[cyan]d[/] to inspect the latest recon finding",
+    ],
+    "scanning_auth": [
+        "AUTH BYPASS testing authentication mechanisms...",
+        "Auth module probes for weak credentials and bypass vectors",
+        "[cyan]d[/] for latest auth finding · [cyan]2[/] findings panel",
+    ],
+    "scanning_chain": [
+        "CHAIN HUNTER chaining vulnerabilities for exploit paths...",
+        "Chain module links low-severity issues into critical chains",
+    ],
+    "scanning_gorgon": [
+        "GORGON ULTRA deep scan in progress — this may take a while",
+        "Gorgon runs exhaustive multi-pass analysis",
+        "[cyan]d[/] to peek at findings as they arrive",
+    ],
+    "scanning_oblivion": [
+        "OBLIVION stealth scan running — minimal footprint mode",
+        "Oblivion uses passive techniques to avoid detection",
     ],
     "has_findings": [
         "[cyan]export html[/] to generate a styled report",
@@ -69,6 +99,11 @@ HINTS: Dict[str, List[str]] = {
         "Click findings on the right panel for details",
         "[cyan]adversarial[/] runs fix-verify loops",
         "[cyan]history[/] to see past scan results",
+        "[cyan]defense[/] can generate remediation code for findings",
+        "[cyan]compliance[/] maps findings to framework controls",
+        "[cyan]delta[/] compares current scan vs previous results",
+        "[cyan]benchmark[/] tracks your score over time",
+        "[cyan]export sarif[/] for GitHub integration",
     ],
     "critical_findings": [
         "{critical} critical finding{s_crit} detected — try [cyan]adversarial {target}[/] to fix them",
@@ -83,12 +118,20 @@ HINTS: Dict[str, List[str]] = {
         "Try [cyan]doctor[/] to diagnose your ReconPro installation",
         "Reduce scope with [cyan]scan <target> with <module>[/]",
         "Use [cyan]clear[/] to reset and try a different target",
+        "Check your network connection and target reachability",
+        "[cyan]profile <target>[/] to verify target is accessible",
     ],
     "has_target": [
         "[cyan]Ctrl+S[/] to re-scan [cyan]{target}[/]",
         "[cyan]swarm {target}[/] for multi-agent deep scan",
         "[cyan]adversarial {target}[/] for iterative hardening",
         "[cyan]scan {target} with recon auth[/] for selective modules",
+        "[cyan]fuzzer {target}[/] to fuzz parameters for vulns",
+        "[cyan]passive {target}[/] for passive DNS / OSINT intel",
+        "[cyan]profile {target}[/] for target fingerprinting",
+        "[cyan]cloud-recon {target}[/] for cloud asset discovery",
+        "[cyan]export html[/] to generate a report",
+        "[cyan]delta[/] to diff against last scan of {target}",
     ],
     "focused_panel": [
         "Focused: [cyan]{focus}[/] · [cyan]Esc[/] back to input",
@@ -188,6 +231,18 @@ class HintBar(Widget):
         tip = _FOCUS_TIPS.get(tip_key, _FOCUS_TIPS.get("command-input", ""))
         if tip:
             self.show_once(tip, duration=3.0)
+
+    def push_module_hint(self, module_id: str) -> None:
+        """Switch to a module-specific scanning hint pool.
+
+        Falls back to generic 'scanning' pool if no module-specific pool exists.
+        """
+        pool_key = f"scanning_{module_id}"
+        if pool_key in HINTS:
+            self.push_context(pool_key)
+        else:
+            # Fallback to generic scanning hints
+            self.push_context("scanning")
 
     def show_once(self, text: str, duration: float = 4.0) -> None:
         """Show a one-shot hint that overrides rotation temporarily."""

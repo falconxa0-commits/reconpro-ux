@@ -38,22 +38,40 @@ from ..theme import Theme
 # ── Command database: (name, aliases, description, takes_args, context) ──
 # context: None = always, "needs_target" = only if target exists, "no_scan" = only when idle
 COMMAND_DB: List[Tuple[str, List[str], str, bool, Optional[str]]] = [
-    ("scan",      ["s"],   "Scan a remote target",                    True,  None),
-    ("audit",     ["a"],   "Audit local machine",                      False, "no_scan"),
-    ("dev",       [],      "Scan dev project",                         True,  "no_scan"),
-    ("doctor",    [],      "Health check",                             False, "no_scan"),
-    ("blitz",     ["b"],   "Parallel multi-target scan",               True,  None),
-    ("subdomains",["sub"], "Discover subdomains",                      True,  None),
-    ("agent",     [],      "Autonomous AI agent",                      True,  None),
-    ("swarm",     [],      "Multi-agent swarm attack",                 True,  None),
-    ("adversarial",["adv"],"Adversarial attack loop",                 True,  None),
-    ("graph",     ["g"],   "Knowledge graph stats",                    False, None),
-    ("export",    ["exp"], "Export last scan (sarif/md/json/html)",    True,  "needs_target"),
-    ("history",   ["h"],   "Scan history",                            False, None),
-    ("theme",     [],      "Switch theme",                             True,  None),
-    ("clear",     ["c"],   "Clear all feeds",                          False, None),
-    ("help",      ["?"],   "Show commands",                            False, None),
-    ("quit",      ["q", "exit"], "Exit NEXUS",                        False, None),
+    # ── Core scan commands ──
+    ("scan",       ["s"],    "Scan a remote target",                     True,  None),
+    ("audit",      ["a"],    "Audit local machine",                       False, "no_scan"),
+    ("dev",        [],       "Scan dev project",                          True,  "no_scan"),
+    ("doctor",     [],       "Health check",                              False, "no_scan"),
+    ("blitz",      ["b"],    "Parallel multi-target scan",                True,  None),
+    ("subdomains", ["sub"],  "Discover subdomains",                       True,  None),
+    ("agent",      [],       "Autonomous AI agent",                       True,  None),
+    ("swarm",      [],       "Multi-agent swarm attack",                  True,  None),
+    ("adversarial", ["adv"], "Adversarial fix-verify loop",               True,  None),
+    # ── Intelligence & recon ──
+    ("graph",      ["g"],    "Knowledge graph stats",                     False, None),
+    ("passive",    [],       "Passive DNS / OSINT intel",                  True,  None),
+    ("fuzzer",     ["fuzz"], "Fuzz parameters for vulns",                 True,  None),
+    ("cve",        [],       "CVE / NVD vulnerability lookup",            True,  None),
+    ("profile",    [],       "Target fingerprinting",                     True,  None),
+    ("netmap",     [],       "Network topology map",                      False, "no_scan"),
+    # ── Post-scan actions ──
+    ("export",     ["exp"],  "Export last scan (sarif/md/json/html)",     True,  "needs_target"),
+    ("history",    ["h"],    "Scan history",                              False, None),
+    ("defense",    [],       "Generate remediation code",                  False, "needs_target"),
+    ("compliance", [],       "Compliance framework mapping",              False, "needs_target"),
+    ("delta",      [],       "Dynamic delta report vs last scan",          False, "needs_target"),
+    ("benchmark",  [],       "Score tracking & leaderboard",               False, None),
+    # ── Analysis ──
+    ("iac",        [],       "Infrastructure-as-Code audit",              True,  "no_scan"),
+    ("container",  [],       "Container escape analysis",                  True,  "no_scan"),
+    ("ast",        [],       "AST code analysis",                         True,  "no_scan"),
+    ("cloud-recon", [],      "Cloud asset recon",                         True,  None),
+    # ── Meta ──
+    ("theme",      [],       "Switch theme",                               True,  None),
+    ("clear",      ["c"],    "Clear all feeds",                            False, None),
+    ("help",       ["?"],    "Show commands",                              False, None),
+    ("quit",       ["q", "exit"], "Exit NEXUS",                           False, None),
 ]
 
 # ── Arg-level completion tables ──
@@ -243,7 +261,8 @@ class CommandCompleter(Widget):
         """Compute and show fuzzy matches for the typed text.
 
         Phase C routing:
-        - First word  → command completion (fuzzy against COMMAND_DB)
+        - Empty input  → show top commands (quick-pick mode)
+        - First word   → command completion (fuzzy against COMMAND_DB)
         - ``scan <partial>`` / ``blitz <partial>`` → target history
         - ``export <partial>`` → format list
         - ``theme <partial>`` → theme name list
@@ -257,9 +276,24 @@ class CommandCompleter(Widget):
             self.hide()
             return
 
+        # ── Phase C enhanced: empty-query quick-pick on first space ──
+        if len(parts) == 1 and not parts[0]:
+            self._mode = "command"
+            self._show_quick_pick()
+            return
+
         first_word = parts[0].lower()
 
         # ── Detect arg-level completion mode ──
+        # "defense <partial>" or "compliance <partial>" → no arg completion yet
+        # (these commands take no positional args in the TUI)
+
+        # "fuzzer <partial>" → target completion
+        # "cve <partial>" → free text (no completion)
+        # "profile <partial>" → target completion
+        # "passive <partial>" → target completion
+        # "cloud-recon <partial>" → target completion
+
         # "... with <partial>" → module names
         if len(parts) >= 3 and parts[-2].lower() == "with":
             self._mode = "arg_module"
@@ -279,8 +313,12 @@ class CommandCompleter(Widget):
             self._show_arg_suggestions(parts[1], EXPORT_FORMATS, "format")
             return
 
-        # "scan <partial>", "blitz <partial>", "swarm <partial>", "subdomains <partial>", "agent <partial>", "adversarial <partial>" → target history
-        target_taking_cmds = {"scan", "blitz", "swarm", "subdomains", "agent", "adversarial", "dev"}
+        # "scan <partial>", "blitz <partial>", etc. → target history
+        target_taking_cmds = {
+            "scan", "blitz", "swarm", "subdomains", "agent",
+            "adversarial", "dev", "passive", "fuzzer", "profile",
+            "cloud-recon", "iac", "container", "ast", "cve",
+        }
         if first_word in target_taking_cmds and len(parts) == 2:
             self._mode = "arg_target"
             # Combine target history with the current partial as a candidate
@@ -376,6 +414,44 @@ class CommandCompleter(Widget):
         if kind == "target":
             return "recent target"
         return ""
+
+    def show_quick_pick(self) -> None:
+        """Show top-priority commands when Tab is pressed on empty input.
+
+        Displays the most useful commands (scan, agent, blitz, etc.)
+        at score 1.0 so they appear as a quick-pick menu.
+        """
+        # Priority commands shown on empty-input Tab
+        quick_cmds = [
+            "scan", "audit", "doctor", "blitz", "agent",
+            "swarm", "subdomains", "adversarial", "export",
+            "theme", "help", "clear", "quit",
+        ]
+        scored: List[Tuple[str, str, float, Optional[str]]] = []
+        for cmd, aliases, desc, takes_args, ctx in COMMAND_DB:
+            if ctx == "needs_target" and not self._context_has_target:
+                continue
+            if ctx == "no_scan" and self._context_scanning:
+                continue
+            if cmd in quick_cmds:
+                alias_hint = ", ".join(aliases) if aliases else None
+                scored.append((cmd, desc, 1.0, alias_hint))
+
+        # Append remaining commands not in quick_cmds
+        for cmd, aliases, desc, takes_args, ctx in COMMAND_DB:
+            if ctx == "needs_target" and not self._context_has_target:
+                continue
+            if ctx == "no_scan" and self._context_scanning:
+                continue
+            if cmd not in quick_cmds:
+                alias_hint = ", ".join(aliases) if aliases else None
+                scored.append((cmd, desc, 0.5, alias_hint))
+
+        self._suggestions = scored[:self._max_visible]
+        self._selected_idx = 0
+        if self._suggestions:
+            self.visible = True
+            self._render()
 
     def hide(self) -> None:
         """Dismiss the completer."""

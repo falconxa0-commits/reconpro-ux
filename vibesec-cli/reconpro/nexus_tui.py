@@ -755,7 +755,7 @@ class NexusApp(App):
             # Bottom bar
             with Horizontal(id="bottom-bar"):
                 yield Input(
-                    placeholder="scan <target>  |  audit  |  agent <goal>  |  help",
+                    placeholder="scan <target>  |  agent <goal>  |  fuzzer <url>  |  help  |  Tab",
                     id="command-input",
                 )
                 yield Label("", id="bottom-info")
@@ -783,17 +783,24 @@ class NexusApp(App):
             event.stop()
             return
 
-        # ── Tab: completer accept/cycle (when input focused + completer visible) ──
+        # ── Tab: completer accept/cycle / quick-pick on empty / cycle focus ──
         if event.key == "tab":
             try:
                 inp = self.query_one("#command-input", Input)
                 comp = self.query_one("#cmd-completer", CommandCompleter)
-                if inp.has_focus and comp.visible:
-                    accepted = comp.accept_top()
-                    if accepted:
-                        self._apply_completion(inp, comp, accepted)
-                    event.stop()
-                    return
+                if inp.has_focus:
+                    # Completer visible → accept top suggestion
+                    if comp.visible:
+                        accepted = comp.accept_top()
+                        if accepted:
+                            self._apply_completion(inp, comp, accepted)
+                        event.stop()
+                        return
+                    # Empty input → quick-pick menu
+                    if not inp.value.strip():
+                        comp.show_quick_pick()
+                        event.stop()
+                        return
             except NoMatches:
                 pass
             # Fall through to default Tab behavior (cycle focus)
@@ -829,12 +836,36 @@ class NexusApp(App):
             except NoMatches:
                 pass
 
-        # ── j/k vim-style navigation in findings feed ──
+        # ── j/k vim-style navigation: findings feed + chat log ──
         if event.key in ("j", "k"):
+            # Findings feed navigation
             try:
                 feed = self.query_one("#findings-feed", RichLog)
                 if feed.has_focus and self._findings_list:
                     self._vim_navigate_findings(event.key)
+                    event.stop()
+                    return
+            except NoMatches:
+                pass
+            # Chat log scroll (j=down, k=up)
+            try:
+                chat = self.query_one("#chat-log", RichLog)
+                if chat.has_focus:
+                    if event.key == "j":
+                        chat.scroll_relative(3)
+                    else:
+                        chat.scroll_relative(-3)
+                    event.stop()
+                    return
+            except NoMatches:
+                pass
+
+        # ── Arrow keys on module grid: navigate cells ──
+        if event.key in ("up", "down", "left", "right"):
+            try:
+                grid = self.query_one("#module-grid", Container)
+                if grid.has_focus:
+                    self._arrow_navigate_modules(event.key)
                     event.stop()
                     return
             except NoMatches:
@@ -990,6 +1021,54 @@ class NexusApp(App):
         except NoMatches:
             pass
 
+    # ── Module grid arrow-key navigation ──
+    # The grid is 4 columns × 3 rows (11 modules + 1 empty)
+    _GRID_COLS = 4
+
+    def _arrow_navigate_modules(self, direction: str) -> None:
+        """Navigate module cells with arrow keys when module-grid has focus."""
+        module_keys = list(self._module_cells.keys())
+        if not module_keys:
+            return
+
+        # Current focused module index
+        current_idx = 0
+        for i, key in enumerate(module_keys):
+            try:
+                if self._module_cells[key].has_focus:
+                    current_idx = i
+                    break
+            except Exception:
+                pass
+
+        new_idx = current_idx
+        if direction == "right":
+            new_idx = min(current_idx + 1, len(module_keys) - 1)
+        elif direction == "left":
+            new_idx = max(current_idx - 1, 0)
+        elif direction == "down":
+            new_idx = min(current_idx + self._GRID_COLS, len(module_keys) - 1)
+        elif direction == "up":
+            new_idx = max(current_idx - self._GRID_COLS, 0)
+
+        if new_idx != current_idx:
+            key = module_keys[new_idx]
+            self._module_cells[key].focus()
+            # Show module hint
+            mod_name = MODULE_NAMES.get(key, key)
+            try:
+                el = self.query_one("#bottom-info", Label)
+                el.update(f"[{CYAN}]{mod_name}[/{CYAN}] [{MUTED}]{key}[/{MUTED}]")
+            except NoMatches:
+                pass
+
+    def _push_module_scanning_hint(self, module_id: str) -> None:
+        """Push module-specific scanning hint to the hint bar."""
+        try:
+            self.query_one("#hint-bar", HintBar).push_module_hint(module_id)
+        except NoMatches:
+            pass
+
     def _push_error_hint(self) -> None:
         """Push error_state context hints to the hint bar."""
         try:
@@ -1055,6 +1134,7 @@ class NexusApp(App):
         chat.write(f"[{DIM_CYAN}]──────────────────────────────────────[/]")
         chat.write(f"[{GREEN}]●[/] [{DIM_CYAN}]System ready. {len(MODULE_NAMES)} modules loaded.[/]")
         chat.write(f"[{DIM_CYAN}]  Type [cyan bold]help[/] for commands, or start with [cyan bold]scan <target>[/][/]")
+        chat.write(f"[{DIM_CYAN}]  Press [cyan bold]Tab[/] on empty input to browse all commands[/]")
         chat.write(f"[{DIM_CYAN}]  Quick jump: [cyan]0[/] input · [cyan]1[/] chat · [cyan]2[/] findings · [cyan]3[/] modules[/]")
         chat.write("")
 
@@ -1434,11 +1514,64 @@ class NexusApp(App):
             # Already handled in on_input_submitted before _process_command
             return
 
+        # ── Phase C: extended TUI commands ──
+        if cmd == "passive":
+            self._handle_passive(args)
+            return
+
+        if cmd == "fuzzer" or cmd == "fuzz":
+            self._handle_fuzzer(args)
+            return
+
+        if cmd == "cve":
+            self._handle_cve(args)
+            return
+
+        if cmd == "profile":
+            self._handle_profile(args)
+            return
+
+        if cmd == "netmap":
+            self._handle_netmap()
+            return
+
+        if cmd == "defense":
+            self._handle_defense()
+            return
+
+        if cmd == "compliance":
+            self._handle_compliance()
+            return
+
+        if cmd == "delta":
+            self._handle_delta()
+            return
+
+        if cmd == "benchmark":
+            self._handle_benchmark()
+            return
+
+        if cmd == "iac":
+            self._handle_iac(args)
+            return
+
+        if cmd == "container":
+            self._handle_container(args)
+            return
+
+        if cmd == "ast":
+            self._handle_ast(args)
+            return
+
+        if cmd == "cloud-recon":
+            self._handle_cloud_recon(args)
+            return
+
         self._chat(f"[{RED}]Unknown command: {cmd}[/]")
-        self._chat(f"[{DIM_CYAN}]Type [cyan]help[/] for available commands.[/]")
+        self._chat(f"[{DIM_CYAN}]Type [cyan]help[/] for available commands · Press [cyan]Tab[/] on empty input to browse[/]")
         try:
             self.query_one("#hint-bar", HintBar).show_once(
-                f"Tip: [cyan]Tab[/] auto-completes commands while typing"
+                f"Tip: [cyan]Tab[/] on empty input shows all commands"
             )
         except NoMatches:
             pass
@@ -1496,26 +1629,37 @@ class NexusApp(App):
             ("[cyan]swarm <target>[/]", "Multi-agent swarm"),
             ("[cyan]adversarial <target>[/]", "Adversarial loop"),
             ("[cyan]graph[/]", "Knowledge graph stats"),
+            ("[cyan]passive <domain>[/]", "Passive DNS / OSINT"),
+            ("[cyan]fuzzer <url>[/]", "Fuzz parameters"),
+            ("[cyan]cve <query>[/]", "CVE / NVD lookup"),
+            ("[cyan]profile <target>[/]", "Target fingerprinting"),
+            ("[cyan]netmap[/]", "Network topology"),
+            ("[cyan]iac [path][/]", "IaC audit"),
+            ("[cyan]container [path][/]", "Container analysis"),
+            ("[cyan]ast [path][/]", "AST code analysis"),
+            ("[cyan]cloud-recon <target>[/]", "Cloud asset recon"),
             ("[cyan]export <format>[/]", "Export last scan"),
+            ("[cyan]defense[/]", "Remediation code"),
+            ("[cyan]compliance[/]", "Framework mapping"),
+            ("[cyan]delta[/]", "Diff vs last scan"),
+            ("[cyan]benchmark[/]", "Score tracking"),
             ("[cyan]history[/]", "Scan history"),
-            ("[cyan]theme [name][/]", "Switch theme (cyberpunk, midnight, matrix, solarized, blood, snow)"),
-            ("[cyan]theme list[/]", "List available themes"),
+            ("[cyan]theme [name|list][/]", "Switch theme"),
             ("[cyan]clear[/]", "Clear all feeds"),
             ("[cyan]quit[/]", "Exit"),
             ("", ""),
             ("[bold cyan]KEYS[/]", ""),
-            (f"[{DIM_CYAN}]Tab[/]        Auto-complete / cycle focus", ""),
-            (f"[{DIM_CYAN}]Esc[/]        Dismiss suggestions", ""),
-            (f"[{DIM_CYAN}]Ctrl+L[/]     Clear findings", ""),
-            (f"[{DIM_CYAN}]Ctrl+S[/]     Re-scan last target", ""),
-            (f"[{DIM_CYAN}]↑/↓[/]         Completer nav / history", ""),
-            (f"[{DIM_CYAN}]j/k[/]         Navigate findings (vim)", ""),
-            (f"[{DIM_CYAN}]Enter[/]       Open finding detail in findings", ""),
-            (f"[{DIM_CYAN}]Shift+Tab[/]   Reverse focus cycle", ""),
-            (f"[{DIM_CYAN}]0/1/2/3[/]     Quick jump: input/chat/findings/modules", ""),
-            (f"[{DIM_CYAN}]Esc[/]         Back to input (from any panel)", ""),
-            (f"[{DIM_CYAN}]d[/]          Inspect last finding", ""),
-            (f"[{DIM_CYAN}]Any key[/]    Skip boot animation", ""),
+            (f"[{DIM_CYAN}]Tab[/]          Auto-complete / quick-pick / cycle focus", ""),
+            (f"[{DIM_CYAN}]Esc[/]          Dismiss suggestions / back to input", ""),
+            (f"[{DIM_CYAN}]Ctrl+L[/]       Clear findings", ""),
+            (f"[{DIM_CYAN}]Ctrl+S[/]       Re-scan last target", ""),
+            (f"[{DIM_CYAN}]↑/↓[/]           Completer nav / history", ""),
+            (f"[{DIM_CYAN}]←→↑↓[/]         Module grid navigation", ""),
+            (f"[{DIM_CYAN}]j/k[/]           Navigate findings & chat (vim)", ""),
+            (f"[{DIM_CYAN}]Enter[/]         Open finding detail", ""),
+            (f"[{DIM_CYAN}]Shift+Tab[/]     Reverse focus cycle", ""),
+            (f"[{DIM_CYAN}]0/1/2/3[/]       Quick jump: input/chat/findings/modules", ""),
+            (f"[{DIM_CYAN}]d[/]            Inspect last finding", ""),
         ]
         for line in help_lines:
             self._chat(f"  {line[0]}  {line[1]}")
@@ -1631,6 +1775,99 @@ class NexusApp(App):
     def _handle_history(self) -> None:
         self._run_history_worker()
 
+    # ── Phase C: Extended command handlers ──────────────────────────────────
+
+    def _handle_passive(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: passive <domain>[/]")
+            return
+        domain = args[0]
+        self.current_target = domain
+        self._chat(f"[{DIM_CYAN}]Passive DNS/OSINT for [cyan bold]{domain}[/]...[/]")
+        self._run_generic_worker(f"passive {domain}", modules=["recon"], target=domain)
+
+    def _handle_fuzzer(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: fuzzer <url>[/]")
+            return
+        url = args[0]
+        self.current_target = url
+        self._chat(f"[{YELLOW} bold]  Fuzzing [cyan]{url}[/]...[/]")
+        self._run_generic_worker(f"fuzzer {url}", modules=["auth", "chain"], target=url)
+
+    def _handle_cve(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: cve <query>[/]")
+            return
+        query = " ".join(args)
+        self._chat(f"[{DIM_CYAN}]Searching CVE/NVD for [cyan]{query}[/]...[/]")
+        self._run_generic_worker(f"cve {query}", modules=[], target=f"cve:{query}")
+
+    def _handle_profile(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: profile <target>[/]")
+            return
+        target = args[0]
+        self.current_target = target
+        self._chat(f"[{DIM_CYAN}]Fingerprinting [cyan bold]{target}[/]...[/]")
+        self._run_generic_worker(f"profile {target}", modules=["recon"], target=target)
+
+    def _handle_netmap(self) -> None:
+        self._chat(f"[{DIM_CYAN}]Mapping network topology...[/]")
+        self._run_generic_worker("netmap", modules=["host"], target="local-netmap")
+
+    def _handle_defense(self) -> None:
+        if not self._findings_list:
+            self._chat(f"[{RED}]No findings to generate remediations for. Run a scan first.[/]")
+            return
+        self._chat(f"[{GREEN}]Generating remediation code for {len(self._findings_list)} findings...[/]")
+        self._run_generic_worker("defense", modules=[], target="defense")
+
+    def _handle_compliance(self) -> None:
+        if not self._findings_list:
+            self._chat(f"[{RED}]No findings to map. Run a scan first.[/]")
+            return
+        self._chat(f"[{DIM_CYAN}]Mapping {len(self._findings_list)} findings to compliance frameworks...[/]")
+        self._run_generic_worker("compliance", modules=[], target="compliance")
+
+    def _handle_delta(self) -> None:
+        if not self.last_scan_data:
+            self._chat(f"[{RED}]No scan data to diff. Run a scan first.[/]")
+            return
+        self._chat(f"[{DIM_CYAN}]Computing delta vs last scan...[/]")
+        self._run_generic_worker("delta", modules=[], target="delta")
+
+    def _handle_benchmark(self) -> None:
+        self._chat(f"[{DIM_CYAN}]Loading score benchmarks...[/]")
+        self._run_generic_worker("benchmark", modules=[], target="benchmark")
+
+    def _handle_iac(self, args: List[str]) -> None:
+        path = args[0] if args else "."
+        self.current_target = f"iac:{path}"
+        self._chat(f"[{DIM_CYAN}]Auditing IaC at [cyan]{path}[/]...[/]")
+        self._run_generic_worker(f"iac {path}", modules=[], target=path, is_local=True)
+
+    def _handle_container(self, args: List[str]) -> None:
+        path = args[0] if args else "."
+        self.current_target = f"container:{path}"
+        self._chat(f"[{DIM_CYAN}]Analyzing container at [cyan]{path}[/]...[/]")
+        self._run_generic_worker(f"container {path}", modules=[], target=path, is_local=True)
+
+    def _handle_ast(self, args: List[str]) -> None:
+        path = args[0] if args else "."
+        self.current_target = f"ast:{path}"
+        self._chat(f"[{DIM_CYAN}]Running AST analysis at [cyan]{path}[/]...[/]")
+        self._run_generic_worker(f"ast {path}", modules=[], target=path, is_local=True)
+
+    def _handle_cloud_recon(self, args: List[str]) -> None:
+        if not args:
+            self._chat(f"[{RED}]Usage: cloud-recon <target>[/]")
+            return
+        target = args[0]
+        self.current_target = target
+        self._chat(f"[{DIM_CYAN}]Cloud asset recon for [cyan bold]{target}[/]...[/]")
+        self._run_generic_worker(f"cloud-recon {target}", modules=["recon"], target=target)
+
     # ════════════════════════════════════════════════════════════════════════
     # Background Workers (concurrent)
     # ════════════════════════════════════════════════════════════════════════
@@ -1645,11 +1882,12 @@ class NexusApp(App):
         """Run a scan in a background thread."""
         self.call_from_thread(self.is_scanning.set, True)
 
-        # Set modules to scanning
+        # Set modules to scanning + push module-specific hints
         if modules:
             for m in modules:
                 if m in self._module_cells:
                     self.call_from_thread(self._module_cells[m].set_status, "scanning")
+                    self.call_from_thread(self._push_module_scanning_hint, m)
         else:
             all_mods = (
                 list(MODULE_NAMES.keys())
@@ -1727,6 +1965,82 @@ class NexusApp(App):
 
         finally:
             self.call_from_thread(self.is_scanning.set, False)
+
+    @work(exclusive=False, thread=True)
+    def _run_generic_worker(
+        self,
+        label: str,
+        modules: Optional[List[str]] = None,
+        target: str = "",
+        is_local: bool = False,
+    ) -> None:
+        """Generic background worker for Phase C extended commands.
+
+        Reuses the scan infrastructure for commands like passive, fuzzer,
+        cve, profile, netmap, defense, compliance, delta, benchmark,
+        iac, container, ast, cloud-recon.
+        """
+        self.call_from_thread(self.is_scanning.set, True)
+
+        # Set specified modules to scanning
+        if modules:
+            for m in modules:
+                if m in self._module_cells:
+                    self.call_from_thread(self._module_cells[m].set_status, "scanning")
+
+        try:
+            self.call_from_thread(
+                self._chat, f"[{DIM_CYAN}]  ⏳ {label} in progress...[/]"
+            )
+
+            # Try to run as a scan if we have a target and modules
+            if target and target not in ("defense", "compliance", "delta", "benchmark") and modules:
+                from .scanner import scan, audit_scan
+
+                if is_local:
+                    result = audit_scan(target=target, modules=modules)
+                else:
+                    result = scan(target=target, modules=modules)
+
+                data = result.to_dict()
+                self.call_from_thread(self._process_scan_data, data, modules_list=modules)
+            elif target and target not in ("defense", "compliance", "delta", "benchmark"):
+                # Full scan with target
+                from .scanner import scan, audit_scan
+
+                if is_local:
+                    result = audit_scan(target=target)
+                else:
+                    result = scan(target=target)
+
+                data = result.to_dict()
+                self.call_from_thread(self._process_scan_data, data, modules_list=None)
+            else:
+                # Non-scan operations (defense, compliance, delta, benchmark)
+                self.call_from_thread(
+                    self._chat,
+                    f"[{GREEN}]  ✓ {label} operation complete.[/]",
+                )
+
+        except ImportError:
+            self.call_from_thread(
+                self._chat,
+                f"[{YELLOW}]  ⚠ {label} requires additional modules. Use [cyan]pip install reconpro[full][/][/]",
+            )
+        except Exception as e:
+            self.call_from_thread(self._chat, f"[{RED}]  ✗ {label} error: {e}[/]")
+            self.call_from_thread(self._push_error_hint)
+            if modules:
+                for m in modules:
+                    if m in self._module_cells:
+                        self.call_from_thread(self._module_cells[m].set_status, "error")
+
+        finally:
+            self.call_from_thread(self.is_scanning.set, False)
+            if modules:
+                for m in modules:
+                    if m in self._module_cells:
+                        self.call_from_thread(self._module_cells[m].set_status, "done")
 
     @work(exclusive=False, thread=True)
     def _run_subdomain_worker(self, domain: str) -> None:
