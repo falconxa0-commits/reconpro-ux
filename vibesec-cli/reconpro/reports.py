@@ -107,7 +107,7 @@ def _aggregate_dread(findings: List[Dict[str, Any]]) -> List[float]:
     counts = [0] * 5
 
     for f in findings:
-        dread = f.get("dread")
+        dread = f.get("dread_score") or f.get("dread")
         if dread is None:
             continue
 
@@ -144,7 +144,7 @@ def _top_finding_dread(findings: List[Dict[str, Any]], n: int = 8) -> List[Dict[
 
     result = []
     for f in sorted_f[:n]:
-        dread = f.get("dread")
+        dread = f.get("dread_score") or f.get("dread")
         if isinstance(dread, dict):
             components = [dread.get(key, 0) for key in _DREAD_LABELS]
         elif isinstance(dread, (int, float)) and float(dread) > 0:
@@ -796,8 +796,8 @@ def generate_html_report(data: Dict[str, Any], output_path: str = "") -> str:
         color = _report_theme.sev_hex(sev)
         evidence = f.get("evidence", "")
         evidence_short = (evidence[:80] + "..." if len(evidence) > 80 else evidence) if evidence else ""
-        dread_val = f.get("dread", 0)
-        dread_display = f"{dread_val:.1f}" if isinstance(dread_val, float) else (f"{sum(dread_val.values())/5:.1f}" if isinstance(dread_val, dict) else "-")
+        dread_val = f.get("dread_score") or f.get("dread", 0)
+        dread_display = f"{dread_val:.1f}" if isinstance(dread_val, (int, float)) and not isinstance(dread_val, bool) else (f"{sum(dread_val.values())/5:.1f}" if isinstance(dread_val, dict) else "-")
         evidence_cell = f'<td style="color:{h_muted};font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{evidence_short}</td>' if evidence_short else '<td></td>'
         findings_rows += f'''
         <tr>
