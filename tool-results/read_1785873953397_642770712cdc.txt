@@ -1,0 +1,1160 @@
+     1→from __future__ import annotations
+     2→
+     3→import argparse
+     4→import json
+     5→import os
+     6→import sys
+     7→
+     8→from rich.console import Console, Group
+     9→from rich.panel import Panel
+    10→from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+    11→from rich.table import Table
+    12→from rich.text import Text
+    13→
+    14→from . import __version__
+    15→from .theme import Theme
+    16→from .scanner import (
+    17→    scan, audit_scan, MODULE_REGISTRY, LOCAL_MODULES,
+    18→    ALL_MODULES, DEFAULT_MODULES, DEFAULT_LOCAL_MODULES,
+    19→)
+    20→from .history import list_scans, get_latest, diff_scans, save_scan, clear_history
+    21→from .reports import generate_html_report
+    22→from .parallel import blitz_scan
+    23→
+    24→console = Console()
+    25→
+    26→BANNER = r"""[bold bright_white]
+    27→██████╗ ███████╗ ██████╗██╗  ██╗███████╗██████╗ ███████╗██████╗ ██████╗ ██╗    ██╗
+    28→██╔══██╗██╔════╝██╔════╝██║  ██╗██╔════╝██╔══██╗██╔════╝██╔════╝██║██╗ ██╔╝
+    29→██████╔╝█████╗  ██║     ███████║█████╗  ██████╔╝█████╗  ██║     ██╔╝██╗██║
+    30→██╔═══╝ ██╔══╝  ██║     ██╔══██║██╔══╝  ██╔══██╗██╔══╝  ██║     █████╔╝██║
+    31→██║     ███████╗╚██████╗██║  ██║███████╗██║  ██║███████╗╚██████╗██╔╝██╗██║
+    32→╚═╝     ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝
+    33→[/bold bright_white][dim]          E L E V E N   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.[/dim]
+    34→"""
+    35→
+    36→# Colors from unified theme system
+    37→_cli_theme = Theme.current()
+    38→
+    39→SEV_COLORS = {
+    40→    "critical": "bright_red",
+    41→    "high": "red",
+    42→    "medium": "yellow",
+    43→    "low": "green",
+    44→    "info": "dim",
+    45→}
+    46→
+    47→GRADE_COLORS = {
+    48→    "A+": _cli_theme.grade_rich("A+"),
+    49→    "A": _cli_theme.grade_rich("A"),
+    50→    "B": _cli_theme.grade_rich("B"),
+    51→    "C": _cli_theme.grade_rich("C"),
+    52→    "D": _cli_theme.grade_rich("D"),
+    53→    "F": _cli_theme.grade_rich("F"),
+    54→}
+    55→
+    56→
+    57→# ── Rich rendering ──────────────────────────────────────────────────────
+    58→
+    59→
+    60→def _render_summary(result, title: str = "RECONPRO") -> None:
+    61→    score = result.total_score
+    62→    grade = result.grade
+    63→    grade_color = GRADE_COLORS.get(grade, "bold bright_red")
+    64→    sc = result.severity_counts
+    65→    total = len(result.findings)
+    66→    bar_width = 50
+    67→    filled = int(score / 100 * bar_width)
+    68→    bar = "█" * filled + "░" * (bar_width - filled)
+    69→    lines = [
+    70→        Text(f"\n  {bar} [bold {grade_color}]{score}/100 ({grade})[/{grade_color}]"),
+    71→        Text(f"\n  Target: [cyan]{result.target}[/]"),
+    72→        Text(f"  Modules: [dim]{', '.join(result.modules_run)}[/]"),
+    73→        Text(""),
+    74→        Text(
+    75→            f"  Findings: [bold]{total}[/]  "
+    76→            f"[bright_red]{sc.get('critical', 0)} critical[/], "
+    77→            f"[red]{sc.get('high', 0)} high[/], "
+    78→            f"[yellow]{sc.get('medium', 0)} medium[/], "
+    79→            f"[green]{sc.get('low', 0)} low[/], "
+    80→            f"[dim]{sc.get('info', 0)} info[/]",
+    81→        ),
+    82→    ]
+    83→    if result.vibesec_score is not None:
+    84→        lines.append(Text(
+    85→            f"\n  VibeSec Score: [bold bright_green]{result.vibesec_score}/100 ({result.vibesec_grade})[/]"
+    86→        ))
+    87→    console.print(Panel(Group(*lines), border_style=grade_color,
+    88→                         title=f"[bold]{title}[/bold]", title_align="left", padding=(1, 2)))
+    89→
+    90→
+    91→def _render_findings_table(result, show_remediation: bool = False) -> None:
+    92→    if not result.findings:
+    93→        console.print("\n  [bright_green]No findings. Target is clean.[/]")
+    94→        return
+    95→    table = Table(title=f"Findings — {len(result.findings)} detected",
+    96→                  border_style="bright_white", header_style="bold bright_white")
+    97→    table.add_column("Severity", style="bold", width=10)
+    98→    table.add_column("Module", style="cyan", width=12)
+    99→    table.add_column("Category", style="magenta", width=18)
+   100→    table.add_column("Finding", style="white")
+   101→    table.add_column("Pts", style="yellow", width=5)
+   102→    if show_remediation:
+   103→        table.add_column("Fix", style="bright_green", width=50)
+   104→    for f in result.findings[:80]:
+   105→        sev = f.get("severity", "info")
+   106→        color = SEV_COLORS.get(sev, "white")
+   107→        row = [
+   108→            f"[{color}]{sev.upper()}[/{color}]",
+   109→            f.get("module", ""), f.get("category", ""),
+   110→            f.get("title", "")[:70], str(f.get("points_deducted", 0)),
+   111→        ]
+   112→        if show_remediation:
+   113→            row.append(f.get("remediation", "")[:50])
+   114→        table.add_row(*row)
+   115→    console.print(table)
+   116→
+   117→
+   118→def _render_module_breakdown(result) -> None:
+   119→    if not result.module_results:
+   120→        return
+   121→    t = Table(title="Module Breakdown", border_style="dim", header_style="bold dim")
+   122→    t.add_column("Module", style="bold", width=16)
+   123→    t.add_column("Findings", style="white", width=10)
+   124→    t.add_column("Critical", style="bright_red", width=10)
+   125→    t.add_column("High", style="red", width=8)
+   126→    t.add_column("Medium", style="yellow", width=8)
+   127→    for mod_id, mod_data in result.module_results.items():
+   128→        findings = mod_data.get("findings", [])
+   129→        t.add_row(mod_id.upper(), str(len(findings)),
+   130→                   str(sum(1 for f in findings if f.get("severity") == "critical")),
+   131→                   str(sum(1 for f in findings if f.get("severity") == "high")),
+   132→                   str(sum(1 for f in findings if f.get("severity") == "medium")))
+   133→    console.print(t)
+   134→
+   135→
+   136→def _render_badge(result) -> None:
+   137→    if result.badge_markdown:
+   138→        console.print(Panel(Group(
+   139→            Text("  GitHub README Badge (copy-paste):", style="bold dim"),
+   140→            Text(f"  {result.badge_markdown}", style="cyan"),
+   141→        ), border_style="dim", title="[dim]Badge[/dim]", title_align="left", padding=(0, 2)))
+   142→
+   143→
+   144→def _render_remediations(result) -> None:
+   145→    actionable = [f for f in result.findings
+   146→                  if f.get("remediation") and f.get("severity") not in ("info",)
+   147→                  and f.get("points_deducted", 0) > 0]
+   148→    if not actionable:
+   149→        console.print("\n  [bright_green]No actionable fixes needed.[/]")
+   150→        return
+   151→    console.print("\n[bold bright_white]  Fix Commands:[/bold bright_white]\n")
+   152→    seen = set()
+   153→    for f in actionable:
+   154→        fix = f.get("remediation", "").strip()
+   155→        sev = f.get("severity", "info")
+   156→        color = SEV_COLORS.get(sev, "white")
+   157→        if fix and fix not in seen:
+   158→            seen.add(fix)
+   159→            console.print(f"  [{color}]{sev.upper():8}[/{color}]  {fix}")
+   160→    console.print()
+   161→
+   162→
+   163→def _output_result(result, args, title: str = "RECONPRO", show_remediation: bool = False) -> None:
+   164→    json_output = getattr(args, "json_output", False)
+   165→    output_file = getattr(args, "output_file", None)
+   166→    if json_output:
+   167→        text = json.dumps(result.to_dict(), indent=2, default=str)
+   168→        if output_file:
+   169→            with open(output_file, "w") as fp:
+   170→                fp.write(text)
+   171→            console.print(f"  [green]JSON saved: [cyan]{output_file}[/][/]")
+   172→        else:
+   173→            console.print(text)
+   174→    else:
+   175→        _render_summary(result, title=title)
+   176→        console.print()
+   177→        _render_module_breakdown(result)
+   178→        console.print()
+   179→        _render_findings_table(result, show_remediation=show_remediation)
+   180→        if show_remediation:
+   181→            _render_remediations(result)
+   182→        _render_badge(result)
+   183→        if output_file:
+   184→            with open(output_file, "w") as fp:
+   185→                fp.write(json.dumps(result.to_dict(), indent=2, default=str))
+   186→            console.print(f"\n  [green]JSON saved: [cyan]{output_file}[/][/]")
+   187→        # Auto-save to history
+   188→        save_scan(result.to_dict())
+   189→    console.print()
+   190→
+   191→
+   192→def _spinner_wrap(msg: str, fn, *a, **kw):
+   193→    """Run a function with a spinner."""
+   194→    with Progress(SpinnerColumn(), TextColumn("[bold]{task.description}[/]"),
+   195→                   TimeElapsedColumn(), console=console) as progress:
+   196→        task = progress.add_task(msg, total=None)
+   197→        result = fn(*a, **kw)
+   198→        progress.update(task, completed=True)
+   199→    return result
+   200→
+   201→
+   202→# ── CLI entry point ─────────────────────────────────────────────────────
+   203→
+   204→
+   205→def main(argv: list[str] | None = None) -> None:
+   206→    parser = argparse.ArgumentParser(
+   207→        prog="reconpro",
+   208→        description=(
+   209→            "ReconPro Nexus v7 — Async Engine. Evasion. Swarm. Knowledge Graph. 40+ Subcommands.\n"
+   210→            "The next-gen security platform with AI agent, swarm, and attack-path chaining.\n\n"
+   211→            "Quick Start:  reconpro nexus           (mind-blowing agent TUI)\n"
+   212→            "AI Agent:     reconpro agent <goal>   (LLM-powered, 18 tools)\n"
+   213→            "Swarm:        reconpro swarm <target>  (SCOUT→HACKER→CODER→GUARDIAN)\n"
+   214→            "Adversarial:  reconpro adversarial <target>  (hacker vs coder self-play)\n"
+   215→            "Intel:        cve, graph, compliance, passive (threat intel + knowledge graph)\n"
+   216→            "Export:       export (SARIF/MD/JSON/HTML)\n"
+   217→            "Cloud:        iac, container, cloud-recon, delta (infra security)\n"
+   218→            "Defense:      defense, fuzzer, profile, benchmark (auto-fix + scoring)"
+   219→        ),
+   220→        epilog="""Examples:
+   221→  # NEXUS (recommended)
+   222→  reconpro nexus                # Mind-blowing agent TUI
+   223→
+   224→  # AI Agent (reasoning + 18 tools)
+   225→  reconpro agent \"fully recon example.com, find CVEs, generate SARIF\"
+   226→  reconpro agent \"swarm attack myapp.com with 3 rounds\"
+   227→
+   228→  # Swarm Intelligence
+   229→  reconpro swarm example.com               # SCOUT→HACKER→CODER→GUARDIAN
+   230→  reconpro swarm example.com --mode attack   # SCOUT+HACKER only
+   231→
+   232→  # Adversarial Self-Play
+   233→  reconpro adversarial example.com           # 3-round hacker vs coder
+   234→
+   235→  # Remote
+   236→  reconpro scan example.com
+   237→  reconpro vibesec example.com
+   238→
+   239→  # Local + Code
+   240→  reconpro audit              # Full machine audit
+   241→  reconpro ast /path/to/code  # AST vulnerability analysis
+   242→  reconpro secrets            # Find secrets
+   243→
+   244→  # Threat Intelligence
+   245→  reconpro cve SQL injection    # NVD CVE lookup
+   246→  reconpro graph example.com   # Knowledge graph
+   247→
+   248→  # Export (CI/CD ready)
+   249→  reconpro export report.sarif # SARIF for GitHub Code Scanning
+   250→  reconpro export report.md     # Markdown report
+   251→
+   252→  # Advanced
+   253→  reconpro blitz t1.com t2.com t3.com
+   254→  reconpro subdomains example.com
+   255→  reconpro schedule example.com --every 1h
+   256→  reconpro serve --port 7890""",
+   257→        formatter_class=argparse.RawDescriptionHelpFormatter,
+   258→    )
+   259→
+   260→    parser.add_argument("--version", "-v", action="version", version=f"ReconPro {__version__}")
+   261→    sub = parser.add_subparsers(dest="subcommand")
+   262→
+   263→    # ── scan ──────────────────────────────────────────────────────
+   264→    p = sub.add_parser("scan", help="Full remote scan")
+   265→    p.add_argument("target", help="Target domain or URL")
+   266→    p.add_argument("--modules", "-m", type=str)
+   267→    p.add_argument("--all", "-a", action="store_true")
+   268→    p.add_argument("--json", dest="json_output", action="store_true")
+   269→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   270→    p.add_argument("--timeout", "-t", type=int, default=8)
+   271→    p.add_argument("--insecure", "-k", action="store_true")
+   272→    p.add_argument("--rate-limit", type=float, default=10.0)
+   273→
+   274→    # ── vibesec ───────────────────────────────────────────────────
+   275→    p = sub.add_parser("vibesec", help="Quick VibeSec benchmark")
+   276→    p.add_argument("target", help="Target domain or URL")
+   277→    p.add_argument("--json", dest="json_output", action="store_true")
+   278→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   279→    p.add_argument("--timeout", "-t", type=int, default=8)
+   280→    p.add_argument("--insecure", "-k", action="store_true")
+   281→    p.add_argument("--rate-limit", type=float, default=10.0)
+   282→
+   283→    # ── audit ────────────────────────────────────────────────────
+   284→    p = sub.add_parser("audit", help="Full machine audit (ports, firewall, SSH, Docker, env, files)")
+   285→    p.add_argument("--modules", "-m", type=str)
+   286→    p.add_argument("--json", dest="json_output", action="store_true")
+   287→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   288→
+   289→    # ── dev ───────────────────────────────────────────────────────
+   290→    p = sub.add_parser("dev", help="Developer project scan (secrets, deps, git, docker)")
+   291→    p.add_argument("path", nargs="?", default=".")
+   292→    p.add_argument("--json", dest="json_output", action="store_true")
+   293→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   294→
+   295→    # ── doctor ────────────────────────────────────────────────────
+   296→    p = sub.add_parser("doctor", help="Health check with fix commands")
+   297→    p.add_argument("--json", dest="json_output", action="store_true")
+   298→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   299→
+   300→    # ── ports ─────────────────────────────────────────────────────
+   301→    p = sub.add_parser("ports", help="Show open ports and risky services")
+   302→    p.add_argument("--json", dest="json_output", action="store_true")
+   303→
+   304→    # ── secrets ────────────────────────────────────────────────────
+   305→    p = sub.add_parser("secrets", help="Find secrets in env vars and codebase")
+   306→    p.add_argument("path", nargs="?", default=".")
+   307→    p.add_argument("--json", dest="json_output", action="store_true")
+   308→
+   309→    # ── list ──────────────────────────────────────────────────────
+   310→    p = sub.add_parser("list", help="List available modules")
+   311→    p.add_argument("--local", action="store_true")
+   312→    p.add_argument("--all", action="store_true")
+   313→
+   314→    # ── NEXUS ────────────────────────────────────────────────────
+   315→    sub.add_parser("nexus", help="Launch NEXUS — mind-blowing agent TUI (mouse + keyboard + split-screen)")
+   316→
+   317→    # ── chat ──────────────────────────────────────────────────────
+   318→    sub.add_parser("chat", help="Interactive chat mode — talk to ReconPro")
+   319→
+   320→    # ── tui ───────────────────────────────────────────────────────
+   321→    sub.add_parser("tui", help="Visual terminal dashboard")
+   322→
+   323→    # ── blitz ─────────────────────────────────────────────────────
+   324→    p = sub.add_parser("blitz", help="Parallel multi-target scan")
+   325→    p.add_argument("targets", nargs="+", help="Target domains/URLs")
+   326→    p.add_argument("--workers", "-w", type=int, default=4)
+   327→    p.add_argument("--modules", "-m", type=str)
+   328→
+   329→    # ── agent ─────────────────────────────────────────────────────
+   330→    p = sub.add_parser("agent", help="Autonomous agent — give it a goal")
+   331→    p.add_argument("goal", help="Natural language goal (e.g. 'fully scan example.com and find subdomains')")
+   332→
+   333→    # ── subdomains ────────────────────────────────────────────────
+   334→    p = sub.add_parser("subdomains", help="Discover subdomains")
+   335→    p.add_argument("domain", help="Domain to enumerate")
+   336→    p.add_argument("--json", dest="json_output", action="store_true")
+   337→
+   338→    # ── schedule ──────────────────────────────────────────────────
+   339→    p = sub.add_parser("schedule", help="Schedule recurring scans")
+   340→    p.add_argument("target", help="Target domain, URL, or 'audit'")
+   341→    p.add_argument("--every", "-e", type=str, default="1h", help="Interval: 30m, 1h, 6h, 1d")
+   342→    p.add_argument("--modules", "-m", type=str)
+   343→    p.add_argument("--max-runs", type=int, default=0, help="Max runs (0=forever)")
+   344→
+   345→    # ── serve ─────────────────────────────────────────────────────
+   346→    p = sub.add_parser("serve", help="Start REST API server")
+   347→    p.add_argument("--port", "-p", type=int, default=7890)
+   348→
+   349→    # ── report ────────────────────────────────────────────────────
+   350→    p = sub.add_parser("report", help="Generate HTML report from last scan")
+   351→    p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+   352→
+   353→    # ── history ───────────────────────────────────────────────────
+   354→    p = sub.add_parser("history", help="View scan history")
+   355→    p.add_argument("target", nargs="?", default=None)
+   356→    p.add_argument("--limit", "-n", type=int, default=10)
+   357→    p.add_argument("--clear", action="store_true", help="Delete all history")
+   358→
+   359→    # ── diff ───────────────────────────────────────────────────────
+   360→    p = sub.add_parser("diff", help="Compare two scan results")
+   361→    p.add_argument("a", nargs="?", default=None, help="First scan file or 'last'")
+   362→    p.add_argument("b", nargs="?", default=None, help="Second scan file or 'last-2'")
+   363→
+   364→    # ── screenshot ────────────────────────────────────────────────
+   365→    p = sub.add_parser("screenshot", help="Take browser screenshot (needs: pip install reconpro[browser])")
+   366→    p.add_argument("url", help="URL to screenshot")
+   367→
+   368→    # ── open ───────────────────────────────────────────────────────
+   369→    p = sub.add_parser("open", help="Open URL in browser")
+   370→    p.add_argument("url", help="URL to open")
+   371→
+   372→    # ── plugin ────────────────────────────────────────────────────
+   373→    p = sub.add_parser("plugin", help="Plugin management")
+   374→    p.add_argument("action", choices=["list", "create", "run"])
+   375→    p.add_argument("name", nargs="?", default=None)
+   376→    p.add_argument("target", nargs="?", default=None)
+   377→
+   378→    # ── swarm ─────────────────────────────────────────────────────
+   379→    p = sub.add_parser("swarm", help="Swarm attack: SCOUT→HACKER→CODER→GUARDIAN")
+   380→    p.add_argument("target", help="Target domain or URL")
+   381→    p.add_argument("--mode", "-m", type=str, default="full",
+   382→                     choices=["full", "recon", "attack", "fix", "verify"])
+   383→
+   384→    # ── adversarial ────────────────────────────────────────────────
+   385→    p = sub.add_parser("adversarial", help="Adversarial self-play: hacker vs coder loop")
+   386→    p.add_argument("target", help="Target domain or URL")
+   387→    p.add_argument("--rounds", "-r", type=int, default=3)
+   388→    p.add_argument("--modules", "-m", type=str)
+   389→    p.add_argument("--local", action="store_true", help="Target is local machine")
+   390→
+   391→    # ── ast ─────────────────────────────────────────────────────────
+   392→    p = sub.add_parser("ast", help="AST code analysis (Python/JS/TS vulnerability patterns)")
+   393→    p.add_argument("path", nargs="?", default=".", help="File or directory to analyze")
+   394→
+   395→    # ── cve ─────────────────────────────────────────────────────────
+   396→    p = sub.add_parser("cve", help="CVE/NVD threat intelligence lookup")
+   397→    p.add_argument("query", help="Search query (e.g. 'SQL injection', 'CVE-2024-1234')")
+   398→    p.add_argument("--limit", "-n", type=int, default=5)
+   399→
+   400→    # ── graph ───────────────────────────────────────────────────────
+   401→    p = sub.add_parser("graph", help="Knowledge graph: attack surface, blast radius, chains")
+   402→    p.add_argument("target", nargs="?", default=None, help="Target (default: use last scan)")
+   403→    p.add_argument("--action", "-a", type=str, default="stats",
+   404→                     choices=["stats", "chains", "surface", "blast", "export"])
+   405→
+   406→    # ── iac ──────────────────────────────────────────────────────────
+   407→    p = sub.add_parser("iac", help="Infrastructure-as-Code audit (Terraform/CF/Docker/K8s)")
+   408→    p.add_argument("path", nargs="?", default=".", help="Directory to scan")
+   409→    p.add_argument("--json", dest="json_output", action="store_true")
+   410→
+   411→    # ── container ──────────────────────────────────────────────────────
+   412→    p = sub.add_parser("container", help="Container escape analysis (Dockerfile + K8s)")
+   413→    p.add_argument("path", nargs="?", default=".", help="Directory to scan")
+   414→    p.add_argument("--json", dest="json_output", action="store_true")
+   415→
+   416→    # ── cloud-recon ─────────────────────────────────────────────────────
+   417→    p = sub.add_parser("cloud-recon", help="Cloud infrastructure recon (AWS/Azure/GCP metadata + assets)")
+   418→    p.add_argument("target", help="Target domain or 'local' for metadata probe")
+   419→    p.add_argument("--json", dest="json_output", action="store_true")
+   420→
+   421→    # ── defense ────────────────────────────────────────────────────────
+   422→    p = sub.add_parser("defense", help="Generate deployable fixes (WAF rules, patches, IaC fixes)")
+   423→    p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+   424→
+   425→    # ── fuzzer ──────────────────────────────────────────────────────────
+   426→    p = sub.add_parser("fuzzer", help="Context-aware payload fuzzing")
+   427→    p.add_argument("url", help="Target URL to fuzz")
+   428→    p.add_argument("--param", "-p", type=str, help="Specific parameter to fuzz")
+   429→    p.add_argument("--category", "-c", type=str, help="Payload category (sqli, xss, ssti, ...)")
+   430→
+   431→    # ── profile ─────────────────────────────────────────────────────────
+   432→    p = sub.add_parser("profile", help="Target fingerprinting + auto scan plan")
+   433→    p.add_argument("target", help="Target domain or URL")
+   434→
+   435→    # ── compliance ───────────────────────────────────────────────────────
+   436→    p = sub.add_parser("compliance", help="Compliance mapping (SOC2/ISO/PCI/HIPAA/GDPR/CIS)")
+   437→    p.add_argument("--frameworks", "-f", type=str, default="soc2,pci-dss",
+   438→                     help="Comma-separated frameworks")
+   439→    p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+   440→
+   441→    # ── delta ───────────────────────────────────────────────────────────
+   442→    p = sub.add_parser("delta", help="Dynamic delta report (compare scans with git blame)")
+   443→    p.add_argument("target", nargs="?", default=None, help="Target (default: use last scan)")
+   444→    p.add_argument("--format", "-f", type=str, default="markdown", choices=["markdown", "sarif"])
+   445→
+   446→    # ── benchmark ───────────────────────────────────────────────────────
+   447→    p = sub.add_parser("benchmark", help="Score tracking + competitive leaderboard")
+   448→    p.add_argument("targets", nargs="*", help="Targets to benchmark")
+   449→    p.add_argument("--days", "-d", type=int, default=30)
+   450→    p.add_argument("--leaderboard", action="store_true", help="Show leaderboard")
+   451→
+   452→    # ── graph-visual ────────────────────────────────────────────────────
+   453→    p = sub.add_parser("graph-visual", help="Interactive D3.js knowledge graph visualization")
+   454→    p.add_argument("-o", "--output", type=str, default="reconpro_graph.html", help="Output HTML file")
+   455→
+   456→    # ── netmap ──────────────────────────────────────────────────────────
+   457→    p = sub.add_parser("netmap", help="Network topology + trust mapping + lateral paths")
+   458→    p.add_argument("--subnet", "-s", type=str, help="Subnet to scan (e.g. 192.168.1.0/24)")
+   459→
+   460→    # ── passive ─────────────────────────────────────────────────────────
+   461→    p = sub.add_parser("passive", help="Passive DNS + historical intel (VirusTotal, Wayback)")
+   462→    p.add_argument("domain", help="Domain to query")
+   463→
+   464→    # ── export ──────────────────────────────────────────────────────────
+   465→    p = sub.add_parser("export", help="Export last scan to SARIF/MD/JSON/HTML")
+   466→    p.add_argument("output", nargs="?", default="reconpro_report.sarif",
+   467→                     help="Output path (format auto-detected from extension)")
+   468→
+   469→    # ── zai (z.ai live stream) ──────────────────────────────────────────
+   470→    p = sub.add_parser("zai", help="z.ai live stream AI analysis — zero config, no API keys needed")
+   471→    p.add_argument("target", nargs="?", default="", help="Target to scan and analyze (optional: uses last scan if omitted)")
+   472→    p.add_argument("--stream", action="store_true", help="Stream AI analysis in real-time (default)")
+   473→    p.add_argument("--no-stream", action="store_true", help="Return complete analysis at once")
+   474→    p.add_argument("--chat", type=str, default="", help="Free-form chat message (skips scan)")
+   475→    p.add_argument("--health", action="store_true", help="Health check: verify z.ai connectivity")
+   476→    p.add_argument("--model", type=str, default="glm-4-flash", help="Model name (default: glm-4-flash)")
+   477→
+   478→    # ── Parse ─────────────────────────────────────────────────────
+   479→    args, remaining = parser.parse_known_args(argv)
+   480→    cmd = args.subcommand
+   481→
+   482→    # ── LIST ───────────────────────────────────────────────────────
+   483→    if cmd == "list":
+   484→        show_all = getattr(args, "all", False)
+   485→        show_local = getattr(args, "local", False)
+   486→        if show_local or show_all:
+   487→            console.print("\n[bold bright_yellow]Local Modules:[/bold bright_yellow]\n")
+   488→            for mid, e in LOCAL_MODULES.items():
+   489→                d = " (default)" if mid in DEFAULT_LOCAL_MODULES else ""
+   490→                console.print(f"  [cyan]{mid:12}[/] {e['name']:18}{d}")
+   491→        if not show_local or show_all:
+   492→            console.print("\n[bold]Remote Modules:[/bold]\n")
+   493→            for mid, e in MODULE_REGISTRY.items():
+   494→                d = " (default)" if mid in DEFAULT_MODULES else ""
+   495→                console.print(f"  [cyan]{mid:12}[/] {e['name']:18}{d}")
+   496→        console.print(f"\n  [dim]Total: {len(ALL_MODULES)} modules[/]\n")
+   497→        return
+   498→
+   499→    # ── IAC ─────────────────────────────────────────────────────────
+   500→    if cmd == "iac":
+   501→        console.print(BANNER)
+   502→        result = _spinner_wrap(f"Auditing IaC at {args.path}...", audit_scan, target=args.path, modules=["iac_audit"])
+   503→        _output_result(result, args, title="IAC AUDIT", show_remediation=True)
+   504→        return
+   505→
+   506→    # ── CONTAINER ─────────────────────────────────────────────────
+   507→    if cmd == "container":
+   508→        console.print(BANNER)
+   509→        result = _spinner_wrap(f"Analyzing containers at {args.path}...", audit_scan, target=args.path, modules=["container_sec"])
+   510→        _output_result(result, args, title="CONTAINER SECURITY", show_remediation=True)
+   511→        return
+   512→
+   513→    # ── CLOUD-RECON ──────────────────────────────────────────────────
+   514→    if cmd == "cloud-recon":
+   515→        console.print(BANNER)
+   516→        target = args.target
+   517→        from .modules.cloud_recon import run_cloud_recon
+   518→        findings = _spinner_wrap(f"Cloud recon on {target}...", run_cloud_recon, target, target if target.startswith("http") else f"https://{target}")
+   519→        if findings:
+   520→            for f in findings:
+   521→                c = SEV_COLORS.get(f.severity, "white")
+   522→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+   523→            console.print(f"  [bold]{len(findings)} cloud finding(s).[/]")
+   524→        else:
+   525→            console.print("  [dim]No cloud findings.[/]")
+   526→        console.print()
+   527→        return
+   528→
+   529→    # ── DEFENSE ────────────────────────────────────────────────────
+   530→    if cmd == "defense":
+   531→        data = None
+   532→        if getattr(args, "input", None):
+   533→            with open(args.input) as f:
+   534→                data = json.load(f)
+   535→        if not data:
+   536→            data = get_latest()
+   537→        if not data:
+   538→            console.print("  [yellow]No scan data. Run a scan first.[/]")
+   539→            sys.exit(1)
+   540→        from .defense import generate_defense_bundle
+   541→        bundle = _spinner_wrap("Generating defenses...", generate_defense_bundle, data.get("target", "unknown"), data.get("findings", []))
+   542→        console.print(Panel(bundle.to_report(), border_style="green", title="[bold]DEFENSE BUNDLE[/bold]", padding=(1, 2)))
+   543→        console.print()
+   544→        return
+   545→
+   546→    # ── FUZZER ────────────────────────────────────────────────────
+   547→    if cmd == "fuzzer":
+   548→        console.print(BANNER)
+   549→        from .fuzzer import FuzzSession, TechDetector
+   550→        url = args.url
+   551→        base = url if url.startswith("http") else f"https://{url}"
+   552→        profile = _spinner_wrap(f"Detecting tech on {base}...", TechDetector().analyze, base)
+   553→        console.print(f"  [cyan]Detected:[/] {', '.join(profile.frameworks) or 'unknown'}")
+   554→        console.print(f"  [cyan]Language:[/] {profile.language or 'unknown'}")
+   555→        console.print(f"  [cyan]WAF:[/] {profile.waf or 'none'}")
+   556→        category = getattr(args, "category", None) or "sqli"
+   557→        session = FuzzSession(base, profile)
+   558→        payloads = session.select_payloads(category)
+   559→        console.print(f"  [yellow]{len(payloads)} {category} payloads loaded (tech-aware selection)[/]")
+   560→        console.print()
+   561→        return
+   562→
+   563→    # ── PROFILE ────────────────────────────────────────────────────
+   564→    if cmd == "profile":
+   565→        console.print(BANNER)
+   566→        from .profiler import profile_target, get_scan_plan
+   567→        target = args.target
+   568→        profile = _spinner_wrap(f"Profiling {target}...", profile_target, target)
+   569→        plan = get_scan_plan(target)
+   570→        console.print(f"  [cyan]Frameworks:[/] {', '.join(profile.frameworks) or 'none'}")
+   571→        console.print(f"  [cyan]Language:[/] {profile.language or 'unknown'}")
+   572→        console.print(f"  [cyan]Server:[/] {profile.server or 'unknown'}")
+   573→        console.print(f"  [cyan]WAF:[/] {profile.waf or 'none'}")
+   574→        console.print(f"  [cyan]App Type:[/] {profile.app_type}")
+   575→        console.print(f"  [bold]Recommended:[/] {', '.join(plan.get('recommended_modules', []))}")
+   576→        console.print(f"  [dim]{plan.get('reasoning', '')}[/]")
+   577→        console.print()
+   578→        return
+   579→
+   580→    # ── COMPLIANCE ───────────────────────────────────────────────────
+   581→    if cmd == "compliance":
+   582→        console.print(BANNER)
+   583→        data = None
+   584→        if getattr(args, "input", None):
+   585→            with open(args.input) as f:
+   586→                data = json.load(f)
+   587→        if not data:
+   588→            data = get_latest()
+   589→        if not data:
+   590→            console.print("  [yellow]No scan data. Run a scan first.[/]")
+   591→            sys.exit(1)
+   592→        frameworks = [f.strip() for f in args.frameworks.split(",")]
+   593→        from .compliance import ComplianceMapper
+   594→        mapper = ComplianceMapper()
+   595→        report = _spinner_wrap(f"Mapping to {', '.join(frameworks)}...", mapper.map_findings, data.get("findings", []), frameworks)
+   596→        for fw, info in report.per_framework.items():
+   597→            pct = info.get("compliance_pct", 0)
+   598→            color = "green" if pct >= 80 else ("yellow" if pct >= 50 else "red")
+   599→            console.print(f"  [{color}]{fw}:[/] {pct:.0f}% ({info.get('covered_controls', 0)}/{info.get('total_controls', 0)} controls)")
+   600→        console.print()
+   601→        return
+   602→
+   603→    # ── DELTA ───────────────────────────────────────────────────────
+   604→    if cmd == "delta":
+   605→        console.print(BANNER)
+   606→        from .delta import compare_with_last, generate_delta_report
+   607→        text = _spinner_wrap("Computing delta...", generate_delta_report, args.target, args.format)
+   608→        console.print(text)
+   609→        console.print()
+   610→        return
+   611→
+   612→    # ── BENCHMARK ───────────────────────────────────────────────────
+   613→    if cmd == "benchmark":
+   614→        console.print(BANNER)
+   615→        from .benchmark import ScoreTracker
+   616→        tracker = ScoreTracker()
+   617→        if args.leaderboard:
+   618→            report = tracker.get_leaderboard(days=args.days)
+   619→            console.print(report)
+   620→        else:
+   621→            console.print("  [dim]Use: reconpro benchmark --leaderboard --days 30[/]")
+   622→        console.print()
+   623→        return
+   624→
+   625→    # ── GRAPH-VISUAL ────────────────────────────────────────────────
+   626→    if cmd == "graph-visual":
+   627→        console.print(BANNER)
+   628→        from .graph_ui import GraphUIRenderer
+   629→        from .knowledge_graph import SecurityKnowledgeGraph
+   630→        graph = SecurityKnowledgeGraph()
+   631→        graph.load()
+   632→        latest = get_latest()
+   633→        if latest:
+   634→            graph.add_scan_result(latest)
+   635→        renderer = GraphUIRenderer()
+   636→        path = _spinner_wrap("Generating interactive graph...", renderer.render_to_file, graph.to_dict(), args.output)
+   637→        console.print(f"  [green]Graph saved: [cyan]{path}[/][/]")
+   638→        console.print(f"  [dim]Open in browser. Features: zoom, search, blast radius, path finder.[/]")
+   639→        console.print()
+   640→        return
+   641→
+   642→    # ── NETMAP ───────────────────────────────────────────────────────
+   643→    if cmd == "netmap":
+   644→        console.print(BANNER)
+   645→        from .netmap import run_local
+   646→        findings = _spinner_wrap("Mapping network...", run_local)
+   647→        if not findings:
+   648→            console.print("  [bright_green]No network issues found.[/]")
+   649→        else:
+   650→            for f in findings[:20]:
+   651→                c = SEV_COLORS.get(f.severity, "white")
+   652→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+   653→        console.print()
+   654→        return
+   655→
+   656→    # ── PASSIVE ──────────────────────────────────────────────────────
+   657→    if cmd == "passive":
+   658→        console.print(BANNER)
+   659→        from .passive_intel import PassiveDNS, WaybackMachine
+   660→        domain = args.domain
+   661→        pdns = PassiveDNS()
+   662→        results = _spinner_wrap(f"Querying passive intel for {domain}...", pdns.query_virustotal, domain)
+   663→        if results:
+   664→            for r in results[:10]:
+   665→                console.print(f"  [cyan]{r.get('ip', '?')}[/]  {r.get('date', '?')}")
+   666→        wb = WaybackMachine()
+   667→        history = wb.get_history(domain)
+   668→        console.print(f"  {len(history)} archived page(s)." if history else "  [dim]No archive data.[/]")
+   669→        console.print()
+   670→        return
+   671→
+   672→    # ── NEXUS ──────────────────────────────────────────────────
+   673→    if cmd == "nexus":
+   674→        from .nexus_tui import start_nexus as run_nexus
+   675→        run_nexus()
+   676→        return
+   677→
+   678→    # ── CHAT ───────────────────────────────────────────────────────
+   679→    if cmd == "chat":
+   680→        from .chat import start_chat
+   681→        console.print(BANNER)
+   682→        start_chat()
+   683→        return
+   684→
+   685→    # ── TUI ────────────────────────────────────────────────────────
+   686→    if cmd == "tui":
+   687→        from .nexus_tui import start_nexus
+   688→        start_nexus()
+   689→        return
+   690→
+   691→    # ── BLITZ ──────────────────────────────────────────────────────
+   692→    if cmd == "blitz":
+   693→        targets = getattr(args, "targets", [])
+   694→        if not targets or len(targets) < 2:
+   695→            console.print("  [yellow]Usage: reconpro blitz target1.com target2.com [target3.com ...][/]")
+   696→            sys.exit(1)
+   697→        console.print(BANNER)
+   698→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+   699→        blitz_scan(targets, max_workers=args.workers, modules=modules)
+   700→        return
+   701→
+   702→    # ── AGENT ──────────────────────────────────────────────────────
+   703→    if cmd == "agent":
+   704→        goal = getattr(args, "goal", "")
+   705→        if not goal:
+   706→            console.print("  [yellow]Usage: reconpro agent \"fully scan example.com and find subdomains\"[/]")
+   707→            sys.exit(1)
+   708→        console.print(BANNER)
+   709→        from .nexus_agent import run_nexus_agent
+   710→        run_nexus_agent(goal)
+   711→        return
+   712→
+   713→    # ── SWARM ─────────────────────────────────────────────────────
+   714→    if cmd == "swarm":
+   715→        console.print(BANNER)
+   716→        from .swarm import run_swarm
+   717→        run_swarm(args.target, mode=args.mode)
+   718→        return
+   719→
+   720→    # ── ADVERSARIAL ────────────────────────────────────────────────
+   721→    if cmd == "adversarial":
+   722→        console.print(BANNER)
+   723→        from .adversarial import run_adversarial
+   724→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+   725→        run_adversarial(args.target, max_rounds=args.rounds, modules=modules, is_local=args.local)
+   726→        return
+   727→
+   728→    # ── AST ────────────────────────────────────────────────────────
+   729→    if cmd == "ast":
+   730→        console.print(BANNER)
+   731→        from .modules.ast_analyzer import ASTAnalyzer
+   732→        analyzer = ASTAnalyzer()
+   733→        path = os.path.abspath(args.path)
+   734→        findings = _spinner_wrap(f"Analyzing {path}...", analyzer.analyze_directory, path)
+   735→        if not findings:
+   736→            console.print("\n  [bright_green]No vulnerabilities found in code.[/]")
+   737→        else:
+   738→            table = Table(border_style="dim", header_style="bold dim")
+   739→            table.add_column("Severity", style="bold", width=10)
+   740→            table.add_column("File", style="cyan", width=30)
+   741→            table.add_column("Line", style="dim", width=6)
+   742→            table.add_column("Finding")
+   743→            for f in sorted(findings, key=lambda x: {"critical":0,"high":1,"medium":2,"low":3}.get(x.severity,4)):
+   744→                c = SEV_COLORS.get(f.severity, "white")
+   745→                table.add_row(f"[{c}]{f.severity.upper()}[/{c}]", f.asset[-30:] if f.asset else "", str(f.evidence)[:6] if f.evidence else "", f.title[:60])
+   746→            console.print(table)
+   747→            console.print(f"\n  [bold]{len(findings)} vulnerability pattern(s) found.[/]")
+   748→        console.print()
+   749→        return
+   750→
+   751→    # ── CVE ─────────────────────────────────────────────────────────
+   752→    if cmd == "cve":
+   753→        console.print(BANNER)
+   754→        from .cve_radar import CVERadar
+   755→        radar = CVERadar()
+   756→        if args.query.upper().startswith("CVE-"):
+   757→            details = _spinner_wrap(f"Looking up {args.query}...", radar.get_cve_details, args.query)
+   758→            if details:
+   759→                console.print(f"\n  [bold]{details.get('id', args.query)}[/]")
+   760→                console.print(f"  Severity: [red]{details.get('severity', '?')}[/]  CVSS: {details.get('cvss', '?')}")
+   761→                console.print(f"  {details.get('description', 'No description')[:200]}")
+   762→            else:
+   763→                console.print(f"  [dim]No results for {args.query}.[/]")
+   764→        else:
+   765→            results = _spinner_wrap(f"Searching NVD for '{args.query}'...", radar.search_nvd, args.query, args.limit)
+   766→            if results:
+   767→                for r in results:
+   768→                    console.print(f"  [bold]{r.get('id', '?')}[/]  [red]{r.get('severity', '?')}[/]  {r.get('description', '')[:100]}")
+   769→                console.print(f"\n  [bold]{len(results)} result(s).[/]")
+   770→            else:
+   771→                console.print(f"  [dim]No CVEs found for '{args.query}'.[/]")
+   772→        console.print()
+   773→        return
+   774→
+   775→    # ── GRAPH ───────────────────────────────────────────────────────
+   776→    if cmd == "graph":
+   777→        console.print(BANNER)
+   778→        from .knowledge_graph import SecurityKnowledgeGraph
+   779→        graph = SecurityKnowledgeGraph()
+   780→        # Load from last scan if available
+   781→        latest = get_latest()
+   782→        if latest:
+   783→            graph.add_scan_result(latest)
+   784→        target = args.target or (latest.get("target") if latest else None)
+   785→        action = args.action
+   786→        if action == "stats" or not target:
+   787→            stats = graph.stats()
+   788→            console.print(f"\n  [bold]Knowledge Graph Stats:[/]")
+   789→            for k, v in stats.items():
+   790→                console.print(f"    [cyan]{k}:[/] {v}")
+   791→        elif action == "chains":
+   792→            chains = graph.find_chains(target)
+   793→            if chains:
+   794→                console.print(f"\n  [bold]Attack Chains for {target}:[/]")
+   795→                for i, chain in enumerate(chains[:10]):
+   796→                    console.print(f"    [red]Chain {i+1}:[/] {' → '.join(chain)}")
+   797→            else:
+   798→                console.print(f"  [dim]No attack chains found for {target}.[/]")
+   799→        elif action == "surface":
+   800→            surface = graph.get_attack_surface(target)
+   801→            console.print(f"\n  [bold]Attack Surface for {target}:[/]")
+   802→            for k, v in surface.items():
+   803→                console.print(f"    [cyan]{k}:[/] {v}")
+   804→        elif action == "blast":
+   805→            blast = graph.get_blast_radius(target)
+   806→            console.print(f"\n  [bold]Blast Radius from {target}:[/]")
+   807→            console.print(f"    [red]{len(blast)} reachable vulnerabilities[/]")
+   808→        elif action == "export":
+   809→            cypher = graph.to_cypher()
+   810→            console.print(f"\n  [bold]Cypher Export:[/] {len(cypher)} statements")
+   811→            for line in cypher[:20]:
+   812→                console.print(f"    {line[:100]}")
+   813→        graph.save()
+   814→        console.print(f"\n  [dim]Graph saved to ~/.reconpro/memory/graph.json[/]")
+   815→        console.print()
+   816→        return
+   817→
+   818→    # ── EXPORT ──────────────────────────────────────────────────────
+   819→    if cmd == "export":
+   820→        data = get_latest()
+   821→        if not data:
+   822→            console.print("  [yellow]No scan data. Run a scan first.[/]")
+   823→            sys.exit(1)
+   824→        from .formats import export as _export
+   825→        path = _spinner_wrap(f"Exporting to {args.output}...", _export, data, args.output)
+   826→        console.print(f"  [green]Exported: [cyan]{path}[/][/]")
+   827→        return
+   828→
+   829→    # ── SUBDOMAINS ────────────────────────────────────────────────
+   830→    if cmd == "subdomains":
+   831→        domain = args.domain
+   832→        console.print(BANNER)
+   833→        console.print(f"  [dim]v{__version__} | subdomain discovery: {domain}[/]\n")
+   834→        from .subdomains import discover_subdomains
+   835→        subs = _spinner_wrap(f"Discovering subdomains of {domain}...", discover_subdomains, domain)
+   836→        if not subs:
+   837→            console.print("\n  [dim]No subdomains found.[/]")
+   838→        else:
+   839→            for s in subs:
+   840→                console.print(f"  [cyan]{s}[/]")
+   841→            console.print(f"\n  [bold]{len(subs)} subdomain(s) found.[/]")
+   842→            if args.json_output:
+   843→                console.print(json.dumps({"domain": domain, "subdomains": subs}, indent=2))
+   844→        console.print()
+   845→        return
+   846→
+   847→    # ── SCHEDULE ───────────────────────────────────────────────────
+   848→    if cmd == "schedule":
+   849→        target = args.target
+   850→        is_local = target.lower() == "audit"
+   851→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+   852→        from .scheduler import run_scheduled
+   853→        run_scheduled(target, interval=args.every, modules=modules,
+   854→                      is_local=is_local, max_runs=args.max_runs)
+   855→        return
+   856→
+   857→    # ── SERVE ──────────────────────────────────────────────────────
+   858→    if cmd == "serve":
+   859→        from .server import run_server
+   860→        console.print(BANNER)
+   861→        run_server(port=args.port)
+   862→        return
+   863→
+   864→    # ── REPORT ─────────────────────────────────────────────────────
+   865→    if cmd == "report":
+   866→        data = None
+   867→        if getattr(args, "input", None):
+   868→            with open(args.input) as f:
+   869→                data = json.load(f)
+   870→        else:
+   871→            data = get_latest()
+   872→        if not data:
+   873→            console.print("  [yellow]No scan data. Run a scan first or use -i <file>.[/]")
+   874→            sys.exit(1)
+   875→        path = _spinner_wrap("Generating HTML report...", generate_html_report, data)
+   876→        console.print(f"  [green]Report saved: [cyan]{path}[/][/]")
+   877→        return
+   878→
+   879→    # ── HISTORY ───────────────────────────────────────────────────
+   880→    if cmd == "history":
+   881→        if getattr(args, "clear", False):
+   882→            n = clear_history()
+   883→            console.print(f"  Cleared {n} scan(s) from history.")
+   884→            return
+   885→        scans = list_scans(target=getattr(args, "target", None), limit=args.limit)
+   886→        if not scans:
+   887→            console.print("  [dim]No scan history yet.[/]")
+   888→            return
+   889→        table = Table(border_style="dim", header_style="bold dim")
+   890→        table.add_column("Date", style="dim", width=16)
+   891→        table.add_column("Target", style="cyan", width=25)
+   892→        table.add_column("Score", style="bold", width=8)
+   893→        table.add_column("Grade", style="bold", width=6)
+   894→        table.add_column("Findings", width=10)
+   895→        table.add_column("File", style="dim")
+   896→        for s in scans:
+   897→            g = s.get("grade", "?")
+   898→            gc = GRADE_COLORS.get(g, "white")
+   899→            table.add_row(s.get("_saved_at", "?")[:16], s.get("target", "?")[:25],
+   900→                         str(s.get("total_score", "?")), f"[{gc}]{g}[/{gc}]",
+   901→                         str(len(s.get("findings", []))), s.get("_file", ""))
+   902→        console.print(table)
+   903→        console.print()
+   904→        return
+   905→
+   906→    # ── DIFF ────────────────────────────────────────────────────────
+   907→    if cmd == "diff":
+   908→        scans = list_scans(limit=2)
+   909→        if len(scans) < 2:
+   910→            console.print("  [yellow]Need at least 2 scans. Run some scans first.[/]")
+   911→            sys.exit(1)
+   912→        d = diff_scans(scans[0]["_file"], scans[1]["_file"])
+   913→        change = d["score_change"]
+   914→        color = "green" if change > 0 else ("red" if change < 0 else "dim")
+   915→        console.print(f"\n  [bold]{d['scan_a']['target']}[/]  score={d['scan_a']['score']} ({d['scan_a']['grade']})")
+   916→        console.print(f"  [bold]{d['scan_b']['target']}[/]  score={d['scan_b']['score']} ({d['scan_b']['grade']})")
+   917→        console.print(f"  Change: [{color}]{'+' if change > 0 else ''}{change} pts[/{color}]")
+   918→        if d["new"]:
+   919→            console.print(f"\n  [red]New issues ({len(d['new'])}):[/red]")
+   920→            for n in d["new"][:10]:
+   921→                console.print(f"    [red]+[/] {n}")
+   922→        if d["fixed"]:
+   923→            console.print(f"\n  [green]Fixed ({len(d['fixed'])}):[/green]")
+   924→            for f in d["fixed"][:10]:
+   925→                console.print(f"    [green]-[/] {f}")
+   926→        if d["persistent"]:
+   927→            console.print(f"\n  [yellow]Still present ({len(d['persistent'])}):[/yellow]")
+   928→        console.print()
+   929→        return
+   930→
+   931→    # ── SCREENSHOT ─────────────────────────────────────────────────
+   932→    if cmd == "screenshot":
+   933→        try:
+   934→            from .browser_mod import take_screenshot
+   935→            path = _spinner_wrap(f"Screenshotting {args.url}...", take_screenshot, args.url)
+   936→            console.print(f"  [green]Screenshot: [cyan]{path}[/][/]")
+   937→        except ImportError:
+   938→            console.print("  [yellow]Install browser support:[/]")
+   939→            console.print("    pip install reconpro[browser]")
+   940→            console.print("    playwright install")
+   941→        return
+   942→
+   943→    # ── OPEN ────────────────────────────────────────────────────────
+   944→    if cmd == "open":
+   945→        from .browser_mod import open_browser
+   946→        open_browser(args.url)
+   947→        console.print(f"  Opened [cyan]{args.url}[/] in browser")
+   948→        return
+   949→
+   950→    # ── PLUGIN ─────────────────────────────────────────────────────
+   951→    if cmd == "plugin":
+   952→        from .plugins import discover_plugins, create_plugin_template, run_plugin as _run_plugin
+   953→        action = args.action
+   954→        if action == "list":
+   955→            plugins = discover_plugins()
+   956→            if not plugins:
+   957→                console.print("  [dim]No plugins found. Create one: reconpro plugin create my-check[/]")
+   958→            else:
+   959→                for pid, p in plugins.items():
+   960→                    console.print(f"  [cyan]{pid:12}[/] {p['name']:18} {p['description']}")
+   961→        elif action == "create":
+   962→            if not args.name:
+   963→                console.print("  [yellow]Usage: reconpro plugin create <name>[/]")
+   964→                sys.exit(1)
+   965→            path = create_plugin_template(args.name)
+   966→            console.print(f"  [green]Plugin template created: [cyan]{path}[/][/]")
+   967→            console.print(f"  [dim]Edit the file, then: reconpro plugin run {args.name} example.com[/]")
+   968→        elif action == "run":
+   969→            if not args.name or not args.target:
+   970→                console.print("  [yellow]Usage: reconpro plugin run <plugin-name> <target>[/]")
+   971→                sys.exit(1)
+   972→            base_url = args.target if args.target.startswith("http") else f"https://{args.target}"
+   973→            findings = _run_plugin(args.name, args.target, base_url)
+   974→            for f in findings:
+   975→                c = SEV_COLORS.get(f.severity, "white")
+   976→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+   977→        return
+   978→
+   979→    # ── AUDIT (local) ─────────────────────────────────────────────
+   980→    if cmd == "audit":
+   981→        console.print(BANNER)
+   982→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+   983→        result = _spinner_wrap("Auditing machine...", audit_scan, target="localhost", modules=modules)
+   984→        _output_result(result, args, title="HOST AUDIT", show_remediation=True)
+   985→        return
+   986→
+   987→    # ── DEV ────────────────────────────────────────────────────────
+   988→    if cmd == "dev":
+   989→        path = args.path
+   990→        console.print(BANNER)
+   991→        result = _spinner_wrap("Scanning project...", audit_scan, target=path, modules=["dev"])
+   992→        _output_result(result, args, title="DEV SEC", show_remediation=True)
+   993→        return
+   994→
+   995→    # ── DOCTOR ─────────────────────────────────────────────────────
+   996→    if cmd == "doctor":
+   997→        console.print(BANNER)
+   998→        result = _spinner_wrap("Running diagnostics...", audit_scan, target="localhost", modules=["doctor"])
+   999→        _output_result(result, args, title="DOCTOR", show_remediation=True)
+  1000→        return
+  1001→
+  1002→    # ── PORTS ──────────────────────────────────────────────────────
+  1003→    if cmd == "ports":
+  1004→        console.print(BANNER)
+  1005→        from .modules.host import _check_open_ports
+  1006→        findings = _spinner_wrap("Scanning ports...", _check_open_ports)
+  1007→        if not findings:
+  1008→            console.print("\n  [bright_green]No risky ports found.[/]")
+  1009→        else:
+  1010→            for f in findings:
+  1011→                c = SEV_COLORS.get(f.severity, "white")
+  1012→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+  1013→            if args.json_output:
+  1014→                console.print(json.dumps([f.to_dict() for f in findings], indent=2, default=str))
+  1015→        console.print()
+  1016→        return
+  1017→
+  1018→    # ── SECRETS ────────────────────────────────────────────────────
+  1019→    if cmd == "secrets":
+  1020→        path = args.path
+  1021→        console.print(BANNER)
+  1022→        from .modules.host import _check_env_secrets
+  1023→        from .modules.dev import _check_env_files, _check_hardcoded_secrets
+  1024→        all_f = _spinner_wrap("Hunting secrets...", lambda: (
+  1025→            _check_env_secrets() +
+  1026→            _check_env_files(os.path.abspath(path)) +
+  1027→            _check_hardcoded_secrets(os.path.abspath(path))
+  1028→        ))
+  1029→        total = len(all_f)
+  1030→        crit = sum(1 for f in all_f if f.severity == "critical")
+  1031→        high = sum(1 for f in all_f if f.severity == "high")
+  1032→        if total == 0:
+  1033→            console.print("\n  [bright_green]No secrets found. Clean.[/]")
+  1034→        else:
+  1035→            console.print(Panel(Group(
+  1036→                Text(f"\n  [bold bright_red]{total} secret(s) found[/]  [bright_red]{crit} critical[/], [red]{high} high[/]"),
+  1037→            ), border_style="bright_red", title="[bold]SECRET SCAN[/bold]", padding=(1, 2)))
+  1038→            console.print()
+  1039→            for f in all_f:
+  1040→                c = SEV_COLORS.get(f.severity, "white")
+  1041→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+  1042→                if f.remediation:
+  1043→                    console.print(f"           [dim]{f.remediation}[/dim]")
+  1044→            if args.json_output:
+  1045→                console.print(json.dumps([f.to_dict() for f in all_f], indent=2, default=str))
+  1046→        console.print()
+  1047→        return
+  1048→
+  1049→    # ── VIBESEC ────────────────────────────────────────────────────
+  1050→    if cmd == "vibesec":
+  1051→        target = args.target
+  1052→        if not target:
+  1053→            console.print("  [yellow]Usage: reconpro vibesec <target>[/]")
+  1054→            sys.exit(1)
+  1055→        console.print(BANNER)
+  1056→        result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=["vibesec"],
+  1057→                                timeout=args.timeout, verify_tls=not args.insecure, rate_limit=args.rate_limit)
+  1058→        _output_result(result, args)
+  1059→        return
+  1060→
+  1061→    # ── SCAN (explicit) ────────────────────────────────────────────
+  1062→    if cmd == "scan":
+  1063→        target = args.target
+  1064→        if not target:
+  1065→            console.print("  [yellow]Usage: reconpro scan <target>[/]")
+  1066→            sys.exit(1)
+  1067→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+  1068→        console.print(BANNER)
+  1069→        result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
+  1070→                                all_modules=args.all, timeout=args.timeout,
+  1071→                                verify_tls=not args.insecure, rate_limit=args.rate_limit)
+  1072→        _output_result(result, args)
+  1073→        return
+  1074→
+  1075→    # ── Implicit scan (no subcommand) ──────────────────────────────
+  1076→    if remaining and not cmd:
+  1077→        target = remaining[0]
+  1078→        scan_args = parser.parse_args(["scan"] + remaining)
+  1079→        modules = [m.strip().lower() for m in scan_args.modules.split(",")] if scan_args.modules else None
+  1080→        console.print(BANNER)
+  1081→        result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
+  1082→                                all_modules=scan_args.all, timeout=scan_args.timeout,
+  1083→                                verify_tls=not scan_args.insecure, rate_limit=scan_args.rate_limit)
+  1084→        _output_result(result, scan_args)
+  1085→        return
+  1086→
+  1087→    # ── ZAI (z.ai live stream) ──────────────────────────────────────
+  1088→    if cmd == "zai":
+  1089→        from .integrations.zai_stream import ZAIStreamClient
+  1090→        client = ZAIStreamClient(model=args.model)
+  1091→
+  1092→        if getattr(args, "health", False):
+  1093→            console.print(f"  [cyan]Checking z.ai connectivity...[/]")
+  1094→            console.print(f"  [dim]{client}[/]")
+  1095→            result = client.health_check()
+  1096→            if result["status"] == "connected":
+  1097→                console.print(f"  [bright_green]CONNECTED[/]  latency: {result['latency_ms']}ms  model: {result['model']}")
+  1098→                console.print(f"  [dim]Response: {result.get('response_preview', '')}[/]")
+  1099→            else:
+  1100→                console.print(f"  [bright_red]ERROR: {result.get('error', 'unknown')}[/]")
+  1101→            return
+  1102→
+  1103→        if getattr(args, "chat", ""):
+  1104→            console.print(BANNER)
+  1105→            console.print(f"  [cyan]z.ai Live Stream[/]  [dim]model: {args.model}[/]")
+  1106→            console.print(f"  [dim]{'─' * 50}[/]")
+  1107→            if not getattr(args, "no_stream", False):
+  1108→                for chunk in client.chat_stream(args.chat):
+  1109→                    console.print(chunk, end="")
+  1110→                console.print()
+  1111→            else:
+  1112→                response = client.chat(args.chat)
+  1113→                console.print(response)
+  1114→            console.print(f"  [dim]{'─' * 50}[/]")
+  1115→            return
+  1116→
+  1117→        # Analyze scan findings
+  1118→        target = getattr(args, "target", "")
+  1119→        findings = None
+  1120→        if target:
+  1121→            console.print(BANNER)
+  1122→            result = _spinner_wrap(f"Scanning {target}...", scan, target,
+  1123→                                    timeout=8, verify_tls=True, rate_limit=10.0)
+  1124→            findings = result.findings
+  1125→            scan_target = target
+  1126→        else:
+  1127→            # Use last scan from history
+  1128→            latest = get_latest()
+  1129→            if not latest:
+  1130→                console.print("  [yellow]No target specified and no scan history found.[/]")
+  1131→                console.print("  [dim]Usage: reconpro zai <target>  or  reconpro scan <target> && reconpro zai[/]")
+  1132→                sys.exit(1)
+  1133→            findings = latest.get("findings", [])
+  1134→            scan_target = latest.get("target", "unknown")
+  1135→            console.print(BANNER)
+  1136→            console.print(f"  [dim]Using last scan: {scan_target} ({len(findings)} findings)[/]")
+  1137→
+  1138→        if not findings:
+  1139→            console.print("  [bright_green]No findings to analyze. Target is clean![/]")
+  1140→            return
+  1141→
+  1142→        console.print(f"  [cyan]z.ai Live Stream Analysis[/]  [dim]{len(findings)} findings → {args.model}[/]")
+  1143→        console.print(f"  [dim]{'─' * 60}[/]")
+  1144→        if not getattr(args, "no_stream", False):
+  1145→            for chunk in client.analyze_findings_stream(findings, scan_target):
+  1146→                console.print(chunk, end="")
+  1147→            console.print()
+  1148→        else:
+  1149→            analysis = client.analyze_findings(findings, scan_target)
+  1150→            console.print(analysis)
+  1151→        console.print(f"  [dim]{'─' * 60}[/]")
+  1152→        return
+  1153→
+  1154→    # ── No args ─────────────────────────────────────────────────────
+  1155→    parser.print_help()
+  1156→
+  1157→
+  1158→if __name__ == "__main__":
+  1159→    main()
+  1160→
