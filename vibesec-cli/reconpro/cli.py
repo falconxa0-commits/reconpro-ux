@@ -466,6 +466,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("output", nargs="?", default="reconpro_report.sarif",
                      help="Output path (format auto-detected from extension)")
 
+    # ── zai (z.ai live stream) ──────────────────────────────────────────
+    p = sub.add_parser("zai", help="z.ai live stream AI analysis — zero config, no API keys needed")
+    p.add_argument("target", nargs="?", default="", help="Target to scan and analyze (optional: uses last scan if omitted)")
+    p.add_argument("--stream", action="store_true", help="Stream AI analysis in real-time (default)")
+    p.add_argument("--no-stream", action="store_true", help="Return complete analysis at once")
+    p.add_argument("--chat", type=str, default="", help="Free-form chat message (skips scan)")
+    p.add_argument("--health", action="store_true", help="Health check: verify z.ai connectivity")
+    p.add_argument("--model", type=str, default="glm-4-flash", help="Model name (default: glm-4-flash)")
+
     # ── Parse ─────────────────────────────────────────────────────
     args, remaining = parser.parse_known_args(argv)
     cmd = args.subcommand
@@ -1073,6 +1082,73 @@ def main(argv: list[str] | None = None) -> None:
                                 all_modules=scan_args.all, timeout=scan_args.timeout,
                                 verify_tls=not scan_args.insecure, rate_limit=scan_args.rate_limit)
         _output_result(result, scan_args)
+        return
+
+    # ── ZAI (z.ai live stream) ──────────────────────────────────────
+    if cmd == "zai":
+        from .integrations.zai_stream import ZAIStreamClient
+        client = ZAIStreamClient(model=args.model)
+
+        if getattr(args, "health", False):
+            console.print(f"  [cyan]Checking z.ai connectivity...[/]")
+            console.print(f"  [dim]{client}[/]")
+            result = client.health_check()
+            if result["status"] == "connected":
+                console.print(f"  [bright_green]CONNECTED[/]  latency: {result['latency_ms']}ms  model: {result['model']}")
+                console.print(f"  [dim]Response: {result.get('response_preview', '')}[/]")
+            else:
+                console.print(f"  [bright_red]ERROR: {result.get('error', 'unknown')}[/]")
+            return
+
+        if getattr(args, "chat", ""):
+            console.print(BANNER)
+            console.print(f"  [cyan]z.ai Live Stream[/]  [dim]model: {args.model}[/]")
+            console.print(f"  [dim]{'─' * 50}[/]")
+            if not getattr(args, "no_stream", False):
+                for chunk in client.chat_stream(args.chat):
+                    console.print(chunk, end="")
+                console.print()
+            else:
+                response = client.chat(args.chat)
+                console.print(response)
+            console.print(f"  [dim]{'─' * 50}[/]")
+            return
+
+        # Analyze scan findings
+        target = getattr(args, "target", "")
+        findings = None
+        if target:
+            console.print(BANNER)
+            result = _spinner_wrap(f"Scanning {target}...", scan, target,
+                                    timeout=8, verify_tls=True, rate_limit=10.0)
+            findings = result.findings
+            scan_target = target
+        else:
+            # Use last scan from history
+            latest = get_latest()
+            if not latest:
+                console.print("  [yellow]No target specified and no scan history found.[/]")
+                console.print("  [dim]Usage: reconpro zai <target>  or  reconpro scan <target> && reconpro zai[/]")
+                sys.exit(1)
+            findings = latest.get("findings", [])
+            scan_target = latest.get("target", "unknown")
+            console.print(BANNER)
+            console.print(f"  [dim]Using last scan: {scan_target} ({len(findings)} findings)[/]")
+
+        if not findings:
+            console.print("  [bright_green]No findings to analyze. Target is clean![/]")
+            return
+
+        console.print(f"  [cyan]z.ai Live Stream Analysis[/]  [dim]{len(findings)} findings → {args.model}[/]")
+        console.print(f"  [dim]{'─' * 60}[/]")
+        if not getattr(args, "no_stream", False):
+            for chunk in client.analyze_findings_stream(findings, scan_target):
+                console.print(chunk, end="")
+            console.print()
+        else:
+            analysis = client.analyze_findings(findings, scan_target)
+            console.print(analysis)
+        console.print(f"  [dim]{'─' * 60}[/]")
         return
 
     # ── No args ─────────────────────────────────────────────────────
