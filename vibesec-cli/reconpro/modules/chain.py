@@ -49,45 +49,84 @@ def _check_ssrf(base_url: str, timeout: int = 8, verify_tls: bool = True) -> Lis
     findings: List[Finding] = []
     host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
 
-    ssrf_payloads = [
-        {"url": "http://127.0.0.1"},
-        {"url": "http://169.254.169.254/latest/meta-data/"},
-        {"url": "http://localhost:8080"},
-        {"url": "http://[::1]"},
-        {"url": "file:///etc/passwd"},
+    ssrf_params = [
+        "url", "uri", "redirect", "next", "returnTo", "return_url",
+        "callback", "continue", "target", "dest", "destination",
+        "route", "path", "forward",
     ]
 
-    ssrf_endpoints = ["/api/fetch", "/api/proxy", "/api/preview",
-                     "/api/redirect", "/api/webhook", "/api/url"]
+    ssrf_payloads = [
+        "http://127.0.0.1",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://169.254.169.254/metadata/v1/instance?api-version=2021-02-01",
+        "http://localhost:8080",
+        "http://[::1]",
+        "file:///etc/passwd",
+        "gopher://127.0.0.1:6379/_INFO",
+    ]
+
+    ssrf_endpoints = [
+        "/api/fetch", "/api/proxy", "/api/preview",
+        "/api/redirect", "/api/webhook", "/api/url",
+        "/api/callback", "/api/forward",
+    ]
+
+    import urllib.parse
 
     for endpoint in ssrf_endpoints:
         url = base_url.rstrip("/") + endpoint
-        for payload in ssrf_payloads:
-            try:
-                import urllib.parse
-                encoded = urllib.parse.urlencode(payload)
-                full_url = f"{url}?{encoded}"
-                resp = http_probe(full_url, timeout=timeout, verify_tls=verify_tls)
-                body = resp.get("body", "")[:4096]
-                status = resp.get("status", 0)
+        for param in ssrf_params:
+            for payload in ssrf_payloads:
+                try:
+                    encoded = urllib.parse.urlencode({param: payload})
+                    full_url = f"{url}?{encoded}"
+                    resp = http_probe(full_url, timeout=timeout, verify_tls=verify_tls)
+                    body = resp.get("body", "")[:4096]
+                    status = resp.get("status", 0)
 
-                if status == 200 and len(body) > 20:
-                    # Check if internal content leaked
-                    internal_sigs = ["ami-id", "instance-id", "root:",
-                                    "127.0.0.1", "localhost", "meta-data"]
-                    if any(sig in body.lower() for sig in internal_sigs):
-                        findings.append(Finding(
-                            title=f"SSRF via {endpoint}",
-                            severity="critical", category="ssrf",
-                            module="chain",
-                            description=f"Server-side request forgery: {endpoint} reflects internal content",
-                            evidence=f"Payload: {payload['url']}, internal data in response",
-                            asset=host, points_deducted=15,
-                            remediation="Validate and sanitize all URL inputs. Block internal IP ranges.",
-                        ))
-                        break
-            except Exception:
-                pass
+                    if status == 200 and len(body) > 20:
+                        internal_sigs = [
+                            "ami-id", "instance-id", "root:",
+                            "127.0.0.1", "localhost", "meta-data",
+                            "computeMetadata", "metadata/v1",
+                            "redis_version", "redis",
+                        ]
+                        if any(sig in body.lower() for sig in internal_sigs):
+                            findings.append(Finding(
+                                title=f"SSRF via {endpoint}?{param}",
+                                severity="critical", category="ssrf",
+                                module="chain",
+                                description="Server-side request forgery: {} reflects internal content".format(endpoint),
+                                evidence="Payload: {} via param {}, internal data in response".format(payload, param),
+                                asset=host, points_deducted=15,
+                                remediation="Validate and sanitize all URL inputs. Block internal IP ranges.",
+                            ))
+                            break
+                except Exception:
+                    pass
+            else:
+                continue
+            break
+
+    # DNS rebinding check
+    try:
+        import socket
+        results = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        ips = list(set(addr[4][0] for addr in results))
+        if len(ips) >= 2:
+            findings.append(Finding(
+                title="Potential DNS rebinding susceptibility",
+                severity="medium", category="ssrf",
+                module="chain",
+                description="Host resolves to multiple A records ({}), which may enable DNS rebinding attacks".format(
+                    "; ".join(ips[:4])),
+                evidence="A records: {}".format("; ".join(ips[:4])),
+                asset=host, points_deducted=8,
+                remediation="Ensure application-level IP validation after DNS resolution to prevent DNS rebinding.",
+            ))
+    except Exception:
+        pass
 
     return findings
 

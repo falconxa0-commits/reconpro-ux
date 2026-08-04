@@ -268,6 +268,29 @@ def run_recon(target: str, base_url: str, timeout: int = 8,
             add(f"Open port: {p['port']}", "medium", "ports",
                 f"Port {p['port']} is open", f"Port {p['port']}: open", 3)
 
+    # 6b. ASN lookup
+    try:
+        import subprocess
+        whois_result = subprocess.run(
+            ["whois", host],
+            capture_output=True, text=True, timeout=10
+        )
+        whois_text = whois_result.stdout
+        asn_match = re.search(r'(?:ASN|AS)(?:\t|[ :]+)(\d+)', whois_text, re.IGNORECASE)
+        org_match = re.search(r'(?:OrgName|Organization|org-name)[:\s]+(.+)', whois_text, re.IGNORECASE)
+        if asn_match:
+            asn = asn_match.group(1)
+            org = org_match.group(1).strip()[:80] if org_match else "Unknown"
+            add(f"ASN: AS{asn} ({org})", "info", "asn",
+                f"Hosted on AS{asn}, operated by {org}",
+                f"ASN: AS{asn}, Org: {org[:50]}", 0)
+        elif org_match:
+            add(f"Hosting: {org_match.group(1).strip()[:60]}", "info", "asn",
+                f"Operated by: {org_match.group(1).strip()[:80]}",
+                f"Org: {org_match.group(1).strip()[:50]}", 0)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
     # 7. Sensitive paths
     for path in SENSITIVE_PATHS:
         url = base_url.rstrip("/") + path
@@ -303,5 +326,51 @@ def run_recon(target: str, base_url: str, timeout: int = 8,
         loc = root_h.get("location", "")
         add(f"Redirect: {root['status']} -> {loc[:80]}", "info", "redirects",
             f"Root URL redirects to {loc}", f"Status {root['status']}", 0)
+
+    # 13. Email / SPF / DMARC
+    try:
+        import subprocess
+        for qtype in ["TXT", "MX"]:
+            try:
+                result = subprocess.run(
+                    ["dig", "+short", host, qtype],
+                    capture_output=True, text=True, timeout=5
+                )
+                output = result.stdout.strip()
+                if qtype == "MX" and output:
+                    mx_records = [l.strip() for l in output.split("\n") if l.strip()]
+                    add(f"MX records found ({len(mx_records)})", "info", "email",
+                        f"Mail servers: {'; '.join(mx_records[:5])}",
+                        f"MX: {'; '.join(mx_records[:3])}", 0)
+                elif qtype == "TXT" and output:
+                    lines = output.split("\n")
+                    has_spf = any('v=spf1' in l.lower() for l in lines)
+                    has_dmarc = False
+                    for l in lines:
+                        if 'v=dmarc1' in l.lower():
+                            has_dmarc = True
+                    if not has_spf:
+                        add("Missing SPF record", "medium", "email",
+                            "No SPF (Sender Policy Framework) TXT record found — email spoofing possible",
+                            "dig TXT: no v=spf1", 5)
+                    if not has_dmarc:
+                        # Check _dmarc subdomain
+                        try:
+                            dmarc_result = subprocess.run(
+                                ["dig", "+short", f"_dmarc.{host}", "TXT"],
+                                capture_output=True, text=True, timeout=5
+                            )
+                            if 'v=dmarc1' not in dmarc_result.stdout.lower():
+                                add("Missing DMARC record", "medium", "email",
+                                    "No DMARC record found — no email authentication policy",
+                                    "dig _dmarc TXT: no v=dmarc1", 5)
+                        except Exception:
+                            add("Missing DMARC record", "medium", "email",
+                                "Could not check DMARC record",
+                                "DMARC check failed", 3)
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+    except Exception:
+        pass
 
     return findings

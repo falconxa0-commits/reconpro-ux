@@ -6,15 +6,26 @@ from ..http import http_probe, Finding
 
 
 BOT_SIGNATURES = [
-    # (name, response_patterns, request_paths_to_try)
-    ("Mirai C2", [r"\x00\x00.*\x00", r"mi\x00rak\x00i"], []),
-    ("Generic Bot Panel", ["botnet", "bot panel", "c2 panel", "command & control"], "/c2"),
+    ("Mirai C2", [r"\x00\x00.*\x00", r"mi\x00rak\x00i"], None),
+    ("Cobalt Strike Beacon", ["beacon", "cobalt strike", r"c2\.config", "sleep\.mask", "jitter"], ["/beacon", "/c2", "/api/beacon"]),
+    ("Metasploit Handler", ["metasploit", "msf", "meterpreter", "reverse_tcp", "payload/stage"], ["/metasploit", "/msf"]),
+    ("Emotet C2", ["emotet", "geodo", "heodo", "trickbot", "qakbot"], None),
+    ("TrickBot C2", ["trickbot", "trickloader", "trick_door", "postback"], None),
+    ("QakBot C2", ["qakbot", "qbot", "pink botnet", "chthonic"], None),
+    ("SolarWinds SUNBURST", ["solarwinds", "sunburst", "orion", "supernova", "solarwinds.orion"], None),
+    ("Log4Shell Exploitation", ["jndi:ldap", "jndi:rmi", "log4j", "log4shell", r"\${jndi:"], None),
+    ("Generic Bot Panel", ["botnet", "bot panel", "c2 panel", "command & control"], ["/c2"]),
     ("DGA Domain", None, None),
 ]
 
 C2_INDICATORS = [
     "botnet", "c2 server", "command and control", "zombie",
     "bot panel", "ddos panel", "stresser", "booter",
+    "cobalt strike", "beacon", "meterpreter", "metasploit",
+    "emotet", "trickbot", "qakbot", "solarwinds",
+    "jndi:ldap", "jndi:rmi", "log4shell", "log4j",
+    "reverse_shell", "backdoor", "webshell",
+    "malware", "trojan", "rat.exe", "implant",
 ]
 
 
@@ -115,6 +126,62 @@ def _check_honeypot_signs(base_url: str, timeout: int = 8,
     return findings
 
 
+def _check_malware_signatures(base_url: str, timeout: int = 8,
+                                verify_tls: bool = True) -> List[Finding]:
+    """Probe main page and signature-specific paths for malware family indicators."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    for name, patterns, paths in BOT_SIGNATURES:
+        if patterns is None:
+            continue
+
+        urls_to_check = [base_url]
+        if paths:
+            for p in paths:
+                urls_to_check.append(base_url.rstrip("/") + p)
+
+        for check_url in urls_to_check:
+            try:
+                resp = http_probe(check_url, timeout=timeout, verify_tls=verify_tls)
+                body = resp.get("body", "")[:8192]
+                headers = resp.get("headers", {})
+                haystack = (body + " " + " ".join(headers.values())).lower()
+
+                for pattern in patterns:
+                    try:
+                        if re.search(pattern, haystack, re.IGNORECASE):
+                            findings.append(Finding(
+                                title=f"Malware signature: {name}",
+                                severity="critical", category="bot_detection",
+                                module="bot",
+                                description=f"Malware family '{name}' signature matched at {check_url}",
+                                evidence=f"Pattern '{pattern}' matched in response from {check_url}",
+                                asset=host, points_deducted=15,
+                                remediation="Isolate and investigate the host. Remove any malicious payloads.",
+                            ))
+                            break
+                    except re.error:
+                        if pattern.lower() in haystack:
+                            findings.append(Finding(
+                                title=f"Malware signature: {name}",
+                                severity="critical", category="bot_detection",
+                                module="bot",
+                                description="Malware family '{}' signature matched at {}".format(name, check_url),
+                                evidence="Pattern '{}' matched in response from {}".format(pattern, check_url),
+                                asset=host, points_deducted=15,
+                                remediation="Isolate and investigate the host. Remove any malicious payloads.",
+                            ))
+                            break
+                else:
+                    continue
+                break
+            except Exception:
+                pass
+
+    return findings
+
+
 def run_bot(target: str, base_url: str, timeout: int = 8,
              verify_tls: bool = True) -> List[Finding]:
     """C2 / bot infrastructure detection. Returns list of Findings."""
@@ -123,5 +190,6 @@ def run_bot(target: str, base_url: str, timeout: int = 8,
 
     findings.extend(_check_common_c2_paths(base_url, timeout=timeout, verify_tls=verify_tls))
     findings.extend(_check_honeypot_signs(base_url, timeout=timeout, verify_tls=verify_tls))
+    findings.extend(_check_malware_signatures(base_url, timeout=timeout, verify_tls=verify_tls))
 
     return findings
