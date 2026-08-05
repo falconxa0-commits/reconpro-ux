@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from .modules import (
     run_recon, run_vibesec, run_auth, run_chain,
     run_bot, run_gorgon, run_oblivion, run_nhi,
-    run_host, run_dev, run_doctor,
+    run_host, run_dev, run_doctor, run_pegasus,
 )
 from .http import http_probe, Finding, compute_grade, badge_markdown, default_limiter
 
@@ -22,6 +22,7 @@ MODULE_REGISTRY = {
     "oblivion": {"name": "OBLIVION",      "runner": run_oblivion, "color": "bright_magenta"},
     "vibesec":  {"name": "VIBESEC",       "runner": None,         "color": "bright_green"},
     "nhi":      {"name": "NHI GRAPH",     "runner": run_nhi,      "color": "cyan"},
+    "pegasus":  {"name": "PEGASUS HUNTER", "runner": run_pegasus,  "color": "bright_red"},
 }
 
 # ── Local scan modules (scan the machine, not a URL) ────────────────────
