@@ -1,0 +1,774 @@
+     1→     1→"""HOST module — Full local machine security audit.
+     2→     2→
+     3→     3→Scans the laptop/machine for:
+     4→     4→- Open ports & listening services
+     5→     5→- Firewall status (ufw / iptables / firewalld)
+     6→     6→- User accounts & sudoers
+     7→     7→- SSH configuration hardening
+     8→     8→- Running Docker containers & exposed ports
+     9→     9→- Cron jobs & scheduled tasks
+    10→    10→- Environment variables leaking secrets
+    11→    11→- Sensitive file permissions
+    12→    12→- OS & kernel info
+    13→    13→- Network interfaces
+    14→    14→- Installed services
+    15→    15→- Bluetooth & WiFi status
+    16→    16→- USB devices
+    17→    17→- Auto-start / launch agents
+    18→    18→"""
+    19→    19→from __future__ import annotations
+    20→    20→
+    21→    21→import os
+    22→    22→import re
+    23→    23→import subprocess
+    24→    24→import stat
+    25→    25→from pathlib import Path
+    26→    26→from typing import Any, Dict, List, Optional, Tuple
+    27→    27→
+    28→    28→from ..http import Finding
+    29→    29→
+    30→    30→
+    31→    31→def _hostname() -> str:
+    32→    32→    """Cross-platform hostname (works on Linux, macOS, Windows)."""
+    33→    33→    try:
+    34→    34→        return os.uname().nodename
+    35→    35→    except AttributeError:
+    36→    36→        return os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "localhost"))
+    37→    37→
+    38→    38→
+    39→    39→def _run(cmd: str, timeout: int = 10) -> Tuple[int, str]:
+    40→    40→    """Run a shell command, return (exit_code, stdout+stderr)."""
+    41→    41→    try:
+    42→    42→        r = subprocess.run(
+    43→    43→            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+    44→    44→        )
+    45→    45→        return r.returncode, (r.stdout + r.stderr).strip()
+    46→    46→    except Exception:
+    47→    47→        return -1, ""
+    48→    48→
+    49→    49→
+    50→    50→def _is_windows() -> bool:
+    51→    51→    """Check if running on Windows."""
+    52→    52→    return os.name == "nt"
+    53→    53→
+    54→    54→
+    55→    55→def _is_macos() -> bool:
+    56→    56→    """Check if running on macOS."""
+    57→    57→    return os.name == "posix" and hasattr(os, "uname") and os.uname().sysname == "Darwin"
+    58→    58→
+    59→    59→
+    60→    60→def _file_exists(p: str) -> bool:
+    61→    61→    return os.path.exists(p)
+    62→    62→
+    63→    63→
+    64→    64→def _file_perms(p: str) -> Optional[int]:
+    65→    65→    try:
+    66→    66→        return stat.S_IMODE(os.stat(p).st_mode)
+    67→    67→    except Exception:
+    68→    68→        return None
+    69→    69→
+    70→    70→
+    71→    71→def _check_open_ports() -> List[Finding]:
+    72→    72→    """Find open listening ports via ss/netstat."""
+    73→    73→    findings: List[Finding] = []
+    74→    74→    hostname = _hostname()
+    75→    75→
+    76→    76→    # Platform-specific port enumeration
+    77→    77→    if _is_windows():
+    78→    78→        code, out = _run('netstat -an 2>NUL | findstr LISTENING')
+    79→    79→        if code != 0 or not out:
+    80→    80→            findings.append(Finding(
+    81→    81→                title="Could not enumerate open ports",
+    82→    82→                severity="low", category="ports",
+    83→    83→                module="host",
+    84→    84→                description="Unable to enumerate open ports.",
+    85→    85→                evidence="netstat returned no output",
+    86→    86→                asset=hostname, points_deducted=1,
+    87→    87→                remediation="Run as Administrator for full port visibility.",
+    88→    88→            ))
+    89→    89→            return findings
+    90→    90→    else:
+    91→    91→        code, out = _run("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null")
+    92→    92→        if code != 0 or not out:
+    93→    93→            findings.append(Finding(
+    94→    94→                title="Could not enumerate open ports",
+    95→    95→                severity="low", category="ports",
+    96→    96→                module="host",
+    97→    97→                description="Unable to run ss or netstat. Try running with sudo.",
+    98→    98→                evidence="ss/netstat returned no output",
+    99→    99→                asset=hostname, points_deducted=1,
+   100→   100→                remediation="Run with sudo for full port visibility.",
+   101→   101→            ))
+   102→   102→            return findings
+   103→   103→
+   104→   104→    ports = []
+   105→   105→    for line in out.splitlines():
+   106→   106→        # Parse ss output: 0.0.0.0:3000 or [::]:8080
+   107→   107→        match = re.search(r':(\d+)\s', line)
+   108→   108→        if match:
+   109→   109→            port = int(match.group(1))
+   110→   110→            ports.append(port)
+   111→   111→
+   112→   112→    # Categorize risky ports
+   113→   113→    risky_ports = {
+   114→   114→        23: ("high", "Telnet (unencrypted)"),
+   115→   115→        21: ("high", "FTP (unencrypted)"),
+   116→   116→        445: ("high", "SMB/CIFS"),
+   117→   117→        3389: ("high", "RDP"),
+   118→   118→        5900: ("high", "VNC"),
+   119→   119→        6379: ("high", "Redis (no auth by default)"),
+   120→   120→        27017: ("high", "MongoDB (no auth by default)"),
+   121→   121→        11211: ("high", "Memcached"),
+   122→   122→        9200: ("medium", "Elasticsearch"),
+   123→   123→        5432: ("medium", "PostgreSQL"),
+   124→   124→        3306: ("medium", "MySQL"),
+   125→   125→        8080: ("low", "HTTP alt"),
+   126→   126→        8443: ("low", "HTTPS alt"),
+   127→   127→        3000: ("low", "Node.js dev server"),
+   128→   128→        5173: ("low", "Vite dev server"),
+   129→   129→        8000: ("low", "Python dev server"),
+   130→   130→    }
+   131→   131→
+   132→   132→    for port in sorted(set(ports)):
+   133→   133→        if port in risky_ports:
+   134→   134→            sev, desc = risky_ports[port]
+   135→   135→            findings.append(Finding(
+   136→   136→                title=f"Risky open port: {port} ({desc})",
+   137→   137→                severity=sev, category="ports",
+   138→   138→                module="host",
+   139→   139→                description=f"Port {port} ({desc}) is open and listening. This could expose services to network attackers.",
+   140→   140→                evidence=f"Port {port} found in ss/netstat output",
+   141→   141→                asset=hostname, points_deducted=8 if sev == "high" else 4,
+   142→   142→                remediation=f"Close port {port} if not needed, or bind to 127.0.0.1 only.",
+   143→   143→            ))
+   144→   144→
+   145→   145→    if not findings and ports:
+   146→   146→        findings.append(Finding(
+   147→   147→            title=f"{len(set(ports))} open ports detected",
+   148→   148→            severity="info", category="ports",
+   149→   149→            module="host",
+   150→   150→            description=f"Found {len(set(ports))} open ports. None are known high-risk.",
+   151→   151→            evidence=", ".join(str(p) for p in sorted(set(ports))[:20]),
+   152→   152→            asset=hostname, points_deducted=0,
+   153→   153→            remediation="Review all open ports periodically.",
+   154→   154→        ))
+   155→   155→
+   156→   156→    return findings
+   157→   157→
+   158→   158→
+   159→   159→def _check_firewall() -> List[Finding]:
+   160→   160→    """Check firewall status."""
+   161→   161→    findings: List[Finding] = []
+   162→   162→    hostname = _hostname()
+   163→   163→
+   164→   164→    # Windows: check Windows Defender Firewall
+   165→   165→    if _is_windows():
+   166→   166→        code, out = _run('netsh advfirewall show currentprofile state 2>NUL')
+   167→   167→        if code == 0 and "ON" in out.upper():
+   168→   168→            findings.append(Finding(
+   169→   169→                title="Windows Defender Firewall is active",
+   170→   170→                severity="info", category="firewall",
+   171→   171→                module="host",
+   172→   172→                description="Windows Defender Firewall is enabled.",
+   173→   173→                evidence=out[:200],
+   174→   174→                asset=hostname, points_deducted=0,
+   175→   175→                remediation="",
+   176→   176→            ))
+   177→   177→        else:
+   178→   178→            findings.append(Finding(
+   179→   179→                title="Windows Firewall is not enabled",
+   180→   180→                severity="high", category="firewall",
+   181→   181→                module="host",
+   182→   182→                description="Windows Defender Firewall is not active. Your machine is exposed to network attacks.",
+   183→   183→                evidence="Firewall state: OFF",
+   184→   184→                asset=hostname, points_deducted=10,
+   185→   185→                remediation="Enable Windows Firewall: netsh advfirewall set allprofiles state on",
+   186→   186→            ))
+   187→   187→        return findings
+   188→   188→
+   189→   189→    # macOS: check Application Layer Firewall
+   190→   190→    if _is_macos():
+   191→   191→        code, out = _run("defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null")
+   192→   192→        if code == 0 and out.strip() == "1":
+   193→   193→            findings.append(Finding(
+   194→   194→                title="macOS Application Firewall is active",
+   195→   195→                severity="info", category="firewall",
+   196→   196→                module="host",
+   197→   197→                description="macOS Application Layer Firewall is enabled.",
+   198→   198→                evidence=f"globalstate={out.strip()}",
+   199→   199→                asset=hostname, points_deducted=0,
+   200→   200→                remediation="",
+   201→   201→            ))
+   202→   202→        else:
+   203→   203→            findings.append(Finding(
+   204→   204→                title="macOS Firewall is not enabled",
+   205→   205→                severity="high", category="firewall",
+   206→   206→                module="host",
+   207→   207→                description="macOS Application Layer Firewall is not active. Your machine is exposed to network attacks.",
+   208→   208→                evidence=f"globalstate={out.strip() if code == 0 else 'unknown'}",
+   209→   209→                asset=hostname, points_deducted=10,
+   210→   210→                remediation="Enable Application Firewall in System Preferences > Security & Privacy > Firewall",
+   211→   211→            ))
+   212→   212→        return findings
+   213→   213→
+   214→   214→    # Check ufw (Linux)
+   215→   215→    code, out = _run("ufw status 2>/dev/null")
+   216→   216→    if code == 0:
+   217→   217→        if "inactive" in out.lower():
+   218→   218→            findings.append(Finding(
+   219→   219→                title="UFW firewall is inactive",
+   220→   220→                severity="high", category="firewall",
+   221→   221→                module="host",
+   222→   222→                description="UFW (Uncomplicated Firewall) is installed but not active. Your machine is exposed to network attacks.",
+   223→   223→                evidence=out[:200],
+   224→   224→                asset=hostname, points_deducted=10,
+   225→   225→                remediation="Enable UFW: sudo ufw enable && sudo ufw default deny incoming",
+   226→   226→            ))
+   227→   227→        else:
+   228→   228→            findings.append(Finding(
+   229→   229→                title="UFW firewall is active",
+   230→   230→                severity="info", category="firewall",
+   231→   231→                module="host",
+   232→   232→                description="UFW firewall is enabled.",
+   233→   233→                evidence=out[:200],
+   234→   234→                asset=hostname, points_deducted=0,
+   235→   235→                remediation="",
+   236→   236→            ))
+   237→   237→        return findings
+   238→   238→
+   239→   239→    # Check iptables (Linux)
+   240→   240→    code, out = _run("iptables -L -n 2>/dev/null")
+   241→   241→    if code == 0 and out:
+   242→   242→        if "ACCEPT" in out and "DROP" not in out and "REJECT" not in out:
+   243→   243→            findings.append(Finding(
+   244→   244→                title="iptables has no DROP/REJECT rules",
+   245→   245→                severity="high", category="firewall",
+   246→   246→                module="host",
+   247→   247→                description="iptables is running but all chains have ACCEPT policy with no filtering rules.",
+   248→   248→                evidence="No DROP or REJECT rules found",
+   249→   249→                asset=hostname, points_deducted=10,
+   250→   250→                remediation="Configure iptables rules or install UFW: sudo apt install ufw && sudo ufw enable",
+   251→   251→            ))
+   252→   252→        else:
+   253→   253→            findings.append(Finding(
+   254→   254→                title="iptables rules found",
+   255→   255→                severity="info", category="firewall",
+   256→   256→                module="host",
+   257→   257→                description="iptables has filtering rules configured.",
+   258→   258→                evidence="Rules present",
+   259→   259→                asset=hostname, points_deducted=0,
+   260→   260→                remediation="",
+   261→   261→            ))
+   262→   262→        return findings
+   263→   263→
+   264→   264→    findings.append(Finding(
+   265→   265→        title="No firewall detected",
+   266→   266→        severity="high", category="firewall",
+   267→   267→        module="host",
+   268→   268→        description="No firewall detected. Your machine has no network firewall.",
+   269→   269→        evidence="No firewall found",
+   270→   270→        asset=hostname, points_deducted=10,
+   271→   271→        remediation="Install and enable a firewall: sudo apt install ufw && sudo ufw enable",
+   272→   272→    ))
+   273→   273→    return findings
+   274→   274→
+   275→   275→
+   276→   276→def _check_users() -> List[Finding]:
+   277→   277→    """Check user accounts and sudo access."""
+   278→   278→    findings: List[Finding] = []
+   279→   279→    hostname = _hostname()
+   280→   280→
+   281→   281→    if _is_windows():
+   282→   282→        # Check administrator accounts on Windows
+   283→   283→        code, out = _run('net localgroup Administrators 2>NUL')
+   284→   284→        if code == 0 and out:
+   285→   285→            lines = [l.strip() for l in out.splitlines() if l.strip()]
+   286→   286→            # First two lines are header, last line is "The command completed..."
+   287→   287→            admins = [l for l in lines[2:] if l and "command completed" not in l.lower()]
+   288→   288→            if len(admins) > 2:
+   289→   289→                findings.append(Finding(
+   290→   290→                    title=f"{len(admins)} administrator accounts found",
+   291→   291→                    severity="medium", category="users",
+   292→   292→                    module="host",
+   293→   293→                    description=f"{len(admins)} users have administrator privileges: {', '.join(admins[:5])}. Minimize admin access to reduce risk.",
+   294→   294→                    evidence=f"Administrators: {', '.join(admins[:5])}",
+   295→   295→                    asset=hostname, points_deducted=5,
+   296→   296→                    remediation="Remove unnecessary users from the Administrators group via Computer Management.",
+   297→   297→                ))
+   298→   298→        return findings
+   299→   299→
+   300→   300→    # Non-Windows: check sudo users
+   301→   301→    code, out = _run("getent group sudo 2>/dev/null")
+   302→   302→    if code == 0 and out:
+   303→   303→        users = [u for u in out.split(":")[1].split(",") if u.strip()]
+   304→   304→        if len(users) > 2:
+   305→   305→            findings.append(Finding(
+   306→   306→                title=f"{len(users)} users have sudo privileges",
+   307→   307→                severity="medium", category="users",
+   308→   308→                module="host",
+   309→   309→                description=f"{len(users)} users can run sudo: {', '.join(users[:5])}. Minimize sudo access to reduce risk.",
+   310→   310→                evidence=f"sudo group: {out[:200]}",
+   311→   311→                asset=hostname, points_deducted=5,
+   312→   312→                remediation="Remove unnecessary users from the sudo group. Use specific capabilities instead.",
+   313→   313→            ))
+   314→   314→
+   315→   315→    # Check for passwordless sudo (non-Windows only)
+   316→   316→    code, out = _run("sudo -n true 2>&1")
+   317→   317→    if code == 0:
+   318→   318→        findings.append(Finding(
+   319→   319→            title="Passwordless sudo is enabled",
+   320→   320→            severity="high", category="users",
+   321→   321→            module="host",
+   322→   322→            description="Current user can run sudo without a password. Any code running as your user has root access.",
+   323→   323→            evidence="sudo -n returned exit code 0",
+   324→   324→            asset=hostname, points_deducted=10,
+   325→   325→            remediation="Require password for sudo: remove NOPASSWD from /etc/sudoers",
+   326→   326→        ))
+   327→   327→
+   328→   328→    # Check for empty password users (Linux only)
+   329→   329→    code, out = _run("sudo awk -F: '($2 == \"\") {print $1}' /etc/shadow 2>/dev/null")
+   330→   330→    if code == 0 and out.strip():
+   331→   331→        users = out.strip().splitlines()
+   332→   332→        findings.append(Finding(
+   333→   333→            title=f"{len(users)} user(s) with empty password",
+   334→   334→            severity="critical", category="users",
+   335→   335→            module="host",
+   336→   336→            description=f"Users with no password: {', '.join(users[:5])}. This is a critical security risk.",
+   337→   337→            evidence=out[:200],
+   338→   338→            asset=hostname, points_deducted=15,
+   339→   339→            remediation="Set passwords for all users immediately: sudo passwd <username>",
+   340→   340→        ))
+   341→   341→
+   342→   342→    return findings
+   343→   343→
+   344→   344→
+   345→   345→def _check_ssh() -> List[Finding]:
+   346→   346→    """Check SSH configuration hardening."""
+   347→   347→    findings: List[Finding] = []
+   348→   348→    hostname = _hostname()
+   349→   349→    sshd_config = "/etc/ssh/sshd_config"
+   350→   350→
+   351→   351→    if not _file_exists(sshd_config):
+   352→   352→        return findings
+   353→   353→
+   354→   354→    try:
+   355→   355→        with open(sshd_config) as f:
+   356→   356→            config = f.read()
+   357→   357→    except Exception:
+   358→   358→        return findings
+   359→   359→
+   360→   360→    ssh_checks = [
+   361→   361→        (r'^#?PermitRootLogin\s+yes', "high", "SSH root login is permitted", "Set PermitRootLogin no"),
+   362→   362→        (r'^#?PasswordAuthentication\s+yes', "medium", "SSH password authentication enabled", "Use SSH keys only: PasswordAuthentication no"),
+   363→   363→        (r'^#?PermitEmptyPasswords\s+yes', "critical", "SSH allows empty passwords", "Set PermitEmptyPasswords no"),
+   364→   364→        (r'^#?X11Forwarding\s+yes', "low", "SSH X11 forwarding enabled", "Set X11Forwarding no if not needed"),
+   365→   365→        (r'^#?MaxAuthTries\s+(\d+)', None, "", ""),  # just read value
+   366→   366→        (r'^#?Protocol\s+1', "high", "SSH Protocol 1 in use (insecure)", "Use Protocol 2"),
+   367→   367→        (r'^#?AllowAgentForwarding\s+yes', "low", "SSH agent forwarding enabled", "Disable if not needed: AllowAgentForwarding no"),
+   368→   368→    ]
+   369→   369→
+   370→   370→    for pattern, sev, title, remediation in ssh_checks:
+   371→   371→        if re.search(pattern, config, re.MULTILINE | re.IGNORECASE):
+   372→   372→            if sev is None:
+   373→   373→                # MaxAuthTries check
+   374→   374→                match = re.search(r'^#?MaxAuthTries\s+(\d+)', config, re.MULTILINE)
+   375→   375→                if match and int(match.group(1)) > 6:
+   376→   376→                    findings.append(Finding(
+   377→   377→                        title=f"SSH MaxAuthTries is {match.group(1)} (too high)",
+   378→   378→                        severity="low", category="ssh",
+   379→   379→                        module="host",
+   380→   380→                        description=f"MaxAuthTries={match.group(1)} allows more brute-force attempts.",
+   381→   381→                        evidence=f"MaxAuthTries {match.group(1)}",
+   382→   382→                        asset=hostname, points_deducted=2,
+   383→   383→                        remediation="Set MaxAuthTries 4",
+   384→   384→                    ))
+   385→   385→            else:
+   386→   386→                findings.append(Finding(
+   387→   387→                    title=title,
+   388→   388→                    severity=sev, category="ssh",
+   389→   389→                    module="host",
+   390→   390→                    description=f"SSH config issue: {title}",
+   391→   391→                    evidence=f"Found in {sshd_config}",
+   392→   392→                    asset=hostname, points_deducted=8 if sev == "high" else (15 if sev == "critical" else 3),
+   393→   393→                    remediation=remediation,
+   394→   394→                ))
+   395→   395→
+   396→   396→    return findings
+   397→   397→
+   398→   398→
+   399→   399→def _check_docker() -> List[Finding]:
+   400→   400→    """Check Docker security."""
+   401→   401→    findings: List[Finding] = []
+   402→   402→    hostname = _hostname()
+   403→   403→
+   404→   404→    # Check if Docker is running
+   405→   405→    code, out = _run("docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null")
+   406→   406→    if code != 0 or not out:
+   407→   407→        return findings
+   408→   408→
+   409→   409→    containers = [l for l in out.splitlines() if l.strip()]
+   410→   410→    if containers:
+   411→   411→        findings.append(Finding(
+   412→   412→            title=f"{len(containers)} Docker container(s) running",
+   413→   413→            severity="info", category="docker",
+   414→   414→            module="host",
+   415→   415→            description=f"Found {len(containers)} running Docker containers.",
+   416→   416→            evidence=out[:300],
+   417→   417→            asset=hostname, points_deducted=0,
+   418→   418→            remediation="",
+   419→   419→        ))
+   420→   420→
+   421→   421→    # Check for containers with host networking
+   422→   422→    code, out = _run("docker ps --format '{{.Names}}' -q 2>/dev/null | xargs -I{} docker inspect {} --format '{{.Name}} {{.HostConfig.NetworkMode}}' 2>/dev/null")
+   423→   423→    if code == 0 and out:
+   424→   424→        for line in out.splitlines():
+   425→   425→            if "host" in line.lower():
+   426→   426→                findings.append(Finding(
+   427→   427→                    title=f"Docker container using host networking: {line.split()[0]}",
+   428→   428→                    severity="high", category="docker",
+   429→   429→                    module="host",
+   430→   430→                    description="Container with host network mode shares the host's network stack, bypassing network isolation.",
+   431→   431→                    evidence=line[:200],
+   432→   432→                    asset=hostname, points_deducted=8,
+   433→   433→                    remediation="Use bridge networking instead of host mode.",
+   434→   434→                ))
+   435→   435→
+   436→   436→    # Check for privileged containers
+   437→   437→    code, out = _run("docker ps -q 2>/dev/null | xargs -I{} docker inspect {} --format '{{.Name}} {{.HostConfig.Privileged}}' 2>/dev/null")
+   438→   438→    if code == 0 and out:
+   439→   439→        for line in out.splitlines():
+   440→   440→            if "true" in line.lower():
+   441→   441→                findings.append(Finding(
+   442→   442→                    title=f"Privileged Docker container: {line.split()[0]}",
+   443→   443→                    severity="critical", category="docker",
+   444→   444→                    module="host",
+   445→   445→                    description="Privileged containers have full access to the host system. This is extremely dangerous.",
+   446→   446→                    evidence=line[:200],
+   447→   447→                    asset=hostname, points_deducted=15,
+   448→   448→                    remediation="Remove --privileged flag. Use specific capabilities instead.",
+   449→   449→                ))
+   450→   450→
+   451→   451→    return findings
+   452→   452→
+   453→   453→
+   454→   454→def _check_env_secrets() -> List[Finding]:
+   455→   455→    """Scan environment variables for leaked secrets."""
+   456→   456→    findings: List[Finding] = []
+   457→   457→    hostname = _hostname()
+   458→   458→
+   459→   459→    secret_patterns = [
+   460→   460→        (r'(?i)api[_-]?key', "API key in environment"),
+   461→   461→        (r'(?i)secret[_-]?key', "Secret key in environment"),
+   462→   462→        (r'(?i)aws[_-]?(access|secret)', "AWS credential in environment"),
+   463→   463→        (r'(?i)github[_-]?token', "GitHub token in environment"),
+   464→   464→        (r'(?i)stripe[_-]?secret', "Stripe secret in environment"),
+   465→   465→        (r'(?i)jwt[_-]?secret', "JWT secret in environment"),
+   466→   466→        (r'(?i)database[_-]?url', "Database URL in environment"),
+   467→   467→        (r'(?i)mongodb[_-]?uri', "MongoDB URI in environment"),
+   468→   468→        (r'(?i)redis[_-]?url', "Redis URL in environment"),
+   469→   469→        (r'(?i)sendgrid[_-]?api', "SendGrid API key in environment"),
+   470→   470→        (r'(?i)twilio[_-]?auth', "Twilio auth token in environment"),
+   471→   471→        (r'(?i)private[_-]?key', "Private key reference in environment"),
+   472→   472→    ]
+   473→   473→
+   474→   474→    for pattern, title in secret_patterns:
+   475→   475→        matches = [k for k in os.environ if re.search(pattern, k)]
+   476→   476→        if matches:
+   477→   477→            for key in matches[:3]:
+   478→   478→                val = os.environ.get(key, "")
+   479→   479→                masked = val[:6] + "..." if len(val) > 6 else "(set)"
+   480→   480→                findings.append(Finding(
+   481→   481→                    title=f"{title}: {key}",
+   482→   482→                    severity="high", category="env_secrets",
+   483→   483→                    module="host",
+   484→   484→                    description=f"Environment variable {key} may contain a secret. Val: {masked}",
+   485→   485→                    evidence=f"{key}={masked}",
+   486→   486→                    asset=hostname, points_deducted=8,
+   487→   487→                    remediation=f"Move {key} to a secrets manager (AWS Secrets Manager, Vault, .env file with restricted permissions).",
+   488→   488→                ))
+   489→   489→
+   490→   490→    return findings
+   491→   491→
+   492→   492→
+   493→   493→def _check_file_permissions() -> List[Finding]:
+   494→   494→    """Check sensitive file permissions."""
+   495→   495→    findings: List[Finding] = []
+   496→   496→    hostname = _hostname()
+   497→   497→
+   498→   498→    sensitive_files = [
+   499→   499→        ("/etc/shadow", 0o640, "critical", "Password hash file"),
+   500→   500→        ("/etc/passwd", 0o644, "medium", "User account file"),
+   501→   501→        ("/etc/sudoers", 0o440, "high", "Sudoers file"),
+   502→   502→        ("/etc/ssh/sshd_config", 0o600, "medium", "SSH server config"),
+   503→   503→        ("~/.ssh/id_rsa", 0o600, "critical", "SSH private key"),
+   504→   504→        ("~/.ssh/id_ed25519", 0o600, "critical", "Ed25519 private key"),
+   505→   505→        ("~/.ssh/authorized_keys", 0o600, "high", "SSH authorized keys"),
+   506→   506→        ("~/.ssh/config", 0o600, "medium", "SSH client config"),
+   507→   507→        ("~/.gnupg", 0o700, "high", "GPG directory"),
+   508→   508→        ("~/.aws/credentials", 0o600, "critical", "AWS credentials file"),
+   509→   509→        ("~/.netrc", 0o600, "high", "netrc credentials file"),
+   510→   510→        ("~/.pgpass", 0o600, "high", "PostgreSQL password file"),
+   511→   511→    ]
+   512→   512→
+   513→   513→    for path, expected, sev, desc in sensitive_files:
+   514→   514→        full_path = os.path.expanduser(path)
+   515→   515→        if not _file_exists(full_path):
+   516→   516→            continue
+   517→   517→        perms = _file_perms(full_path)
+   518→   518→        if perms is None:
+   519→   519→            continue
+   520→   520→
+   521→   521→        # Check if file is world-readable or world-writable
+   522→   522→        if perms & stat.S_IROTH:
+   523→   523→            findings.append(Finding(
+   524→   524→                title=f"World-readable: {desc} ({path})",
+   525→   525→                severity=sev, category="file_permissions",
+   526→   526→                module="host",
+   527→   527→                description=f"{desc} at {path} has permissions {oct(perms)} and is world-readable.",
+   528→   528→                evidence=f"Permissions: {oct(perms)}",
+   529→   529→                asset=hostname, points_deducted=10 if sev in ("critical", "high") else 5,
+   530→   530→                remediation=f"Restrict permissions: chmod {oct(expected)} {path}",
+   531→   531→            ))
+   532→   532→        elif perms & stat.S_IWOTH:
+   533→   533→            findings.append(Finding(
+   534→   534→                title=f"World-writable: {desc} ({path})",
+   535→   535→                severity=sev, category="file_permissions",
+   536→   536→                module="host",
+   537→   537→                description=f"{desc} at {path} has permissions {oct(perms)} and is world-writable.",
+   538→   538→                evidence=f"Permissions: {oct(perms)}",
+   539→   539→                asset=hostname, points_deducted=12 if sev == "critical" else 6,
+   540→   540→                remediation=f"Restrict permissions: chmod {oct(expected)} {path}",
+   541→   541→            ))
+   542→   542→
+   543→   543→    return findings
+   544→   544→
+   545→   545→
+   546→   546→def _check_cron_jobs() -> List[Finding]:
+   547→   547→    """Check cron jobs for security issues."""
+   548→   548→    findings: List[Finding] = []
+   549→   549→    hostname = _hostname()
+   550→   550→
+   551→   551→    if _is_windows():
+   552→   552→        # Windows: check Task Scheduler
+   553→   553→        code, out = _run('schtasks /query /fo LIST 2>NUL | findstr TaskName')
+   554→   554→        if code == 0 and out:
+   555→   555→            tasks = [l.strip() for l in out.splitlines() if l.strip()]
+   556→   556→            if tasks:
+   557→   557→                findings.append(Finding(
+   558→   558→                    title=f"{len(tasks)} scheduled task(s) found",
+   559→   559→                    severity="info", category="cron",
+   560→   560→                    module="host",
+   561→   561→                    description=f"Found {len(tasks)} scheduled tasks. Review for any suspicious scheduled tasks.",
+   562→   562→                    evidence="; ".join(tasks[:10]),
+   563→   563→                    asset=hostname, points_deducted=0,
+   564→   564→                    remediation="Review scheduled tasks: schtasks /query /fo LIST",
+   565→   565→                ))
+   566→   566→        return findings
+   567→   567→
+   568→   568→    # Non-Windows: check crontab
+   569→   569→    code, out = _run("crontab -l 2>/dev/null")
+   570→   570→    if code == 0 and out:
+   571→   571→        lines = [l for l in out.splitlines() if l.strip() and not l.strip().startswith("#")]
+   572→   572→        if lines:
+   573→   573→            findings.append(Finding(
+   574→   574→                title=f"{len(lines)} cron job(s) found for current user",
+   575→   575→                severity="info", category="cron",
+   576→   576→                module="host",
+   577→   577→                description=f"Found {len(lines)} active cron jobs. Review for any suspicious scheduled tasks.",
+   578→   578→                evidence=out[:300],
+   579→   579→                asset=hostname, points_deducted=0,
+   580→   580→                remediation="Review cron jobs: crontab -l",
+   581→   581→            ))
+   582→   582→
+   583→   583→    # Check system crons for world-writable scripts
+   584→   584→    cron_dirs = ["/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly"]
+   585→   585→    for cdir in cron_dirs:
+   586→   586→        if not os.path.isdir(cdir):
+   587→   587→            continue
+   588→   588→        for entry in os.listdir(cdir):
+   589→   589→            full = os.path.join(cdir, entry)
+   590→   590→            if os.path.isfile(full):
+   591→   591→                perms = _file_perms(full)
+   592→   592→                if perms and (perms & stat.S_IWOTH):
+   593→   593→                    findings.append(Finding(
+   594→   594→                        title=f"World-writable cron script: {full}",
+   595→   595→                        severity="critical", category="cron",
+   596→   596→                        module="host",
+   597→   597→                        description=f"Cron script {full} is world-writable. Any user can modify it to run code as root.",
+   598→   598→                        evidence=f"Permissions: {oct(perms)}",
+   599→   599→                        asset=hostname, points_deducted=15,
+   600→   600→                        remediation=f"chmod 755 {full}",
+   601→   601→                    ))
+   602→   602→
+   603→   603→    return findings
+   604→   604→
+   605→   605→
+   606→   606→def _check_auto_start() -> List[Finding]:
+   607→   607→    """Check auto-start services and launch agents."""
+   608→   608→    findings: List[Finding] = []
+   609→   609→    hostname = _hostname()
+   610→   610→
+   611→   611→    if _is_windows():
+   612→   612→        # Check Windows startup entries
+   613→   613→        code, out = _run('wmic startup get caption,command 2>NUL')
+   614→   614→        if code == 0 and out:
+   615→   615→            lines = [l.strip() for l in out.splitlines() if l.strip() and l.strip() != "Caption  Command"]
+   616→   616→            if len(lines) > 5:
+   617→   617→                findings.append(Finding(
+   618→   618→                    title=f"{len(lines)} startup entry/entries found (high count)",
+   619→   619→                    severity="low", category="services",
+   620→   620→                    module="host",
+   621→   621→                    description=f"{len(lines)} items are configured to run at Windows startup. More startup items = larger attack surface.",
+   622→   622→                    evidence="; ".join(lines[:5]),
+   623→   623→                    asset=hostname, points_deducted=2,
+   624→   624→                    remediation="Review and remove unnecessary startup entries: Task Manager > Startup tab",
+   625→   625→                ))
+   626→   626→
+   627→   627→        # Check running services count
+   628→   628→        code, out = _run('sc query state= all 2>NUL | findstr RUNNING | find /c /v ""')
+   629→   629→        if code == 0 and out.strip():
+   630→   630→            try:
+   631→   631→                count = int(out.strip())
+   632→   632→                if count > 100:
+   633→   633→                    findings.append(Finding(
+   634→   634→                        title=f"{count} Windows services running (high count)",
+   635→   635→                        severity="low", category="services",
+   636→   636→                        module="host",
+   637→   637→                        description=f"{count} services are currently running. More services = larger attack surface.",
+   638→   638→                        evidence=f"Running services: {count}",
+   639→   639→                        asset=hostname, points_deducted=2,
+   640→   640→                        remediation="Disable unnecessary services: services.msc",
+   641→   641→                    ))
+   642→   642→            except ValueError:
+   643→   643→                pass
+   644→   644→        return findings
+   645→   645→
+   646→   646→    # Non-Windows: systemd services
+   647→   647→    code, out = _run("systemctl list-unit-files --state=enabled --type=service --no-pager 2>/dev/null")
+   648→   648→    if code == 0 and out:
+   649→   649→        services = [l.strip() for l in out.splitlines() if "enabled" in l]
+   650→   650→        if len(services) > 20:
+   651→   651→            findings.append(Finding(
+   652→   652→                title=f"{len(services)} enabled systemd services (high count)",
+   653→   653→                severity="low", category="services",
+   654→   654→                module="host",
+   655→   655→                description=f"{len(services)} services are enabled at boot. More services = larger attack surface.",
+   656→   656→                evidence=f"Count: {len(services)}",
+   657→   657→                asset=hostname, points_deducted=2,
+   658→   658→                remediation="Disable unnecessary services: sudo systemctl disable <service>",
+   659→   659→            ))
+   660→   660→
+   661→   661→    return findings
+   662→   662→
+   663→   663→
+   664→   664→def _check_network() -> List[Finding]:
+   665→   665→    """Check network configuration."""
+   666→   666→    findings: List[Finding] = []
+   667→   667→    hostname = _hostname()
+   668→   668→
+   669→   669→    # Check if WiFi is connected
+   670→   670→    code, out = _run("iwconfig 2>/dev/null | grep -i 'essid'" )
+   671→   671→    if code == 0 and out:
+   672→   672→        if "off/any" not in out.lower():
+   673→   673→            findings.append(Finding(
+   674→   674→                title="Connected to WiFi network",
+   675→   675→                severity="info", category="network",
+   676→   676→                module="host",
+   677→   677→                description=f"Machine is connected to WiFi: {out.strip()[:100]}",
+   678→   678→                evidence=out.strip()[:100],
+   679→   679→                asset=hostname, points_deducted=0,
+   680→   680→                remediation="",
+   681→   681→            ))
+   682→   682→
+   683→   683→    # Check for promiscuous mode
+   684→   684→    code, out = _run("ip link 2>/dev/null | grep -i promisc")
+   685→   685→    if code == 0 and out:
+   686→   686→        findings.append(Finding(
+   687→   687→            title="Network interface in promiscuous mode",
+   688→   688→            severity="high", category="network",
+   689→   689→            module="host",
+   690→   690→            description="A network interface is in promiscuous mode, meaning it captures all network traffic.",
+   691→   691→            evidence=out.strip()[:200],
+   692→   692→            asset=hostname, points_deducted=8,
+   693→   693→            remediation="Check for packet sniffers. Disable promiscuous mode: sudo ip link set <iface> promisc off",
+   694→   694→        ))
+   695→   695→
+   696→   696→    return findings
+   697→   697→
+   698→   698→
+   699→   699→def _check_os_info() -> List[Finding]:
+   700→   700→    """Gather OS info and check for known issues."""
+   701→   701→    findings: List[Finding] = []
+   702→   702→    hostname = _hostname()
+   703→   703→
+   704→   704→    try:
+   705→   705→        import platform
+   706→   706→        sysname = platform.system()
+   707→   707→        machine = platform.machine()
+   708→   708→        kernel = platform.release()
+   709→   709→        if _is_windows():
+   710→   710→            remediation = "Keep Windows updated: Settings > Windows Update > Check for updates"
+   711→   711→        elif _is_macos():
+   712→   712→            remediation = "Keep macOS updated: System Preferences > Software Update"
+   713→   713→        else:
+   714→   714→            remediation = "Update your system packages: sudo apt upgrade"
+   715→   715→        findings.append(Finding(
+   716→   716→            title=f"OS: {sysname} {machine} | Kernel: {kernel}",
+   717→   717→            severity="info", category="os_info",
+   718→   718→            module="host",
+   719→   719→            description=f"Running {sysname} on {machine} with kernel {kernel}",
+   720→   720→            evidence=kernel,
+   721→   721→            asset=hostname, points_deducted=0,
+   722→   722→            remediation=remediation,
+   723→   723→        ))
+   724→   724→    except Exception:
+   725→   725→        pass
+   726→   726→
+   727→   727→    return findings
+   728→   728→
+   729→   729→
+   730→   730→def _check_usb_devices() -> List[Finding]:
+   731→   731→    """Check for connected USB devices."""
+   732→   732→    findings: List[Finding] = []
+   733→   733→    hostname = _hostname()
+   734→   734→
+   735→   735→    code, out = _run("lsusb 2>/dev/null")
+   736→   736→    if code == 0 and out:
+   737→   737→        devices = [l for l in out.splitlines() if l.strip()]
+   738→   738→        if devices:
+   739→   739→            findings.append(Finding(
+   740→   740→                title=f"{len(devices)} USB device(s) connected",
+   741→   741→                severity="info", category="usb",
+   742→   742→                module="host",
+   743→   743→                description=f"USB devices detected. Be cautious of unknown USB devices (BadUSB attacks).",
+   744→   744→                evidence=out[:300],
+   745→   745→                asset=hostname, points_deducted=0,
+   746→   746→                remediation="Only connect trusted USB devices. Consider USB device whitelisting.",
+   747→   747→            ))
+   748→   748→
+   749→   749→    return findings
+   750→   750→
+   751→   751→
+   752→   752→def run_host(target: str = "localhost", base_url: str = "", timeout: int = 8,
+   753→   753→             verify_tls: bool = True) -> List[Finding]:
+   754→   754→    """Full local machine security audit.
+   755→   755→
+   756→   756→    Scans the entire laptop/machine for security issues.
+   757→   757→    """
+   758→   758→    findings: List[Finding] = []
+   759→   759→
+   760→   760→    findings.extend(_check_os_info())
+   761→   761→    findings.extend(_check_open_ports())
+   762→   762→    findings.extend(_check_firewall())
+   763→   763→    findings.extend(_check_users())
+   764→   764→    findings.extend(_check_ssh())
+   765→   765→    findings.extend(_check_docker())
+   766→   766→    findings.extend(_check_env_secrets())
+   767→   767→    findings.extend(_check_file_permissions())
+   768→   768→    findings.extend(_check_cron_jobs())
+   769→   769→    findings.extend(_check_auto_start())
+   770→   770→    findings.extend(_check_network())
+   771→   771→    findings.extend(_check_usb_devices())
+   772→   772→
+   773→   773→    return findings
+   774→   774→

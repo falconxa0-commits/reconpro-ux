@@ -423,9 +423,12 @@ def _check_system_updates() -> List[Finding]:
 
 
 def _check_shared_memory() -> List[Finding]:
-    """Check /dev/shm is mounted noexec."""
+    """Check /dev/shm is mounted noexec (Linux only)."""
     findings: List[Finding] = []
     hostname = _hostname()
+
+    if _is_windows() or _is_macos():
+        return findings  # Not applicable on Windows/macOS
 
     code, out = _run("mount | grep /dev/shm")
     if code == 0 and out:
@@ -444,9 +447,27 @@ def _check_shared_memory() -> List[Finding]:
 
 
 def _check_core_dumps() -> List[Finding]:
-    """Check if core dumps are restricted."""
+    """Check if core dumps are restricted (Linux only)."""
     findings: List[Finding] = []
     hostname = _hostname()
+
+    if _is_windows():
+        # Windows: check via WMI (Windows Error Reporting / crash dumps)
+        code, out = _run('reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting" /v Disabled 2>NUL')
+        if code == 0 and "REG_DWORD" in out and "0x1" in out:
+            findings.append(Finding(
+                title="Windows Error Reporting is enabled",
+                severity="info", category="hardening",
+                module="doctor",
+                description="Windows Error Reporting may write crash dumps containing sensitive data.",
+                evidence="WER not disabled",
+                asset=hostname, points_deducted=1,
+                remediation="Disable WER if crash dumps are a concern: Settings > Privacy > Diagnostics & feedback",
+            ))
+        return findings
+
+    if _is_macos():
+        return findings  # macOS core dump handling is internal
 
     code, out = _run("ulimit -c")
     if code == 0 and out.strip() not in ("0", "unlimited"):

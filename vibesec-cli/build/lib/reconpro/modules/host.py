@@ -495,20 +495,34 @@ def _check_file_permissions() -> List[Finding]:
     findings: List[Finding] = []
     hostname = _hostname()
 
-    sensitive_files = [
-        ("/etc/shadow", 0o640, "critical", "Password hash file"),
-        ("/etc/passwd", 0o644, "medium", "User account file"),
-        ("/etc/sudoers", 0o440, "high", "Sudoers file"),
-        ("/etc/ssh/sshd_config", 0o600, "medium", "SSH server config"),
-        ("~/.ssh/id_rsa", 0o600, "critical", "SSH private key"),
-        ("~/.ssh/id_ed25519", 0o600, "critical", "Ed25519 private key"),
-        ("~/.ssh/authorized_keys", 0o600, "high", "SSH authorized keys"),
-        ("~/.ssh/config", 0o600, "medium", "SSH client config"),
-        ("~/.gnupg", 0o700, "high", "GPG directory"),
-        ("~/.aws/credentials", 0o600, "critical", "AWS credentials file"),
-        ("~/.netrc", 0o600, "high", "netrc credentials file"),
-        ("~/.pgpass", 0o600, "high", "PostgreSQL password file"),
-    ]
+    if _is_windows():
+        sensitive_files = [
+            ("~/.ssh/id_rsa", 0o600, "critical", "SSH private key"),
+            ("~/.ssh/id_ed25519", 0o600, "critical", "Ed25519 private key"),
+            ("~/.ssh/authorized_keys", 0o600, "high", "SSH authorized keys"),
+            ("~/.ssh/config", 0o600, "medium", "SSH client config"),
+            ("~/.gnupg", 0o700, "high", "GPG directory"),
+            ("~/.aws/credentials", 0o600, "critical", "AWS credentials file"),
+            ("~/.netrc", 0o600, "high", "netrc credentials file"),
+            ("~/.pgpass", 0o600, "high", "PostgreSQL password file"),
+            ("~/.env", 0o600, "high", ".env secrets file"),
+            (os.path.join(os.environ.get('APPDATA', ''), 'credentials'), 0o600, "critical", "Windows Credential Manager backup"),
+        ]
+    else:
+        sensitive_files = [
+            ("/etc/shadow", 0o640, "critical", "Password hash file"),
+            ("/etc/passwd", 0o644, "medium", "User account file"),
+            ("/etc/sudoers", 0o440, "high", "Sudoers file"),
+            ("/etc/ssh/sshd_config", 0o600, "medium", "SSH server config"),
+            ("~/.ssh/id_rsa", 0o600, "critical", "SSH private key"),
+            ("~/.ssh/id_ed25519", 0o600, "critical", "Ed25519 private key"),
+            ("~/.ssh/authorized_keys", 0o600, "high", "SSH authorized keys"),
+            ("~/.ssh/config", 0o600, "medium", "SSH client config"),
+            ("~/.gnupg", 0o700, "high", "GPG directory"),
+            ("~/.aws/credentials", 0o600, "critical", "AWS credentials file"),
+            ("~/.netrc", 0o600, "high", "netrc credentials file"),
+            ("~/.pgpass", 0o600, "high", "PostgreSQL password file"),
+        ]
 
     for path, expected, sev, desc in sensitive_files:
         full_path = os.path.expanduser(path)
@@ -520,6 +534,10 @@ def _check_file_permissions() -> List[Finding]:
 
         # Check if file is world-readable or world-writable
         if perms & stat.S_IROTH:
+            if _is_windows():
+                remediation_cmd = f'Restrict permissions: icacls "{full_path}" /inheritance:r /grant:r "%USERNAME%":(R,W)'
+            else:
+                remediation_cmd = f"Restrict permissions: chmod {oct(expected)} {path}"
             findings.append(Finding(
                 title=f"World-readable: {desc} ({path})",
                 severity=sev, category="file_permissions",
@@ -527,9 +545,13 @@ def _check_file_permissions() -> List[Finding]:
                 description=f"{desc} at {path} has permissions {oct(perms)} and is world-readable.",
                 evidence=f"Permissions: {oct(perms)}",
                 asset=hostname, points_deducted=10 if sev in ("critical", "high") else 5,
-                remediation=f"Restrict permissions: chmod {oct(expected)} {path}",
+                remediation=remediation_cmd,
             ))
         elif perms & stat.S_IWOTH:
+            if _is_windows():
+                remediation_cmd = f"Remove write access: icacls \"{full_path}\" /remove \"Everyone\""
+            else:
+                remediation_cmd = f"Restrict permissions: chmod {oct(expected)} {path}"
             findings.append(Finding(
                 title=f"World-writable: {desc} ({path})",
                 severity=sev, category="file_permissions",
@@ -537,7 +559,7 @@ def _check_file_permissions() -> List[Finding]:
                 description=f"{desc} at {path} has permissions {oct(perms)} and is world-writable.",
                 evidence=f"Permissions: {oct(perms)}",
                 asset=hostname, points_deducted=12 if sev == "critical" else 6,
-                remediation=f"Restrict permissions: chmod {oct(expected)} {path}",
+                remediation=remediation_cmd,
             ))
 
     return findings
@@ -666,10 +688,10 @@ def _check_network() -> List[Finding]:
     findings: List[Finding] = []
     hostname = _hostname()
 
-    # Check if WiFi is connected
-    code, out = _run("iwconfig 2>/dev/null | grep -i 'essid'" )
-    if code == 0 and out:
-        if "off/any" not in out.lower():
+    if _is_windows():
+        # Check WiFi via netsh
+        code, out = _run('netsh wlan show interfaces 2>NUL | findstr /i "SSID State"')
+        if code == 0 and out and ("connected" in out.lower() or "SSID" in out):
             findings.append(Finding(
                 title="Connected to WiFi network",
                 severity="info", category="network",
@@ -679,8 +701,36 @@ def _check_network() -> List[Finding]:
                 asset=hostname, points_deducted=0,
                 remediation="",
             ))
+        return findings
 
-    # Check for promiscuous mode
+    # macOS/Linux: Check if WiFi is connected
+    if _is_macos():
+        code, out = _run("system_profiler SPAirPort 2>/dev/null | grep -i 'current network'")
+        if code == 0 and out:
+            findings.append(Finding(
+                title="Connected to WiFi network",
+                severity="info", category="network",
+                module="host",
+                description=f"Machine is connected to WiFi: {out.strip()[:100]}",
+                evidence=out.strip()[:100],
+                asset=hostname, points_deducted=0,
+                remediation="",
+            ))
+    else:
+        code, out = _run("iwconfig 2>/dev/null | grep -i 'essid'")
+        if code == 0 and out:
+            if "off/any" not in out.lower():
+                findings.append(Finding(
+                    title="Connected to WiFi network",
+                    severity="info", category="network",
+                    module="host",
+                    description=f"Machine is connected to WiFi: {out.strip()[:100]}",
+                    evidence=out.strip()[:100],
+                    asset=hostname, points_deducted=0,
+                    remediation="",
+                ))
+
+    # Check for promiscuous mode (Linux only)
     code, out = _run("ip link 2>/dev/null | grep -i promisc")
     if code == 0 and out:
         findings.append(Finding(
