@@ -19,6 +19,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..http import Finding
 
 
+def _hostname() -> str:
+    """Cross-platform hostname (works on Linux, macOS, Windows)."""
+    try:
+        return os.uname().nodename
+    except AttributeError:
+        return os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "localhost"))
+
+
 def _run(cmd: str, timeout: int = 8) -> Tuple[int, str]:
     """Run a shell command, return (exit_code, output)."""
     try:
@@ -33,7 +41,7 @@ def _run(cmd: str, timeout: int = 8) -> Tuple[int, str]:
 def _check_password_policy() -> List[Finding]:
     """Check password and authentication policies."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Check if password aging is configured
     code, out = _run("cat /etc/login.defs 2>/dev/null")
@@ -76,7 +84,7 @@ def _check_password_policy() -> List[Finding]:
 def _check_disk_encryption() -> List[Finding]:
     """Check if disk encryption is active."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Check LUKS
     code, out = _run("lsblk -o NAME,FSTYPE,TYPE -n 2>/dev/null | grep -i crypt")
@@ -102,7 +110,7 @@ def _check_disk_encryption() -> List[Finding]:
 def _check_auto_lock() -> List[Finding]:
     """Check screen lock / auto-lock settings."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Linux: check gnome screensaver or xautolock
     code, out = _run("gsettings get org.gnome.desktop.screensaver lock-enabled 2>/dev/null")
@@ -137,7 +145,7 @@ def _check_auto_lock() -> List[Finding]:
 def _check_antivirus() -> List[Finding]:
     """Check for antivirus / malware protection."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Check common AV tools
     av_tools = [
@@ -181,7 +189,7 @@ def _check_antivirus() -> List[Finding]:
 def _check_system_updates() -> List[Finding]:
     """Check for pending system updates."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Ubuntu/Debian
     code, out = _run("apt list --upgradable 2>/dev/null | grep -c 'upgradable'")
@@ -208,7 +216,7 @@ def _check_system_updates() -> List[Finding]:
 def _check_shared_memory() -> List[Finding]:
     """Check /dev/shm is mounted noexec."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     code, out = _run("mount | grep /dev/shm")
     if code == 0 and out:
@@ -229,7 +237,7 @@ def _check_shared_memory() -> List[Finding]:
 def _check_core_dumps() -> List[Finding]:
     """Check if core dumps are restricted."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     code, out = _run("ulimit -c")
     if code == 0 and out.strip() not in ("0", "unlimited"):
@@ -251,7 +259,7 @@ def _check_core_dumps() -> List[Finding]:
 def _check_browser_security() -> List[Finding]:
     """Check for browser security extensions/configs."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # This is informational - we can check if common privacy/security browsers are installed
     browsers_found = []

@@ -28,6 +28,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..http import Finding
 
 
+def _hostname() -> str:
+    """Cross-platform hostname (works on Linux, macOS, Windows)."""
+    try:
+        return os.uname().nodename
+    except AttributeError:
+        return os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "localhost"))
+
+
 def _run(cmd: str, timeout: int = 10) -> Tuple[int, str]:
     """Run a shell command, return (exit_code, stdout+stderr)."""
     try:
@@ -53,7 +61,7 @@ def _file_perms(p: str) -> Optional[int]:
 def _check_open_ports() -> List[Finding]:
     """Find open listening ports via ss/netstat."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Try ss first (modern Linux), then netstat
     code, out = _run("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null")
@@ -127,7 +135,7 @@ def _check_open_ports() -> List[Finding]:
 def _check_firewall() -> List[Finding]:
     """Check firewall status."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Check ufw
     code, out = _run("ufw status 2>/dev/null")
@@ -194,7 +202,7 @@ def _check_firewall() -> List[Finding]:
 def _check_users() -> List[Finding]:
     """Check user accounts and sudo access."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Check sudo users
     code, out = _run("getent group sudo 2>/dev/null")
@@ -244,7 +252,7 @@ def _check_users() -> List[Finding]:
 def _check_ssh() -> List[Finding]:
     """Check SSH configuration hardening."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
     sshd_config = "/etc/ssh/sshd_config"
 
     if not _file_exists(sshd_config):
@@ -298,7 +306,7 @@ def _check_ssh() -> List[Finding]:
 def _check_docker() -> List[Finding]:
     """Check Docker security."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Check if Docker is running
     code, out = _run("docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null")
@@ -353,7 +361,7 @@ def _check_docker() -> List[Finding]:
 def _check_env_secrets() -> List[Finding]:
     """Scan environment variables for leaked secrets."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     secret_patterns = [
         (r'(?i)api[_-]?key', "API key in environment"),
@@ -392,7 +400,7 @@ def _check_env_secrets() -> List[Finding]:
 def _check_file_permissions() -> List[Finding]:
     """Check sensitive file permissions."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     sensitive_files = [
         ("/etc/shadow", 0o640, "critical", "Password hash file"),
@@ -445,7 +453,7 @@ def _check_file_permissions() -> List[Finding]:
 def _check_cron_jobs() -> List[Finding]:
     """Check cron jobs for security issues."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     code, out = _run("crontab -l 2>/dev/null")
     if code == 0 and out:
@@ -487,7 +495,7 @@ def _check_cron_jobs() -> List[Finding]:
 def _check_auto_start() -> List[Finding]:
     """Check auto-start services and launch agents."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Systemd services
     code, out = _run("systemctl list-unit-files --state=enabled --type=service --no-pager 2>/dev/null")
@@ -510,7 +518,7 @@ def _check_auto_start() -> List[Finding]:
 def _check_network() -> List[Finding]:
     """Check network configuration."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     # Check if WiFi is connected
     code, out = _run("iwconfig 2>/dev/null | grep -i 'essid'" )
@@ -545,16 +553,18 @@ def _check_network() -> List[Finding]:
 def _check_os_info() -> List[Finding]:
     """Gather OS info and check for known issues."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     try:
-        uname_info = os.uname()
-        kernel = uname_info.release
+        import platform
+        sysname = platform.system()
+        machine = platform.machine()
+        kernel = platform.release()
         findings.append(Finding(
-            title=f"OS: {uname_info.sysname} {uname_info.machine} | Kernel: {kernel}",
+            title=f"OS: {sysname} {machine} | Kernel: {kernel}",
             severity="info", category="os_info",
             module="host",
-            description=f"Running {uname_info.sysname} on {uname_info.machine} with kernel {kernel}",
+            description=f"Running {sysname} on {machine} with kernel {kernel}",
             evidence=kernel,
             asset=hostname, points_deducted=0,
             remediation="Keep your kernel up to date: sudo apt upgrade",
@@ -568,7 +578,7 @@ def _check_os_info() -> List[Finding]:
 def _check_usb_devices() -> List[Finding]:
     """Check for connected USB devices."""
     findings: List[Finding] = []
-    hostname = os.uname().nodename
+    hostname = _hostname()
 
     code, out = _run("lsusb 2>/dev/null")
     if code == 0 and out:
