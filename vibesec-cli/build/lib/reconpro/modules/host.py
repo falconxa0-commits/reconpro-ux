@@ -47,6 +47,16 @@ def _run(cmd: str, timeout: int = 10) -> Tuple[int, str]:
         return -1, ""
 
 
+def _is_windows() -> bool:
+    """Check if running on Windows."""
+    return os.name == "nt"
+
+
+def _is_macos() -> bool:
+    """Check if running on macOS."""
+    return os.name == "posix" and hasattr(os, "uname") and os.uname().sysname == "Darwin"
+
+
 def _file_exists(p: str) -> bool:
     return os.path.exists(p)
 
@@ -63,19 +73,33 @@ def _check_open_ports() -> List[Finding]:
     findings: List[Finding] = []
     hostname = _hostname()
 
-    # Try ss first (modern Linux), then netstat
-    code, out = _run("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null")
-    if code != 0 or not out:
-        findings.append(Finding(
-            title="Could not enumerate open ports",
-            severity="low", category="ports",
-            module="host",
-            description="Unable to run ss or netstat. Try running with sudo.",
-            evidence="ss/netstat returned no output",
-            asset=hostname, points_deducted=1,
-            remediation="Run with sudo for full port visibility.",
-        ))
-        return findings
+    # Platform-specific port enumeration
+    if _is_windows():
+        code, out = _run('netstat -an 2>NUL | findstr LISTENING')
+        if code != 0 or not out:
+            findings.append(Finding(
+                title="Could not enumerate open ports",
+                severity="low", category="ports",
+                module="host",
+                description="Unable to enumerate open ports.",
+                evidence="netstat returned no output",
+                asset=hostname, points_deducted=1,
+                remediation="Run as Administrator for full port visibility.",
+            ))
+            return findings
+    else:
+        code, out = _run("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null")
+        if code != 0 or not out:
+            findings.append(Finding(
+                title="Could not enumerate open ports",
+                severity="low", category="ports",
+                module="host",
+                description="Unable to run ss or netstat. Try running with sudo.",
+                evidence="ss/netstat returned no output",
+                asset=hostname, points_deducted=1,
+                remediation="Run with sudo for full port visibility.",
+            ))
+            return findings
 
     ports = []
     for line in out.splitlines():
@@ -137,7 +161,57 @@ def _check_firewall() -> List[Finding]:
     findings: List[Finding] = []
     hostname = _hostname()
 
-    # Check ufw
+    # Windows: check Windows Defender Firewall
+    if _is_windows():
+        code, out = _run('netsh advfirewall show currentprofile state 2>NUL')
+        if code == 0 and "ON" in out.upper():
+            findings.append(Finding(
+                title="Windows Defender Firewall is active",
+                severity="info", category="firewall",
+                module="host",
+                description="Windows Defender Firewall is enabled.",
+                evidence=out[:200],
+                asset=hostname, points_deducted=0,
+                remediation="",
+            ))
+        else:
+            findings.append(Finding(
+                title="Windows Firewall is not enabled",
+                severity="high", category="firewall",
+                module="host",
+                description="Windows Defender Firewall is not active. Your machine is exposed to network attacks.",
+                evidence="Firewall state: OFF",
+                asset=hostname, points_deducted=10,
+                remediation="Enable Windows Firewall: netsh advfirewall set allprofiles state on",
+            ))
+        return findings
+
+    # macOS: check Application Layer Firewall
+    if _is_macos():
+        code, out = _run("defaults read /Library/Preferences/com.apple.alf globalstate 2>/dev/null")
+        if code == 0 and out.strip() == "1":
+            findings.append(Finding(
+                title="macOS Application Firewall is active",
+                severity="info", category="firewall",
+                module="host",
+                description="macOS Application Layer Firewall is enabled.",
+                evidence=f"globalstate={out.strip()}",
+                asset=hostname, points_deducted=0,
+                remediation="",
+            ))
+        else:
+            findings.append(Finding(
+                title="macOS Firewall is not enabled",
+                severity="high", category="firewall",
+                module="host",
+                description="macOS Application Layer Firewall is not active. Your machine is exposed to network attacks.",
+                evidence=f"globalstate={out.strip() if code == 0 else 'unknown'}",
+                asset=hostname, points_deducted=10,
+                remediation="Enable Application Firewall in System Preferences > Security & Privacy > Firewall",
+            ))
+        return findings
+
+    # Check ufw (Linux)
     code, out = _run("ufw status 2>/dev/null")
     if code == 0:
         if "inactive" in out.lower():
@@ -162,7 +236,7 @@ def _check_firewall() -> List[Finding]:
             ))
         return findings
 
-    # Check iptables
+    # Check iptables (Linux)
     code, out = _run("iptables -L -n 2>/dev/null")
     if code == 0 and out:
         if "ACCEPT" in out and "DROP" not in out and "REJECT" not in out:
@@ -181,7 +255,7 @@ def _check_firewall() -> List[Finding]:
                 severity="info", category="firewall",
                 module="host",
                 description="iptables has filtering rules configured.",
-                evidence=f"Rules present",
+                evidence="Rules present",
                 asset=hostname, points_deducted=0,
                 remediation="",
             ))
@@ -191,8 +265,8 @@ def _check_firewall() -> List[Finding]:
         title="No firewall detected",
         severity="high", category="firewall",
         module="host",
-        description="Neither UFW nor iptables rules detected. Your machine has no network firewall.",
-        evidence="ufw and iptables both unavailable",
+        description="No firewall detected. Your machine has no network firewall.",
+        evidence="No firewall found",
         asset=hostname, points_deducted=10,
         remediation="Install and enable a firewall: sudo apt install ufw && sudo ufw enable",
     ))
@@ -204,7 +278,26 @@ def _check_users() -> List[Finding]:
     findings: List[Finding] = []
     hostname = _hostname()
 
-    # Check sudo users
+    if _is_windows():
+        # Check administrator accounts on Windows
+        code, out = _run('net localgroup Administrators 2>NUL')
+        if code == 0 and out:
+            lines = [l.strip() for l in out.splitlines() if l.strip()]
+            # First two lines are header, last line is "The command completed..."
+            admins = [l for l in lines[2:] if l and "command completed" not in l.lower()]
+            if len(admins) > 2:
+                findings.append(Finding(
+                    title=f"{len(admins)} administrator accounts found",
+                    severity="medium", category="users",
+                    module="host",
+                    description=f"{len(admins)} users have administrator privileges: {', '.join(admins[:5])}. Minimize admin access to reduce risk.",
+                    evidence=f"Administrators: {', '.join(admins[:5])}",
+                    asset=hostname, points_deducted=5,
+                    remediation="Remove unnecessary users from the Administrators group via Computer Management.",
+                ))
+        return findings
+
+    # Non-Windows: check sudo users
     code, out = _run("getent group sudo 2>/dev/null")
     if code == 0 and out:
         users = [u for u in out.split(":")[1].split(",") if u.strip()]
@@ -219,7 +312,7 @@ def _check_users() -> List[Finding]:
                 remediation="Remove unnecessary users from the sudo group. Use specific capabilities instead.",
             ))
 
-    # Check for passwordless sudo
+    # Check for passwordless sudo (non-Windows only)
     code, out = _run("sudo -n true 2>&1")
     if code == 0:
         findings.append(Finding(
@@ -232,7 +325,7 @@ def _check_users() -> List[Finding]:
             remediation="Require password for sudo: remove NOPASSWD from /etc/sudoers",
         ))
 
-    # Check for empty password users
+    # Check for empty password users (Linux only)
     code, out = _run("sudo awk -F: '($2 == \"\") {print $1}' /etc/shadow 2>/dev/null")
     if code == 0 and out.strip():
         users = out.strip().splitlines()
@@ -455,6 +548,24 @@ def _check_cron_jobs() -> List[Finding]:
     findings: List[Finding] = []
     hostname = _hostname()
 
+    if _is_windows():
+        # Windows: check Task Scheduler
+        code, out = _run('schtasks /query /fo LIST 2>NUL | findstr TaskName')
+        if code == 0 and out:
+            tasks = [l.strip() for l in out.splitlines() if l.strip()]
+            if tasks:
+                findings.append(Finding(
+                    title=f"{len(tasks)} scheduled task(s) found",
+                    severity="info", category="cron",
+                    module="host",
+                    description=f"Found {len(tasks)} scheduled tasks. Review for any suspicious scheduled tasks.",
+                    evidence="; ".join(tasks[:10]),
+                    asset=hostname, points_deducted=0,
+                    remediation="Review scheduled tasks: schtasks /query /fo LIST",
+                ))
+        return findings
+
+    # Non-Windows: check crontab
     code, out = _run("crontab -l 2>/dev/null")
     if code == 0 and out:
         lines = [l for l in out.splitlines() if l.strip() and not l.strip().startswith("#")]
@@ -497,7 +608,42 @@ def _check_auto_start() -> List[Finding]:
     findings: List[Finding] = []
     hostname = _hostname()
 
-    # Systemd services
+    if _is_windows():
+        # Check Windows startup entries
+        code, out = _run('wmic startup get caption,command 2>NUL')
+        if code == 0 and out:
+            lines = [l.strip() for l in out.splitlines() if l.strip() and l.strip() != "Caption  Command"]
+            if len(lines) > 5:
+                findings.append(Finding(
+                    title=f"{len(lines)} startup entry/entries found (high count)",
+                    severity="low", category="services",
+                    module="host",
+                    description=f"{len(lines)} items are configured to run at Windows startup. More startup items = larger attack surface.",
+                    evidence="; ".join(lines[:5]),
+                    asset=hostname, points_deducted=2,
+                    remediation="Review and remove unnecessary startup entries: Task Manager > Startup tab",
+                ))
+
+        # Check running services count
+        code, out = _run('sc query state= all 2>NUL | findstr RUNNING | find /c /v ""')
+        if code == 0 and out.strip():
+            try:
+                count = int(out.strip())
+                if count > 100:
+                    findings.append(Finding(
+                        title=f"{count} Windows services running (high count)",
+                        severity="low", category="services",
+                        module="host",
+                        description=f"{count} services are currently running. More services = larger attack surface.",
+                        evidence=f"Running services: {count}",
+                        asset=hostname, points_deducted=2,
+                        remediation="Disable unnecessary services: services.msc",
+                    ))
+            except ValueError:
+                pass
+        return findings
+
+    # Non-Windows: systemd services
     code, out = _run("systemctl list-unit-files --state=enabled --type=service --no-pager 2>/dev/null")
     if code == 0 and out:
         services = [l.strip() for l in out.splitlines() if "enabled" in l]
@@ -560,6 +706,12 @@ def _check_os_info() -> List[Finding]:
         sysname = platform.system()
         machine = platform.machine()
         kernel = platform.release()
+        if _is_windows():
+            remediation = "Keep Windows updated: Settings > Windows Update > Check for updates"
+        elif _is_macos():
+            remediation = "Keep macOS updated: System Preferences > Software Update"
+        else:
+            remediation = "Update your system packages: sudo apt upgrade"
         findings.append(Finding(
             title=f"OS: {sysname} {machine} | Kernel: {kernel}",
             severity="info", category="os_info",
@@ -567,7 +719,7 @@ def _check_os_info() -> List[Finding]:
             description=f"Running {sysname} on {machine} with kernel {kernel}",
             evidence=kernel,
             asset=hostname, points_deducted=0,
-            remediation="Keep your kernel up to date: sudo apt upgrade",
+            remediation=remediation,
         ))
     except Exception:
         pass
