@@ -792,7 +792,7 @@ def check_cloud_dns(domain: str) -> List[Dict[str, Any]]:
 # ════════════════════════════════════════════════════════════════════════
 
 def run_cloud_recon(target: str, base_url: str = "", timeout: int = 8,
-        verify_tls: bool = True) -> Tuple[List[Finding], int, str, str]:
+        verify_tls: bool = True) -> List[Finding]:
     """Run cloud infrastructure reconnaissance.
 
     For local targets (127.0.0.1, localhost, metadata IPs): probe cloud
@@ -1149,4 +1149,4 @@ def run_cloud_recon(target: str, base_url: str = "", timeout: int = 8,
     grade = compute_grade(score)
     badge_md = badge_markdown(host, grade)
 
-    return findings, score, grade, badge_md
+    return findings
