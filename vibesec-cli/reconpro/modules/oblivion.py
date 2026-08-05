@@ -258,7 +258,7 @@ def _stage_6_form_audit(base_url: str, timeout: int = 8, verify_tls: bool = True
 def _stage_7_error_probe(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
     findings = []
     host = _h(base_url)
-    for payload in ["?filter=INVALID{{{{", "{\"bad\": \\"json\"]\"}", "<invalid>xml"]:
+    for payload in ['?filter=INVALID{{{{', '{"bad": "json"}]"}', '<invalid>xml']:
         try:
             resp = http_probe(base_url.rstrip("/") + "/api/v1/users" + payload,
                              method="POST" if "{" in payload else "GET",

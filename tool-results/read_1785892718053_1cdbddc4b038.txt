@@ -1,0 +1,535 @@
+    50→
+    51→
+    52→def _h(base_url: str) -> str:
+    53→    return base_url.replace("https://", "").replace("http://", "").split("/")[0]
+    54→
+    55→
+    56→# ── Stage 1-3: Original OBLIVION stages ─────────────────────────────────
+    57→
+    58→def _analyze_info_disclosure(base_url: str, timeout: int = 8,
+    59→                              verify_tls: bool = True) -> List[Finding]:
+    60→    findings: List[Finding] = []
+    61→    host = _h(base_url)
+    62→    info_paths = [
+    63→        "/.git/HEAD", "/.git/config", "/.git/logs/HEAD",
+    64→        "/.svn/entries", "/.hg/store", "/.DS_Store", "/Thumbs.db",
+    65→        "/server-status", "/server-info", "/.well-known/security.txt",
+    66→        "/.env", "/.env.local", "/.env.production",
+    67→        "/wp-config.php.bak", "/config.php~",
+    68→        "/backup.sql", "/db.sql", "/dump.sql",
+    69→        "/.htaccess", "/.htpasswd", "/WEB-INF/web.xml",
+    70→        "/META-INF/MANIFEST.MF", "/debug", "/phpinfo.php", "/info.php",
+    71→        "/actuator", "/actuator/env", "/actuator/health",
+    72→        "/swagger.json", "/swagger-ui.html", "/graphql", "/graphiql",
+    73→    ]
+    74→    for path in info_paths:
+    75→        try:
+    76→            resp = http_probe(base_url.rstrip("/") + path, timeout=timeout, verify_tls=verify_tls)
+    77→            if resp.get("status") == 200 and len(resp.get("body", "")) > 10:
+    78→                body_lower = resp.get("body", "").lower()
+    79→                if any(s in body_lower for s in ["password", "secret", "api_key", "token", "private"]):
+    80→                    sev, pts = "critical", 15
+    81→                elif any(s in body_lower for s in ["stack trace", "exception", "error", "debug"]):
+    82→                    sev, pts = "high", 10
+    83→                elif path in ("/.git/HEAD", "/.svn/entries", "/.hg/store"):
+    84→                    sev, pts = "high", 10
+    85→                elif "swagger" in path or "graphql" in path:
+    86→                    sev, pts = "low", 3
+    87→                else:
+    88→                    sev, pts = "medium", 5
+    89→                findings.append(Finding(
+    90→                    title="Info disclosure: {}".format(path), severity=sev, category="info_disclosure",
+    91→                    module="oblivion", description="Sensitive info at {}".format(path),
+    92→                    evidence="GET {} -> 200 ({} bytes)".format(path, len(resp.get("body", ""))),
+    93→                    asset=host, points_deducted=pts, dread_score=_dread_score(sev),
+    94→                ))
+    95→        except Exception:
+    96→            pass
+    97→    return findings
+    98→
+    99→
+   100→def _analyze_headers_deep(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   101→    findings: List[Finding] = []
+   102→    host = _h(base_url)
+   103→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   104→    headers = resp.get("headers", {})
+   105→    h_lower = {k.lower(): v for k, v in headers.items()}
+   106→    checks = [
+   107→        ("strict-transport-security", "HSTS", "high"),
+   108→        ("content-security-policy", "CSP", "high"),
+   109→        ("x-content-type-options", "X-Content-Type-Options", "medium"),
+   110→        ("x-frame-options", "X-Frame-Options", "medium"),
+   111→        ("referrer-policy", "Referrer-Policy", "low"),
+   112→        ("permissions-policy", "Permissions-Policy", "low"),
+   113→        ("cross-origin-opener-policy", "COOP", "medium"),
+   114→        ("cross-origin-resource-policy", "CORP", "medium"),
+   115→        ("cross-origin-embedder-policy", "COEP", "medium"),
+   116→    ]
+   117→    for hdr, display, sev in checks:
+   118→        if hdr not in h_lower:
+   119→            findings.append(Finding(
+   120→                title="Missing {}".format(display), severity=sev, category="security_headers",
+   121→                module="oblivion", description="{} header missing".format(display),
+   122→                evidence="{} not found".format(hdr), asset=host, points_deducted=5,
+   123→                dread_score=_dread_score(sev),
+   124→            ))
+   125→    for hdr, title in [("server", "Server version disclosure"), ("x-powered-by", "Tech disclosure")]:
+   126→        if hdr in h_lower:
+   127→            findings.append(Finding(
+   128→                title=title, severity="low", category="info_disclosure", module="oblivion",
+   129→                description="{}: {}".format(hdr, h_lower[hdr]),
+   130→                evidence="{}: {}".format(hdr, h_lower[hdr]), asset=host, points_deducted=2,
+   131→                dread_score=_dread_score("low"),
+   132→            ))
+   133→    return findings
+   134→
+   135→
+   136→def _analyze_js_secrets(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   137→    findings: List[Finding] = []
+   138→    host = _h(base_url)
+   139→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   140→    body = resp.get("body", "")[:65536]
+   141→    js_urls = re.findall(r'src=["\']([^"\']*\.js[^"\']*)["\']', body)
+   142→    inline = re.findall(r'<script[^>]*>(.*?)</script>', body, re.DOTALL)
+   143→    all_js = " ".join(inline)
+   144→    for js_url in js_urls[:10]:
+   145→        try:
+   146→            js_resp = http_probe(js_url if js_url.startswith("http") else base_url.rstrip("/") + js_url,
+   147→                                timeout=timeout, verify_tls=verify_tls)
+   148→            if js_resp.get("status") == 200:
+   149→                all_js += " " + js_resp.get("body", "")[:32768]
+   150→        except Exception:
+   151→            pass
+   152→    patterns = [
+   153→        (r'api[_-]?key["\':\s]*=["\']([\w-]{20,})', "Hardcoded API key"),
+   154→        (r'secret["\':\s]*=["\']([\w-]{20,})', "Hardcoded secret"),
+   155→        (r'password["\':\s]*=["\']([^"\']{8,})', "Hardcoded password"),
+   156→    ]
+   157→    for pat, title in patterns:
+   158→        matches = re.findall(pat, all_js, re.IGNORECASE)
+   159→        if matches:
+   160→            masked = matches[0][:8] + "..." + matches[0][-4:] if len(matches[0]) > 12 else "***"
+   161→            findings.append(Finding(
+   162→                title=title, severity="critical", category="secrets_in_js", module="oblivion",
+   163→                description="Secret in JS: {}".format(title), evidence="Match: {}".format(masked),
+   164→                asset=host, points_deducted=15, dread_score=_dread_score("critical"),
+   165→            ))
+   166→            break
+   167→    return findings
+   168→
+   169→
+   170→# ── Stages 4-20: New OBLIVION stages ─────────────────────────────────
+   171→
+   172→def _stage_4_js_deps(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   173→    findings = []
+   174→    host = _h(base_url)
+   175→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   176→    body = resp.get("body", "")[:65536]
+   177→    js_urls = re.findall(r'src=["\']([^"\']*\.js[^"\']*)["\']', body)
+   178→    old_libs = [
+   179→        (r'jquery/1\.', "jQuery 1.x", "medium"), (r'jquery/2\.', "jQuery 2.x", "medium"),
+   180→        (r'angular\.js/1\.', "AngularJS 1.x", "high"), (r'react/0\.', "React 0.x", "high"),
+   181→        (r'lodash/3\.', "Lodash 3.x", "medium"), (r'bootstrap/3\.', "Bootstrap 3.x", "low"),
+   182→    ]
+   183→    all_js = ""
+   184→    for js_url in js_urls[:8]:
+   185→        try:
+   186→            js_resp = http_probe(js_url if js_url.startswith("http") else base_url.rstrip("/") + js_url,
+   187→                                timeout=timeout, verify_tls=verify_tls)
+   188→            if js_resp.get("status") == 200:
+   189→                all_js += " " + js_resp.get("body", "")[:16384]
+   190→        except Exception:
+   191→            pass
+   192→    for pat, name, sev in old_libs:
+   193→        if re.search(pat, all_js, re.IGNORECASE):
+   194→            findings.append(Finding(
+   195→                title="Vulnerable dependency: {}".format(name), severity=sev,
+   196→                category="vulnerable_deps", module="oblivion",
+   197→                description="Outdated library {} detected in page JS".format(name),
+   198→                evidence="Pattern: {}".format(pat), asset=host, points_deducted=5,
+   199→                dread_score=_dread_score(sev),
+   200→            ))
+   201→    return findings
+   202→
+   203→
+   204→def _stage_5_mixed_content(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   205→    findings = []
+   206→    if not base_url.startswith("https"):
+   207→        return findings
+   208→    host = _h(base_url)
+   209→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   210→    body = resp.get("body", "")[:65536]
+   211→    http_urls = re.findall(r'(?:src|href)=["\'](http://[^"\']+)"', body)
+   212→    for url in http_urls[:5]:
+   213→        findings.append(Finding(
+   214→            title="Mixed content: {}".format(url[:60]), severity="medium",
+   215→            category="mixed_content", module="oblivion",
+   216→            description="HTTP resource loaded on HTTPS page", evidence="URL: {}".format(url[:80]),
+   217→            asset=host, points_deducted=4, dread_score=_dread_score("medium"),
+   218→        ))
+   219→    return findings
+   220→
+   221→
+   222→def _stage_6_form_audit(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   223→    findings = []
+   224→    host = _h(base_url)
+   225→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   226→    body = resp.get("body", "")[:65536]
+   227→    forms = re.findall(r'<form[^>]*>(.*?)</form>', body, re.DOTALL | re.IGNORECASE)
+   228→    for i, form in enumerate(forms[:10]):
+   229→        action = re.search(r'action=["\']([^"\']*)', form, re.IGNORECASE)
+   230→        method = re.search(r'method=["\']([^"\']*)', form, re.IGNORECASE)
+   231→        has_csrf = bool(re.search(r'csrf|_token|authenticity', form, re.IGNORECASE))
+   232→        if action and action.group(1).startswith("http://"):
+   233→            findings.append(Finding(
+   234→                title="Form {} action over HTTP".format(i+1), severity="medium",
+   235→                category="form_security", module="oblivion",
+   236→                description="Form submits to HTTP URL", evidence="Action: {}".format(action.group(1)[:80]),
+   237→                asset=host, points_deducted=6, dread_score=_dread_score("medium"),
+   238→            ))
+   239→        if not has_csrf and (method and method.group(1).lower() == "post"):
+   240→            findings.append(Finding(
+   241→                title="Form {} missing CSRF token".format(i+1), severity="high",
+   242→                category="csrf", module="oblivion",
+   243→                description="POST form without CSRF protection", evidence="Form {} has no CSRF token".format(i+1),
+   244→                asset=host, points_deducted=10, dread_score=_dread_score("high"),
+   245→            ))
+   246→        sensitive = re.search(r'(password|credit|card|ssn)', form, re.IGNORECASE)
+   247→        get_method = method and method.group(1).lower() == "get"
+   248→        if sensitive and get_method:
+   249→            findings.append(Finding(
+   250→                title="Sensitive form {} uses GET".format(i+1), severity="high",
+   251→                category="sensitive_get", module="oblivion",
+   252→                description="Form with sensitive field uses GET method", evidence="Field: {}".format(sensitive.group(1)),
+   253→                asset=host, points_deducted=8, dread_score=_dread_score("high"),
+   254→            ))
+   255→    return findings
+   256→
+   257→
+   258→def _stage_7_error_probe(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   259→    findings = []
+   260→    host = _h(base_url)
+   261→    for payload in ["?filter=INVALID{{{{", "{\"bad\": \\"json\"]\"}", "<invalid>xml"]:
+   262→        try:
+   263→            resp = http_probe(base_url.rstrip("/") + "/api/v1/users" + payload,
+   264→                             method="POST" if "{" in payload else "GET",
+   265→                             body=payload.encode() if "{" in payload else None,
+   266→                             headers={"Content-Type": "application/json"} if "{" in payload else {},
+   267→                             timeout=timeout, verify_tls=verify_tls)
+   268→            body = resp.get("body", "")[:4096].lower()
+   269→            sigs = ["stack trace", "exception", "traceback", "syntaxerror", "at line"]
+   270→            found = [s for s in sigs if s in body]
+   271→            if found:
+   272→                findings.append(Finding(
+   273→                    title="Error disclosure via probe", severity="medium", category="error_disclosure",
+   274→                    module="oblivion", description="Error details leak: {}".format(", ".join(found[:3])),
+   275→                    evidence="Signatures: {}".format(", ".join(found[:3])),
+   276→                    asset=host, points_deducted=6, dread_score=_dread_score("medium"),
+   277→                ))
+   278→                break
+   279→        except Exception:
+   280→            pass
+   281→    return findings
+   282→
+   283→
+   284→def _stage_8_rate_limit(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   285→    findings = []
+   286→    host = _h(base_url)
+   287→    got_429 = False
+   288→    for i in range(20):
+   289→        try:
+   290→            resp = http_probe(base_url.rstrip("/") + "/api/v1/users?r={}".format(i), timeout=timeout, verify_tls=verify_tls)
+   291→            if resp.get("status") == 429 or "retry-after" in {k.lower() for k in resp.get("headers", {})}:
+   292→                got_429 = True
+   293→                break
+   294→        except Exception:
+   295→            pass
+   296→    if not got_429:
+   297→        findings.append(Finding(
+   298→            title="No rate limiting detected", severity="medium", category="rate_limiting",
+   299→            module="oblivion", description="20 rapid requests, no 429",
+   300→            evidence="No rate limiting", asset=host, points_deducted=5, dread_score=_dread_score("medium"),
+   301→        ))
+   302→    return findings
+   303→
+   304→
+   305→def _stage_9_session_mgmt(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   306→    findings = []
+   307→    host = _h(base_url)
+   308→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   309→    set_cookie = resp.get("headers", {}).get("set-cookie", "")
+   310→    for cookie in set_cookie.split(","):
+   311→        name = cookie.split("=")[0].strip()
+   312→        cl = cookie.lower()
+   313→        if name and "httponly" not in cl:
+   314→            findings.append(Finding(
+   315→                title="Missing HttpOnly: {}".format(name[:40]), severity="medium", category="session",
+   316→                module="oblivion", description="Cookie lacks HttpOnly", evidence="Cookie: {}".format(name),
+   317→                asset=host, points_deducted=5, dread_score=_dread_score("medium"),
+   318→            ))
+   319→        if name and "secure" not in cl:
+   320→            findings.append(Finding(
+   321→                title="Missing Secure: {}".format(name[:40]), severity="medium", category="session",
+   322→                module="oblivion", description="Cookie lacks Secure flag", evidence="Cookie: {}".format(name),
+   323→                asset=host, points_deducted=5, dread_score=_dread_score("medium"),
+   324→            ))
+   325→    body = resp.get("body", "")[:8192]
+   326→    if re.search(r'[?&](jsessionid|phpsessid|asp.net_sessionid|sid)=', body, re.IGNORECASE):
+   327→        findings.append(Finding(
+   328→            title="Session ID in URL", severity="high", category="session",
+   329→            module="oblivion", description="Session ID exposed in URL — session fixation risk",
+   330→            evidence="Session parameter in URL", asset=host, points_deducted=10, dread_score=_dread_score("high"),
+   331→        ))
+   332→    return findings
+   333→
+   334→
+   335→def _stage_10_cors_deep(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   336→    findings = []
+   337→    host = _h(base_url)
+   338→    origins = ["null", "https://evil.com", "https://{}.evil.com".format(host.split(".")[-1])]
+   339→    for origin in origins:
+   340→        try:
+   341→            resp = http_probe(base_url, headers={"Origin": origin}, timeout=timeout, verify_tls=verify_tls)
+   342→            h = resp.get("headers", {})
+   343→            acao = h.get("Access-Control-Allow-Origin", "")
+   344→            creds = h.get("Access-Control-Allow-Credentials", "")
+   345→            if acao == origin and "true" in creds.lower():
+   346→                findings.append(Finding(
+   347→                    title="CORS credential theft: {}".format(origin), severity="critical",
+   348→                    category="cors", module="oblivion",
+   349→                    description="CORS allows credentials from attacker origin",
+   350→                    evidence="ACAO: {}, Credentials: true".format(acao),
+   351→                    asset=host, points_deducted=15, dread_score=_dread_score("critical"),
+   352→                ))
+   353→                break
+   354→        except Exception:
+   355→            pass
+   356→    return findings
+   357→
+   358→
+   359→def _stage_11_hpp(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   360→    findings = []
+   361→    host = _h(base_url)
+   362→    for ep in ["/api/v1/users", "/api/search"]:
+   363→        try:
+   364→            r1 = http_probe(base_url.rstrip("/") + ep + "?id=1", timeout=timeout, verify_tls=verify_tls)
+   365→            r2 = http_probe(base_url.rstrip("/") + ep + "?id=1&id=2", timeout=timeout, verify_tls=verify_tls)
+   366→            if abs(len(r1.get("body", "")) - len(r2.get("body", ""))) > 20:
+   367→                findings.append(Finding(
+   368→                    title="HPP: {}".format(ep), severity="medium", category="hpp", module="oblivion",
+   369→                    description="HTTP parameter pollution — response changes with duplicate params",
+   370→                    evidence="id=1: {}b, id=1&id=2: {}b".format(len(r1.get("body", "")), len(r2.get("body", ""))),
+   371→                    asset=host, points_deducted=6, dread_score=_dread_score("medium"),
+   372→                ))
+   373→        except Exception:
+   374→            pass
+   375→    return findings
+   376→
+   377→
+   378→def _stage_12_api_versions(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   379→    findings = []
+   380→    host = _h(base_url)
+   381→    for v in ["v1", "v2", "v3", "v4", "latest", "internal"]:
+   382→        try:
+   383→            resp = http_probe(base_url.rstrip("/") + "/api/{}/users".format(v), timeout=timeout, verify_tls=verify_tls)
+   384→            if resp.get("status") == 200:
+   385→                findings.append(Finding(
+   386→                    title="Unauth API: /api/{}/".format(v), severity="medium", category="api_exposure",
+   387→                    module="oblivion", description="API version accessible without auth",
+   388→                    evidence="GET /api/{}/users -> 200".format(v),
+   389→                    asset=host, points_deducted=4, dread_score=_dread_score("medium"),
+   390→                ))
+   391→        except Exception:
+   392→            pass
+   393→    return findings
+   394→
+   395→
+   396→def _stage_13_backup_files(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   397→    findings = []
+   398→    host = _h(base_url)
+   399→    paths = ["/config.php.bak", "/config.php.old", "/database.sql", "/site.zip", "/backup/", "/db.dump",
+   400→             "/wp-config.php~", "/config.yaml.save", "/.env.backup", "/backup.sql.gz"]
+   401→    for path in paths:
+   402→        try:
+   403→            resp = http_probe(base_url.rstrip("/") + path, timeout=timeout, verify_tls=verify_tls)
+   404→            if resp.get("status") == 200 and len(resp.get("body", "")) > 10:
+   405→                findings.append(Finding(
+   406→                    title="Backup exposed: {}".format(path), severity="high", category="backup_exposure",
+   407→                    module="oblivion", description="Backup file accessible",
+   408→                    evidence="GET {} -> 200 ({}b)".format(path, len(resp.get("body", ""))),
+   409→                    asset=host, points_deducted=12, dread_score=_dread_score("high"),
+   410→                ))
+   411→        except Exception:
+   412→            pass
+   413→    return findings
+   414→
+   415→
+   416→def _stage_14_dir_listing(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   417→    findings = []
+   418→    host = _h(base_url)
+   419→    for d in ["/uploads/", "/files/", "/images/", "/assets/", "/backup/", "/logs/", "/tmp/", "/static/"]:
+   420→        try:
+   421→            resp = http_probe(base_url.rstrip("/") + d, timeout=timeout, verify_tls=verify_tls)
+   422→            body = resp.get("body", "").lower()
+   423→            if resp.get("status") == 200 and any(s in body for s in ["index of", "parent directory", "<table", "<title>index"]):
+   424→                findings.append(Finding(
+   425→                    title="Directory listing: {}".format(d), severity="medium", category="directory_listing",
+   426→                    module="oblivion", description="Directory listing enabled",
+   427→                    evidence="GET {} -> 200".format(d),
+   428→                    asset=host, points_deducted=5, dread_score=_dread_score("medium"),
+   429→                ))
+   430→        except Exception:
+   431→            pass
+   432→    return findings
+   433→
+   434→
+   435→def _stage_15_cookie_bomb(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   436→    findings = []
+   437→    host = _h(base_url)
+   438→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   439→    set_cookie = resp.get("headers", {}).get("set-cookie", "")
+   440→    for cookie in set_cookie.split(","):
+   441→        if len(cookie.strip()) > 4096:
+   442→            findings.append(Finding(
+   443→                title="Oversized cookie ({}b)".format(len(cookie.strip())), severity="low",
+   444→                category="cookie_bomb", module="oblivion",
+   445→                description="Cookie exceeds 4096 bytes", evidence="Cookie size: {}".format(len(cookie.strip())),
+   446→                asset=host, points_deducted=3, dread_score=_dread_score("low"),
+   447→            ))
+   448→    return findings
+   449→
+   450→
+   451→def _stage_16_websocket(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   452→    findings = []
+   453→    host = _h(base_url)
+   454→    for ws in ["/ws", "/websocket", "/socket.io/", "/api/ws"]:
+   455→        try:
+   456→            resp = http_probe(base_url.rstrip("/") + ws,
+   457→                             headers={"Upgrade": "websocket", "Connection": "Upgrade"},
+   458→                             timeout=timeout, verify_tls=verify_tls)
+   459→            if resp.get("status") in (101, 200, 426):
+   460→                findings.append(Finding(
+   461→                    title="WebSocket: {}".format(ws), severity="medium", category="websocket",
+   462→                    module="oblivion", description="WebSocket endpoint accessible",
+   463→                    evidence="{} -> {}".format(ws, resp.get("status")),
+   464→                    asset=host, points_deducted=5, dread_score=_dread_score("medium"),
+   465→                ))
+   466→        except Exception:
+   467→            pass
+   468→    return findings
+   469→
+   470→
+   471→def _stage_17_graphql_introspection(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   472→    findings = []
+   473→    host = _h(base_url)
+   474→    gql_query = json.dumps({"query": "{ __schema { types { name } } }"})
+   475→    for ep in ["/graphql", "/api/graphql"]:
+   476→        try:
+   477→            resp = http_probe(base_url.rstrip("/") + ep, method="POST", body=gql_query.encode(),
+   478→                             headers={"Content-Type": "application/json"}, timeout=timeout, verify_tls=verify_tls)
+   479→            body = resp.get("body", "")
+   480→            if resp.get("status") == 200 and "__schema" in body and "types" in body:
+   481→                findings.append(Finding(
+   482→                    title="GraphQL introspection: {}".format(ep), severity="high",
+   483→                    category="graphql_introspection", module="oblivion",
+   484→                    description="Full schema exposed via introspection",
+   485→                    evidence="__schema and types in response", asset=host, points_deducted=10,
+   486→                    dread_score=_dread_score("high"),
+   487→                ))
+   488→                break
+   489→        except Exception:
+   490→            pass
+   491→    return findings
+   492→
+   493→
+   494→def _stage_18_mirror_fracture(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   495→    findings = []
+   496→    host = _h(base_url)
+   497→    uas = ["Chrome/120", "curl/7.88", "python-requests/2.31", "Googlebot/2.1"]
+   498→    lengths = []
+   499→    for ua in uas:
+   500→        try:
+   501→            resp = http_probe(base_url, headers={"User-Agent": ua}, timeout=timeout, verify_tls=verify_tls)
+   502→            lengths.append(len(resp.get("body", "")))
+   503→        except Exception:
+   504→            lengths.append(0)
+   505→    if max(lengths) > 0 and (max(lengths) - min(lengths)) / max(max(lengths), 1) > 0.2:
+   506→        ai = _oblivion_ai("What security risk does differential response behavior indicate? One sentence.", timeout=30)
+   507→        findings.append(Finding(
+   508→            title="Mirror Fracture: differential responses", severity="info",
+   509→            category="differential_response", module="oblivion",
+   510→            description="Server treats different User-Agents differently. {}".format(ai[:200]),
+   511→            evidence="Lengths: {}".format(lengths), asset=host, points_deducted=2,
+   512→            dread_score=_dread_score("info"),
+   513→        ))
+   514→    return findings
+   515→
+   516→
+   517→def _stage_19_temporal(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+   518→    findings = []
+   519→    host = _h(base_url)
+   520→    bodies = []
+   521→    for _ in range(3):
+   522→        try:
+   523→            resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   524→            bodies.append(resp.get("body", ""))
+   525→            time.sleep(2)
+   526→        except Exception:
+   527→            bodies.append("")
+   528→    if bodies and len(set(len(b) for b in bodies)) > 1:
+   529→        findings.append(Finding(
+   530→            title="Temporal inconsistency", severity="info", category="temporal_inconsistency",
+   531→            module="oblivion", description="Response body changes between requests — application state is dynamic",
+   532→            evidence="Lengths: {}".format([len(b) for b in bodies]),
+   533→            asset=host, points_deducted=2, dread_score=_dread_score("info"),
+   534→        ))
+   535→    return findings
+   536→
+   537→
+   538→def _stage_20_wisdom_verdict(base_url: str, all_findings: List[Finding], target: str,
+   539→                            timeout: int = 30) -> List[Finding]:
+   540→    host = _h(base_url)
+   541→    titles = [f.title for f in all_findings if f.severity in ("critical", "high")]
+   542→    scores = [_dread_score(f.severity) for f in all_findings]
+   543→    avg = round(sum(scores) / len(scores), 1) if scores else 0
+   544→    level, desc = _dread_level(avg)
+   545→    prompt = "Wisdom Verdict for {} ({} findings, avg DREAD {}/10, level: {}): {}. One paragraph verdict.".format(
+   546→        host, len(all_findings), avg, level, "; ".join(titles[:8]))
+   547→    ai = _oblivion_ai(prompt, timeout=timeout)
+   548→    sev = "transcendent" if avg >= 9.5 else "critical" if avg >= 7 else "high" if avg >= 5 else "medium"
+   549→    return [Finding(
+   550→        title="OBLIVION Wisdom Verdict: {} ({}/10)".format(level, avg),
+   551→        severity=sev, category="wisdom_verdict", module="oblivion",
+   552→        description="{} — {}".format(desc, ai[:300]),
+   553→        evidence="DREAD avg: {}/10, Level: {}, Findings: {}".format(avg, level, len(all_findings)),
+   554→        asset=host, points_deducted=int(avg),
+   555→        dread_score=avg,
+   556→    )]
+   557→
+   558→
+   559→def run_oblivion(target: str, base_url: str, timeout: int = 8,
+   560→                 verify_tls: bool = True) -> List[Finding]:
+   561→    """23-stage analytical dissolution with DREAD scoring. Returns list of Findings."""
+   562→    findings: List[Finding] = []
+   563→    findings.extend(_analyze_info_disclosure(base_url, timeout=timeout, verify_tls=verify_tls))
+   564→    findings.extend(_analyze_headers_deep(base_url, timeout=timeout, verify_tls=verify_tls))
+   565→    findings.extend(_analyze_js_secrets(base_url, timeout=timeout, verify_tls=verify_tls))
+   566→    findings.extend(_stage_4_js_deps(base_url, timeout=timeout, verify_tls=verify_tls))
+   567→    findings.extend(_stage_5_mixed_content(base_url, timeout=timeout, verify_tls=verify_tls))
+   568→    findings.extend(_stage_6_form_audit(base_url, timeout=timeout, verify_tls=verify_tls))
+   569→    findings.extend(_stage_7_error_probe(base_url, timeout=timeout, verify_tls=verify_tls))
+   570→    findings.extend(_stage_8_rate_limit(base_url, timeout=timeout, verify_tls=verify_tls))
+   571→    findings.extend(_stage_9_session_mgmt(base_url, timeout=timeout, verify_tls=verify_tls))
+   572→    findings.extend(_stage_10_cors_deep(base_url, timeout=timeout, verify_tls=verify_tls))
+   573→    findings.extend(_stage_11_hpp(base_url, timeout=timeout, verify_tls=verify_tls))
+   574→    findings.extend(_stage_12_api_versions(base_url, timeout=timeout, verify_tls=verify_tls))
+   575→    findings.extend(_stage_13_backup_files(base_url, timeout=timeout, verify_tls=verify_tls))
+   576→    findings.extend(_stage_14_dir_listing(base_url, timeout=timeout, verify_tls=verify_tls))
+   577→    findings.extend(_stage_15_cookie_bomb(base_url, timeout=timeout, verify_tls=verify_tls))
+   578→    findings.extend(_stage_16_websocket(base_url, timeout=timeout, verify_tls=verify_tls))
+   579→    findings.extend(_stage_17_graphql_introspection(base_url, timeout=timeout, verify_tls=verify_tls))
+   580→    findings.extend(_stage_18_mirror_fracture(base_url, timeout=timeout, verify_tls=verify_tls))
+   581→    findings.extend(_stage_19_temporal(base_url, timeout=timeout, verify_tls=verify_tls))
+   582→    findings.extend(_stage_20_wisdom_verdict(base_url, findings, target, timeout=timeout))
+   583→    return findings
+   584→
