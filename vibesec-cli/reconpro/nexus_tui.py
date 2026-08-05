@@ -45,7 +45,7 @@ from .widgets import (
 )
 from .nexus_help import HelpOverlay
 
-VERSION = "7.2.5"
+VERSION = "7.2.6"
 BG = Theme.current().BG
 CYAN = Theme.current().CYAN
 RED = Theme.current().RED
@@ -172,8 +172,8 @@ class FindingDetailModal(ModalScreen):
 class BootScreen(Widget):
     """Full-screen animated boot sequence."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self._step = 0
         self._spinner_idx = 0
         self._module_idx = 0
@@ -268,8 +268,8 @@ class BootScreen(Widget):
 class ModuleCell(Static):
     """Single module status cell in the grid."""
 
-    def __init__(self, module_id: str, name: str) -> None:
-        super().__init__()
+    def __init__(self, module_id: str, name: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self.module_id = module_id
         self.module_name = name
         self.status = "idle"  # idle | scanning | done | error
@@ -329,8 +329,8 @@ class StatusDot(Static):
 
     scanning: reactive[bool] = reactive(False)
 
-    def __init__(self) -> None:
-        super().__init__("")
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__("", **kwargs)
         self._phase = 0
 
     def on_mount(self) -> None:

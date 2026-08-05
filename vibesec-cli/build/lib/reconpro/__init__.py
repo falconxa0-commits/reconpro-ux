@@ -41,7 +41,7 @@ Usage:
     reconpro serve                          # API server
 """
 
-__version__ = "7.2.5"
+__version__ = "7.2.6"
 __all__ = ["scan", "ReconProResult", "audit_scan", "__version__"]
 
 from .scanner import scan, ReconProResult, audit_scan  # noqa: E402
