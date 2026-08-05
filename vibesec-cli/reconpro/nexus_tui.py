@@ -807,6 +807,7 @@ class NexusApp(App):
         self._left_collapsed: bool = False
         self._modules_collapsed: bool = False
         self._resize_timer: Optional[Timer] = None
+        self._pulse_timer: Optional[Timer] = None
         self._compact_mode: bool = False
         self._split_flash_timer: Optional[Timer] = None
         self._user_manually_resized: bool = False  # True after Ctrl+←/→
@@ -1893,7 +1894,7 @@ class NexusApp(App):
         # Debounce to avoid flicker during rapid resize
         if self._resize_timer is not None:
             self._resize_timer.stop()
-        self._resize_timer = self.set_timer(0.15, lambda: self._apply_responsive_layout(event.width, event.height))
+        self._resize_timer = self.set_timer(0.15, lambda: self._apply_responsive_layout(event.size.width, event.size.height))
 
     def _apply_responsive_layout(self, width: int, height: int) -> None:
         """Apply layout changes based on terminal dimensions.
@@ -3302,7 +3303,7 @@ class NexusApp(App):
                 if region is not None:
                     # Calculate which line was clicked relative to the scroll position
                     scroll_offset = event.widget.scroll_y
-                    click_y = event.y - region.y
+                    click_y = event.screen_y - region.y
                     # Each finding takes 1 line; estimate index from click position
                     # Account for scroll position
                     line_height = 1
@@ -3330,7 +3331,9 @@ class NexusApp(App):
         try:
             header = self.query_one("#findings-header", Label)
             header.update(f"[{RED} bold]► FINDINGS ⚠[/]")
-            self.set_timer(0.3, lambda: self._restore_findings_header())
+            if self._pulse_timer is not None:
+                self._pulse_timer.stop()
+            self._pulse_timer = self.set_timer(0.3, lambda: self._restore_findings_header())
         except NoMatches:
             pass
 
