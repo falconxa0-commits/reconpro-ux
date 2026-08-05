@@ -45,7 +45,7 @@ from .widgets import (
 )
 from .nexus_help import HelpOverlay
 
-VERSION = "7.2.4"
+VERSION = "7.2.5"
 BG = Theme.current().BG
 CYAN = Theme.current().CYAN
 RED = Theme.current().RED
@@ -454,7 +454,7 @@ class NexusApp(App):
         text-style: bold;
     }}
     #score-gauge {{
-        margin-left: auto;
+        width: 1fr;
     }}
 
     /* ── Stats Bar ────────────────────────────────────── */
@@ -497,7 +497,7 @@ class NexusApp(App):
         height: 100%;
         dock: left;
         border-right: solid {BORDER_COLOR};
-        transition: width 250ms ease-in-out, border 200ms;
+        transition: width 250ms, border 200ms;
     }}
     #chat-header {{
         height: 1;
@@ -520,7 +520,7 @@ class NexusApp(App):
     #right-panel {{
         width: 60%;
         height: 100%;
-        transition: width 250ms ease-in-out;
+        transition: width 250ms;
     }}
 
     /* ── Findings Feed ───────────────────────────────────── */
@@ -545,7 +545,7 @@ class NexusApp(App):
     #modules-wrapper {{
         width: 100%;
         height: 2fr;
-        transition: height 200ms in 100ms;
+        transition: height 200ms;
     }}
     #modules-header {{
         height: 1;
@@ -567,7 +567,7 @@ class NexusApp(App):
         grid-gutter: 0 2;
         grid-columns: 1fr 1fr 1fr;
         overflow-y: auto;
-        transition: height 300ms in 200ms;
+        transition: height 300ms;
     }}
     .module-cell {{
         height: 3;
@@ -607,7 +607,7 @@ class NexusApp(App):
         width: 0;
         overflow: hidden;
         border: none;
-        transition: width 200ms ease-in;
+        transition: width 200ms;
     }}
     #left-panel.collapsed * {{
         display: none;
@@ -616,12 +616,12 @@ class NexusApp(App):
         width: 100%;
     }}
     #modules-wrapper {{
-        transition: height 300ms ease-in-out;
+        transition: height 300ms;
     }}
     #modules-wrapper.collapsed {{
         height: 0;
         overflow: hidden;
-        transition: height 200ms ease-in;
+        transition: height 200ms;
     }}
     #modules-wrapper.collapsed * {{
         display: none;
@@ -630,7 +630,7 @@ class NexusApp(App):
         display: none;
     }}
     #findings-feed {{
-        transition: height 300ms ease-in-out;
+        transition: height 300ms;
     }}
     #findings-feed.expanded-modules {{
         height: 5fr;
@@ -639,14 +639,12 @@ class NexusApp(App):
     /* ── Phase D: Panel Focus Zoom ──────────────────────── */
     #left-panel.panel-zoom {{
         border-right: solid {CYAN};
-        box-shadow: inset 0 0 6 {CYAN}44;
     }}
     #right-panel.panel-zoom {{
         border: solid {CYAN};
-        box-shadow: inset 0 0 6 {CYAN}44;
     }}
     #module-grid.panel-zoom {{
-        box-shadow: inset 0 0 4 {GREEN}33;
+        border: solid {GREEN};
     }}
 
     /* ── Phase D: Resize Divider Indicator ──────────────── */
@@ -758,7 +756,6 @@ class NexusApp(App):
     /* ── Phase E: Toast Overlay z-index ────────────────── */
     #toast-container {{
         layer: overlay;
-        z-index: 100;
     }}
     """
 
