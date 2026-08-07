@@ -675,14 +675,41 @@ def main(argv: list[str] | None = None) -> None:
         _banner(args)
         from .passive_intel import PassiveDNS, WaybackMachine
         domain = args.domain
-        pdns = PassiveDNS()
-        results = _spinner_wrap(f"Querying passive intel for {domain}...", pdns.query_virustotal, domain)
-        if results:
-            for r in results[:10]:
-                console.print(f"  [cyan]{r.get('ip', '?')}[/]  {r.get('date', '?')}")
+
+        # Wayback Machine (free, no key needed)
         wb = WaybackMachine()
-        history = wb.get_history(domain)
-        console.print(f"  {len(history)} archived page(s)." if history else "  [dim]No archive data.[/]")
+        history = _spinner_wrap(f"Querying Wayback Machine for {domain}...", wb.get_history, domain)
+        if history:
+            console.print(f"  [green]{len(history)}[/] archived page(s) found:")
+            for h in history[:10]:
+                console.print(f"    [dim]{h.get('timestamp', '?')}[/] {h.get('url', '?')[:80]}")
+        else:
+            console.print("  [dim]No Wayback archive data found.[/]")
+
+        # Passive DNS (free — uses system DNS + public resolvers, no API key)
+        pdns = PassiveDNS()
+        dns_results = _spinner_wrap(f"Resolving DNS for {domain}...", pdns.resolve_dns, domain)
+        if dns_results:
+            console.print(f"  [green]{len(dns_results)}[/] DNS record(s):")
+            for r in dns_results[:15]:
+                rtype = r.get("type", "?")
+                value = r.get("value", "?")
+                ttl = r.get("ttl", "")
+                console.print(f"    [cyan]{rtype:6s}[/] {value} [dim](TTL {ttl})[/]")
+        else:
+            console.print("  [dim]No DNS records found.[/]")
+
+        # Optional: VirusTotal (requires API key)
+        vt_key = os.environ.get("VIRUSTOTAL_API_KEY", "")
+        if vt_key:
+            vt_results = _spinner_wrap(f"Querying VirusTotal for {domain}...", pdns.query_virustotal, domain, vt_key)
+            if vt_results:
+                console.print(f"  [green]{len(vt_results)}[/] VirusTotal resolution(s):")
+                for r in vt_results[:10]:
+                    console.print(f"    [cyan]{r.get('ip', '?')}[/]  {r.get('last_resolved', '?')}")
+            else:
+                console.print("  [dim]No VirusTotal data.[/]")
+
         console.print()
         return
 

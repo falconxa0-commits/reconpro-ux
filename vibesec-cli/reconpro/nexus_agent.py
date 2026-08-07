@@ -1,13 +1,11 @@
-"""Nexus Agent — LLM-powered agentic security engine.
+"""Nexus Agent — Agentic security engine.
 
-The core AI brain of ReconPro. Accepts a natural language goal, reasons about
-what needs to be done, plans tool usage, executes step by step, verifies
-results, and adapts the plan dynamically.
+The core intelligence brain of ReconPro. Accepts a natural language goal,
+reasons about what needs to be done, plans tool usage, executes step by step,
+verifies results, and adapts the plan dynamically.
 
-Supports three backends:
-  1. OpenAI (GPT-4o-mini) — requires OPENAI_API_KEY
-  2. Anthropic Claude — requires ANTHROPIC_API_KEY
-  3. Rule-based planner — works with zero API keys
+Powered by a built-in rule-based planner — zero external API keys required.
+Optionally supports OpenAI/Anthropic LLM backends when API keys are set.
 
 18 built-in tools covering scanning, recon, intel, and export.
 Persistent per-target memory stored at ~/.reconpro/memory/agent_context.json.
@@ -1346,8 +1344,7 @@ class NexusAgent:
             self._emit("[bold cyan]NEXUS[/] | LLM: [green]Anthropic Claude[/]")
             result = self._execute_llm(goal, backend="anthropic")
         else:
-            self._emit("[bold cyan]NEXUS[/] | Engine: [yellow]Rule-Based Planner[/]")
-            self._emit("[dim]Set OPENAI_API_KEY or ANTHROPIC_API_KEY for AI mode.[/]")
+            self._emit("[bold cyan]NEXUS[/] | Engine: [green]Rule-Based Intelligence[/]")
             result = self._execute_rules(goal)
 
         # Save session to memory

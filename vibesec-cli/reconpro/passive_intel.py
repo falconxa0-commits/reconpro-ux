@@ -1,12 +1,14 @@
 """
-ReconPro v8.5 — Passive DNS & Historical Intelligence
+ReconPro — Passive DNS & Historical Intelligence
 
-Gathers passive DNS records, historical web snapshots, and technology
-detection data from public services (VirusTotal, SecurityTrails, Shodan,
-Wayback Machine). Uses only urllib from stdlib.
+Gathers DNS records, historical web snapshots, and technology detection data.
+Uses only free, keyless sources: system DNS resolver, Cloudflare DoH,
+and the Internet Archive Wayback Machine.
+
+Optionally supports VirusTotal, SecurityTrails, and Shodan when API keys are set.
 
 Exports:
-    PassiveDNS         – DNS resolution history from multiple sources
+    PassiveDNS         – DNS resolution from system + Cloudflare DoH
     WaybackMachine     – archived page URLs and content
     DeprecationDetector – stale DNS record detection
 """
@@ -58,6 +60,66 @@ def _safe_html_get(url: str, timeout: float = 15.0) -> str:
 
 class PassiveDNS:
     """Query passive DNS services for historical resolution data."""
+
+    @staticmethod
+    def resolve_dns(domain: str, timeout: float = 5.0) -> List[Dict[str, Any]]:
+        """Resolve DNS records using system resolver (no API key needed).
+
+        Returns list of {"type": "A"/"AAAA"/"MX"/"NS"/"TXT", "value": ..., "ttl": ...}.
+        """
+        import socket
+        results: List[Dict[str, Any]] = []
+
+        # A + AAAA records
+        try:
+            addrs = socket.getaddrinfo(domain, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            seen = set()
+            for family, _, _, _, sockaddr in addrs:
+                ip = sockaddr[0]
+                if ip not in seen:
+                    seen.add(ip)
+                    rtype = "AAAA" if family == socket.AF_INET6 else "A"
+                    results.append({"type": rtype, "value": ip, "ttl": ""})
+        except (socket.gaierror, OSError):
+            pass
+
+        # MX records via DNS JSON API (Cloudflare DoH — free, no key)
+        try:
+            mx_url = f"https://cloudflare-dns.com/dns-query?name={urllib.parse.quote(domain)}&type=MX"
+            req = urllib.request.Request(mx_url, headers={
+                "User-Agent": "ReconPro/7",
+                "Accept": "application/dns-json",
+            })
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                for answer in data.get("Answer", []):
+                    results.append({
+                        "type": "MX",
+                        "value": answer.get("data", ""),
+                        "ttl": str(answer.get("TTL", "")),
+                    })
+        except Exception:
+            pass
+
+        # NS records via Cloudflare DoH
+        try:
+            ns_url = f"https://cloudflare-dns.com/dns-query?name={urllib.parse.quote(domain)}&type=NS"
+            req = urllib.request.Request(ns_url, headers={
+                "User-Agent": "ReconPro/7",
+                "Accept": "application/dns-json",
+            })
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                for answer in data.get("Answer", []):
+                    results.append({
+                        "type": "NS",
+                        "value": answer.get("data", "").rstrip("."),
+                        "ttl": str(answer.get("TTL", "")),
+                    })
+        except Exception:
+            pass
+
+        return results
 
     def query_virustotal(self, domain: str, api_key: str = "") -> List[Dict[str, Any]]:
         """Query VirusTotal for DNS resolution history.
