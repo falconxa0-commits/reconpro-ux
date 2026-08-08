@@ -937,6 +937,15 @@ def run_recon(target: str, base_url: str, timeout: int = 8,
 
     # ── 1. DNS (Cloudflare DoH + socket fallback) ─────────────────────────
     dns = _dns_lookup(host)
+
+    # v9.1.0: Inject ReconPro Signature into DNS-check probe
+    _sig_headers = {}
+    try:
+        from ..wishes import SignatureBroadcaster
+        _sig_headers = SignatureBroadcaster().broadcast()
+    except Exception:
+        pass
+
     if not dns["a"] and not dns["aaaa"]:
         add("DNS resolution failed", "critical", "dns",
             f"No A or AAAA records found for {host}", "DNS lookup: no results")

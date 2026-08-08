@@ -546,6 +546,24 @@ def _stage_20_wisdom_verdict(base_url: str, all_findings: List[Finding], target:
         host, len(all_findings), avg, level, "; ".join(titles[:8]))
     ai = _oblivion_ai(prompt, timeout=timeout)
     sev = "transcendent" if avg >= 9.5 else "critical" if avg >= 7 else "high" if avg >= 5 else "medium"
+
+    # v9.1.0: Record in Hall of the Forgotten
+    try:
+        from ..wishes import HallOfTheForgotten, UnifiedVerdict
+        hall = HallOfTheForgotten()
+        uv = UnifiedVerdict()
+        verdict_result = uv.from_findings([f.to_dict() for f in all_findings])
+        hall.record_encounter(
+            target=host,
+            dread_index=avg,
+            vendors_detected=0,
+            stages_completed=20,
+            cves_matched=sum(1 for f in all_findings if "cve" in f.title.lower()),
+            verdict=verdict_result["verdict"],
+        )
+    except Exception:
+        pass
+
     return [Finding(
         title="OBLIVION Wisdom Verdict: {} ({}/10)".format(level, avg),
         severity=sev, category="wisdom_verdict", module="oblivion",

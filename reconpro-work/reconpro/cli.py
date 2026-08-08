@@ -490,6 +490,45 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--health", action="store_true", help="Health check: verify z.ai connectivity")
     p.add_argument("--model", type=str, default="glm-4-flash", help="Model name (default: glm-4-flash)")
 
+    # ── wishes (v9.1.0 22-Wish Ritual) ───────────────────────────
+    p = sub.add_parser("wishes", help="Execute 22-Wish orchestration ritual against a target")
+    p.add_argument("target", help="Target domain or URL")
+    p.add_argument("--modules", "-m", type=str, default=None, help="Comma-separated modules to include")
+    p.add_argument("--timeout", type=int, default=8)
+    p.add_argument("--insecure", "-k", action="store_true", help="Skip TLS verification")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    # ── geoip (v9.1.0 GeoIP Enrichment) ──────────────────────────
+    p = sub.add_parser("geoip", help="GeoIP enrichment for IP addresses")
+    p.add_argument("ips", nargs="+", help="IP addresses to enrich")
+    p.add_argument("--batch", action="store_true", help="Use batch API for multiple IPs")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    # ── threat-feeds (v9.1.0 Threat Feed Ingestion) ───────────────
+    p = sub.add_parser("threat-feeds", help="Threat feed ingestion and IP reputation checking")
+    p.add_argument("ips", nargs="*", help="IPs to check (checks all feeds + DNSBLs)")
+    p.add_argument("--refresh", action="store_true", help="Force refresh all feeds")
+    p.add_argument("--stats", action="store_true", help="Show feed statistics only")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    # ── ai-redteam (v9.1.0 AI Red Team) ──────────────────────────
+    p = sub.add_parser("ai-redteam", help="AI endpoint discovery, vendor fingerprinting, secret extraction")
+    p.add_argument("target", help="Target domain or URL")
+    p.add_argument("--timeout", type=int, default=8)
+    p.add_argument("--insecure", "-k", action="store_true", help="Skip TLS verification")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    # ── supply-chain (v9.1.0 Supply Chain Audit) ─────────────────
+    p = sub.add_parser("supply-chain", help="Supply chain audit — GitHub repos or web content analysis")
+    p.add_argument("target", help="GitHub repo (owner/repo) or URL to audit")
+    p.add_argument("--max-files", type=int, default=30, help="Max files to scrape (GitHub)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    # ── cross-validate (v9.1.0 Cross-Validation) ──────────────────
+    p = sub.add_parser("cross-validate", help="Cross-validate ReconPro findings with independent verification")
+    p.add_argument("target", nargs="?", default=None, help="Target (default: use last scan)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
     # ── Parse ─────────────────────────────────────────────────────
     global _cli_args
     args, remaining = parser.parse_known_args(argv)
@@ -591,6 +630,208 @@ def main(argv: list[str] | None = None) -> None:
         console.print(f"  [cyan]App Type:[/] {profile.app_type}")
         console.print(f"  [bold]Recommended:[/] {', '.join(plan.get('recommended_modules', []))}")
         console.print(f"  [dim]{plan.get('reasoning', '')}[/]")
+        console.print()
+        return
+
+    # ── WISHES (v9.1.0) ─────────────────────────────────────────
+    if cmd == "wishes":
+        _banner(args)
+        target = args.target
+        base_url = target if target.startswith("http") else f"https://{target}"
+        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+
+        # Run scan first to get module results
+        result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
+                                timeout=args.timeout, verify_tls=not args.insecure, rate_limit=10.0)
+
+        from .wishes import WishesOrchestrator
+        orchestrator = WishesOrchestrator()
+        manifest = _spinner_wrap(
+            f"Executing 22-Wish ritual on {target}...",
+            orchestrator.execute,
+            target=target, base_url=base_url,
+            timeout=args.timeout, verify_tls=not args.insecure,
+            modules=result.modules_run, module_results=result.module_results,
+        )
+
+        if getattr(args, "json_output", False):
+            console.print_json(json.dumps(manifest, indent=2, default=str))
+        else:
+            verdict = manifest.get("verdict", {}).get("verdict", "?")
+            fear = manifest.get("fear", {})
+            console.print(f"  [bold]22-Wish Ritual Complete[/]")
+            console.print(f"  [cyan]Verdict:[/] {verdict}")
+            console.print(f"  [cyan]Fear Index:[/] {fear.get('fear_index', 0)} ({fear.get('fear_label', '?')})")
+            console.print(f"  [cyan]Wishes Granted:[/] {len(manifest.get('wishes_granted', []))}/{manifest.get('wishes_count', 22)}")
+            console.print(f"  [cyan]Witness ID:[/] {manifest.get('witness', {}).get('encounter_id', '?')}")
+            hall_b = manifest.get('hall_broken', {})
+            console.print(f"  [cyan]Hall of Broken:[/] {hall_b.get('total_encounters', 0)} encounters, avg fear {hall_b.get('average_fear', 0)}")
+            hall_f = manifest.get('hall_forgotten', {})
+            console.print(f"  [cyan]Hall of Forgotten:[/] {hall_f.get('total_encounters', 0)} encounters, avg dread {hall_f.get('average_dread', 0)}")
+        console.print()
+        return
+
+    # ── GEOIP (v9.1.0) ────────────────────────────────────────────
+    if cmd == "geoip":
+        _banner(args)
+        ips = args.ips
+        from .geoip import GeoIPLookup, BatchGeoIP, format_geoip_summary
+        if getattr(args, 'batch', False) and len(ips) > 1:
+            batch = BatchGeoIP()
+            results = _spinner_wrap(f"Enriching {len(ips)} IPs...", batch.enrich_batch, ips)
+            if getattr(args, 'json_output', False):
+                console.print_json(json.dumps(results, indent=2, default=str))
+            else:
+                for ip, data in results.items():
+                    console.print(f"  {format_geoip_summary(data)}")
+        else:
+            geo = GeoIPLookup()
+            for ip in ips:
+                result = geo.enrich_ip(ip)
+                if getattr(args, 'json_output', False):
+                    console.print_json(json.dumps(result, indent=2, default=str))
+                else:
+                    console.print(f"  {format_geoip_summary(result)}")
+        console.print()
+        return
+
+    # ── THREAT-FEEDS (v9.1.0) ─────────────────────────────────────
+    if cmd == "threat-feeds":
+        _banner(args)
+        from .threat_feeds import ThreatFeedManager, DNSBLChecker, check_ip_reputation
+        if getattr(args, 'stats', False):
+            mgr = ThreatFeedManager()
+            stats = _spinner_wrap("Fetching feed stats...", mgr.refresh_all, force=getattr(args, 'refresh', False))
+            console.print("  [bold]Threat Feed Statistics:[/]")
+            for name, count in stats.items():
+                console.print(f"  [cyan]{name:25}[/] {count:>6} indicators")
+        elif getattr(args, 'ips', None):
+            ips = args.ips
+            for ip in ips:
+                result = _spinner_wrap(f"Checking {ip}...", check_ip_reputation, ip)
+                if getattr(args, 'json_output', False):
+                    console.print_json(json.dumps(result, indent=2, default=str))
+                else:
+                    is_mal = result.get('is_malicious', False)
+                    color = "bright_red" if is_mal else "bright_green"
+                    console.print(f"  [{color}]{ip:18}[/{color}]  score={result.get('threat_score', 0)}  feeds={len(result.get('threat_feeds', []))}  dnsbl={len(result.get('dnsbl_hits', []))}")
+                    for hit in result.get('threat_feeds', []):
+                        console.print(f"    [red]  Feed:[/] {hit['feed']}")
+                    for hit in result.get('dnsbl_hits', []):
+                        console.print(f"    [red]  DNSBL:[/] {hit['dnsbl']}")
+        else:
+            mgr = ThreatFeedManager()
+            stats = _spinner_wrap("Refreshing threat feeds...", mgr.refresh_all, force=getattr(args, 'refresh', False))
+            console.print("  [bold]Threat Feed Refresh Complete:[/]")
+            for name, count in stats.items():
+                status_color = "bright_green" if count >= 0 else "bright_red"
+                console.print(f"  [{status_color}]{name:25}[/{status_color}] {count:>6} indicators")
+        console.print()
+        return
+
+    # ── AI-REDTEAM (v9.1.0) ───────────────────────────────────────
+    if cmd == "ai-redteam":
+        _banner(args)
+        target = args.target
+        base_url = target if target.startswith("http") else f"https://{target}"
+        from .ai_red_team import run_ai_red_team
+        results = _spinner_wrap(f"AI red-teaming {target}...", run_ai_red_team, target, base_url,
+                                timeout=args.timeout, verify_tls=not args.insecure)
+        if getattr(args, 'json_output', False):
+            console.print_json(json.dumps(results, indent=2, default=str))
+        else:
+            console.print(f"  [cyan]Endpoints Discovered:[/] {results.get('endpoints_discovered', 0)}")
+            console.print(f"  [cyan]Vendors Detected:[/] {results.get('vendors_detected', 0)}")
+            console.print(f"  [cyan]Secrets Found:[/] {results.get('secrets_found', 0)}")
+            console.print(f"  [cyan]Total Risk Score:[/] {results.get('total_risk_score', 0)}")
+            for ep in results.get('endpoints', [])[:10]:
+                ai_tag = " [bright_green]AI[/]" if ep.get('has_ai_content') else ""
+                console.print(f"    [dim]{ep['status']}[/] {ep['endpoint']:45}{ai_tag}")
+            for v in results.get('vendors', []):
+                console.print(f"    [yellow]Vendor:[/] {v['vendor']:20} score={v['score']}")
+            for s in results.get('secrets', []):
+                sev_color = SEV_COLORS.get(s['severity'], 'white')
+                console.print(f"    [{sev_color}]{s['severity'].upper():8}[/{sev_color}] {s['type']}: {s['match']}")
+        console.print()
+        return
+
+    # ── SUPPLY-CHAIN (v9.1.0) ─────────────────────────────────────
+    if cmd == "supply-chain":
+        _banner(args)
+        target = args.target
+        from .supply_chain import SCCAudit
+        audit = SCCAudit()
+        if "/" in target and not target.startswith("http"):
+            results = _spinner_wrap(f"Auditing {target}...", audit.audit_github, target, max_files=args.max_files)
+            if getattr(args, 'json_output', False):
+                console.print_json(json.dumps(results, indent=2, default=str))
+            else:
+                analysis = results.get('analysis', {})
+                console.print(f"  [cyan]Files Scraped:[/] {results.get('files_scraped', 0)}")
+                console.print(f"  [cyan]API Requests:[/] {results.get('api_requests', 0)}")
+                console.print(f"  [cyan]Workflows Found:[/] {results.get('workflows_found', 0)}")
+                console.print(f"  [cyan]Secrets Found:[/] {len(analysis.get('secrets_found', []))}")
+                console.print(f"  [cyan]Risk Score:[/] {analysis.get('risk_score', 0)}")
+                for dep in analysis.get('dependency_files', []):
+                    console.print(f"    [cyan]{dep['manager']:10}[/] {dep['file']}")
+                for s in analysis.get('secrets_found', []):
+                    console.print(f"    [red]{s['type']:20}[/] {s['file']}")
+                for sp in analysis.get('suspicious_patterns', []):
+                    console.print(f"    [yellow]{sp['pattern']}[/] in {sp.get('file', '?')}")
+        else:
+            results = _spinner_wrap(f"Auditing {target}...", audit.audit_url, target)
+            if getattr(args, 'json_output', False):
+                console.print_json(json.dumps(results, indent=2, default=str))
+            else:
+                page = results.get('page', {})
+                console.print(f"  [cyan]Status:[/] {page.get('status', 0)}")
+                console.print(f"  [cyan]Title:[/] {page.get('title', '?')}")
+                console.print(f"  [cyan]Links:[/] {len(page.get('links', []))}")
+                console.print(f"  [cyan]Scripts:[/] {len(page.get('scripts', []))}")
+        console.print()
+        return
+
+    # ── CROSS-VALIDATE (v9.1.0) ───────────────────────────────────
+    if cmd == "cross-validate":
+        target = getattr(args, 'target', None)
+        findings = []
+        if target:
+            latest = get_latest()
+            if latest and latest.get('target', '') == target.replace('https://', '').replace('http://', '').split('/')[0]:
+                findings = latest.get('findings', [])
+            else:
+                _banner(args)
+                result = _spinner_wrap(f"Scanning {target}...", scan, target, timeout=8, verify_tls=True, rate_limit=10.0)
+                findings = result.findings
+        else:
+            latest = get_latest()
+            if not latest:
+                console.print("  [yellow]No scan data. Run a scan first or specify a target.[/]")
+                sys.exit(1)
+            target = latest.get('target', 'unknown')
+            findings = latest.get('findings', [])
+
+        _banner(args)
+        from .cross_validator import CrossValidator
+        base_url = target if target.startswith('http') else f'https://{target}'
+        cv_results = _spinner_wrap(f"Cross-validating {target}...", CrossValidator().validate, target, findings, base_url)
+        if getattr(args, 'json_output', False):
+            console.print_json(json.dumps(cv_results, indent=2, default=str))
+        else:
+            vr = cv_results.get('verification_rate', 0)
+            color = 'bright_green' if vr >= 80 else 'yellow' if vr >= 50 else 'bright_red'
+            console.print(f"  [bold]Cross-Validation Results:[/]")
+            console.print(f"  [{color}]Verification Rate: {vr}%[/{color}]")
+            console.print(f"  [cyan]Verified:[/] {len(cv_results.get('verified', []))} findings")
+            console.print(f"  [red]Failed:[/] {len(cv_results.get('failed', []))} findings")
+            console.print(f"  [yellow]Mismatches:[/] {len(cv_results.get('mismatches', []))} findings")
+            indep = cv_results.get('independent_checks', {})
+            dns = indep.get('dns', {})
+            http = indep.get('http', {})
+            tls = indep.get('tls', {})
+            console.print(f"  [dim]DNS records: {dns.get('records', {})}[/]")
+            console.print(f"  [dim]HTTP status: {http.get('status', '?')}, headers: {len(http.get('headers', {}))}[/]")
+            console.print(f"  [dim]TLS version: {tls.get('version', '?')}[/]")
         console.print()
         return
 

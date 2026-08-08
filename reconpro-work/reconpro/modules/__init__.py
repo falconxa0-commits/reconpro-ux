@@ -21,3 +21,14 @@ __all__ = [
     "run_host", "run_dev", "run_doctor", "run_cloud_recon",
     "run_pegasus", "run_team",
 ]
+
+# v9.1.0: New capabilities are in top-level modules, not scanning sub-modules.
+# They can be imported directly:
+#   from reconpro.wishes import WishesOrchestrator
+#   from reconpro.geoip import GeoIPLookup
+#   from reconpro.threat_feeds import ThreatFeedManager
+#   from reconpro.ai_cve_db import AICVEDatabase
+#   from reconpro.ai_red_team import AIEndpointDiscovery, AIVendorFingerprinter
+#   from reconpro.cross_validator import CrossValidator
+#   from reconpro.supply_chain import SCCAudit
+#   from reconpro.ansi_capture import ANSICapture

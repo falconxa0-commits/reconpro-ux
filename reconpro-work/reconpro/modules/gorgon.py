@@ -418,7 +418,10 @@ def _stage_14_websocket(base_url: str, timeout: int = 8, verify_tls: bool = True
 
 def _stage_15_fear_assessment(base_url: str, findings_so_far: List[Finding],
                                 timeout: int = 30) -> List[Finding]:
-    """Stage 15: Fear Index — AI-powered final assessment."""
+    """Stage 15: Fear Index — AI-powered final assessment.
+
+    v9.1.0: Now also records to Hall of the Broken.
+    """
     host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
     total_pts = sum(f.points_deducted or 0 for f in findings_so_far)
     score = min(total_pts / 5.0, 10.0)
@@ -426,6 +429,23 @@ def _stage_15_fear_assessment(base_url: str, findings_so_far: List[Finding],
     prompt = "Analyze these attack findings for {} (Fear score {}/10, level: {}): {}. Provide one sentence verdict.".format(
         host, round(score, 1), level, "; ".join(f.title for f in findings_so_far[:10]))
     ai_verdict = _gorgon_ai(base_url, prompt, timeout)
+
+    # v9.1.0: Record in Hall of the Broken
+    try:
+        from ..wishes import HallOfTheBroken, FearIndex
+        hall = HallOfTheBroken()
+        fear_calc = FearIndex()
+        fear_result = fear_calc.from_findings([f.to_dict() for f in findings_so_far])
+        hall.record_encounter(
+            target=host,
+            fear_index=fear_result["fear_index"],
+            endpoints_found=sum(1 for f in findings_so_far if f.category in ("surface_map", "api_discovery", "websocket")),
+            vulnerable_count=sum(1 for f in findings_so_far if f.severity in ("critical", "high")),
+            cves_matched=sum(1 for f in findings_so_far if "cve" in f.title.lower()),
+        )
+    except Exception:
+        pass
+
     return [Finding(
         title="GORGON Fear Index: {} ({}/10)".format(level, round(score, 1)),
         severity="critical" if score >= 6 else "high" if score >= 4 else "medium",
@@ -436,9 +456,92 @@ def _stage_15_fear_assessment(base_url: str, findings_so_far: List[Finding],
     )]
 
 
+def _stage_16_ai_endpoint_discovery(base_url: str, timeout: int = 8,
+                                      verify_tls: bool = True) -> List[Finding]:
+    """v9.1.0 Stage 16: AI-specific endpoint discovery and vendor fingerprinting."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    try:
+        from ..ai_red_team import AIEndpointDiscovery, AIVendorFingerprinter, SecretExtractor
+        from ..ai_cve_db import AICVEDatabase
+
+        # Discover AI endpoints
+        discovery = AIEndpointDiscovery()
+        endpoints = discovery.discover(base_url, timeout=timeout, verify_tls=verify_tls)
+        if endpoints:
+            findings.append(Finding(
+                title="AI endpoints: {} discovered".format(len(endpoints)),
+                severity="medium", category="ai_endpoint_discovery",
+                module="gorgon",
+                description="AI-specific endpoints found: {}".format(", ".join(e["endpoint"] for e in endpoints[:8])),
+                evidence="{} AI endpoints discovered".format(len(endpoints)),
+                asset=host, points_deducted=4,
+            ))
+
+        # Vendor fingerprinting
+        fp = AIVendorFingerprinter()
+        vendors = fp.fingerprint(base_url, timeout=timeout, verify_tls=verify_tls)
+        for v in vendors[:3]:
+            findings.append(Finding(
+                title="AI vendor detected: {}".format(v["vendor"]),
+                severity="medium", category="ai_vendor_fingerprint",
+                module="gorgon",
+                description="AI vendor {} detected (score: {})".format(v["vendor"], v["score"]),
+                evidence="Evidence: {}".format("; ".join(v.get("evidence", []))),
+                asset=host, points_deducted=3,
+            ))
+
+        # AI CVE matching
+        db = AICVEDatabase()
+        if vendors:
+            all_cves = []
+            for v in vendors:
+                cves = db.search(product=v["vendor"])
+                all_cves.extend(cves)
+            if all_cves:
+                for cve in all_cves[:3]:
+                    findings.append(Finding(
+                        title="AI CVE: {} (CVSS {})".format(cve["cve"], cve["cvss"]),
+                        severity="critical" if cve["cvss"] >= 9.0 else "high",
+                        category="ai_cve",
+                        module="gorgon",
+                        description="{}: {}".format(cve["cve"], cve["description"][:100]),
+                        evidence="Product: {}, Type: {}, CVSS: {}".format(cve["product"], cve["type"], cve["cvss"]),
+                        asset=host, points_deducted=12 if cve["cvss"] >= 9.0 else 8,
+                        remediation="Upgrade {} to {} or later.".format(cve["product"], cve.get("fix_version", "latest")),
+                    ))
+
+        # Secret extraction from root response
+        extractor = SecretExtractor()
+        try:
+            resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+            secrets = extractor.extract_from_response(resp)
+            for s in secrets[:5]:
+                findings.append(Finding(
+                    title="Secret exposed: {}".format(s["type"]),
+                    severity=s["severity"], category="secret_exposure",
+                    module="gorgon",
+                    description="{} found in response: {}".format(s["type"], s["match"][:60]),
+                    evidence="Pattern: {}".format(s.get("pattern", "?")),
+                    asset=host, points_deducted=12 if s["severity"] == "critical" else 6,
+                    remediation="Remove exposed secrets from responses. Rotate compromised credentials.",
+                ))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    return findings
+
+
 def run_gorgon(target: str, base_url: str, timeout: int = 8,
                 verify_tls: bool = True) -> List[Finding]:
-    """15-stage AI red team. Returns list of Findings."""
+    """15-stage + AI red team. v9.1.0 adds AI endpoint discovery, vendor fingerprinting,
+    AI CVE matching, and secret extraction.
+
+    Returns list of Findings.
+    """
     findings: List[Finding] = []
     findings.extend(_stage_1_invocation(base_url, timeout=timeout, verify_tls=verify_tls))
     findings.extend(_stage_2_surface_map(base_url, timeout=timeout, verify_tls=verify_tls))
@@ -455,4 +558,6 @@ def run_gorgon(target: str, base_url: str, timeout: int = 8,
     findings.extend(_stage_13_ua_fingerprint(base_url, timeout=timeout, verify_tls=verify_tls))
     findings.extend(_stage_14_websocket(base_url, timeout=timeout, verify_tls=verify_tls))
     findings.extend(_stage_15_fear_assessment(base_url, findings, timeout=timeout))
+    # v9.1.0: AI endpoint discovery, vendor fingerprinting, AI CVE matching, secrets
+    findings.extend(_stage_16_ai_endpoint_discovery(base_url, timeout=timeout, verify_tls=verify_tls))
     return findings

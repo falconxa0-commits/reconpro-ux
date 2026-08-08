@@ -171,11 +171,91 @@ def _check_honeypot_signs(base_url: str, timeout: int = 8,
     return findings
 
 
+def _check_threat_feeds(base_url: str, timeout: int = 8,
+                        verify_tls: bool = True) -> List[Finding]:
+    """v9.1.0: Check target IPs against threat feeds and DNSBLs."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    try:
+        import socket
+        ips = []
+        # Resolve the host to IPs
+        for family in (socket.AF_INET,):
+            try:
+                results = socket.getaddrinfo(host, None, family)
+                ips.extend(r[4][0] for r in results)
+            except (socket.gaierror, OSError):
+                pass
+
+        if not ips:
+            return findings
+
+        from ..threat_feeds import ThreatFeedManager, DNSBLChecker, check_ip_reputation
+        dnsbl = DNSBLChecker(timeout=3.0)
+
+        for ip in ips[:3]:  # Limit to first 3 IPs
+            # DNSBL check (fast, local DNS)
+            try:
+                hits = dnsbl.check_ip(ip)
+                if hits:
+                    listed_on = [h["dnsbl"] for h in hits[:3]]
+                    findings.append(Finding(
+                        title="DNSBL listed: {}".format(ip),
+                        severity="high", category="dnsbl_listing",
+                        module="bot",
+                        description="IP {} listed on DNSBLs: {}".format(ip, ", ".join(listed_on)),
+                        evidence="DNSBL hits: {}".format(", ".join(f"{h['dnsbl']}" for h in hits[:3])),
+                        asset=host, points_deducted=10,
+                        remediation="Investigate why the IP is blacklisted. May indicate compromised host or spam.",
+                    ))
+            except Exception:
+                pass
+
+            # GeoIP enrichment
+            try:
+                from ..geoip import GeoIPLookup, is_hosting_ip, is_proxy_ip
+                geo = GeoIPLookup()
+                geo_data = geo.enrich_ip(ip, use_cache=True)
+                tags = []
+                if geo_data.get("proxy") or is_proxy_ip(geo_data):
+                    tags.append("proxy")
+                if geo_data.get("hosting") or is_hosting_ip(geo_data):
+                    tags.append("hosting")
+                if tags:
+                    geo_info = "{} ({}), ISP: {}".format(
+                        geo_data.get("city", "?"), geo_data.get("countryCode", "??"),
+                        geo_data.get("isp", "?"),
+                    )
+                    findings.append(Finding(
+                        title="IP intelligence: {} [{}]".format(ip, ", ".join(tags).upper()),
+                        severity="medium", category="ip_intelligence",
+                        module="bot",
+                        description="GeoIP enrichment for {}: {}".format(ip, geo_info),
+                        evidence=geo_info,
+                        asset=host, points_deducted=3,
+                        remediation="Review hosting/proxy status for security posture.",
+                    ))
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+
+    return findings
+
+
 def run_bot(target: str, base_url: str, timeout: int = 8,
              verify_tls: bool = True) -> List[Finding]:
-    """C2 / bot infrastructure detection with 10 malware family signatures. Returns list of Findings."""
+    """C2 / bot infrastructure detection with threat feeds, DNSBL, and GeoIP enrichment.
+
+    v9.1.0: Now integrates threat feed ingestion, DNSBL checking,
+    and GeoIP enrichment from the new v9.1.0 capabilities.
+    """
     findings: List[Finding] = []
     findings.extend(_check_common_c2_paths(base_url, timeout=timeout, verify_tls=verify_tls))
     findings.extend(_check_malware_signatures(base_url, timeout=timeout, verify_tls=verify_tls))
     findings.extend(_check_honeypot_signs(base_url, timeout=timeout, verify_tls=verify_tls))
+    # v9.1.0: Threat feeds + DNSBL + GeoIP
+    findings.extend(_check_threat_feeds(base_url, timeout=timeout, verify_tls=verify_tls))
     return findings
