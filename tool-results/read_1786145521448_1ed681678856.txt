@@ -1,0 +1,1153 @@
+     1→"""Module: CLOUD_RECON — Cloud Infrastructure Reconnaissance for ReconPro v8.0.
+     2→
+     3→Probes cloud provider metadata endpoints (AWS, Azure, GCP, DigitalOcean),
+     4→discovers cloud-hosted storage assets (S3, Azure Blob, GCS), and checks
+     5→DNS records for cloud-service indicators.
+     6→
+     7→Probes:
+     8→  1. AWS IMDSv1 / IMDSv2 metadata
+     9→  2. Azure Instance Metadata Service
+    10→  3. GCP Compute Metadata
+    11→  4. DigitalOcean Metadata
+    12→
+    13→Discovery:
+    14→  5. AWS S3 public buckets
+    15→  6. Azure Blob storage containers
+    16→  7. GCP Cloud Storage buckets
+    17→
+    18→DNS:
+    19→  8. CNAME records to cloud providers
+    20→  9. TXT records (SPF, DKIM, DMARC, verification)
+    21→ 10. SRV records for cloud services
+    22→ 11. NS records for cloud-hosted DNS
+    23→"""
+    24→from __future__ import annotations
+    25→
+    26→import json
+    27→import re
+    28→import socket
+    29→import subprocess
+    30→from typing import Any, Dict, List, Optional, Tuple
+    31→
+    32→from ..http import http_probe, Finding, compute_grade, badge_markdown, default_limiter
+    33→
+    34→
+    35→# ── DREAD scoring helper ────────────────────────────────────────────────
+    36→
+    37→def _dread(damage: int, repro: int, exploit: int, affected: int, discover: int) -> float:
+    38→    """Compute DREAD score (0–10) from five component ratings."""
+    39→    return round((damage + repro + exploit + affected + discover) / 5.0, 1)
+    40→
+    41→
+    42→# ── Severity → points mapping ───────────────────────────────────────────
+    43→
+    44→SEV_POINTS = {
+    45→    "critical": 15,
+    46→    "high": 10,
+    47→    "medium": 5,
+    48→    "low": 2,
+    49→    "info": 0,
+    50→}
+    51→
+    52→
+    53→# ════════════════════════════════════════════════════════════════════════
+    54→# 1. CLOUD METADATA PROBERS
+    55→# ════════════════════════════════════════════════════════════════════════
+    56→
+    57→def probe_aws_metadata(timeout: int = 5) -> Dict[str, Any]:
+    58→    """Probe AWS EC2 Instance Metadata Service (IMDSv1 and IMDSv2).
+    59→
+    60→    Returns {accessible: bool, data: dict, findings: list}.
+    61→    """
+    62→    result: Dict[str, Any] = {
+    63→        "accessible": False,
+    64→        "data": {},
+    65→        "findings": [],
+    66→    }
+    67→    base = "http://169.254.169.254/latest/meta-data/"
+    68→
+    69→    # --- IMDSv1: direct GET ---
+    70→    v1_resp = http_probe(base, timeout=timeout, verify_tls=False)
+    71→    if v1_resp.get("ok") and v1_resp.get("status") == 200:
+    72→        result["accessible"] = True
+    73→        result["data"]["imds_v1"] = {
+    74→            "status": v1_resp["status"],
+    75→            "index": v1_resp.get("body", "")[:2048].strip(),
+    76→        }
+    77→        result["findings"].append({
+    78→            "title": "AWS IMDSv1 accessible (token-less)",
+    79→            "severity": "critical",
+    80→            "dread": _dread(10, 10, 10, 8, 9),
+    81→            "evidence": f"GET {base} -> 200",
+    82→        })
+    83→
+    84→        # Probe common IMDSv1 sub-paths
+    85→        sub_paths = [
+    86→            ("iam/security-credentials/", "iam_roles"),
+    87→            ("hostname", "hostname"),
+    88→            ("local-ipv4", "local_ipv4"),
+    89→            ("instance-id", "instance_id"),
+    90→            ("instance-type", "instance_type"),
+    91→            ("ami-id", "ami_id"),
+    92→            ("placement/availability-zone", "az"),
+    93→        ]
+    94→        for path, key in sub_paths:
+    95→            resp = http_probe(base + path, timeout=timeout, verify_tls=False)
+    96→            if resp.get("ok") and resp.get("status") == 200:
+    97→                body = resp.get("body", "").strip()
+    98→                result["data"][key] = body[:1024]
+    99→                if key == "iam_roles":
+   100→                    roles = [r.strip() for r in body.splitlines() if r.strip()]
+   101→                    for role in roles:
+   102→                        role_resp = http_probe(
+   103→                            base + "iam/security-credentials/" + role,
+   104→                            timeout=timeout, verify_tls=False,
+   105→                        )
+   106→                        if role_resp.get("ok") and role_resp.get("status") == 200:
+   107→                            result["findings"].append({
+   108→                                "title": f"AWS IAM role credentials exposed: {role}",
+   109→                                "severity": "critical",
+   110→                                "dread": _dread(10, 10, 9, 9, 8),
+   111→                                "evidence": f"GET iam/security-credentials/{role} -> 200"
+   112→                                           f" ({len(role_resp.get('body', ''))} bytes)",
+   113→                            })
+   114→                            # Try to parse credential JSON safely
+   115→                            try:
+   116→                                cred = json.loads(role_resp.get("body", ""))
+   117→                                result["data"][f"cred_{role}"] = {
+   118→                                    k: v for k, v in cred.items()
+   119→                                    if k not in ("SecretAccessKey", "Token")
+   120→                                }
+   121→                            except (json.JSONDecodeError, ValueError):
+   122→                                pass
+   123→
+   124→    # --- IMDSv2: PUT to get token, then GET with token ---
+   125→    token_url = "http://169.254.169.254/latest/api/token"
+   126→    token_resp = http_probe(
+   127→        token_url, method="PUT",
+   128→        headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+   129→        timeout=timeout, verify_tls=False,
+   130→    )
+   131→    if token_resp.get("ok") and token_resp.get("status") == 200:
+   132→        token = token_resp.get("body", "").strip()
+   133→        if token:
+   134→            v2_resp = http_probe(
+   135→                base, timeout=timeout, verify_tls=False,
+   136→                headers={"X-aws-ec2-metadata-token": token},
+   137→            )
+   138→            if v2_resp.get("ok") and v2_resp.get("status") == 200:
+   139→                result["data"]["imds_v2"] = {
+   140→                    "status": v2_resp["status"],
+   141→                    "index": v2_resp.get("body", "")[:2048].strip(),
+   142→                }
+   143→                if not result["accessible"]:
+   144→                    result["accessible"] = True
+   145→                result["findings"].append({
+   146→                    "title": "AWS IMDSv2 accessible (token obtained)",
+   147→                    "severity": "high",
+   148→                    "dread": _dread(8, 8, 8, 7, 7),
+   149→                    "evidence": f"PUT {token_url} -> 200, GET {base} -> 200",
+   150→                })
+   151→
+   152→    return result
+   153→
+   154→
+   155→def probe_azure_metadata(timeout: int = 5) -> Dict[str, Any]:
+   156→    """Probe Azure Instance Metadata Service.
+   157→
+   158→    Returns {accessible: bool, data: dict, findings: list}.
+   159→    """
+   160→    result: Dict[str, Any] = {
+   161→        "accessible": False,
+   162→        "data": {},
+   163→        "findings": [],
+   164→    }
+   165→    url = (
+   166→        "http://169.254.169.254/metadata/instance?api-version=2021-02-01"
+   167→    )
+   168→    resp = http_probe(
+   169→        url, timeout=timeout, verify_tls=False,
+   170→        headers={"Metadata": "true"},
+   171→    )
+   172→
+   173→    if resp.get("ok") and resp.get("status") == 200:
+   174→        result["accessible"] = True
+   175→        body = resp.get("body", "")[:4096]
+   176→        result["data"]["instance"] = body
+   177→
+   178→        # Parse JSON to extract key fields
+   179→        try:
+   180→            data = json.loads(body)
+   181→            compute_data = data.get("compute", {})
+   182→            result["data"]["vm_id"] = compute_data.get("vmId", "")
+   183→            result["data"]["vm_size"] = compute_data.get("vmSize", "")
+   184→            result["data"]["location"] = compute_data.get("location", "")
+   185→            result["data"]["os_type"] = compute_data.get("osType", "")
+   186→            result["data"]["subscription_id"] = data.get("compute", {}).get("subscriptionId", "")
+   187→        except (json.JSONDecodeError, ValueError, AttributeError):
+   188→            pass
+   189→
+   190→        result["findings"].append({
+   191→            "title": "Azure Instance Metadata Service accessible",
+   192→            "severity": "high",
+   193→            "dread": _dread(8, 9, 8, 7, 7),
+   194→            "evidence": f"GET {url} -> 200 ({len(body)} bytes)",
+   195→        })
+   196→
+   197→        # Probe additional Azure metadata endpoints
+   198→        extra_endpoints = [
+   199→            ("/metadata/identity/oauth2/token?api-version=2018-02-01"
+   200→             "&resource=https://management.azure.com/", "managed_identity_token"),
+   201→            ("/metadata/instance/network/interface?api-version=2021-02-01", "network"),
+   202→        ]
+   203→        for endpoint, key in extra_endpoints:
+   204→            full_url = f"http://169.254.169.254{endpoint}"
+   205→            extra_resp = http_probe(
+   206→                full_url, timeout=timeout, verify_tls=False,
+   207→                headers={"Metadata": "true"},
+   208→            )
+   209→            if extra_resp.get("ok") and extra_resp.get("status") == 200:
+   210→                extra_body = extra_resp.get("body", "")[:2048]
+   211→                result["data"][key] = extra_body
+   212→                if key == "managed_identity_token":
+   213→                    result["findings"].append({
+   214→                        "title": "Azure managed identity token obtained",
+   215→                        "severity": "critical",
+   216→                        "dread": _dread(10, 10, 9, 9, 8),
+   217→                        "evidence": (f"GET {full_url} -> 200 "
+   218→                                     f"({len(extra_body)} bytes)"),
+   219→                    })
+   220→
+   221→    return result
+   222→
+   223→
+   224→def probe_gcp_metadata(timeout: int = 5) -> Dict[str, Any]:
+   225→    """Probe Google Compute Engine Metadata Service.
+   226→
+   227→    Returns {accessible: bool, data: dict, findings: list}.
+   228→    """
+   229→    result: Dict[str, Any] = {
+   230→        "accessible": False,
+   231→        "data": {},
+   232→        "findings": [],
+   233→    }
+   234→    base = "http://metadata.google.internal/computeMetadata/v1/"
+   235→    hdr = {"Metadata-Flavor": "Google"}
+   236→
+   237→    # Probe the metadata index
+   238→    resp = http_probe(base, timeout=timeout, verify_tls=False, headers=hdr)
+   239→
+   240→    if resp.get("ok") and resp.get("status") == 200:
+   241→        result["accessible"] = True
+   242→        result["data"]["index"] = resp.get("body", "")[:2048].strip()
+   243→
+   244→        # Check for correct Metadata-Flavor response header
+   245→        flavor = resp.get("headers", {}).get("Metadata-Flavor", "")
+   246→        if flavor == "Google":
+   247→            result["findings"].append({
+   248→                "title": "GCP Compute Metadata accessible",
+   249→                "severity": "high",
+   250→                "dread": _dread(8, 9, 8, 7, 7),
+   251→                "evidence": f"GET {base} -> 200, Metadata-Flavor: Google",
+   252→            })
+   253→
+   254→        # Probe specific paths
+   255→        sub_paths = [
+   256→            ("instance/id", "instance_id"),
+   257→            ("instance/zone", "zone"),
+   258→            ("instance/machine-type", "machine_type"),
+   259→            ("instance/image", "image"),
+   260→            ("instance/service-accounts/", "service_accounts"),
+   261→            ("project/project-id", "project_id"),
+   262→            ("project/numeric-project-id", "numeric_project_id"),
+   263→        ]
+   264→        for path, key in sub_paths:
+   265→            sub_resp = http_probe(
+   266→                base + path, timeout=timeout, verify_tls=False, headers=hdr,
+   267→            )
+   268→            if sub_resp.get("ok") and sub_resp.get("status") == 200:
+   269→                body = sub_resp.get("body", "").strip()
+   270→                result["data"][key] = body[:1024]
+   271→
+   272→                if key == "service_accounts":
+   273→                    accounts = [a.strip() for a in body.splitlines() if a.strip()]
+   274→                    for acct in accounts:
+   275→                        # Check if the service account has a default token
+   276→                        token_resp = http_probe(
+   277→                            base + f"service-accounts/{acct}token",
+   278→                            timeout=timeout, verify_tls=False, headers=hdr,
+   279→                        )
+   280→                        if token_resp.get("ok") and token_resp.get("status") == 200:
+   281→                            result["findings"].append({
+   282→                                "title": (f"GCP service account token obtained: "
+   283→                                          f"{acct}"
+   284→),
+   285→                                "severity": "critical",
+   286→                                "dread": _dread(10, 10, 9, 9, 8),
+   287→                                "evidence": (f"GET service-accounts/{acct}token "
+   288→                                             f"-> 200 "
+   289→                                             f"({len(token_resp.get('body', ''))} bytes)"),
+   290→                            })
+   291→                        # Check for service account scopes
+   292→                        scopes_resp = http_probe(
+   293→                            base + f"service-accounts/{acct}scopes",
+   294→                            timeout=timeout, verify_tls=False, headers=hdr,
+   295→                        )
+   296→                        if scopes_resp.get("ok") and scopes_resp.get("status") == 200:
+   297→                            scopes_body = scopes_resp.get("body", "")[:2048]
+   298→                            result["data"][f"scopes_{acct}"] = scopes_body
+   299→
+   300→    return result
+   301→
+   302→
+   303→def probe_digitalocean_metadata(timeout: int = 5) -> Dict[str, Any]:
+   304→    """Probe DigitalOcean Metadata Service (Droplet Metadata).
+   305→
+   306→    Returns {accessible: bool, data: dict, findings: list}.
+   307→    """
+   308→    result: Dict[str, Any] = {
+   309→        "accessible": False,
+   310→        "data": {},
+   311→        "findings": [],
+   312→    }
+   313→    base = "http://169.254.169.254/metadata/v1/"
+   314→    hdr = {"Metadata-Flavor": "digitalocean"}
+   315→
+   316→    resp = http_probe(base, timeout=timeout, verify_tls=False, headers=hdr)
+   317→
+   318→    if resp.get("ok") and resp.get("status") == 200:
+   319→        result["accessible"] = True
+   320→        body = resp.get("body", "")[:4096]
+   321→        result["data"]["index"] = body.strip()
+   322→
+   323→        result["findings"].append({
+   324→            "title": "DigitalOcean Metadata Service accessible",
+   325→            "severity": "high",
+   326→            "dread": _dread(8, 9, 8, 7, 7),
+   327→            "evidence": f"GET {base} -> 200 ({len(body)} bytes)",
+   328→        })
+   329→
+   330→        # Probe specific DO metadata paths
+   331→        do_paths = [
+   332→            ("id", "droplet_id"),
+   333→            ("hostname", "hostname"),
+   334→            ("region", "region"),
+   335→            ("interfaces/private/0/ipv4/address", "private_ipv4"),
+   336→            ("interfaces/public/0/ipv4/address", "public_ipv4"),
+   337→            ("dns/nameservers/0", "dns_ns"),
+   338→            ("tags", "tags"),
+   339→        ]
+   340→        for path, key in do_paths:
+   341→            sub_resp = http_probe(
+   342→                base + path, timeout=timeout, verify_tls=False, headers=hdr,
+   343→            )
+   344→            if sub_resp.get("ok") and sub_resp.get("status") == 200:
+   345→                result["data"][key] = sub_resp.get("body", "").strip()[:1024]
+   346→
+   347→        # Check for user-data (may contain secrets/scripts)
+   348→        user_data_resp = http_probe(
+   349→            base + "user-data", timeout=timeout, verify_tls=False, headers=hdr,
+   350→        )
+   351→        if user_data_resp.get("ok") and user_data_resp.get("status") == 200:
+   352→            ud_body = user_data_resp.get("body", "")[:4096]
+   353→            if ud_body.strip():
+   354→                result["data"]["user_data"] = ud_body
+   355→                has_secrets = any(
+   356→                    kw in ud_body.lower()
+   357→                    for kw in ["password", "secret", "api_key", "token", "private_key"]
+   358→                )
+   359→                if has_secrets:
+   360→                    result["findings"].append({
+   361→                        "title": "DigitalOcean user-data contains potential secrets",
+   362→                        "severity": "critical",
+   363→                        "dread": _dread(9, 9, 9, 8, 8),
+   364→                        "evidence": f"user-data: {len(ud_body)} bytes (secrets detected)",
+   365→                    })
+   366→
+   367→    return result
+   368→
+   369→
+   370→# ════════════════════════════════════════════════════════════════════════
+   371→# 2. CLOUD ASSET DISCOVERY
+   372→# ════════════════════════════════════════════════════════════════════════
+   373→
+   374→AWS_BUCKET_SUFFIXES = [
+   375→    "-assets", "-logs", "-backups", "-config", "-data",
+   376→    "-public", "-private", "-static", "-media", "-uploads",
+   377→    "-deploy", "-releases", "-staging", "-prod", "-dev",
+   378→]
+   379→
+   380→
+   381→def discover_aws_s3_buckets(domain: str, timeout: int = 5) -> List[Dict[str, Any]]:
+   382→    """Discover AWS S3 buckets associated with a domain.
+   383→
+   384→    Checks {domain}.s3.amazonaws.com and common bucket name patterns.
+   385→    Each result: {bucket, url, accessible, status, evidence}.
+   386→    """
+   387→    buckets: List[Dict[str, Any]] = []
+   388→    clean = re.sub(r"^https?://", "", domain).split("/")[0].lower()
+   389→    base_name = re.sub(r"[^a-z0-9]", "", clean)
+   390→
+   391→    # Candidate bucket names
+   392→    candidates = {
+   393→        clean: f"https://{clean}.s3.amazonaws.com",
+   394→        f"www.{clean}": f"https://www.{clean}.s3.amazonaws.com",
+   395→    }
+   396→    for suffix in AWS_BUCKET_SUFFIXES:
+   397→        name = base_name + suffix
+   398→        candidates[name] = f"https://{name}.s3.amazonaws.com"
+   399→
+   400→    # Also try {domain} as a bucket hosting a website
+   401→    candidates[f"{clean}-website"] = f"https://{clean}-website.s3-website-us-east-1.amazonaws.com"
+   402→
+   403→    for bucket_name, url in candidates.items():
+   404→        resp = http_probe(url, method="HEAD", timeout=timeout, verify_tls=True)
+   405→        status = resp.get("status", 0)
+   406→        headers = resp.get("headers", {})
+   407→
+   408→        # S3 returns 200 for public buckets, 403 for existent-but-private,
+   409→        # 404 for non-existent
+   410→        if status in (200, 301, 302):
+   411→            is_listing = False
+   412→            listing_indicators = ["ListBucketResult", "<Key>", "<Contents>"]
+   413→            if status == 200:
+   414→                body = resp.get("body", "")[:4096]
+   415→                is_listing = any(ind in body for ind in listing_indicators)
+   416→            buckets.append({
+   417→                "bucket": bucket_name,
+   418→                "url": url,
+   419→                "accessible": True,
+   420→                "status": status,
+   421→                "is_listing": is_listing,
+   422→                "evidence": f"HEAD {url} -> {status}",
+   423→            })
+   424→        elif status == 403:
+   425→            # Bucket exists but access denied — still a finding
+   426→            buckets.append({
+   427→                "bucket": bucket_name,
+   428→                "url": url,
+   429→                "accessible": False,
+   430→                "status": 403,
+   431→                "is_listing": False,
+   432→                "evidence": f"HEAD {url} -> 403 (bucket exists, access denied)",
+   433→            })
+   434→
+   435→    return buckets
+   436→
+   437→
+   438→def discover_azure_storage(domain: str, timeout: int = 5) -> List[Dict[str, Any]]:
+   439→    """Discover Azure Blob Storage accounts associated with a domain.
+   440→
+   441→    Checks {name}.blob.core.windows.net patterns.
+   442→    Each result: {account, url, accessible, status, evidence}.
+   443→    """
+   444→    results: List[Dict[str, Any]] = []
+   445→    clean = re.sub(r"^https?://", "", domain).split("/")[0].lower()
+   446→    base_name = re.sub(r"[^a-z0-9]", "", clean)
+   447→
+   448→    # Azure storage account names must be 3-24 chars, lowercase alphanumeric only
+   449→    candidates = {
+   450→        base_name[:24]: f"https://{base_name[:24]}.blob.core.windows.net",
+   451→        f"{base_name}static"[:24]: f"https://{base_name}static"[:24] + ".blob.core.windows.net",
+   452→        f"{base_name}media"[:24]: f"https://{base_name}media"[:24] + ".blob.core.windows.net",
+   453→        f"{base_name}data"[:24]: f"https://{base_name}data"[:24] + ".blob.core.windows.net",
+   454→        f"{base_name}backups"[:24]: f"https://{base_name}backups"[:24] + ".blob.core.windows.net",
+   455→        f"{base_name}assets"[:24]: f"https://{base_name}assets"[:24] + ".blob.core.windows.net",
+   456→    }
+   457→
+   458→    for acct_name, url in candidates.items():
+   459→        if len(acct_name) < 3:
+   460→            continue
+   461→        resp = http_probe(url, method="HEAD", timeout=timeout, verify_tls=True)
+   462→        status = resp.get("status", 0)
+   463→
+   464→        if status in (200, 301, 302, 400):
+   465→            # 400 from Azure can indicate the account exists but container is unspecified
+   466→            results.append({
+   467→                "account": acct_name,
+   468→                "url": url,
+   469→                "accessible": status in (200, 301, 302),
+   470→                "status": status,
+   471→                "evidence": f"HEAD {url} -> {status}",
+   472→            })
+   473→        elif status == 403:
+   474→            results.append({
+   475→                "account": acct_name,
+   476→                "url": url,
+   477→                "accessible": False,
+   478→                "status": 403,
+   479→                "evidence": f"HEAD {url} -> 403 (storage account exists, access denied)",
+   480→            })
+   481→
+   482→    return results
+   483→
+   484→
+   485→def discover_gcp_storage(domain: str, timeout: int = 5) -> List[Dict[str, Any]]:
+   486→    """Discover GCP Cloud Storage buckets associated with a domain.
+   487→
+   488→    Checks storage.googleapis.com/{bucket} patterns.
+   489→    Each result: {bucket, url, accessible, status, evidence}.
+   490→    """
+   491→    results: List[Dict[str, Any]] = []
+   492→    clean = re.sub(r"^https?://", "", domain).split("/")[0].lower()
+   493→    base_name = re.sub(r"[^a-z0-9]", "", clean)
+   494→
+   495→    # GCP bucket naming: lowercase, letters/numbers/dashes/hyphens, 3-63 chars
+   496→    candidates = [
+   497→        clean,
+   498→        f"www-{clean}",
+   499→        f"{base_name}-assets",
+   500→        f"{base_name}-static",
+   501→        f"{base_name}-media",
+   502→        f"{base_name}-data",
+   503→        f"{base_name}-backups",
+   504→        f"{base_name}-public",
+   505→        f"{base_name}-config",
+   506→        f"{base_name}-logs",
+   507→    ]
+   508→
+   509→    for bucket_name in candidates:
+   510→        bucket_name = bucket_name[:63].strip("-")
+   511→        if len(bucket_name) < 3:
+   512→            continue
+   513→        url = f"https://storage.googleapis.com/{bucket_name}"
+   514→        resp = http_probe(url, method="GET", timeout=timeout, verify_tls=True)
+   515→        status = resp.get("status", 0)
+   516→        body = resp.get("body", "")[:4096]
+   517→        headers = resp.get("headers", {})
+   518→
+   519→        # GCS returns 200 for public buckets, 401/403 for auth-required
+   520→        if status == 200 and len(body) > 10:
+   521→            is_listing = any(
+   522→                ind in body for ind in ["<ListBucketResult>", "<Contents>", "<Key>"]
+   523→            )
+   524→            results.append({
+   525→                "bucket": bucket_name,
+   526→                "url": url,
+   527→                "accessible": True,
+   528→                "status": status,
+   529→                "is_listing": is_listing,
+   530→                "evidence": f"GET {url} -> 200 ({len(body)} bytes)",
+   531→            })
+   532→        elif status in (401, 403):
+   533→            # Bucket exists but requires authentication
+   534→            results.append({
+   535→                "bucket": bucket_name,
+   536→                "url": url,
+   537→                "accessible": False,
+   538→                "status": status,
+   539→                "is_listing": False,
+   540→                "evidence": f"GET {url} -> {status} (bucket exists, auth required)",
+   541→            })
+   542→
+   543→    return results
+   544→
+   545→
+   546→# ════════════════════════════════════════════════════════════════════════
+   547→# 3. CLOUD DNS RECORD CHECKS
+   548→# ════════════════════════════════════════════════════════════════════════
+   549→
+   550→CLOUD_CNAME_PATTERNS: Dict[str, re.Pattern] = {
+   551→    "CloudFront": re.compile(r"\.(?:cloudfront|cloudfront\.net)$", re.I),
+   552→    "AWS S3": re.compile(r"\.s3(?:-website)?(?:-[\w-]+)?\.amazonaws\.com$", re.I),
+   553→    "AWS ELB/ALB": re.compile(r"\.(?:elb|elasticloadbalancing)\.amazonaws\.com$", re.I),
+   554→    "Azure CDN": re.compile(r"\.azureedge\.net$", re.I),
+   555→    "Azure Blob": re.compile(r"\.blob\.core\.windows\.net$", re.I),
+   556→    "Cloudflare": re.compile(r"\.cloudflare\.com$", re.I),
+   557→    "GCP Load Balancer": re.compile(r"\..appspot\.com$", re.I),
+   558→    "Fastly": re.compile(r"\.fastly\.net$", re.I),
+   559→    "Heroku": re.compile(r"\.herokudns\.com$", re.I),
+   560→    "Vercel": re.compile(r"\.vercel-dns\.com$", re.I),
+   561→    "Netlify": re.compile(r"\.netlify\.com$", re.I),
+   562→}
+   563→
+   564→
+   565→def _dns_resolve(host: str) -> List[str]:
+   566→    """Resolve hostname to list of IP addresses."""
+   567→    ips: List[str] = []
+   568→    seen: set = set()
+   569→    try:
+   570→        results = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+   571→        for _fam, _type, _proto, _canonname, sockaddr in results:
+   572→            ip = sockaddr[0]
+   573→            if ip not in seen:
+   574→                seen.add(ip)
+   575→                ips.append(ip)
+   576→    except (socket.gaierror, OSError):
+   577→        pass
+   578→    return ips
+   579→
+   580→
+   581→def _dns_cname(host: str) -> List[str]:
+   582→    """Get CNAME chain for a hostname via gethostbyname_ex."""
+   583→    aliases: List[str] = []
+   584→    try:
+   585→        _hostname, aliaslist, _ipaddrlist = socket.gethostbyname_ex(host)
+   586→        aliases.extend(aliaslist)
+   587→    except (socket.gaierror, OSError, socket.herror):
+   588→        pass
+   589→    return aliases
+   590→
+   591→
+   592→def _dns_query(host: str, rtype: str) -> List[str]:
+   593→    """Query DNS records using system `dig` command. Falls back to empty list."""
+   594→    results: List[str] = []
+   595→    try:
+   596→        proc = subprocess.run(
+   597→            ["dig", "+short", host, rtype],
+   598→            capture_output=True, text=True, timeout=5,
+   599→        )
+   600→        if proc.returncode == 0:
+   601→            for line in proc.stdout.strip().splitlines():
+   602→                line = line.strip().strip('"').strip()
+   603→                if line:
+   604→                    results.append(line)
+   605→    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+   606→        pass
+   607→    return results
+   608→
+   609→
+   610→def _dns_query_host(host: str, rtype: str) -> List[str]:
+   611→    """Query DNS records using system `host` command. Falls back to empty list."""
+   612→    results: List[str] = []
+   613→    try:
+   614→        proc = subprocess.run(
+   615→            ["host", "-t", rtype, host],
+   616→            capture_output=True, text=True, timeout=5,
+   617→        )
+   618→        if proc.returncode == 0:
+   619→            for line in proc.stdout.strip().splitlines():
+   620→                line = line.strip()
+   621→                if line and "NS" not in line.upper().split()[0] if line.split() else True:
+   622→                    results.append(line)
+   623→    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+   624→        pass
+   625→    return results
+   626→
+   627→
+   628→def check_cloud_dns(domain: str) -> List[Dict[str, Any]]:
+   629→    """Check DNS records for cloud-service indicators.
+   630→
+   631→    Checks CNAMEs, TXT records (SPF, DKIM, DMARC, verification),
+   632→    SRV records, and NS records for cloud-hosted DNS.
+   633→
+   634→    Returns list of dicts with check type and details.
+   635→    """
+   636→    results: List[Dict[str, Any]] = []
+   637→    clean = re.sub(r"^https?://", "", domain).split("/")[0].lower()
+   638→
+   639→    # --- CNAME records ---
+   640→    cnames = _dns_cname(clean)
+   641→    # Also check www subdomain
+   642→    if clean != f"www.{clean}":
+   643→        cnames.extend(_dns_cname(f"www.{clean}"))
+   644→
+   645→    for cname in cnames:
+   646→        for provider, pattern in CLOUD_CNAME_PATTERNS.items():
+   647→            if pattern.search(cname):
+   648→                results.append({
+   649→                    "type": "cname",
+   650→                    "provider": provider,
+   651→                    "host": clean,
+   652→                    "cname": cname,
+   653→                    "evidence": f"CNAME: {cname} -> {provider}",
+   654→                })
+   655→
+   656→    # --- TXT records ---
+   657→    txt_records = _dns_query(clean, "TXT")
+   658→    for txt in txt_records:
+   659→        txt_lower = txt.lower()
+   660→        # SPF detection
+   661→        if "v=spf1" in txt_lower:
+   662→            results.append({
+   663→                "type": "txt",
+   664→                "subtype": "spf",
+   665→                "host": clean,
+   666→                "value": txt[:300],
+   667→                "evidence": f"SPF record: {txt[:200]}",
+   668→            })
+   669→            # Check for overly permissive SPF
+   670→            if "+all" in txt_lower or "?all" in txt_lower:
+   671→                results.append({
+   672→                    "type": "txt",
+   673→                    "subtype": "spf_permissive",
+   674→                    "host": clean,
+   675→                    "value": txt[:300],
+   676→                    "evidence": f"Permissive SPF: {txt[:200]}",
+   677→                })
+   678→
+   679→        # DKIM detection
+   680→        if "v=dkim1" in txt_lower:
+   681→            results.append({
+   682→                "type": "txt",
+   683→                "subtype": "dkim",
+   684→                "host": clean,
+   685→                "value": txt[:300],
+   686→                "evidence": f"DKIM record found: {txt[:200]}",
+   687→            })
+   688→
+   689→        # DMARC detection
+   690→        if "v=dmarc1" in txt_lower:
+   691→            results.append({
+   692→                "type": "txt",
+   693→                "subtype": "dmarc",
+   694→                "host": clean,
+   695→                "value": txt[:300],
+   696→                "evidence": f"DMARC record: {txt[:200]}",
+   697→            })
+   698→            if "p=none" in txt_lower:
+   699→                results.append({
+   700→                    "type": "txt",
+   701→                    "subtype": "dmarc_weak",
+   702→                    "host": clean,
+   703→                    "value": txt[:300],
+   704→                    "evidence": f"Weak DMARC policy (p=none): {txt[:200]}",
+   705→                })
+   706→
+   707→        # Cloud verification records
+   708→        for provider_name, indicator in [
+   709→            ("Google", "google-site-verification"),
+   710→            ("AWS", "amazonses"),
+   711→            ("Azure", "ms"),
+   712→            ("Shopify", "shopify"),
+   713→            ("Stripe", "stripe"),
+   714→        ]:
+   715→            if indicator in txt_lower:
+   716→                results.append({
+   717→                    "type": "txt",
+   718→                    "subtype": "verification",
+   719→                    "provider": provider_name,
+   720→                    "host": clean,
+   721→                    "value": txt[:300],
+   722→                    "evidence": f"{provider_name} verification TXT: {txt[:200]}",
+   723→                })
+   724→                break
+   725→
+   726→    # --- DMARC explicit check (._dmarc subdomain) ---
+   727→    dmarc_records = _dns_query(f"_dmarc.{clean}", "TXT")
+   728→    if not dmarc_records:
+   729→        results.append({
+   730→            "type": "txt",
+   731→            "subtype": "dmarc_missing",
+   732→            "host": clean,
+   733→            "value": "",
+   734→            "evidence": f"No DMARC record found for _dmarc.{clean}",
+   735→        })
+   736→
+   737→    # --- SRV records for cloud services ---
+   738→    srv_queries = [
+   739→        ("_sip._tcp", "SIP/VoIP"),
+   740→        ("_xmpp-server._tcp", "XMPP Chat"),
+   741→        ("_autodiscover._tcp", "Exchange/Office365"),
+   742→        ("_sftp._ssh", "SFTP"),
+   743→    ]
+   744→    for prefix, service_name in srv_queries:
+   745→        srv_records = _dns_query(f"{prefix}.{clean}", "SRV")
+   746→        for srv in srv_records:
+   747→            results.append({
+   748→                "type": "srv",
+   749→                "service": service_name,
+   750→                "host": clean,
+   751→                "value": srv[:300],
+   752→                "evidence": f"SRV {prefix}.{clean}: {srv[:200]}",
+   753→            })
+   754→
+   755→    # --- NS records ---
+   756→    ns_records = _dns_query(clean, "NS")
+   757→    cloud_ns_patterns = {
+   758→        "AWS Route53": re.compile(r"awsdns\-|route53", re.I),
+   759→        "Cloudflare DNS": re.compile(r"cloudflare\.com$", re.I),
+   760→        "Google Cloud DNS": re.compile(r"google\.com$|cloud\.google", re.I),
+   761→        "Azure DNS": re.compile(r"azure-dns|azure\.net", re.I),
+   762→        "DigitalOcean DNS": re.compile(r"digitalocean\.com$", re.I),
+   763→    }
+   764→    for ns in ns_records:
+   765→        ns_clean = ns.strip().rstrip(".")
+   766→        for provider, pattern in cloud_ns_patterns.items():
+   767→            if pattern.search(ns_clean):
+   768→                results.append({
+   769→                    "type": "ns",
+   770→                    "provider": provider,
+   771→                    "host": clean,
+   772→                    "nameserver": ns_clean,
+   773→                    "evidence": f"NS: {ns_clean} -> {provider}",
+   774→                })
+   775→                break
+   776→
+   777→    # --- A/AAAA resolution check ---
+   778→    ips = _dns_resolve(clean)
+   779→    if ips:
+   780→        results.append({
+   781→            "type": "resolution",
+   782→            "host": clean,
+   783→            "ips": ips,
+   784→            "evidence": f"Resolved {clean} -> {', '.join(ips[:5])}",
+   785→        })
+   786→
+   787→    return results
+   788→
+   789→
+   790→# ════════════════════════════════════════════════════════════════════════
+   791→# 4. MAIN RUN FUNCTION
+   792→# ════════════════════════════════════════════════════════════════════════
+   793→
+   794→def run_cloud_recon(target: str, base_url: str = "", timeout: int = 8,
+   795→        verify_tls: bool = True) -> List[Finding]:
+   796→    """Run cloud infrastructure reconnaissance.
+   797→
+   798→    For local targets (127.0.0.1, localhost, metadata IPs): probe cloud
+   799→    metadata endpoints.
+   800→
+   801→    For remote domain targets: DNS checks + cloud asset discovery.
+   802→
+   803→    Returns (findings, score, grade, badge_md).
+   804→    """
+   805→    findings: List[Finding] = []
+   806→    deductions = 0
+   807→    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+   808→
+   809→    def add(title: str, severity: str, category: str, desc: str,
+   810→            evidence: str, pts: int, dread: float = 0.0,
+   811→            remediation: str = "") -> None:
+   812→        nonlocal deductions
+   813→        deductions += pts
+   814→        findings.append(Finding(
+   815→            title=title, severity=severity, category=category,
+   816→            module="cloud_recon", description=desc, evidence=evidence,
+   817→            asset=host, points_deducted=pts,
+   818→            dread_score=dread if dread else _dread(
+   819→                10 if severity == "critical" else (8 if severity == "high" else 5),
+   820→                8, 7, 6, 7,
+   821→            ),
+   822→            remediation=remediation,
+   823→        ))
+   824→
+   825→    # Determine if target is local (metadata probe) or remote (DNS + assets)
+   826→    local_indicators = ("127.0.0.1", "localhost", "::1", "169.254.169.254",
+   827→                        "metadata.google.internal")
+   828→    is_local = host in local_indicators or host.startswith("127.") or host.startswith("10.")
+   829→
+   830→    if is_local:
+   831→        # ── Metadata endpoint probing ──
+   832→        # AWS
+   833→        aws = probe_aws_metadata(timeout=timeout)
+   834→        if aws["accessible"]:
+   835→            for f in aws["findings"]:
+   836→                sev = f["severity"]
+   837→                pts = SEV_POINTS.get(sev, 5)
+   838→                add(
+   839→                    f["title"], sev, "cloud_metadata",
+   840→                    f"AWS EC2 metadata is accessible from this environment. "
+   841→                    f"This may expose instance configuration, IAM credentials, "
+   842→                    f"and network details.",
+   843→                    f["evidence"], pts, f["dread"],
+   844→                    remediation=(
+   845→                        "Disable IMDSv1: set MetadataOptions.HttpTokens=required. "
+   846→                        "Restrict IMDSv2 via IAM conditions and hop-limit=1. "
+   847→                        "Network ACLs should block 169.254.169.254 for "
+   848→                        "non-EC2 instances."
+   849→                    ),
+   850→                )
+   851→
+   852→        # Azure
+   853→        azure = probe_azure_metadata(timeout=timeout)
+   854→        if azure["accessible"]:
+   855→            for f in azure["findings"]:
+   856→                sev = f["severity"]
+   857→                pts = SEV_POINTS.get(sev, 5)
+   858→                add(
+   859→                    f["title"], sev, "cloud_metadata",
+   860→                    "Azure Instance Metadata Service is accessible. "
+   861→                    "This exposes VM configuration and potentially managed "
+   862→                    "identity tokens.",
+   863→                    f["evidence"], pts, f["dread"],
+   864→                    remediation=(
+   865→                        "Restrict managed identity token access. "
+   866→                        "Use Azure Policy to enforce IMDS restrictions. "
+   867→                        "Apply network security groups to limit metadata access."
+   868→                    ),
+   869→                )
+   870→
+   871→        # GCP
+   872→        gcp = probe_gcp_metadata(timeout=timeout)
+   873→        if gcp["accessible"]:
+   874→            for f in gcp["findings"]:
+   875→                sev = f["severity"]
+   876→                pts = SEV_POINTS.get(sev, 5)
+   877→                add(
+   878→                    f["title"], sev, "cloud_metadata",
+   879→                    "GCP Compute Metadata is accessible. This may expose "
+   880→                    "instance details, service account tokens, and project "
+   881→                    "information.",
+   882→                    f["evidence"], pts, f["dread"],
+   883→                    remediation=(
+   884→                        "Restrict metadata access with IAM conditions. "
+   885→                        "Disable default service account token access. "
+   886→                        "Use VPC Service Controls to limit metadata API reach."
+   887→                    ),
+   888→                )
+   889→
+   890→        # DigitalOcean
+   891→        do = probe_digitalocean_metadata(timeout=timeout)
+   892→        if do["accessible"]:
+   893→            for f in do["findings"]:
+   894→                sev = f["severity"]
+   895→                pts = SEV_POINTS.get(sev, 5)
+   896→                add(
+   897→                    f["title"], sev, "cloud_metadata",
+   898→                    "DigitalOcean Metadata Service is accessible. This "
+   899→                    "exposes droplet configuration and potentially user-data "
+   900→                    "with secrets.",
+   901→                    f["evidence"], pts, f["dread"],
+   902→                    remediation=(
+   903→                        "Review droplet metadata access. Remove sensitive data "
+   904→                        "from user-data. Use cloud firewalls to restrict "
+   905→                        "169.254.169.254 if not needed."
+   906→                    ),
+   907→                )
+   908→
+   909→        if not any(p["accessible"] for p in [aws, azure, gcp, do]):
+   910→            add(
+   911→                "No cloud metadata endpoints accessible",
+   912→                "info", "cloud_metadata",
+   913→                "No cloud provider metadata services responded at "
+   914→                "169.254.169.254 or metadata.google.internal. The host does "
+   915→                "not appear to be running on a major cloud provider, or "
+   916→                "metadata access is properly restricted.",
+   917→                "All metadata probes returned no response", 0,
+   918→                remediation="",
+   919→            )
+   920→
+   921→    else:
+   922→        # ── Remote target: DNS checks + asset discovery ──
+   923→
+   924→        # DNS record checks
+   925→        dns_results = check_cloud_dns(host)
+   926→
+   927→        for r in dns_results:
+   928→            rtype = r["type"]
+   929→
+   930→            if rtype == "cname":
+   931→                add(
+   932→                    f"CNAME points to {r['provider']}: {r['host']}",
+   933→                    "info", "cloud_dns",
+   934→                    f"Host {r['host']} has a CNAME record pointing to "
+   935→                    f"{r['provider']} ({r['cname']}). This confirms use of "
+   936→                    f"{r['provider']} infrastructure.",
+   937→                    r["evidence"], 0,
+   938→                    _dread(3, 5, 2, 2, 8),
+   939→                    remediation="",
+   940→                )
+   941→
+   942→            elif rtype == "txt":
+   943→                subtype = r.get("subtype", "")
+   944→                if subtype == "spf_permissive":
+   945→                    add(
+   946→                        "Permissive SPF record (+all or ?all)",
+   947→                        "medium", "cloud_dns",
+   948→                        f"SPF record for {r['host']} uses a permissive 'all' "
+   949→                        f"mechanism, allowing any mail server to send on behalf "
+   950→                        f"of the domain. This enables email spoofing.",
+   951→                        r["evidence"], 5,
+   952→                        _dread(6, 8, 8, 7, 6),
+   953→                        remediation=(
+   954→                            "Change SPF 'all' mechanism from +all/?all to "
+   955→                            "-all or ~all to reject or soft-fail unauthorized "
+   956→                            "senders."
+   957→                        ),
+   958→                    )
+   959→                elif subtype == "dmarc_missing":
+   960→                    add(
+   961→                        "No DMARC record configured",
+   962→                        "medium", "cloud_dns",
+   963→                        f"No DMARC TXT record found for _dmarc.{r['host']}. "
+   964→                        f"Without DMARC, email receivers cannot verify the "
+   965→                        f"domain's email authentication policy.",
+   966→                        r["evidence"], 5,
+   967→                        _dread(5, 9, 7, 6, 8),
+   968→                        remediation=(
+   969→                            "Publish a DMARC record: _dmarc.{host} IN TXT "
+   970→                            '"v=DMARC1; p=reject; rua=mailto:dmarc@{host}"'
+   971→                        ),
+   972→                    )
+   973→                elif subtype == "dmarc_weak":
+   974→                    add(
+   975→                        "Weak DMARC policy (p=none)",
+   976→                        "medium", "cloud_dns",
+   977→                        f"DMARC policy for {r['host']} is set to p=none, which "
+   978→                        f"means no action is taken on failed authentication. "
+   979→                        f"This provides no protection against email spoofing.",
+   980→                        r["evidence"], 5,
+   981→                        _dread(5, 8, 7, 6, 7),
+   982→                        remediation=(
+   983→                            "Change DMARC policy to p=quarantine or p=reject "
+   984→                            f"for {host}."
+   985→                        ),
+   986→                    )
+   987→                elif subtype == "verification":
+   988→                    provider = r.get("provider", "unknown")
+   989→                    add(
+   990→                        f"{provider} domain verification TXT record",
+   991→                        "info", "cloud_dns",
+   992→                        f"Domain {r['host']} has a {provider} verification TXT "
+   993→                        f"record. This confirms use of {provider} services.",
+   994→                        r["evidence"], 0,
+   995→                        _dread(2, 5, 1, 2, 7),
+   996→                        remediation="",
+   997→                    )
+   998→                elif subtype in ("spf", "dkim", "dmarc"):
+   999→                    add(
+  1000→                        f"{subtype.upper()} record present",
+  1001→                        "info", "cloud_dns",
+  1002→                        f"{r['host']} has a {subtype.upper()} record configured.",
+  1003→                        r["evidence"], 0,
+  1004→                        remediation="",
+  1005→                    )
+  1006→
+  1007→            elif rtype == "srv":
+  1008→                add(
+  1009→                    f"SRV record: {r['service']}",
+  1010→                    "info", "cloud_dns",
+  1011→                    f"{r['host']} has an SRV record for {r['service']}: "
+  1012→                    f"{r.get('value', '')[:200]}",
+  1013→                    r["evidence"], 0,
+  1014→                    remediation="",
+  1015→                )
+  1016→
+  1017→            elif rtype == "ns":
+  1018→                add(
+  1019→                    f"DNS hosted on {r['provider']}: {r['nameserver']}",
+  1020→                    "info", "cloud_dns",
+  1021→                    f"{r['host']} uses {r['provider']} for DNS hosting "
+  1022→                    f"(nameserver: {r['nameserver']}).",
+  1023→                    r["evidence"], 0,
+  1024→                    remediation="",
+  1025→                )
+  1026→
+  1027→        # Cloud asset discovery
+  1028→        # AWS S3
+  1029→        s3_buckets = discover_aws_s3_buckets(host, timeout=timeout)
+  1030→        for bucket in s3_buckets:
+  1031→            if bucket["accessible"] and bucket.get("is_listing"):
+  1032→                add(
+  1033→                    f"Public S3 bucket with directory listing: {bucket['bucket']}",
+  1034→                    "critical", "cloud_storage",
+  1035→                    f"AWS S3 bucket '{bucket['bucket']}' is publicly accessible "
+  1036→                    f"and has directory listing enabled. All objects may be "
+  1037→                    f"enumerated and downloaded by anyone.",
+  1038→                    bucket["evidence"], 15,
+  1039→                    _dread(10, 10, 10, 8, 9),
+  1040→                    remediation=(
+  1041→                        f"Disable public access on S3 bucket '{bucket['bucket']}'. "
+  1042→                        f"Block all public access in S3 settings. Apply "
+  1043→                        f"bucket policies that deny s3:* to '*' principal."
+  1044→                    ),
+  1045→                )
+  1046→            elif bucket["accessible"]:
+  1047→                add(
+  1048→                    f"Public S3 bucket: {bucket['bucket']}",
+  1049→                    "high", "cloud_storage",
+  1050→                    f"AWS S3 bucket '{bucket['bucket']}' is publicly accessible "
+  1051→                    f"(status {bucket['status']}). Contents may be retrievable.",
+  1052→                    bucket["evidence"], 10,
+  1053→                    _dread(8, 9, 9, 7, 8),
+  1054→                    remediation=(
+  1055→                        f"Review and restrict access to S3 bucket "
+  1056→                        f"'{bucket['bucket']}'. Enable Block Public Access."
+  1057→                    ),
+  1058→                )
+  1059→            elif bucket["status"] == 403:
+  1060→                add(
+  1061→                    f"S3 bucket exists (access denied): {bucket['bucket']}",
+  1062→                    "low", "cloud_storage",
+  1063→                    f"AWS S3 bucket '{bucket['bucket']}' exists but returns "
+  1064→                    f"403 Forbidden. Bucket name is disclosed.",
+  1065→                    bucket["evidence"], 2,
+  1066→                    _dread(3, 8, 4, 3, 7),
+  1067→                    remediation=(
+  1068→                        f"Consider renaming the bucket or using a CloudFront "
+  1069→                        f"origin with WAF to obscure the direct S3 endpoint."
+  1070→                    ),
+  1071→                )
+  1072→
+  1073→        # Azure Blob Storage
+  1074→        azure_storage = discover_azure_storage(host, timeout=timeout)
+  1075→        for acct in azure_storage:
+  1076→            if acct["accessible"]:
+  1077→                add(
+  1078→                    f"Public Azure storage account: {acct['account']}",
+  1079→                    "high", "cloud_storage",
+  1080→                    f"Azure Blob Storage account '{acct['account']}' is "
+  1081→                    f"publicly accessible (status {acct['status']}).",
+  1082→                    acct["evidence"], 10,
+  1083→                    _dread(8, 9, 9, 7, 8),
+  1084→                    remediation=(
+  1085→                        f"Restrict access to storage account '{acct['account']}'. "
+  1086→                        f"Disable public access. Use SAS tokens or managed "
+  1087→                        f"identities for authorized access."
+  1088→                    ),
+  1089→                )
+  1090→            elif acct["status"] == 403:
+  1091→                add(
+  1092→                    f"Azure storage account exists (access denied): {acct['account']}",
+  1093→                    "low", "cloud_storage",
+  1094→                    f"Azure Blob Storage account '{acct['account']}' exists "
+  1095→                    f"but returns 403. Account name is disclosed.",
+  1096→                    acct["evidence"], 2,
+  1097→                    _dread(3, 8, 4, 3, 7),
+  1098→                    remediation=(
+  1099→                        f"Use Azure Private Endpoints and disable public "
+  1100→                        f"access for storage account '{acct['account']}'."
+  1101→                    ),
+  1102→                )
+  1103→
+  1104→        # GCP Cloud Storage
+  1105→        gcp_buckets = discover_gcp_storage(host, timeout=timeout)
+  1106→        for bucket in gcp_buckets:
+  1107→            if bucket["accessible"] and bucket.get("is_listing"):
+  1108→                add(
+  1109→                    f"Public GCS bucket with listing: {bucket['bucket']}",
+  1110→                    "critical", "cloud_storage",
+  1111→                    f"GCP Cloud Storage bucket '{bucket['bucket']}' is public "
+  1112→                    f"with directory listing. All objects are enumerable.",
+  1113→                    bucket["evidence"], 15,
+  1114→                    _dread(10, 10, 10, 8, 9),
+  1115→                    remediation=(
+  1116→                        f"Set uniform bucket-level access on '{bucket['bucket']}'. "
+  1117→                        f"Remove allUsers/allAuthenticatedUsers from IAM. "
+  1118→                        f"Enable public access prevention."
+  1119→                    ),
+  1120→                )
+  1121→            elif bucket["accessible"]:
+  1122→                add(
+  1123→                    f"Public GCS bucket: {bucket['bucket']}",
+  1124→                    "high", "cloud_storage",
+  1125→                    f"GCP Cloud Storage bucket '{bucket['bucket']}' is publicly "
+  1126→                    f"accessible (status {bucket['status']}).",
+  1127→                    bucket["evidence"], 10,
+  1128→                    _dread(8, 9, 9, 7, 8),
+  1129→                    remediation=(
+  1130→                        f"Restrict access to '{bucket['bucket']}'. Remove public "
+  1131→                        f"IAM bindings. Use signed URLs for temporary access."
+  1132→                    ),
+  1133→                )
+  1134→            elif bucket["status"] in (401, 403):
+  1135→                add(
+  1136→                    f"GCS bucket exists (auth required): {bucket['bucket']}",
+  1137→                    "low", "cloud_storage",
+  1138→                    f"GCP Cloud Storage bucket '{bucket['bucket']}' exists "
+  1139→                    f"but requires authentication (status {bucket['status']}).",
+  1140→                    bucket["evidence"], 2,
+  1141→                    _dread(3, 8, 4, 3, 7),
+  1142→                    remediation="",
+  1143→                )
+  1144→
+  1145→    # ── Scoring ──
+  1146→    score = max(0, min(100, 100 - deductions))
+  1147→    if not findings:
+  1148→        score = 100
+  1149→    grade = compute_grade(score)
+  1150→    badge_md = badge_markdown(host, grade)
+  1151→
+  1152→    return findings
+  1153→

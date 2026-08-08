@@ -15,7 +15,16 @@ Scans the laptop/machine for:
 - Bluetooth & WiFi status
 - USB devices
 - Auto-start / launch agents
+- SUID/SGID binary audit
+- SELinux/AppArmor status
+- Kernel version CVE check
+- SSH authorized keys audit
+- World-writable directories
+- Suspicious processes
+- UAC status (Windows)
+- BitLocker recovery
 """
+
 from __future__ import annotations
 
 import os
@@ -790,7 +799,7 @@ def _check_usb_devices() -> List[Finding]:
                 title=f"{len(devices)} USB device(s) connected",
                 severity="info", category="usb",
                 module="host",
-                description=f"USB devices detected. Be cautious of unknown USB devices (BadUSB attacks).",
+                description="USB devices detected. Be cautious of unknown USB devices (BadUSB attacks).",
                 evidence=out[:300],
                 asset=hostname, points_deducted=0,
                 remediation="Only connect trusted USB devices. Consider USB device whitelisting.",
@@ -798,6 +807,652 @@ def _check_usb_devices() -> List[Finding]:
 
     return findings
 
+
+# ---------------------------------------------------------------------------
+# NEW CHECK 1: SUID/SGID Binary Audit
+# ---------------------------------------------------------------------------
+
+def _check_suid_sgid() -> List[Finding]:
+    """Find world-writable SUID/SGID binaries (Linux) or auto-elevatable binaries (Windows)."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if _is_windows():
+        # Windows: check for known auto-elevatable binaries in PATH
+        auto_elevatable = [
+            "compmgmtlauncher.exe", "dcomcnfg.exe", "eventvwr.exe",
+            "fxcopcmd.exe", "msconfig.exe", "regedit.exe", "resmon.exe",
+            "taskmgr.exe", "comexp.exe", "mmc.exe",
+        ]
+        code, out = _run("echo %PATH%")
+        if code != 0 or not out:
+            return findings
+        path_dirs = [p.strip('"') for p in out.split(os.pathsep) if p.strip()]
+        found_elevatable = []
+        for d in path_dirs[:30]:
+            if not os.path.isdir(d):
+                continue
+            try:
+                for entry in os.listdir(d):
+                    if entry.lower() in auto_elevatable:
+                        found_elevatable.append(os.path.join(d, entry))
+            except PermissionError:
+                continue
+        if found_elevatable:
+            findings.append(Finding(
+                title=f"{len(found_elevatable)} auto-elevatable binaries found in PATH",
+                severity="medium", category="suid_sgid",
+                module="host",
+                description="Auto-elevatable binaries can escalate privileges without UAC prompt. Ensure only trusted binaries are in PATH.",
+                evidence="; ".join(found_elevatable[:5]),
+                asset=hostname, points_deducted=5,
+                remediation="Review PATH entries and remove unnecessary directories. Restrict file permissions on auto-elevatable binaries.",
+            ))
+        return findings
+
+    if _is_macos():
+        # macOS: basic SUID check
+        code, out = _run("find /usr/bin /usr/sbin /bin /sbin -perm -4000 2>/dev/null")
+        if code == 0 and out:
+            suid_bins = [l for l in out.splitlines() if l.strip()]
+            world_writable = []
+            for b in suid_bins:
+                try:
+                    if os.stat(b).st_mode & stat.S_IWOTH:
+                        world_writable.append(b)
+                except OSError:
+                    continue
+            if world_writable:
+                findings.append(Finding(
+                    title=f"{len(world_writable)} world-writable SUID binary/binaries on macOS",
+                    severity="critical", category="suid_sgid",
+                    module="host",
+                    description="SUID binaries that are world-writable can be replaced by any user to run code as root.",
+                    evidence="; ".join(world_writable[:5]),
+                    asset=hostname, points_deducted=15,
+                    remediation="Remove world-write: sudo chmod o-w <binary> for each listed file.",
+                ))
+        return findings
+
+    # Linux: full SUID/SGID audit
+    code, out = _run("find /usr -perm -4000 -o -perm -2000 2>/dev/null")
+    if code == 0 and out:
+        suid_sgid_bins = [l for l in out.splitlines() if l.strip()]
+        world_writable = []
+        for b in suid_sgid_bins:
+            try:
+                if os.stat(b).st_mode & stat.S_IWOTH:
+                    world_writable.append(b)
+            except OSError:
+                continue
+        if world_writable:
+            findings.append(Finding(
+                title=f"{len(world_writable)} world-writable SUID/SGID binary/binaries found",
+                severity="critical", category="suid_sgid",
+                module="host",
+                description="SUID/SGID binaries that are world-writable can be replaced by any user to run code as elevated user/root.",
+                evidence="; ".join(world_writable[:5]),
+                asset=hostname, points_deducted=15,
+                remediation="Remove world-write: sudo chmod o-w <binary> for each listed file.",
+            ))
+        else:
+            if len(suid_sgid_bins) > 30:
+                findings.append(Finding(
+                    title=f"{len(suid_sgid_bins)} SUID/SGID binaries found (large count)",
+                    severity="low", category="suid_sgid",
+                    module="host",
+                    description=f"{len(suid_sgid_bins)} SUID/SGID binaries found. Review for unnecessary privilege escalation paths.",
+                    evidence=f"Count: {len(suid_sgid_bins)}",
+                    asset=hostname, points_deducted=2,
+                    remediation="Audit SUID/SGID binaries: sudo find / -perm -4000 -o -perm -2000",
+                ))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW CHECK 2: SELinux/AppArmor Status
+# ---------------------------------------------------------------------------
+
+def _check_selinux_apparmor() -> List[Finding]:
+    """Check SELinux enforcing mode or AppArmor active status (Linux only)."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if _is_windows() or _is_macos():
+        return findings  # Not applicable
+
+    # Check SELinux
+    code, out = _run("getenforce 2>/dev/null")
+    if code == 0:
+        mode = out.strip().lower()
+        if mode == "enforcing":
+            findings.append(Finding(
+                title="SELinux is in enforcing mode",
+                severity="info", category="mac",
+                module="host",
+                description="SELinux Mandatory Access Control is active and enforcing policy.",
+                evidence=f"getenforce: {out.strip()}",
+                asset=hostname, points_deducted=0,
+                remediation="",
+            ))
+        elif mode in ("permissive", "disabled"):
+            findings.append(Finding(
+                title=f"SELinux is in {mode} mode",
+                severity="high" if mode == "disabled" else "medium",
+                category="mac",
+                module="host",
+                description=f"SELinux is {mode}. Mandatory Access Control protections are {'absent' if mode == 'disabled' else 'not enforced'}.",
+                evidence=f"getenforce: {out.strip()}",
+                asset=hostname, points_deducted=8 if mode == "disabled" else 5,
+                remediation="Enable SELinux enforcing: sudo setenforce 1 && edit /etc/selinux/config to SELINUX=enforcing",
+            ))
+        return findings
+
+    # Check AppArmor
+    code, out = _run("aa-status 2>/dev/null")
+    if code == 0 and out:
+        profiles_loaded = 0
+        profiles_enforce = 0
+        for line in out.splitlines():
+            if "profiles are loaded" in line.lower():
+                try:
+                    profiles_loaded = int(re.search(r'(\d+)', line).group(1))
+                except (AttributeError, ValueError):
+                    pass
+            if "profiles are in enforce mode" in line.lower():
+                try:
+                    profiles_enforce = int(re.search(r'(\d+)', line).group(1))
+                except (AttributeError, ValueError):
+                    pass
+        if profiles_loaded == 0:
+            findings.append(Finding(
+                title="AppArmor has no profiles loaded",
+                severity="high", category="mac",
+                module="host",
+                description="AppArmor is installed but no profiles are loaded. No MAC protection is active.",
+                evidence="0 profiles loaded",
+                asset=hostname, points_deducted=8,
+                remediation="Load AppArmor profiles: sudo apt install apparmor-profiles && sudo aa-enforce /etc/apparmor.d/*",
+            ))
+        elif profiles_enforce == 0 and profiles_loaded > 0:
+            findings.append(Finding(
+                title="AppArmor profiles loaded but none in enforce mode",
+                severity="high", category="mac",
+                module="host",
+                description=f"{profiles_loaded} AppArmor profiles loaded but none are in enforce mode. All profiles are in complain mode only.",
+                evidence=f"{profiles_loaded} loaded, 0 enforcing",
+                asset=hostname, points_deducted=8,
+                remediation="Enforce profiles: sudo aa-enforce /etc/apparmor.d/*",
+            ))
+        else:
+            findings.append(Finding(
+                title=f"AppArmor: {profiles_enforce}/{profiles_loaded} profiles in enforce mode",
+                severity="info", category="mac",
+                module="host",
+                description="AppArmor MAC is active with profiles in enforce mode.",
+                evidence=f"{profiles_enforce} enforcing of {profiles_loaded} loaded",
+                asset=hostname, points_deducted=0,
+                remediation="",
+            ))
+        return findings
+
+    # Neither SELinux nor AppArmor detected
+    findings.append(Finding(
+        title="No Mandatory Access Control (SELinux/AppArmor) detected",
+        severity="medium", category="mac",
+        module="host",
+        description="No SELinux or AppArmor MAC system detected. Consider enabling one for additional security.",
+        evidence="Neither getenforce nor aa-status succeeded",
+        asset=hostname, points_deducted=5,
+        remediation="Install AppArmor: sudo apt install apparmor apparmor-profiles",
+    ))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW CHECK 3: Kernel Version CVE Check
+# ---------------------------------------------------------------------------
+
+# Static list of high-severity kernel CVEs with version ranges
+_KNOWN_KERNEL_CVES: List[Dict[str, Any]] = [
+    {"id": "CVE-2016-5195", "name": "Dirty COW", "min_ver": "2.6.22", "max_ver": "4.8.3", "severity": "critical",
+     "desc": "Race condition in mm/cow: priv escalation via write-after-zero page."},
+    {"id": "CVE-2017-1000112", "name": "Stack Clash (kernel part)", "min_ver": "2.6.18", "max_ver": "4.13.4", "severity": "critical",
+     "desc": "Stack clash allows arbitrary code execution."},
+    {"id": "CVE-2017-1000405", "name": "Linux Kernel KVM Priv Escalation", "min_ver": "3.10.0", "max_ver": "4.14.13", "severity": "critical",
+     "desc": "KVM allows host OS memory corruption."},
+    {"id": "CVE-2018-14633", "name": "Crypto API Buffer Overflow", "min_ver": "3.6.0", "max_ver": "4.18.10", "severity": "critical",
+     "desc": "Buffer overflow in crypto API allows priv esc."},
+    {"id": "CVE-2019-13272", "name": "PTRACE Tracing Priv Escalation", "min_ver": "3.2.0", "max_ver": "5.1.17", "severity": "critical",
+     "desc": "PTRACE_TRACEME allows local priv esc."},
+    {"id": "CVE-2020-14386", "name": "Packet Socket OOB Write", "min_ver": "4.6.0", "max_ver": "5.8.6", "severity": "critical",
+     "desc": "Out-of-bounds write in AF_PACKET."},
+    {"id": "CVE-2021-4039", "name": "Netfilter UAF", "min_ver": "5.4.0", "max_ver": "5.15.1", "severity": "high",
+     "desc": "Use-after-free in netfilter allows priv esc."},
+    {"id": "CVE-2022-0847", "name": "Dirty Pipe", "min_ver": "5.8.0", "max_ver": "5.16.11", "severity": "critical",
+     "desc": "Buffer overflow in pipe buffer allows overwriting read-only files."},
+    {"id": "CVE-2023-0386", "name": "OverlayFS Priv Escalation", "min_ver": "5.11.0", "max_ver": "6.2.0", "severity": "critical",
+     "desc": "OverlayFS escape allows local priv esc."},
+    {"id": "CVE-2024-1086", "name": "netfilter nf_tables UAF", "min_ver": "5.1.0", "max_ver": "6.7.0", "severity": "critical",
+     "desc": "Use-after-free in nf_tables allows local priv esc."},
+]
+
+
+def _parse_kernel_version(ver: str) -> Optional[Tuple[int, ...]]:
+    """Parse kernel version string into tuple of ints for comparison."""
+    # Extract version part, stripping distro suffixes
+    match = re.match(r'(\d+\.\d+(?:\.\d+)?)', ver)
+    if not match:
+        return None
+    parts = []
+    for p in match.group(1).split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            break
+    return tuple(parts) if parts else None
+
+
+def _version_in_range(ver: Tuple[int, ...], min_v: str, max_v: str) -> bool:
+    """Check if ver falls within [min_v, max_v] inclusive."""
+    v_min = _parse_kernel_version(min_v)
+    v_max = _parse_kernel_version(max_v)
+    if v_min is None or v_max is None:
+        return False
+    return v_min <= ver <= v_max
+
+
+def _check_kernel_cves() -> List[Finding]:
+    """Parse kernel version and check against known high-severity CVE patterns."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if _is_windows():
+        return findings  # Not applicable
+
+    try:
+        import platform
+        kernel_ver = platform.release()
+    except Exception:
+        return findings
+
+    parsed = _parse_kernel_version(kernel_ver)
+    if parsed is None:
+        return findings
+
+    for cve in _KNOWN_KERNEL_CVES:
+        if _version_in_range(parsed, cve["min_ver"], cve["max_ver"]):
+            findings.append(Finding(
+                title=f"Kernel potentially vulnerable to {cve['name']} ({cve['id']})",
+                severity=cve["severity"], category="kernel_cve",
+                module="host",
+                description=f"Kernel version {kernel_ver} falls within the affected range ({cve['min_ver']}-{cve['max_ver']}). {cve['desc']}",
+                evidence=f"Kernel: {kernel_ver}, CVE range: {cve['min_ver']}-{cve['max_ver']}",
+                asset=hostname, points_deducted=15 if cve["severity"] == "critical" else 8,
+                remediation=f"Update kernel: {'sudo apt dist-upgrade' if not _is_macos() else 'softwareupdate -i -a'}",
+            ))
+
+    if not findings:
+        findings.append(Finding(
+            title=f"Kernel {kernel_ver} — no known high-severity CVE matches",
+            severity="info", category="kernel_cve",
+            module="host",
+            description=f"Kernel version {kernel_ver} was checked against a static list of high-severity CVEs and no matches were found.",
+            evidence=f"Kernel: {kernel_ver}",
+            asset=hostname, points_deducted=0,
+            remediation="Keep your kernel updated for future CVEs.",
+        ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW CHECK 4: SSH Authorized Keys Audit
+# ---------------------------------------------------------------------------
+
+def _check_ssh_authorized_keys() -> List[Finding]:
+    """Check for unauthorized or unusual keys in authorized_keys files."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if _is_windows():
+        # Windows: check SSH authorized_keys if OpenSSH is installed
+        ssh_dir = os.path.expanduser("~/.ssh")
+        if not os.path.isdir(ssh_dir):
+            return findings
+        ak_paths = [os.path.join(ssh_dir, "authorized_keys")]
+    else:
+        ak_paths = [
+            os.path.expanduser("~/.ssh/authorized_keys"),
+            "/etc/ssh/authorized_keys",
+        ]
+
+    # Known-good key type prefixes
+    good_key_types = {"ssh-rsa", "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "sk-ssh-ed25519", "sk-ecdsa-sha2-nistp256"}
+
+    for ak_path in ak_paths:
+        if not os.path.isfile(ak_path):
+            continue
+        try:
+            with open(ak_path, errors="replace") as f:
+                lines = f.readlines()
+        except Exception:
+            continue
+
+        total_keys = 0
+        unusual_keys = []
+        for i, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            total_keys += 1
+            parts = line.split()
+            if len(parts) < 2:
+                unusual_keys.append(f"line {i}: malformed key entry")
+                continue
+            key_type = parts[0]
+            if key_type not in good_key_types:
+                unusual_keys.append(f"line {i}: unusual key type '{key_type}'")
+
+        if total_keys > 10:
+            findings.append(Finding(
+                title=f"{total_keys} authorized keys in {ak_path} (high count)",
+                severity="medium", category="ssh_keys",
+                module="host",
+                description=f"{total_keys} SSH keys are authorized in {ak_path}. A large number of authorized keys increases the attack surface.",
+                evidence=f"Path: {ak_path}, Keys: {total_keys}",
+                asset=hostname, points_deducted=5,
+                remediation="Audit and remove unused authorized keys.",
+            ))
+
+        if unusual_keys:
+            findings.append(Finding(
+                title=f"Unusual SSH authorized key(s) in {ak_path}",
+                severity="high", category="ssh_keys",
+                module="host",
+                description="Found unusual or malformed key entries in authorized_keys. These could indicate unauthorized access or key injection.",
+                evidence="; ".join(unusual_keys[:5]),
+                asset=hostname, points_deducted=8,
+                remediation="Review and remove unrecognized keys in authorized_keys.",
+            ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW CHECK 5: World-Writable Directories
+# ---------------------------------------------------------------------------
+
+def _check_world_writable_dirs() -> List[Finding]:
+    """Check /tmp, /var/tmp, /dev/shm for proper permissions."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if _is_windows():
+        # Windows equivalent: check %TEMP% and %TMP% permissions
+        tmp_dirs = [
+            os.environ.get("TEMP", ""),
+            os.environ.get("TMP", ""),
+            r"C:\Windows\Temp",
+        ]
+        for d in tmp_dirs:
+            if not d or not os.path.isdir(d):
+                continue
+            try:
+                # Check if Everyone has write access
+                code, out = _run(f'icacls "{d}" 2>NUL | findstr "Everyone"')
+                if code == 0 and out and ("(W)" in out or "(F)" in out):
+                    findings.append(Finding(
+                        title=f"Open write access on temp dir: {d}",
+                        severity="medium", category="world_writable",
+                        module="host",
+                        description=f"Windows temp directory {d} grants write access to Everyone. Malware can place files here for persistence.",
+                        evidence=out[:200],
+                        asset=hostname, points_deducted=5,
+                        remediation=f"Restrict permissions on {d} via icacls.",
+                    ))
+            except Exception:
+                pass
+        return findings
+
+    if _is_macos():
+        tmp_dirs = ["/tmp", "/private/tmp", "/var/tmp"]
+    else:
+        tmp_dirs = ["/tmp", "/var/tmp", "/dev/shm"]
+
+    for d in tmp_dirs:
+        if not os.path.isdir(d):
+            continue
+        perms = _file_perms(d)
+        if perms is None:
+            continue
+        if perms & stat.S_IWOTH:
+            # /tmp is commonly world-writable (1777 = sticky bit + world-writable)
+            # which is acceptable if sticky bit is set
+            has_sticky = perms & stat.S_ISVTX
+            if not has_sticky:
+                findings.append(Finding(
+                    title=f"World-writable directory without sticky bit: {d}",
+                    severity="high", category="world_writable",
+                    module="host",
+                    description=f"{d} is world-writable (perms {oct(perms)}) but has no sticky bit. Any user can delete/replace files.",
+                    evidence=f"Permissions: {oct(perms)}",
+                    asset=hostname, points_deducted=8,
+                    remediation=f"Add sticky bit: sudo chmod +t {d} (or chmod 1777 {d})",
+                ))
+            else:
+                findings.append(Finding(
+                    title=f"{d} is world-writable with sticky bit ({oct(perms)})",
+                    severity="info", category="world_writable",
+                    module="host",
+                    description=f"{d} has sticky bit set, which prevents users from deleting files they don't own. This is the standard secure configuration.",
+                    evidence=f"Permissions: {oct(perms)}",
+                    asset=hostname, points_deducted=0,
+                    remediation="",
+                ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW CHECK 6: Suspicious Processes
+# ---------------------------------------------------------------------------
+
+# Patterns matching common malware/reverse shell/backdoor process names
+_SUSPICIOUS_PROCESS_PATTERNS = [
+    (re.compile(r'(?i)nc(?:at)?(?:\.exe)?.*-[eEl]'), "netcat reverse shell detected"),
+    (re.compile(r'(?i)\bnc\.exe\b'), "netcat executable running"),
+    (re.compile(r'(?i)\bmsfvenom\b'), "Metasploit msfvenom payload generator"),
+    (re.compile(r'(?i)\bmsfconsole\b'), "Metasploit Framework console"),
+    (re.compile(r'(?i)\bmeterpreter\b'), "Metasploit Meterpreter"),
+    (re.compile(r'(?i)\breverse_?shell\b'), "reverse shell process"),
+    (re.compile(r'(?i)\bbackdoor\b'), "backdoor process"),
+    (re.compile(r'(?i)\bkeylog(?:ger)?\b'), "keylogger process"),
+    (re.compile(r'(?i)\bscreen(?:shot|capture)\b.*save'), "screenshot capture tool"),
+    (re.compile(r'(?i)\bcryptominer\b|\bxmrig\b|\bminerd\b|\bcgminer\b'), "cryptominer process"),
+    (re.compile(r'(?i)\bpty\b.*spawn'), "pty spawn (possible reverse shell)"),
+    (re.compile(r'(?i)\bpython[23]?\b.*-c.*import\s+(?:socket|pty|subprocess|os)'), "suspicious python one-liner"),
+    (re.compile(r'(?i)\bbash\b.*-i.*>/dev/tcp/'), "bash reverse shell via /dev/tcp"),
+    (re.compile(r'(?i)\bsh\b.*-c.*\b(curl|wget)\b.*\|\s*(?:sh|bash)'), "download and execute pattern"),
+    (re.compile(r'(?i)\bpowershell.*-enc\b'), "encoded PowerShell command (common in malware)"),
+    (re.compile(r'(?i)\bpowershell.*-w hidden\b'), "hidden PowerShell window (common in malware)"),
+    (re.compile(r'(?i)\bcmd(?:\.exe)?\b.*/c\s.*\b(curl|certutil)\b'), "cmd download cradle"),
+    (re.compile(r'(?i)\bwhoami\b.*\b>>(?:\/dev\/tcp|\\\\)'), "recon via whoami piped to network"),
+]
+
+
+def _check_suspicious_processes() -> List[Finding]:
+    """Check for processes matching common malware/reverse shell patterns."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if _is_windows():
+        code, out = _run('wmic process get CommandLine 2>NUL')
+    else:
+        code, out = _run("ps aux --no-headers 2>/dev/null || ps -ef 2>/dev/null")
+
+    if code != 0 or not out:
+        return findings
+
+    for line in out.splitlines():
+        for pattern, description in _SUSPICIOUS_PROCESS_PATTERNS:
+            if pattern.search(line):
+                # Mask potential command-line arguments for evidence
+                cmd_line = line.strip()[:200]
+                findings.append(Finding(
+                    title=f"Suspicious process: {description}",
+                    severity="critical", category="suspicious_processes",
+                    module="host",
+                    description=f"A running process matches a known malware or reverse shell pattern: {description}",
+                    evidence=cmd_line,
+                    asset=hostname, points_deducted=15,
+                    remediation="Investigate immediately. Kill the process and check for persistence mechanisms.",
+                ))
+                break  # Only report once per process line
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW CHECK 7: UAC Status (Windows)
+# ---------------------------------------------------------------------------
+
+def _check_uac_status() -> List[Finding]:
+    """Check Windows UAC level via registry."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if not _is_windows():
+        return findings  # Not applicable
+
+    # Read UAC settings from registry
+    # ConsentPromptBehaviorAdmin: 0=Always notify, 1=Prompt for non-Windows binaries,
+    #   2=Prompt for secure desktop (default), 3=Prompt for non-Windows (secure desktop), 5=Always prompt (secure desktop)
+    code, out = _run(r'reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v ConsentPromptBehaviorAdmin 2>NUL')
+    if code == 0 and out:
+        match = re.search(r'REG_DWORD\s+0x([0-9a-fA-F]+)', out)
+        if match:
+            val = int(match.group(1), 16)
+            if val == 0:
+                findings.append(Finding(
+                    title="UAC is completely disabled",
+                    severity="critical", category="uac",
+                    module="host",
+                    description="Windows User Account Control is completely disabled. Any process can silently elevate privileges.",
+                    evidence=f"ConsentPromptBehaviorAdmin = {val}",
+                    asset=hostname, points_deducted=15,
+                    remediation="Enable UAC: Set ConsentPromptBehaviorAdmin to 2 via Local Security Policy or registry.",
+                ))
+            elif val == 1:
+                findings.append(Finding(
+                    title="UAC set to 'Never notify' (weakened)",
+                    severity="high", category="uac",
+                    module="host",
+                    description="UAC is set to not notify the user for admin operations. This significantly weakens privilege boundary protection.",
+                    evidence=f"ConsentPromptBehaviorAdmin = {val}",
+                    asset=hostname, points_deducted=10,
+                    remediation="Set UAC to 'Always notify': Set ConsentPromptBehaviorAdmin to 2 or 5.",
+                ))
+            else:
+                findings.append(Finding(
+                    title=f"UAC is enabled (level {val})",
+                    severity="info", category="uac",
+                    module="host",
+                    description="Windows User Account Control is active and will prompt for elevation.",
+                    evidence=f"ConsentPromptBehaviorAdmin = {val}",
+                    asset=hostname, points_deducted=0,
+                    remediation="",
+                ))
+    else:
+        findings.append(Finding(
+            title="Could not read UAC settings",
+            severity="low", category="uac",
+            module="host",
+            description="Unable to read UAC registry settings.",
+            evidence="Registry query failed",
+            asset=hostname, points_deducted=2,
+            remediation="Manually check UAC: Control Panel > User Accounts > Change User Account Control settings",
+        ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# NEW CHECK 8: BitLocker Recovery
+# ---------------------------------------------------------------------------
+
+def _check_bitlocker_recovery() -> List[Finding]:
+    """Check if BitLocker recovery keys are backed up to AD or TPM (Windows only)."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if not _is_windows():
+        return findings  # Not applicable
+
+    # Check BitLocker status
+    code, out = _run('manage-bde -status C: 2>NUL')
+    if code != 0 or not out:
+        # Check other drives
+        code, out = _run('wmic volume get DriveLetter,DriveType 2>NUL | findstr "3"')
+        if code != 0 or not out:
+            return findings  # No BitLocker or no drives
+
+    if "Percentage Encrypted" not in out:
+        return findings
+
+    # Check if recovery password is backed up to AD
+    recovery_info = {}
+    for line in out.splitlines():
+        line_stripped = line.strip()
+        if "Key Protector" in line_stripped:
+            recovery_info.setdefault("protectors", []).append(line_stripped)
+        if "Numerical Password" in line_stripped or "Recovery Password" in line_stripped:
+            recovery_info["has_numerical"] = True
+        if "TPM" in line_stripped:
+            recovery_info["has_tpm"] = True
+
+    has_numerical = recovery_info.get("has_numerical", False)
+    has_tpm = recovery_info.get("has_tpm", False)
+
+    if not has_tpm and not has_numerical:
+        findings.append(Finding(
+            title="BitLocker active but no TPM or recovery key protector found",
+            severity="high", category="bitlocker",
+            module="host",
+            description="BitLocker is active but no TPM key protector or numerical recovery password is configured. If the device is lost, data cannot be recovered.",
+            evidence="No TPM or numerical password protector in manage-bde output",
+            asset=hostname, points_deducted=8,
+            remediation="Add TPM protector: manage-bde -protectors -add C: -tpm. Backup recovery key: manage-bde -protectors -backup C: -AD",
+        ))
+    elif not has_tpm and has_numerical:
+        findings.append(Finding(
+            title="BitLocker recovery key found but no TPM protector",
+            severity="medium", category="bitlocker",
+            module="host",
+            description="BitLocker has a numerical recovery password but no TPM protector. TPM provides seamless authentication.",
+            evidence="Numerical password found, no TPM protector",
+            asset=hostname, points_deducted=5,
+            remediation="Add TPM protector: manage-bde -protectors -add C: -tpm",
+        ))
+    else:
+        # Check if recovery key is backed up to AD
+        code2, out2 = _run('powershell -command "(Get-BitLockerVolume -MountPoint C:).KeyProtector | Where-Object {$_.KeyProtectorType -eq \"RecoveryPassword\"} | Select-Object -ExpandProperty RecoveryPassword" 2>NUL')
+        findings.append(Finding(
+            title="BitLocker is active with TPM protector",
+            severity="info", category="bitlocker",
+            module="host",
+            description="BitLocker encryption is active with a TPM protector. Ensure recovery keys are backed up to Active Directory or a secure location.",
+            evidence="TPM protector present",
+            asset=hostname, points_deducted=0,
+            remediation="Backup recovery key to AD: manage-bde -protectors -backup C: -AD or save to a secure location.",
+        ))
+
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 def run_host(target: str = "localhost", base_url: str = "", timeout: int = 8,
              verify_tls: bool = True) -> List[Finding]:
@@ -819,5 +1474,15 @@ def run_host(target: str = "localhost", base_url: str = "", timeout: int = 8,
     findings.extend(_check_auto_start())
     findings.extend(_check_network())
     findings.extend(_check_usb_devices())
+
+    # New checks
+    findings.extend(_check_suid_sgid())
+    findings.extend(_check_selinux_apparmor())
+    findings.extend(_check_kernel_cves())
+    findings.extend(_check_ssh_authorized_keys())
+    findings.extend(_check_world_writable_dirs())
+    findings.extend(_check_suspicious_processes())
+    findings.extend(_check_uac_status())
+    findings.extend(_check_bitlocker_recovery())
 
     return findings

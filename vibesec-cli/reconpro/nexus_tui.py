@@ -45,7 +45,7 @@ from .widgets import (
 )
 from .nexus_help import HelpOverlay
 
-VERSION = "7.2.8"
+VERSION = "8.0.0"
 BG = Theme.current().BG
 CYAN = Theme.current().CYAN
 RED = Theme.current().RED

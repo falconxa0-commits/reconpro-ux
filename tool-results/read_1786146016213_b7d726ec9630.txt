@@ -1,0 +1,1717 @@
+     1→     1→"""Nexus Agent — Agentic security engine.
+     2→     2→
+     3→     3→The core intelligence brain of ReconPro. Accepts a natural language goal,
+     4→     4→reasons about what needs to be done, plans tool usage, executes step by step,
+     5→     5→verifies results, and adapts the plan dynamically.
+     6→     6→
+     7→     7→Powered by a built-in rule-based planner — zero external API keys required.
+     8→     8→Optionally supports OpenAI/Anthropic LLM backends when API keys are set.
+     9→     9→
+    10→    10→18 built-in tools covering scanning, recon, intel, and export.
+    11→    11→Persistent per-target memory stored at ~/.reconpro/memory/agent_context.json.
+    12→    12→"""
+    13→    13→from __future__ import annotations
+    14→    14→
+    15→    15→import json
+    16→    16→import os
+    17→    17→import re
+    18→    18→import subprocess
+    19→    19→from datetime import datetime, timezone
+    20→    20→from pathlib import Path
+    21→    21→from typing import Any, Callable, Dict, List, Optional, Tuple
+    22→    22→
+    23→    23→from rich.console import Console
+    24→    24→from rich.panel import Panel
+    25→    25→from rich.text import Text
+    26→    26→
+    27→    27→# ── Optional LLM dependency flags ─────────────────────────────────────
+    28→    28→
+    29→    29→try:
+    30→    30→    import openai
+    31→    31→    HAS_OPENAI = True
+    32→    32→except ImportError:
+    33→    33→    HAS_OPENAI = False
+    34→    34→
+    35→    35→try:
+    36→    36→    import anthropic
+    37→    37→    HAS_ANTHROPIC = True
+    38→    38→except ImportError:
+    39→    39→    HAS_ANTHROPIC = False
+    40→    40→
+    41→    41→console = Console()
+    42→    42→MEMORY_DIR = Path.home() / ".reconpro" / "memory"
+    43→    43→CONTEXT_FILE = MEMORY_DIR / "agent_context.json"
+    44→    44→MAX_ITERATIONS = 10
+    45→    45→
+    46→    46→
+    47→    47→# ══════════════════════════════════════════════════════════════════════
+    48→    48→#  TOOL RESULT & TOOL
+    49→    49→# ══════════════════════════════════════════════════════════════════════
+    50→    50→
+    51→    51→
+    52→    52→class ToolResult:
+    53→    53→    """Result of a tool execution."""
+    54→    54→
+    55→    55→    def __init__(self, output: str, success: bool = True, data: Any = None):
+    56→    56→        self.output = output
+    57→    57→        self.success = success
+    58→    58→        self.data = data
+    59→    59→
+    60→    60→    def to_dict(self) -> Dict:
+    61→    61→        return {"output": self.output, "success": self.success, "data": self.data}
+    62→    62→
+    63→    63→
+    64→    64→class Tool:
+    65→    65→    """A callable tool the agent can use."""
+    66→    66→
+    67→    67→    def __init__(
+    68→    68→        self,
+    69→    69→        name: str,
+    70→    70→        description: str,
+    71→    71→        parameters: Dict[str, Any],
+    72→    72→        execute: Callable[..., ToolResult],
+    73→    73→        category: str = "scan",
+    74→    74→        dangerous: bool = False,
+    75→    75→    ):
+    76→    76→        self.name = name
+    77→    77→        self.description = description
+    78→    78→        self.parameters = parameters
+    79→    79→        self.execute = execute
+    80→    80→        self.category = category
+    81→    81→        self.dangerous = dangerous
+    82→    82→
+    83→    83→    def to_openai_tool(self) -> Dict:
+    84→    84→        return {
+    85→    85→            "type": "function",
+    86→    86→            "function": {
+    87→    87→                "name": self.name,
+    88→    88→                "description": self.description,
+    89→    89→                "parameters": {
+    90→    90→                    "type": "object",
+    91→    91→                    "properties": self.parameters,
+    92→    92→                    "required": list(self.parameters.keys()),
+    93→    93→                },
+    94→    94→            },
+    95→    95→        }
+    96→    96→
+    97→    97→    def to_anthropic_tool(self) -> Dict:
+    98→    98→        return {
+    99→    99→            "name": self.name,
+   100→   100→            "description": self.description,
+   101→   101→            "input_schema": {
+   102→   102→                "type": "object",
+   103→   103→                "properties": self.parameters,
+   104→   104→                "required": list(self.parameters.keys()),
+   105→   105→            },
+   106→   106→        }
+   107→   107→
+   108→   108→
+   109→   109→class ToolRegistry:
+   110→   110→    """Registry of all available tools."""
+   111→   111→
+   112→   112→    def __init__(self):
+   113→   113→        self.tools: Dict[str, Tool] = {}
+   114→   114→
+   115→   115→    def register(self, tool: Tool) -> None:
+   116→   116→        self.tools[tool.name] = tool
+   117→   117→
+   118→   118→    def get(self, name: str) -> Optional[Tool]:
+   119→   119→        return self.tools.get(name)
+   120→   120→
+   121→   121→    def execute(self, name: str, **kwargs) -> ToolResult:
+   122→   122→        tool = self.tools.get(name)
+   123→   123→        if not tool:
+   124→   124→            return ToolResult(f"Tool '{name}' not found.", success=False)
+   125→   125→        try:
+   126→   126→            return tool.execute(**kwargs)
+   127→   127→        except Exception as e:
+   128→   128→            return ToolResult(f"Tool error: {e}", success=False)
+   129→   129→
+   130→   130→    def list_tools(self) -> List[Dict]:
+   131→   131→        return [
+   132→   132→            {"name": t.name, "description": t.description, "category": t.category}
+   133→   133→            for t in self.tools.values()
+   134→   134→        ]
+   135→   135→
+   136→   136→    def to_openai_tools(self) -> List[Dict]:
+   137→   137→        return [t.to_openai_tool() for t in self.tools.values()]
+   138→   138→
+   139→   139→    def to_anthropic_tools(self) -> List[Dict]:
+   140→   140→        return [t.to_anthropic_tool() for t in self.tools.values()]
+   141→   141→
+   142→   142→
+   143→   143→# ══════════════════════════════════════════════════════════════════════
+   144→   144→#  PERSISTENT MEMORY
+   145→   145→# ══════════════════════════════════════════════════════════════════════
+   146→   146→
+   147→   147→
+   148→   148→class AgentMemory:
+   149→   149→    """Persistent memory for the Nexus agent across sessions."""
+   150→   150→
+   151→   151→    def __init__(self):
+   152→   152→        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+   153→   153→        self._data = self._load()
+   154→   154→
+   155→   155→    def _load(self) -> Dict:
+   156→   156→        if CONTEXT_FILE.exists():
+   157→   157→            try:
+   158→   158→                return json.loads(CONTEXT_FILE.read_text())
+   159→   159→            except Exception:
+   160→   160→                pass
+   161→   161→        return {
+   162→   162→            "sessions": [],
+   163→   163→            "target_contexts": {},
+   164→   164→            "learned_patterns": [],
+   165→   165→            "created": datetime.now(timezone.utc).isoformat(),
+   166→   166→        }
+   167→   167→
+   168→   168→    def _save(self) -> None:
+   169→   169→        # Keep only the last 50 sessions
+   170→   170→        if len(self._data.get("sessions", [])) > 50:
+   171→   171→            self._data["sessions"] = self._data["sessions"][-50:]
+   172→   172→        try:
+   173→   173→            CONTEXT_FILE.write_text(json.dumps(self._data, indent=2, default=str))
+   174→   174→        except OSError:
+   175→   175→            pass
+   176→   176→
+   177→   177→    def save_session(
+   178→   178→        self,
+   179→   179→        goal: str,
+   180→   180→        target: str,
+   181→   181→        plan: List[Dict],
+   182→   182→        tool_results: List[Dict],
+   183→   183→        summary: str,
+   184→   184→    ) -> None:
+   185→   185→        session = {
+   186→   186→            "goal": goal,
+   187→   187→            "target": target,
+   188→   188→            "plan": plan,
+   189→   189→            "tool_results": tool_results,
+   190→   190→            "summary": summary,
+   191→   191→            "timestamp": datetime.now(timezone.utc).isoformat(),
+   192→   192→        }
+   193→   193→        self._data.setdefault("sessions", []).append(session)
+   194→   194→        # Update target context
+   195→   195→        self._data.setdefault("target_contexts", {})[target] = {
+   196→   196→            "last_score": self._extract_score(tool_results),
+   197→   197→            "last_grade": self._extract_grade(tool_results),
+   198→   198→            "last_run": session["timestamp"],
+   199→   199→            "finding_count": self._extract_finding_count(tool_results),
+   200→   200→            "known_issues": self._extract_issues(tool_results),
+   201→   201→        }
+   202→   202→        self._save()
+   203→   203→
+   204→   204→    def get_target_context(self, target: str) -> Optional[Dict]:
+   205→   205→        return self._data.get("target_contexts", {}).get(target)
+   206→   206→
+   207→   207→    def get_recent_sessions(self, limit: int = 5) -> List[Dict]:
+   208→   208→        return self._data.get("sessions", [])[-limit:]
+   209→   209→
+   210→   210→    @staticmethod
+   211→   211→    def _extract_score(results: List[Dict]) -> Optional[int]:
+   212→   212→        for r in results:
+   213→   213→            d = r.get("data")
+   214→   214→            if isinstance(d, dict) and "total_score" in d:
+   215→   215→                return d["total_score"]
+   216→   216→        return None
+   217→   217→
+   218→   218→    @staticmethod
+   219→   219→    def _extract_grade(results: List[Dict]) -> Optional[str]:
+   220→   220→        for r in results:
+   221→   221→            d = r.get("data")
+   222→   222→            if isinstance(d, dict) and "grade" in d:
+   223→   223→                return d["grade"]
+   224→   224→        return None
+   225→   225→
+   226→   226→    @staticmethod
+   227→   227→    def _extract_finding_count(results: List[Dict]) -> int:
+   228→   228→        total = 0
+   229→   229→        for r in results:
+   230→   230→            d = r.get("data")
+   231→   231→            if isinstance(d, dict) and "findings" in d:
+   232→   232→                total += len(d["findings"])
+   233→   233→        return total
+   234→   234→
+   235→   235→    @staticmethod
+   236→   236→    def _extract_issues(results: List[Dict]) -> List[str]:
+   237→   237→        issues = []
+   238→   238→        for r in results:
+   239→   239→            d = r.get("data")
+   240→   240→            if isinstance(d, dict) and "findings" in d:
+   241→   241→                for f in d["findings"]:
+   242→   242→                    if isinstance(f, dict) and f.get("severity") in ("critical", "high"):
+   243→   243→                        issues.append(f.get("title", ""))
+   244→   244→        return issues[:20]
+   245→   245→
+   246→   246→
+   247→   247→# ══════════════════════════════════════════════════════════════════════
+   248→   248→#  TOOL IMPLEMENTATIONS (18 tools)
+   249→   249→# ══════════════════════════════════════════════════════════════════════
+   250→   250→
+   251→   251→
+   252→   252→def _tool_remote_scan(
+   253→   253→    target: str = "",
+   254→   254→    modules: str = "",
+   255→   255→    all_modules: bool = False,
+   256→   256→    timeout: int = 10,
+   257→   257→) -> ToolResult:
+   258→   258→    """Full remote scan of a target domain/URL."""
+   259→   259→    from .scanner import scan
+   260→   260→    if not target:
+   261→   261→        return ToolResult("No target specified.", success=False)
+   262→   262→    mod_list = [m.strip().lower() for m in modules.split(",") if m.strip()] if modules else None
+   263→   263→    result = scan(target, modules=mod_list, all_modules=all_modules, timeout=timeout)
+   264→   264→    return ToolResult(
+   265→   265→        f"Scanned {target}. Score: {result.total_score}/100 ({result.grade}). "
+   266→   266→        f"{len(result.findings)} findings.",
+   267→   267→        success=True,
+   268→   268→        data=result.to_dict(),
+   269→   269→    )
+   270→   270→
+   271→   271→
+   272→   272→def _tool_vibesec_benchmark(target: str = "") -> ToolResult:
+   273→   273→    """Quick VibeSec score check."""
+   274→   274→    from .scanner import scan
+   275→   275→    if not target:
+   276→   276→        return ToolResult("No target specified.", success=False)
+   277→   277→    result = scan(target, modules=["vibesec"])
+   278→   278→    score = result.vibesec_score or result.total_score
+   279→   279→    grade = result.vibesec_grade or result.grade
+   280→   280→    return ToolResult(
+   281→   281→        f"VibeSec benchmark for {target}: {score}/100 ({grade}).",
+   282→   282→        success=True,
+   283→   283→        data={
+   284→   284→            "target": target, "vibesec_score": score,
+   285→   285→            "vibesec_grade": grade, "findings": result.findings,
+   286→   286→        },
+   287→   287→    )
+   288→   288→
+   289→   289→
+   290→   290→def _tool_local_audit(target_path: str = ".") -> ToolResult:
+   291→   291→    """Full machine audit."""
+   292→   292→    from .scanner import audit_scan
+   293→   293→    result = audit_scan(target=target_path, all_modules=True)
+   294→   294→    return ToolResult(
+   295→   295→        f"Local audit of {target_path}. Score: {result.total_score}/100 ({result.grade}). "
+   296→   296→        f"{len(result.findings)} findings.",
+   297→   297→        success=True,
+   298→   298→        data=result.to_dict(),
+   299→   299→    )
+   300→   300→
+   301→   301→
+   302→   302→def _tool_dev_scan(path: str = ".") -> ToolResult:
+   303→   303→    """Developer project scan."""
+   304→   304→    from .scanner import audit_scan
+   305→   305→    result = audit_scan(target=path, modules=["dev"])
+   306→   306→    return ToolResult(
+   307→   307→        f"Dev scan of {path}. Score: {result.total_score}/100 ({result.grade}). "
+   308→   308→        f"{len(result.findings)} findings.",
+   309→   309→        success=True,
+   310→   310→        data=result.to_dict(),
+   311→   311→    )
+   312→   312→
+   313→   313→
+   314→   314→def _tool_doctor_check() -> ToolResult:
+   315→   315→    """Health check with fix suggestions."""
+   316→   316→    from .scanner import audit_scan
+   317→   317→    result = audit_scan(target="localhost", modules=["doctor"])
+   318→   318→    return ToolResult(
+   319→   319→        f"Doctor check complete. Score: {result.total_score}/100 ({result.grade}). "
+   320→   320→        f"{len(result.findings)} findings.",
+   321→   321→        success=True,
+   322→   322→        data=result.to_dict(),
+   323→   323→    )
+   324→   324→
+   325→   325→
+   326→   326→def _tool_port_scan() -> ToolResult:
+   327→   327→    """Check for open and risky ports on the local machine."""
+   328→   328→    from .modules.host import _check_open_ports
+   329→   329→    findings = _check_open_ports()
+   330→   330→    if not findings:
+   331→   331→        return ToolResult("No risky ports found.", success=True, data=[])
+   332→   332→    lines = [f"{f.severity.upper()}: {f.title}" for f in findings]
+   333→   333→    return ToolResult(
+   334→   334→        f"Found {len(findings)} port issue(s):\n" + "\n".join(lines),
+   335→   335→        success=True,
+   336→   336→        data=[f.to_dict() for f in findings],
+   337→   337→    )
+   338→   338→
+   339→   339→
+   340→   340→def _tool_secret_hunt(path: str = ".") -> ToolResult:
+   341→   341→    """Find secrets and credentials in a directory."""
+   342→   342→    from .modules.host import _check_env_secrets
+   343→   343→    from .modules.dev import _check_env_files, _check_hardcoded_secrets
+   344→   344→    abs_path = os.path.abspath(path)
+   345→   345→    all_f = (
+   346→   346→        _check_env_secrets()
+   347→   347→        + _check_env_files(abs_path)
+   348→   348→        + _check_hardcoded_secrets(abs_path)
+   349→   349→    )
+   350→   350→    if not all_f:
+   351→   351→        return ToolResult("No secrets found.", success=True, data=[])
+   352→   352→    lines = [f"{f.severity.upper()}: {f.title}" for f in all_f[:20]]
+   353→   353→    return ToolResult(
+   354→   354→        f"Found {len(all_f)} secret(s):\n" + "\n".join(lines),
+   355→   355→        success=True,
+   356→   356→        data=[f.to_dict() for f in all_f],
+   357→   357→    )
+   358→   358→
+   359→   359→
+   360→   360→def _tool_subdomain_discover(domain: str = "") -> ToolResult:
+   361→   361→    """Discover subdomains via CT logs and DNS."""
+   362→   362→    from .subdomains import discover_subdomains
+   363→   363→    if not domain:
+   364→   364→        return ToolResult("No domain specified.", success=False)
+   365→   365→    subs = discover_subdomains(domain)
+   366→   366→    return ToolResult(
+   367→   367→        f"Found {len(subs)} subdomain(s): {', '.join(subs[:20])}",
+   368→   368→        success=True,
+   369→   369→        data={"subdomains": subs},
+   370→   370→    )
+   371→   371→
+   372→   372→
+   373→   373→def _tool_blitz_scan(targets_str: str = "") -> ToolResult:
+   374→   374→    """Parallel multi-target scan."""
+   375→   375→    from .parallel import blitz_scan
+   376→   376→    target_list = [t.strip() for t in targets_str.split(",") if t.strip()]
+   377→   377→    if len(target_list) < 2:
+   378→   378→        return ToolResult("Blitz requires at least 2 comma-separated targets.", success=False)
+   379→   379→    result = blitz_scan(target_list, max_workers=min(4, len(target_list)), save=True)
+   380→   380→    return ToolResult(
+   381→   381→        f"Blitz: {result.get('total_findings', 0)} findings across "
+   382→   382→        f"{result.get('targets_scanned', 0)} targets.",
+   383→   383→        success=True,
+   384→   384→        data=result,
+   385→   385→    )
+   386→   386→
+   387→   387→
+   388→   388→def _tool_ast_analyze(path: str = ".") -> ToolResult:
+   389→   389→    """AST code analysis for security anti-patterns."""
+   390→   390→    from .modules.ast_analyzer import ASTAnalyzer
+   391→   391→    analyzer = ASTAnalyzer()
+   392→   392→    findings = analyzer.analyze_directory(path)
+   393→   393→    if not findings:
+   394→   394→        return ToolResult(f"No code issues found in {path}.", success=True, data=[])
+   395→   395→    summary = analyzer.summary()
+   396→   396→    lines = [f"{f.severity.upper()}: {f.title} ({f.asset})" for f in findings[:20]]
+   397→   397→    return ToolResult(
+   398→   398→        f"AST analysis of {path}: {summary['total']} findings.\n" + "\n".join(lines),
+   399→   399→        success=True,
+   400→   400→        data={
+   401→   401→            "findings": [f.to_dict() for f in findings],
+   402→   402→            "summary": summary,
+   403→   403→        },
+   404→   404→    )
+   405→   405→
+   406→   406→
+   407→   407→def _tool_cve_enrich(findings_json: str = "[]") -> ToolResult:
+   408→   408→    """Enrich findings with CVE data from NVD."""
+   409→   409→    from .cve_radar import CVERadar
+   410→   410→    try:
+   411→   411→        findings = json.loads(findings_json)
+   412→   412→    except (json.JSONDecodeError, TypeError):
+   413→   413→        return ToolResult("Invalid findings JSON.", success=False)
+   414→   414→    if not findings or not isinstance(findings, list):
+   415→   415→        return ToolResult("Empty or invalid findings list.", success=False)
+   416→   416→    radar = CVERadar()
+   417→   417→    enriched = radar.bulk_enrich(findings[:30])
+   418→   418→    threat = radar.threat_summary(enriched)
+   419→   419→    cve_count = threat.get("unique_cves_found", 0)
+   420→   420→    return ToolResult(
+   421→   421→        f"Enriched {len(enriched)} findings. Found {cve_count} unique CVEs. "
+   422→   422→        f"{threat.get('recommendation', '')}",
+   423→   423→        success=True,
+   424→   424→        data={"enriched_findings": enriched, "threat_summary": threat},
+   425→   425→    )
+   426→   426→
+   427→   427→
+   428→   428→def _tool_knowledge_graph(action: str = "build", target: str = "") -> ToolResult:
+   429→   429→    """Build or query the security knowledge graph."""
+   430→   430→    from .knowledge_graph import SecurityKnowledgeGraph
+   431→   431→    if not target:
+   432→   432→        return ToolResult("No target specified.", success=False)
+   433→   433→    kg = SecurityKnowledgeGraph()
+   434→   434→    if action == "build":
+   435→   435→        from .history import get_latest
+   436→   436→        latest = get_latest(target=target)
+   437→   437→        if not latest:
+   438→   438→            latest = get_latest()
+   439→   439→        if latest:
+   440→   440→            kg.add_scan_result(latest)
+   441→   441→        n_count = len(list(kg._g.nodes(data=False)))
+   442→   442→        e_count = len(list(kg._g.edges(data=False)))
+   443→   443→        return ToolResult(
+   444→   444→            f"Knowledge graph built: {n_count} nodes, {e_count} edges for {target}.",
+   445→   445→            success=True,
+   446→   446→            data={"node_count": n_count, "edge_count": e_count, "target": target},
+   447→   447→        )
+   448→   448→    elif action == "attack_chains":
+   449→   449→        chains = kg.find_attack_chains(max_depth=4)
+   450→   450→        return ToolResult(
+   451→   451→            f"Found {len(chains)} attack chain(s).", success=True,
+   452→   452→            data={"attack_chains": chains},
+   453→   453→        )
+   454→   454→    else:
+   455→   455→        return ToolResult(f"Unknown action: {action}. Use 'build' or 'attack_chains'.", success=False)
+   456→   456→
+   457→   457→
+   458→   458→def _tool_adversarial_loop(target: str = "", rounds: int = 2) -> ToolResult:
+   459→   459→    """Run hacker-coder-guardian adversarial loop."""
+   460→   460→    from .adversarial import run_adversarial
+   461→   461→    if not target:
+   462→   462→        return ToolResult("No target specified.", success=False)
+   463→   463→    is_local = target in ("localhost", ".", "local", "my machine")
+   464→   464→    result = run_adversarial(target, max_rounds=rounds, is_local=is_local)
+   465→   465→    return ToolResult(
+   466→   466→        f"Adversarial loop: {result.total_findings_initial} initial findings, "
+   467→   467→        f"{result.findings_fixed} fixed, {result.findings_unfixed} remaining. "
+   468→   468→        f"Score: {result.initial_grade} ({result.initial_score}) -> "
+   469→   469→        f"{result.final_grade} ({result.final_score})",
+   470→   470→        success=True,
+   471→   471→        data={
+   472→   472→            "target": result.target,
+   473→   473→            "initial_score": result.initial_score,
+   474→   474→            "final_score": result.final_score,
+   475→   475→            "initial_grade": result.initial_grade,
+   476→   476→            "final_grade": result.final_grade,
+   477→   477→            "findings_fixed": result.findings_fixed,
+   478→   478→            "findings_unfixed": result.findings_unfixed,
+   479→   479→            "converged": result.converged,
+   480→   480→        },
+   481→   481→    )
+   482→   482→
+   483→   483→
+   484→   484→def _tool_swarm_run(target: str = "", mode: str = "recon") -> ToolResult:
+   485→   485→    """Run the full swarm attack (SCOUT -> HACKER -> CODER -> GUARDIAN)."""
+   486→   486→    from .swarm import run_swarm
+   487→   487→    if not target:
+   488→   488→        return ToolResult("No target specified.", success=False)
+   489→   489→    result = run_swarm(target, mode=mode)
+   490→   490→    total_findings = sum(len(a.findings) for a in result.agents.values())
+   491→   491→    return ToolResult(
+   492→   492→        f"Swarm complete ({mode} mode). {total_findings} total findings across "
+   493→   493→        f"{len(result.agents)} agents.",
+   494→   494→        success=True,
+   495→   495→        data={
+   496→   496→            "target": target, "mode": mode,
+   497→   497→            "agents": {k: {"status": v.status.value, "findings_count": len(v.findings)}
+   498→   498→                       for k, v in result.agents.items()},
+   499→   499→        },
+   500→   500→    )
+   501→   501→
+   502→   502→
+   503→   503→def _tool_generate_report(format: str = "html") -> ToolResult:
+   504→   504→    """Generate a report (HTML, MD, SARIF, JSON) from the last scan."""
+   505→   505→    from .history import get_latest
+   506→   506→    from .formats import export
+   507→   507→    latest = get_latest()
+   508→   508→    if not latest:
+   509→   509→        return ToolResult("No scan data to export. Run a scan first.", success=False)
+   510→   510→    target = latest.get("target", "unknown").replace(",", "").replace("/", "_")[:40]
+   511→   511→    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+   512→   512→    ext_map = {"html": ".html", "md": ".md", "sarif": ".sarif", "json": ".json"}
+   513→   513→    ext = ext_map.get(format.lower(), ".html")
+   514→   514→    filename = f"reconpro_report_{ts}_{target}{ext}"
+   515→   515→    filepath = str(MEMORY_DIR / filename)
+   516→   516→    path = export(latest, filepath, format=format.lower())
+   517→   517→    return ToolResult(
+   518→   518→        f"Report generated: {path}",
+   519→   519→        success=True,
+   520→   520→        data={"path": path, "format": format},
+   521→   521→    )
+   522→   522→
+   523→   523→
+   524→   524→def _tool_scan_history(limit: int = 10) -> ToolResult:
+   525→   525→    """List past scans."""
+   526→   526→    from .history import list_scans
+   527→   527→    scans = list_scans(limit=limit)
+   528→   528→    if not scans:
+   529→   529→        return ToolResult("No scan history found.", success=True, data=[])
+   530→   530→    lines = [
+   531→   531→        f"  {s.get('total_score', '?')}/100 ({s.get('grade', '?')})  "
+   532→   532→        f"{s.get('target', '?')[:30]}  {len(s.get('findings', []))} findings"
+   533→   533→        for s in scans
+   534→   534→    ]
+   535→   535→    return ToolResult(
+   536→   536→        f"Recent {len(scans)} scan(s):\n" + "\n".join(lines),
+   537→   537→        success=True,
+   538→   538→        data=scans,
+   539→   539→    )
+   540→   540→
+   541→   541→
+   542→   542→def _tool_diff_scans() -> ToolResult:
+   543→   543→    """Compare the two most recent scans."""
+   544→   544→    from .history import list_scans, diff_scans
+   545→   545→    scans = list_scans(limit=2)
+   546→   546→    if len(scans) < 2:
+   547→   547→        return ToolResult("Need at least 2 scans to compare.", success=False)
+   548→   548→    d = diff_scans(scans[0]["_file"], scans[1]["_file"])
+   549→   549→    return ToolResult(
+   550→   550→        f"A: {d['scan_a']['target']} {d['scan_a']['score']}/100 ({d['scan_a']['grade']})\n"
+   551→   551→        f"B: {d['scan_b']['target']} {d['scan_b']['score']}/100 ({d['scan_b']['grade']})\n"
+   552→   552→        f"Score change: {d['score_change']} pts | "
+   553→   553→        f"Fixed: {len(d['fixed'])} | New: {len(d['new'])} | Persistent: {len(d['persistent'])}",
+   554→   554→        success=True,
+   555→   555→        data=d,
+   556→   556→    )
+   557→   557→
+   558→   558→
+   559→   559→def _tool_shell_command(command: str = "") -> ToolResult:
+   560→   560→    """Run an arbitrary shell command. DANGEROUS — use with caution."""
+   561→   561→    if not command:
+   562→   562→        return ToolResult("No command specified.", success=False)
+   563→   563→    dangerous_patterns = ["rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:", "chmod -R 777 /"]
+   564→   564→    for dp in dangerous_patterns:
+   565→   565→        if dp in command:
+   566→   566→            return ToolResult(f"Blocked dangerous command pattern: {dp}", success=False)
+   567→   567→    try:
+   568→   568→        result = subprocess.run(
+   569→   569→            command, shell=True, capture_output=True, text=True, timeout=30,
+   570→   570→        )
+   571→   571→        output = (result.stdout + result.stderr)[:2000]
+   572→   572→        return ToolResult(
+   573→   573→            f"Exit code: {result.returncode}\n{output}",
+   574→   574→            success=result.returncode == 0,
+   575→   575→        )
+   576→   576→    except subprocess.TimeoutExpired:
+   577→   577→        return ToolResult("Command timed out (30s).", success=False)
+   578→   578→    except Exception as e:
+   579→   579→        return ToolResult(f"Command error: {e}", success=False)
+   580→   580→
+   581→   581→
+   582→   582→# ══════════════════════════════════════════════════════════════════════
+   583→   583→#  BUILD DEFAULT REGISTRY
+   584→   584→# ══════════════════════════════════════════════════════════════════════
+   585→   585→
+   586→   586→
+   587→   587→def build_registry() -> ToolRegistry:
+   588→   588→    """Build the default tool registry with all 18 tools."""
+   589→   589→    reg = ToolRegistry()
+   590→   590→
+   591→   591→    reg.register(Tool(
+   592→   592→        "remote_scan",
+   593→   593→        "Full remote security scan of a domain or URL. Runs all enabled modules (recon, auth, "
+   594→   594→        "chain, oblivion, etc.) and returns score, grade, and detailed findings. "
+   595→   595→        "Use all_modules=true for maximum coverage.",
+   596→   596→        {
+   597→   597→            "target": {"type": "string", "description": "Domain or URL to scan"},
+   598→   598→            "modules": {"type": "string", "description": "Comma-separated module list (optional, e.g. 'recon,auth')"},
+   599→   599→            "all_modules": {"type": "boolean", "description": "Run all available modules"},
+   600→   600→            "timeout": {"type": "integer", "description": "Per-request timeout in seconds (default 10)"},
+   601→   601→        },
+   602→   602→        _tool_remote_scan, category="scan",
+   603→   603→    ))
+   604→   604→
+   605→   605→    reg.register(Tool(
+   606→   606→        "vibesec_benchmark",
+   607→   607→        "Quick VibeSec security score benchmark. Returns a fast 0-100 score and grade "
+   608→   608→        "for a target without running the full scan suite.",
+   609→   609→        {
+   610→   610→            "target": {"type": "string", "description": "Domain or URL to benchmark"},
+   611→   611→        },
+   612→   612→        _tool_vibesec_benchmark, category="scan",
+   613→   613→    ))
+   614→   614→
+   615→   615→    reg.register(Tool(
+   616→   616→        "local_audit",
+   617→   617→        "Full local machine security audit. Checks open ports, firewall rules, users, SSH config, "
+   618→   618→        "Docker security, environment secrets, file permissions, cron jobs, and network config.",
+   619→   619→        {
+   620→   620→            "target_path": {"type": "string", "description": "Directory to audit (default: current)"},
+   621→   621→        },
+   622→   622→        _tool_local_audit, category="local",
+   623→   623→    ))
+   624→   624→
+   625→   625→    reg.register(Tool(
+   626→   626→        "dev_scan",
+   627→   627→        "Scan a developer project for security issues: package.json/requirements.txt vulnerabilities, "
+   628→   628→        ".env file exposure, git secrets, Docker config, and hardcoded credentials.",
+   629→   629→        {
+   630→   630→            "path": {"type": "string", "description": "Project directory path (default: current)"},
+   631→   631→        },
+   632→   632→        _tool_dev_scan, category="scan",
+   633→   633→    ))
+   634→   634→
+   635→   635→    reg.register(Tool(
+   636→   636→        "doctor_check",
+   637→   637→        "Run security health check on the local machine. Checks password policy, disk encryption, "
+   638→   638→        "screen auto-lock, antivirus status, system updates, and browser security settings. "
+   639→   639→        "Provides fix suggestions for each issue.",
+   640→   640→        {},
+   641→   641→        _tool_doctor_check, category="local",
+   642→   642→    ))
+   643→   643→
+   644→   644→    reg.register(Tool(
+   645→   645→        "port_scan",
+   646→   646→        "Check for open and risky ports on the local machine. Identifies services that may be "
+   647→   647→        "unnecessarily exposed (e.g., databases on public interfaces).",
+   648→   648→        {},
+   649→   649→        _tool_port_scan, category="recon",
+   650→   650→    ))
+   651→   651→
+   652→   652→    reg.register(Tool(
+   653→   653→        "secret_hunt",
+   654→   654→        "Hunt for secrets and credentials in a directory tree. Scans .env files, hardcoded passwords, "
+   655→   655→        "API keys, tokens, and other sensitive values in source code.",
+   656→   656→        {
+   657→   657→            "path": {"type": "string", "description": "Directory to scan (default: current)"},
+   658→   658→        },
+   659→   659→        _tool_secret_hunt, category="recon",
+   660→   660→    ))
+   661→   661→
+   662→   662→    reg.register(Tool(
+   663→   663→        "subdomain_discover",
+   664→   664→        "Discover subdomains using certificate transparency logs (crt.sh) and DNS enumeration. "
+   665→   665→        "Returns a list of all discovered subdomains for the given domain.",
+   666→   666→        {
+   667→   667→            "domain": {"type": "string", "description": "Domain to discover subdomains for"},
+   668→   668→        },
+   669→   669→        _tool_subdomain_discover, category="recon",
+   670→   670→    ))
+   671→   671→
+   672→   672→    reg.register(Tool(
+   673→   673→        "blitz_scan",
+   674→   674→        "Scan multiple targets in parallel using thread pools. Provide comma-separated targets. "
+   675→   675→        "Requires at least 2 targets. Uses up to 4 parallel workers.",
+   676→   676→        {
+   677→   677→            "targets_str": {"type": "string", "description": "Comma-separated list of domains/URLs"},
+   678→   678→        },
+   679→   679→        _tool_blitz_scan, category="scan",
+   680→   680→    ))
+   681→   681→
+   682→   682→    reg.register(Tool(
+   683→   683→        "ast_analyze",
+   684→   684→        "Static AST code analysis for security anti-patterns in Python, JavaScript, and TypeScript. "
+   685→   685→        "Detects eval/exec usage, SQL injection patterns, hardcoded secrets, weak crypto, "
+   686→   686→        "unsafe deserialization, path traversal, command injection, and more.",
+   687→   687→        {
+   688→   688→            "path": {"type": "string", "description": "Directory or file to analyze (default: current)"},
+   689→   689→        },
+   690→   690→        _tool_ast_analyze, category="intel",
+   691→   691→    ))
+   692→   692→
+   693→   693→    reg.register(Tool(
+   694→   694→        "cve_enrich",
+   695→   695→        "Enrich a list of findings with real CVE data from the NVD (National Vulnerability Database). "
+   696→   696→        "Takes a JSON array of finding dicts and returns enriched findings with CVE references, "
+   697→   697→        "CVSS scores, and a threat intelligence summary.",
+   698→   698→        {
+   699→   699→            "findings_json": {"type": "string", "description": "JSON array of finding dicts to enrich"},
+   700→   700→        },
+   701→   701→        _tool_cve_enrich, category="intel",
+   702→   702→    ))
+   703→   703→
+   704→   704→    reg.register(Tool(
+   705→   705→        "knowledge_graph",
+   706→   706→        "Build or query the security knowledge graph. 'build' action ingests scan results into a graph. "
+   707→   707→        "'attack_chains' action discovers potential attack paths through the graph.",
+   708→   708→        {
+   709→   709→            "action": {"type": "string", "description": "Action: 'build' or 'attack_chains'"},
+   710→   710→            "target": {"type": "string", "description": "Target domain the graph is for"},
+   711→   711→        },
+   712→   712→        _tool_knowledge_graph, category="intel",
+   713→   713→    ))
+   714→   714→
+   715→   715→    reg.register(Tool(
+   716→   716→        "adversarial_loop",
+   717→   717→        "Run the hacker-coder-guardian adversarial remediation loop. HACKER finds vulnerabilities, "
+   718→   718→        "CODER generates fix commands, GUARDIAN verifies fixes. Repeats for multiple rounds.",
+   719→   719→        {
+   720→   720→            "target": {"type": "string", "description": "Domain/URL or 'localhost' for local audit"},
+   721→   721→            "rounds": {"type": "integer", "description": "Number of HACKER->CODER->GUARDIAN rounds (default 2)"},
+   722→   722→        },
+   723→   723→        _tool_adversarial_loop, category="scan",
+   724→   724→    ))
+   725→   725→
+   726→   726→    reg.register(Tool(
+   727→   727→        "swarm_run",
+   728→   728→        "Run the full multi-agent swarm attack system. Orchestrates SCOUT (recon), HACKER (deep vuln), "
+   729→   729→        "CODER (remediation), and GUARDIAN (verification) agents in parallel. "
+   730→   730→        "Modes: 'full', 'recon', 'attack', 'fix', 'verify'.",
+   731→   731→        {
+   732→   732→            "target": {"type": "string", "description": "Domain or URL to attack"},
+   733→   733→            "mode": {"type": "string", "description": "Swarm mode: 'full', 'recon', 'attack', 'fix', or 'verify'"},
+   734→   734→        },
+   735→   735→        _tool_swarm_run, category="scan",
+   736→   736→    ))
+   737→   737→
+   738→   738→    reg.register(Tool(
+   739→   739→        "generate_report",
+   740→   740→        "Generate a security report from the most recent scan data. Supports HTML, Markdown, SARIF, "
+   741→   741→        "and JSON formats. SARIF is compatible with GitHub Code Scanning.",
+   742→   742→        {
+   743→   743→            "format": {"type": "string", "description": "Report format: 'html', 'md', 'sarif', or 'json'"},
+   744→   744→        },
+   745→   745→        _tool_generate_report, category="export",
+   746→   746→    ))
+   747→   747→
+   748→   748→    reg.register(Tool(
+   749→   749→        "scan_history",
+   750→   750→        "List recent scan results from local history. Shows target, score, grade, and finding count.",
+   751→   751→        {
+   752→   752→            "limit": {"type": "integer", "description": "Number of scans to show (default 10)"},
+   753→   753→        },
+   754→   754→        _tool_scan_history, category="export",
+   755→   755→    ))
+   756→   756→
+   757→   757→    reg.register(Tool(
+   758→   758→        "diff_scans",
+   759→   759→        "Compare the two most recent scans to see what changed. Shows score delta, fixed findings, "
+   760→   760→        "new findings, and persistent issues.",
+   761→   761→        {},
+   762→   762→        _tool_diff_scans, category="export",
+   763→   763→    ))
+   764→   764→
+   765→   765→    reg.register(Tool(
+   766→   766→        "shell_command",
+   767→   767→        "[DANGEROUS] Execute an arbitrary shell command. Use only when other tools cannot accomplish "
+   768→   768→        "the task. Certain destructive patterns are blocked.",
+   769→   769→        {
+   770→   770→            "command": {"type": "string", "description": "Shell command to execute"},
+   771→   771→        },
+   772→   772→        _tool_shell_command, category="system", dangerous=True,
+   773→   773→    ))
+   774→   774→
+   775→   775→    return reg
+   776→   776→
+   777→   777→
+   778→   778→# ══════════════════════════════════════════════════════════════════════
+   779→   779→#  RULE-BASED PLANNING ENGINE
+   780→   780→# ══════════════════════════════════════════════════════════════════════
+   781→   781→
+   782→   782→
+   783→   783→class RuleBasedPlanner:
+   784→   784→    """Smart rule-based planner that classifies intent, generates plans,
+   785→   785→    and adapts based on results — no LLM required.
+   786→   786→
+   787→   787→    The planner uses a weighted intent scoring system that considers:
+   788→   788→      - Direct keyword matches with configurable weights
+   789→   789→      - Modifier words that boost or reduce intent scores
+   790→   790→      - Target type classification (domain, IP, local, codebase)
+   791→   791→      - Proximity of intent words to target words
+   792→   792→      - Prior context from persistent memory
+   793→   793→    """
+   794→   794→
+   795→   795→    # Intent keyword weights: (word_pattern, base_weight)
+   796→   796→    _INTENT_KEYWORDS: Dict[str, List[Tuple[str, float]]] = {
+   797→   797→        "full_scan": [
+   798→   798→            ("scan", 0.4), ("audit", 0.3), ("assess", 0.3), ("pentest", 0.5),
+   799→   799→            ("security", 0.2), ("vuln", 0.4), ("test", 0.2),
+   800→   800→        ],
+   801→   801→        "subdomain_recon": [
+   802→   802→            ("subdomain", 0.8), ("sub-domain", 0.8), ("attack surface", 0.6),
+   803→   803→            ("enumerate", 0.5), ("discover", 0.3), ("surface map", 0.7),
+   804→   804→        ],
+   805→   805→        "local_audit": [
+   806→   806→            ("machine", 0.6), ("laptop", 0.6), ("computer", 0.5), ("local", 0.6),
+   807→   807→            ("my system", 0.7), ("this machine", 0.6), ("localhost", 0.7),
+   808→   808→        ],
+   809→   809→        "dev_security": [
+   810→   810→            ("project", 0.5), ("codebase", 0.5), ("repo", 0.4), ("source code", 0.5),
+   811→   811→            ("dependencies", 0.4), ("package", 0.3), ("code", 0.3),
+   812→   812→        ],
+   813→   813→        "secret_hunting": [
+   814→   814→            ("secrets", 0.7), ("secret", 0.7), ("credential", 0.7), ("api key", 0.6), ("token", 0.5),
+   815→   815→            ("password", 0.5), ("leak", 0.5), ("exposed", 0.3),
+   816→   816→        ],
+   817→   817→        "compliance": [
+   818→   818→            ("compliance", 0.7), ("health", 0.5), ("doctor", 0.5), ("diagnos", 0.5),
+   819→   819→            ("checkup", 0.5), ("hardening", 0.5), ("cis", 0.6), ("policy", 0.4),
+   820→   820→        ],
+   821→   821→        "attack_simulation": [
+   822→   822→            ("attack", 0.6), ("exploit", 0.6), ("hack", 0.5), ("swarm", 0.7),
+   823→   823→            ("adversarial", 0.7), ("red team", 0.6), ("offensive", 0.5),
+   824→   824→        ],
+   825→   825→        "code_analysis": [
+   826→   826→            (" ast ", 0.7), ("static analysis", 0.5), ("code review", 0.5), ("sast", 0.7),
+   827→   827→            ("analyze code", 0.6), ("code quality", 0.4), ("static code", 0.5),
+   828→   828→        ],
+   829→   829→        "threat_intel": [
+   830→   830→            ("cve", 0.7), ("threat", 0.6), ("intel", 0.6), ("enrich", 0.5),
+   831→   831→            ("knowledge graph", 0.7), ("graph", 0.4), ("chain", 0.3),
+   832→   832→        ],
+   833→   833→        "reporting": [
+   834→   834→            ("report", 0.7), ("html", 0.4), ("sarif", 0.6), ("pdf", 0.4),
+   835→   835→            ("markdown", 0.4), ("export", 0.5), ("document", 0.4), ("generate report", 0.7),
+   836→   836→        ],
+   837→   837→        "comparison": [
+   838→   838→            ("compare", 0.7), ("diff", 0.7), ("vs", 0.5), ("versus", 0.5),
+   839→   839→            ("trend", 0.5), ("progress", 0.3),
+   840→   840→        ],
+   841→   841→        "benchmarking": [
+   842→   842→            ("benchmark", 0.7), ("score", 0.4), ("grade", 0.4), ("rating", 0.5),
+   843→   843→            ("vibesec", 0.6), ("quick", 0.2),
+   844→   844→        ],
+   845→   845→    }
+   846→   846→
+   847→   847→    # Modifier words that amplify intent
+   848→   848→    _AMPLIFIERS = {
+   849→   849→        "full": 1.5, "deep": 1.5, "complete": 1.4, "everything": 1.5,
+   850→   850→        "all": 1.3, "thorough": 1.4, "comprehensive": 1.4, "maximum": 1.5,
+   851→   851→        "aggressive": 1.3, "exhaustive": 1.5, "entire": 1.3,
+   852→   852→    }
+   853→   853→
+   854→   854→    # Modifier words that reduce intent
+   855→   855→    _DAMPENERS = {
+   856→   856→        "quick": 0.7, "fast": 0.7, "brief": 0.6, "simple": 0.7,
+   857→   857→        "just": 0.7, "only": 0.6, "basic": 0.6, "lightweight": 0.6,
+   858→   858→    }
+   859→   859→
+   860→   860→    # Module-specific keywords
+   861→   861→    _MODULE_KEYWORDS: Dict[str, List[str]] = {
+   862→   862→        "recon": ["recon", "reconnaissance", "probe", "fingerprint"],
+   863→   863→        "auth": ["auth", "login", "bypass", "session", "cookie"],
+   864→   864→        "chain": ["ssrf", "chain", "redirect", "open redirect"],
+   865→   865→        "gorgon": ["sqli", "xss", "injection", "gorgon"],
+   866→   866→        "oblivion": ["oblivion", "dread", "deep scan", "ultimate"],
+   867→   867→        "bot": ["bot", "crawler", "c2", "automation"],
+   868→   868→        "nhi": ["nhi", "cloud", "identity", "oauth"],
+   869→   869→        "vibesec": ["vibesec", "vibe", "benchmark", "score"],
+   870→   870→    }
+   871→   871→
+   872→   872→    def __init__(self, registry: ToolRegistry, memory: AgentMemory):
+   873→   873→        self.registry = registry
+   874→   874→        self.memory = memory
+   875→   875→
+   876→   876→    def classify_intent(self, goal: str) -> Dict[str, float]:
+   877→   877→        """Score each intent based on the goal text.
+   878→   878→
+   879→   879→        Uses weighted keyword matching, proximity scoring, and modifiers.
+   880→   880→        Returns a dict mapping intent names to float scores in [0, 1+].
+   881→   881→        """
+   882→   882→        goal_lower = goal.lower()
+   883→   883→        # Pad for whole-word matching
+   884→   884→        padded = f' {goal_lower} '
+   885→   885→        scores: Dict[str, float] = {}
+   886→   886→        words = goal_lower.split()
+   887→   887→
+   888→   888→        # Calculate global modifier
+   889→   889→        modifier = 1.0
+   890→   890→        for w in words:
+   891→   891→            if w in self._AMPLIFIERS:
+   892→   892→                modifier = max(modifier, self._AMPLIFIERS[w])
+   893→   893→            if w in self._DAMPENERS:
+   894→   894→                modifier = min(modifier, self._DAMPENERS[w])
+   895→   895→
+   896→   896→        for intent, keywords in self._INTENT_KEYWORDS.items():
+   897→   897→            score = 0.0
+   898→   898→            for pattern, weight in keywords:
+   899→   899→                # Use whole-word matching to avoid false positives
+   900→   900→                # (e.g., "repo" matching inside "report")
+   901→   901→                if len(pattern.split()) > 1:
+   902→   902→                    # Multi-word pattern: check substring (already specific enough)
+   903→   903→                    matched = pattern in goal_lower
+   904→   904→                else:
+   905→   905→                    # Single-word pattern: check whole word with padding
+   906→   906→                    matched = f' {pattern} ' in padded
+   907→   907→                if matched:
+   908→   908→                    # Boost if near a target-like word
+   909→   909→                    proximity_boost = 1.0
+   910→   910→                    pattern_idx = goal_lower.find(pattern)
+   911→   911→                    for tw in (".com", ".io", ".net", ".org", "http", "localhost"):
+   912→   912→                        tw_idx = goal_lower.find(tw)
+   913→   913→                        if tw_idx >= 0 and abs(pattern_idx - tw_idx) < 40:
+   914→   914→                            proximity_boost = 1.3
+   915→   915→                            break
+   916→   916→                    score += weight * proximity_boost
+   917→   917→            scores[intent] = min(score * modifier, 2.0)
+   918→   918→
+   919→   919→        return scores
+   920→   920→
+   921→   921→    def extract_targets(self, goal: str) -> List[str]:
+   922→   922→        """Extract targets (domains, IPs, URLs, paths) from the goal."""
+   923→   923→        urls = re.findall(r'https?://[\w\-._~:/?#\[\]@!$&\'()*+,;=%]+', goal)
+   924→   924→        domains = re.findall(r'[\w][\w\-]*\.[\w]{2,}(?:\.[\w]{2,})?', goal)
+   925→   925→        skip = {
+   926→   926→            'the', 'and', 'for', 'with', 'all', 'of', 'to', 'from', 'that', 'this',
+   927→   927→            'scan', 'audit', 'check', 'find', 'get', 'show', 'me', 'my',
+   928→   928→        }
+   929→   929→        targets = list(set(
+   930→   930→            urls + [d for d in domains if d.lower() not in skip and len(d) > 4]
+   931→   931→        ))
+   932→   932→        return targets
+   933→   933→
+   934→   934→    def detect_target_type(self, goal: str, targets: List[str]) -> str:
+   935→   935→        """Classify the target type from context."""
+   936→   936→        goal_lower = goal.lower()
+   937→   937→        local_indicators = [
+   938→   938→            'machine', 'laptop', 'computer', 'local', 'my system', 'this machine',
+   939→   939→            'localhost', 'my mac', 'my pc', 'my server',
+   940→   940→        ]
+   941→   941→        for ind in local_indicators:
+   942→   942→            if ind in goal_lower:
+   943→   943→                return "local"
+   944→   944→        dev_indicators = ['project', 'codebase', 'repo', 'source code', 'code review']
+   945→   945→        padded = f' {goal_lower} '
+   946→   946→        for ind in dev_indicators:
+   947→   947→            if f' {ind} ' in padded and not targets:
+   948→   948→                return "codebase"
+   949→   949→        if targets:
+   950→   950→            for t in targets:
+   951→   951→                if t.startswith("http"):
+   952→   952→                    return "remote"
+   953→   953→                if re.match(r'^\d+\.\d+\.\d+\.\d+$', t):
+   954→   954→                    return "remote"
+   955→   955→            return "remote"
+   956→   956→        return "unknown"
+   957→   957→
+   958→   958→    def detect_modules(self, goal: str) -> Optional[List[str]]:
+   959→   959→        """Detect specific module requests from the goal text."""
+   960→   960→        goal_lower = goal.lower()
+   961→   961→        for mod_name, keywords in self._MODULE_KEYWORDS.items():
+   962→   962→            for kw in keywords:
+   963→   963→                if kw in goal_lower:
+   964→   964→                    return [mod_name]
+   965→   965→        return None
+   966→   966→
+   967→   967→    def generate_plan(
+   968→   968→        self, goal: str, scores: Dict[str, float],
+   969→   969→        targets: List[str], target_type: str,
+   970→   970→    ) -> List[Dict[str, Any]]:
+   971→   971→        """Generate an ordered execution plan based on classified intents.
+   972→   972→
+   973→   973→        Returns a list of step dicts: {"tool", "args", "reason"}
+   974→   974→        """
+   975→   975→        plan: List[Dict[str, Any]] = []
+   976→   976→        domain = ""
+   977→   977→        if targets:
+   978→   978→            domain = targets[0].replace("https://", "").replace("http://", "").split("/")[0]
+   979→   979→
+   980→   980→        # Sort intents by score, take significant ones
+   981→   981→        sorted_intents = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+   982→   982→        significant = [(name, s) for name, s in sorted_intents if s > 0.2]
+   983→   983→
+   984→   984→        # Check prior context for this target
+   985→   985→        prior = None
+   986→   986→        if domain:
+   987→   987→            prior = self.memory.get_target_context(domain)
+   988→   988→
+   989→   989→        # ── Subdomain recon phase ──
+   990→   990→        if any(n == "subdomain_recon" and s > 0.3 for n, s in significant):
+   991→   991→            if domain:
+   992→   992→                plan.append({
+   993→   993→                    "tool": "subdomain_discover",
+   994→   994→                    "args": {"domain": domain},
+   995→   995→                    "reason": "User requested subdomain reconnaissance",
+   996→   996→                })
+   997→   997→
+   998→   998→        # ── Benchmarking ──
+   999→   999→        if any(n == "benchmarking" and s > 0.3 for n, s in significant):
+  1000→  1000→            if domain:
+  1001→  1001→                plan.append({
+  1002→  1002→                    "tool": "vibesec_benchmark",
+  1003→  1003→                    "args": {"target": domain},
+  1004→  1004→                    "reason": "User wants a quick security benchmark",
+  1005→  1005→                })
+  1006→  1006→
+  1007→  1007→        # ── Local audit ──
+  1008→  1008→        if target_type == "local":
+  1009→  1009→            if any(n == "compliance" and s > 0.3 for n, s in significant):
+  1010→  1010→                plan.append({"tool": "doctor_check", "args": {}, "reason": "Health/compliance check requested"})
+  1011→  1011→            if any(n == "local_audit" and s > 0.2 for n, s in significant):
+  1012→  1012→                plan.append({"tool": "local_audit", "args": {"target_path": "."}, "reason": "Local machine audit requested"})
+  1013→  1013→
+  1014→  1014→        # ── Dev security ──
+  1015→  1015→        if target_type == "codebase" or any(n == "dev_security" and s > 0.3 for n, s in significant):
+  1016→  1016→            plan.append({"tool": "dev_scan", "args": {"path": "."}, "reason": "Developer project scan requested"})
+  1017→  1017→
+  1018→  1018→        # ── Secret hunting ──
+  1019→  1019→        if any(n == "secret_hunting" and s > 0.3 for n, s in significant):
+  1020→  1020→            plan.append({"tool": "secret_hunt", "args": {"path": "."}, "reason": "Secret hunting requested"})
+  1021→  1021→
+  1022→  1022→        # ── Code analysis ──
+  1023→  1023→        if any(n == "code_analysis" and s > 0.3 for n, s in significant):
+  1024→  1024→            plan.append({"tool": "ast_analyze", "args": {"path": "."}, "reason": "Static code analysis requested"})
+  1025→  1025→
+  1026→  1026→        # ── Full remote scan ──
+  1027→  1027→        is_full = any(n == "full_scan" and s > 0.2 for n, s in significant)
+  1028→  1028→        if targets and target_type == "remote":
+  1029→  1029→            modules = self.detect_modules(goal)
+  1030→  1030→            if len(targets) > 1:
+  1031→  1031→                # Multiple targets → blitz (even if full_scan is set)
+  1032→  1032→                plan.append({
+  1033→  1033→                    "tool": "blitz_scan",
+  1034→  1034→                    "args": {"targets_str": ",".join(targets)},
+  1035→  1035→                    "reason": f"Multiple targets detected ({len(targets)}), using parallel blitz scan",
+  1036→  1036→                })
+  1037→  1037→            elif is_full or not plan:
+  1038→  1038→                plan.append({
+  1039→  1039→                    "tool": "remote_scan",
+  1040→  1040→                    "args": {
+  1041→  1041→                        "target": targets[0],
+  1042→  1042→                        "modules": ",".join(modules) if modules else "",
+  1043→  1043→                        "all_modules": is_full and not modules,
+  1044→  1044→                    },
+  1045→  1045→                    "reason": "Full remote security scan" +
+  1046→  1046→                              (" with all modules" if is_full and not modules else ""),
+  1047→  1047→                })
+  1048→  1048→
+  1049→  1049→        # ── Attack simulation ──
+  1050→  1050→        if any(n == "attack_simulation" and s > 0.3 for n, s in significant):
+  1051→  1051→            if domain:
+  1052→  1052→                plan.append({
+  1053→  1053→                    "tool": "adversarial_loop",
+  1054→  1054→                    "args": {"target": domain, "rounds": 2},
+  1055→  1055→                    "reason": "Attack simulation / adversarial remediation requested",
+  1056→  1056→                })
+  1057→  1057→            elif target_type == "local":
+  1058→  1058→                plan.append({
+  1059→  1059→                    "tool": "adversarial_loop",
+  1060→  1060→                    "args": {"target": "localhost", "rounds": 2},
+  1061→  1061→                    "reason": "Local adversarial remediation loop",
+  1062→  1062→                })
+  1063→  1063→
+  1064→  1064→        # ── Swarm ──
+  1065→  1065→        has_swarm_word = "swarm" in goal.lower()
+  1066→  1066→        if has_swarm_word and any(n == "attack_simulation" and s > 0.3 for n, s in significant):
+  1067→  1067→            if domain:
+  1068→  1068→                # Replace adversarial_loop with swarm if swarm is explicitly requested
+  1069→  1069→                plan = [s for s in plan if s["tool"] != "adversarial_loop"]
+  1070→  1070→                plan.append({
+  1071→  1071→                    "tool": "swarm_run",
+  1072→  1072→                    "args": {"target": domain, "mode": "full"},
+  1073→  1073→                    "reason": "Full swarm attack requested",
+  1074→  1074→                })
+  1075→  1075→
+  1076→  1076→        # ── Threat intel / CVE enrichment ──
+  1077→  1077→        # Note: CVE enrichment is added dynamically by adapt_plan() after scan results.
+  1078→  1078→        # If user explicitly wants knowledge graph, add it now.
+  1079→  1079→        if any(n == "threat_intel" and s > 0.3 for n, s in significant):
+  1080→  1080→            if domain and ("graph" in goal.lower() or "chain" in goal.lower()):
+  1081→  1081→                plan.append({
+  1082→  1082→                    "tool": "knowledge_graph",
+  1083→  1083→                    "args": {"action": "build", "target": domain},
+  1084→  1084→                    "reason": "Knowledge graph analysis requested",
+  1085→  1085→                })
+  1086→  1086→
+  1087→  1087→        # ── Comparison ──
+  1088→  1088→        if any(n == "comparison" and s > 0.3 for n, s in significant):
+  1089→  1089→            plan.append({"tool": "diff_scans", "args": {}, "reason": "Scan comparison requested"})
+  1090→  1090→
+  1091→  1091→        # ── Reporting ──
+  1092→  1092→        wants_report = any(n == "reporting" and s > 0.3 for n, s in significant)
+  1093→  1093→        has_scan_step = any(
+  1094→  1094→            s["tool"] in ("remote_scan", "local_audit", "blitz_scan", "dev_scan",
+  1095→  1095→                           "vibesec_benchmark", "adversarial_loop", "swarm_run")
+  1096→  1096→            for s in plan
+  1097→  1097→        )
+  1098→  1098→        if wants_report:
+  1099→  1099→            fmt = "sarif" if "sarif" in goal.lower() else "html"
+  1100→  1100→            if has_scan_step:
+  1101→  1101→                plan.append({
+  1102→  1102→                    "tool": "generate_report",
+  1103→  1103→                    "args": {"format": fmt},
+  1104→  1104→                    "reason": f"Report generation requested ({fmt})",
+  1105→  1105→                })
+  1106→  1106→            else:
+  1107→  1107→                # No scan was run — just generate from latest history
+  1108→  1108→                plan.append({
+  1109→  1109→                    "tool": "generate_report",
+  1110→  1110→                    "args": {"format": fmt},
+  1111→  1111→                    "reason": f"Generating {fmt} report from latest scan history",
+  1112→  1112→                })
+  1113→  1113→
+  1114→  1114→        # ── Fallback: if no plan was generated ──
+  1115→  1115→        if not plan:
+  1116→  1116→            if targets:
+  1117→  1117→                plan.append({
+  1118→  1118→                    "tool": "remote_scan",
+  1119→  1119→                    "args": {"target": targets[0]},
+  1120→  1120→                    "reason": "Default: scanning the detected target",
+  1121→  1121→                })
+  1122→  1122→            elif target_type == "local":
+  1123→  1123→                plan.append({"tool": "local_audit", "args": {}, "reason": "Default: auditing local machine"})
+  1124→  1124→            elif target_type == "codebase":
+  1125→  1125→                plan.append({"tool": "dev_scan", "args": {}, "reason": "Default: scanning developer project"})
+  1126→  1126→            else:
+  1127→  1127→                plan.append({"tool": "scan_history", "args": {}, "reason": "No clear target — showing scan history"})
+  1128→  1128→
+  1129→  1129→        return plan
+  1130→  1130→
+  1131→  1131→    def adapt_plan(
+  1132→  1132→        self,
+  1133→  1133→        plan: List[Dict[str, Any]],
+  1134→  1134→        completed_results: List[Tuple[Dict, ToolResult]],
+  1135→  1135→        current_idx: int,
+  1136→  1136→    ) -> List[Dict[str, Any]]:
+  1137→  1137→        """Adapt the remaining plan based on results seen so far.
+  1138→  1138→
+  1139→  1139→        This is the 'intelligence' of the rule engine — it inspects intermediate
+  1140→  1140→        results and inserts new steps or modifies remaining ones.
+  1141→  1141→        """
+  1142→  1142→        additions: List[Dict[str, Any]] = []
+  1143→  1143→        domain = ""
+  1144→  1144→        last_score = None
+  1145→  1145→        has_critical = False
+  1146→  1146→        total_findings = 0
+  1147→  1147→        all_findings: List[Dict] = []
+  1148→  1148→        subdomains_found = False
+  1149→  1149→
+  1150→  1150→        for step, result in completed_results:
+  1151→  1151→            d = result.data
+  1152→  1152→            if isinstance(d, dict):
+  1153→  1153→                # Extract score from scan results
+  1154→  1154→                if "total_score" in d:
+  1155→  1155→                    last_score = d["total_score"]
+  1156→  1156→                if "vibesec_score" in d:
+  1157→  1157→                    last_score = d["vibesec_score"]
+  1158→  1158→                # Collect findings
+  1159→  1159→                findings = d.get("findings", [])
+  1160→  1160→                if isinstance(findings, list):
+  1161→  1161→                    all_findings.extend(findings)
+  1162→  1162→                    total_findings += len(findings)
+  1163→  1163→                    for f in findings:
+  1164→  1164→                        if isinstance(f, dict) and f.get("severity") in ("critical", "high"):
+  1165→  1165→                            has_critical = True
+  1166→  1166→                # Check for subdomains
+  1167→  1167→                if "subdomains" in d and len(d["subdomains"]) > 3:
+  1168→  1168→                    subdomains_found = True
+  1169→  1169→                # Get target from data
+  1170→  1170→                if not domain:
+  1171→  1171→                    domain = d.get("target", "")
+  1172→  1172→
+  1173→  1173→        # If any findings found → add CVE enrichment (if not already planned)
+  1174→  1174→        has_any_findings = total_findings > 0
+  1175→  1175→        if has_any_findings and not any(s["tool"] == "cve_enrich" for s in plan[current_idx:]):
+  1176→  1176→            if all_findings:
+  1177→  1177→                try:
+  1178→  1178→                    findings_json = json.dumps(all_findings[:20])
+  1179→  1179→                except (TypeError, ValueError):
+  1180→  1180→                    findings_json = "[]"
+  1181→  1181→                reason = "Enriching findings with CVE data from NVD"
+  1182→  1182→                if has_critical:
+  1183→  1183→                    reason = "Critical/high findings detected — enriching with CVE data"
+  1184→  1184→                additions.append({
+  1185→  1185→                    "tool": "cve_enrich",
+  1186→  1186→                    "args": {"findings_json": findings_json},
+  1187→  1187→                    "reason": reason,
+  1188→  1188→                })
+  1189→  1189→
+  1190→  1190→        # If many subdomains found and not already doing blitz → suggest blitz
+  1191→  1191→        if subdomains_found and not any(s["tool"] == "blitz_scan" for s in plan[current_idx:]):
+  1192→  1192→            # Don't add blitz automatically (too aggressive), but add knowledge graph
+  1193→  1193→            if domain and not any(s["tool"] == "knowledge_graph" for s in plan[current_idx:]):
+  1194→  1194→                additions.append({
+  1195→  1195→                    "tool": "knowledge_graph",
+  1196→  1196→                    "args": {"action": "build", "target": domain},
+  1197→  1197→                    "reason": "Large attack surface detected — building knowledge graph",
+  1198→  1198→                })
+  1199→  1199→
+  1200→  1200→        # If score is very low → add knowledge graph
+  1201→  1201→        if last_score is not None and last_score < 40:
+  1202→  1202→            if domain and not any(s["tool"] == "knowledge_graph" for s in plan[current_idx:]):
+  1203→  1203→                additions.append({
+  1204→  1204→                    "tool": "knowledge_graph",
+  1205→  1205→                    "args": {"action": "build", "target": domain},
+  1206→  1206→                    "reason": f"Critical score ({last_score}/100) — analyzing attack surface via knowledge graph",
+  1207→  1207→                })
+  1208→  1208→
+  1209→  1209→        # If score is low and no adversarial loop → add one
+  1210→  1210→        if last_score is not None and last_score < 50:
+  1211→  1211→            if domain and not any(s["tool"] in ("adversarial_loop", "swarm_run") for s in plan + additions):
+  1212→  1212→                additions.append({
+  1213→  1213→                    "tool": "adversarial_loop",
+  1214→  1214→                    "args": {"target": domain, "rounds": 2},
+  1215→  1215→                    "reason": f"Low score ({last_score}/100) — running adversarial loop for remediation guidance",
+  1216→  1216→                })
+  1217→  1217→
+  1218→  1218→        # Insert additions after current step
+  1219→  1219→        remaining = plan[current_idx + 1:]
+  1220→  1220→        plan = plan[:current_idx + 1] + additions + remaining
+  1221→  1221→
+  1222→  1222→        return plan
+  1223→  1223→
+  1224→  1224→
+  1225→  1225→# ══════════════════════════════════════════════════════════════════════
+  1226→  1226→#  SYSTEM PROMPT FOR LLM
+  1227→  1227→# ══════════════════════════════════════════════════════════════════════
+  1228→  1228→
+  1229→  1229→
+  1230→  1230→def _build_system_prompt(tool_descriptions: str, context_summary: str) -> str:
+  1231→  1231→    return f"""You are RECONPRO NEXUS, an elite autonomous security AI agent. You are a senior
+  1232→  1232→security consultant with 20 years of experience in offensive security, penetration
+  1233→  1233→testing, and threat intelligence.
+  1234→  1234→
+  1235→  1235→## YOUR MISSION
+  1236→  1236→Analyze the user's natural language goal, then execute a sequence of security tools
+  1237→  1237→to accomplish it. Think step-by-step: ANALYZE → PLAN → EXECUTE → VERIFY.
+  1238→  1238→
+  1239→  1239→## YOUR TOOLS ({len(tool_descriptions.splitlines())} available)
+  1240→  1240→{tool_descriptions}
+  1241→  1241→
+  1242→  1242→## THINKING PROTOCOL
+  1243→  1243→1. **ANALYZE**: Identify the target type (domain, IP, local, codebase), the user's
+  1244→  1244→   true intent (recon, vulnerability assessment, compliance, remediation), and any
+  1245→  1245→   modifiers (depth, speed, format).
+  1246→  1246→2. **PLAN**: Build an ordered plan. Chain tools intelligently:
+  1247→  1247→   - For full recon: subdomain_discover → remote_scan → cve_enrich → knowledge_graph → generate_report
+  1248→  1248→   - For local audit: doctor_check → local_audit → secret_hunt → ast_analyze
+  1249→  1249→   - For attack simulation: remote_scan → adversarial_loop or swarm_run
+  1250→  1250→   - For threat intel: remote_scan → cve_enrich → knowledge_graph
+  1251→  1251→3. **EXECUTE**: Call tools one at a time. Wait for results before deciding next steps.
+  1252→  1252→4. **VERIFY**: After each tool result, check:
+  1253→  1253→   - Did it succeed? If not, try an alternative approach.
+  1254→  1254→   - Are there critical/high findings? If yes, enrich with CVEs.
+  1255→  1255→   - Is the score very low (< 40)? If yes, add knowledge graph analysis.
+  1256→  1256→   - Were many subdomains found? If yes, consider a follow-up scan.
+  1257→  1257→5. **ADAPT**: Modify your plan based on intermediate results. Add enrichment steps
+  1258→  1258→   when significant findings are discovered.
+  1259→  1259→
+  1260→  1260→## RULES
+  1261→  1261→- Max 10 tool calls unless the user explicitly requests more.
+  1262→  1262→- Prioritize critical and high severity findings.
+  1263→  1263→- Always generate a report (generate_report) as the final step when a scan was run.
+  1264→  1264→- Use shell_command ONLY as a last resort when no other tool can accomplish the task.
+  1265→  1265→- Explain your reasoning before each tool call.
+  1266→  1266→- If a tool fails, try an alternative or explain why you can't proceed.
+  1267→  1267→
+  1268→  1268→## PREVIOUS CONTEXT
+  1269→  1269→{context_summary}
+  1270→  1270→
+  1271→  1271→## OUTPUT FORMAT
+  1272→  1272→After completing all steps, provide a clear summary of:
+  1273→  1273→- What was analyzed
+  1274→  1274→- What tools were used and what they found
+  1275→  1275→- Key findings (severity + title)
+  1276→  1276→- Recommendations
+  1277→  1277→- Any generated reports or artifacts
+  1278→  1278→"""
+  1279→  1279→
+  1280→  1280→
+  1281→  1281→# ══════════════════════════════════════════════════════════════════════
+  1282→  1282→#  NEXUS AGENT
+  1283→  1283→# ══════════════════════════════════════════════════════════════════════
+  1284→  1284→
+  1285→  1285→
+  1286→  1286→class NexusAgent:
+  1287→  1287→    """The Nexus Agent — LLM-powered or rule-based agentic security engine.
+  1288→  1288→
+  1289→  1289→    Executes a THINK → PLAN → EXECUTE → VERIFY → ADAPT loop, using either
+  1290→  1290→    an LLM (OpenAI/Anthropic) or a smart rule-based planner as fallback.
+  1291→  1291→    """
+  1292→  1292→
+  1293→  1293→    def __init__(
+  1294→  1294→        self,
+  1295→  1295→        on_message: Optional[Callable] = None,
+  1296→  1296→        on_finding: Optional[Callable] = None,
+  1297→  1297→        on_status: Optional[Callable] = None,
+  1298→  1298→        verbose: bool = True,
+  1299→  1299→    ):
+  1300→  1300→        self.registry = build_registry()
+  1301→  1301→        self.memory = AgentMemory()
+  1302→  1302→        self.planner = RuleBasedPlanner(self.registry, self.memory)
+  1303→  1303→        self.verbose = verbose
+  1304→  1304→        self.on_message = on_message or (lambda msg, style="": None)
+  1305→  1305→        self.on_finding = on_finding or (lambda f: None)
+  1306→  1306→        self.on_status = on_status or (lambda s: None)
+  1307→  1307→        self._findings: List[Dict] = []
+  1308→  1308→        self._steps: List[str] = []
+  1309→  1309→        self._targets: List[str] = []
+  1310→  1310→        self._tool_results: List[Dict] = []
+  1311→  1311→
+  1312→  1312→    def _emit(self, msg: str, style: str = "") -> None:
+  1313→  1313→        self.on_message(msg, style)
+  1314→  1314→
+  1315→  1315→    def _emit_status(self, status: str) -> None:
+  1316→  1316→        self.on_status(status)
+  1317→  1317→
+  1318→  1318→    def _emit_finding(self, finding: Dict) -> None:
+  1319→  1319→        self.on_finding(finding)
+  1320→  1320→        self._findings.append(finding)
+  1321→  1321→
+  1322→  1322→    def _detect_backend(self) -> str:
+  1323→  1323→        """Detect which LLM backend is available."""
+  1324→  1324→        if os.environ.get("OPENAI_API_KEY") and HAS_OPENAI:
+  1325→  1325→            return "openai"
+  1326→  1326→        if os.environ.get("ANTHROPIC_API_KEY") and HAS_ANTHROPIC:
+  1327→  1327→            return "anthropic"
+  1328→  1328→        return "rules"
+  1329→  1329→
+  1330→  1330→    def execute(self, goal: str) -> Dict[str, Any]:
+  1331→  1331→        """Main entry point. Execute the agent on a natural language goal."""
+  1332→  1332→        backend = self._detect_backend()
+  1333→  1333→
+  1334→  1334→        # Reset state
+  1335→  1335→        self._findings = []
+  1336→  1336→        self._steps = []
+  1337→  1337→        self._targets = []
+  1338→  1338→        self._tool_results = []
+  1339→  1339→
+  1340→  1340→        if backend == "openai":
+  1341→  1341→            self._emit("[bold cyan]NEXUS[/] | LLM: [green]OpenAI GPT-4o-mini[/]")
+  1342→  1342→            result = self._execute_llm(goal, backend="openai")
+  1343→  1343→        elif backend == "anthropic":
+  1344→  1344→            self._emit("[bold cyan]NEXUS[/] | LLM: [green]Anthropic Claude[/]")
+  1345→  1345→            result = self._execute_llm(goal, backend="anthropic")
+  1346→  1346→        else:
+  1347→  1347→            self._emit("[bold cyan]NEXUS[/] | Engine: [green]Rule-Based Intelligence[/]")
+  1348→  1348→            result = self._execute_rules(goal)
+  1349→  1349→
+  1350→  1350→        # Save session to memory
+  1351→  1351→        if self._targets:
+  1352→  1352→            self.memory.save_session(
+  1353→  1353→                goal=goal,
+  1354→  1354→                target=self._targets[0] if self._targets else "unknown",
+  1355→  1355→                plan=[{"step": s} for s in self._steps],
+  1356→  1356→                tool_results=self._tool_results,
+  1357→  1357→                summary=result.get("summary", ""),
+  1358→  1358→            )
+  1359→  1359→
+  1360→  1360→        return result
+  1361→  1361→
+  1362→  1362→    # ── LLM EXECUTION ─────────────────────────────────────────────────
+  1363→  1363→
+  1364→  1364→    def _execute_llm(self, goal: str, backend: str) -> Dict[str, Any]:
+  1365→  1365→        """Execute using LLM tool-calling loop."""
+  1366→  1366→        tool_descs = "\n".join(
+  1367→  1367→            f"  - {t.name}: {t.description}" for t in self.registry.tools.values()
+  1368→  1368→        )
+  1369→  1369→        prior = ""
+  1370→  1370→        for session in self.memory.get_recent_sessions(limit=3):
+  1371→  1371→            prior += f"  - {session.get('target', '?')}: {session.get('summary', '')[:100]}\n"
+  1372→  1372→        context_summary = f"Recent sessions:\n{prior}" if prior else "No prior sessions."
+  1373→  1373→
+  1374→  1374→        system_prompt = _build_system_prompt(tool_descs, context_summary)
+  1375→  1375→        messages = [{"role": "system", "content": system_prompt}]
+  1376→  1376→        messages.append({"role": "user", "content": goal})
+  1377→  1377→
+  1378→  1378→        self._print_header(goal, "LLM reasoning")
+  1379→  1379→
+  1380→  1380→        for iteration in range(MAX_ITERATIONS):
+  1381→  1381→            self._emit_status(f"LLM reasoning (step {iteration + 1})...")
+  1382→  1382→
+  1383→  1383→            try:
+  1384→  1384→                if backend == "openai":
+  1385→  1385→                    response = self._call_openai(messages)
+  1386→  1386→                else:
+  1387→  1387→                    response = self._call_anthropic(messages)
+  1388→  1388→            except Exception as e:
+  1389→  1389→                self._emit(f"[red]LLM error: {e} — falling back to rule engine.[/]")
+  1390→  1390→                return self._execute_rules(goal)
+  1391→  1391→
+  1392→  1392→            if not response:
+  1393→  1393→                self._emit("[yellow]LLM returned empty response — falling back to rules.[/]")
+  1394→  1394→                return self._execute_rules(goal)
+  1395→  1395→
+  1396→  1396→            content = response.get("content", "")
+  1397→  1397→            tool_calls = response.get("tool_calls", [])
+  1398→  1398→
+  1399→  1399→            # If no tool calls, the LLM is done
+  1400→  1400→            if not tool_calls:
+  1401→  1401→                if content:
+  1402→  1402→                    self._emit(f"  [dim]{content[:500]}[/]")
+  1403→  1403→                break
+  1404→  1404→
+  1405→  1405→            # Execute each tool call
+  1406→  1406→            for tc in tool_calls:
+  1407→  1407→                fn_name = tc.get("function", {}).get("name", "")
+  1408→  1408→                fn_args_str = tc.get("function", {}).get("arguments", "{}")
+  1409→  1409→                try:
+  1410→  1410→                    fn_args = json.loads(fn_args_str) if isinstance(fn_args_str, str) else fn_args_str
+  1411→  1411→                except json.JSONDecodeError:
+  1412→  1412→                    fn_args = {}
+  1413→  1413→
+  1414→  1414→                self._emit(f"  [bold]{fn_name}[/]({json.dumps(fn_args)[:100]})")
+  1415→  1415→                self._emit_status(f"Executing: {fn_name}")
+  1416→  1416→
+  1417→  1417→                result = self.registry.execute(fn_name, **fn_args)
+  1418→  1418→                success_mark = "[green]✓[/]" if result.success else "[red]✗[/]"
+  1419→  1419→                self._emit(f"    {success_mark} {result.output[:200]}")
+  1420→  1420→
+  1421→  1421→                self._steps.append(fn_name)
+  1422→  1422→                self._collect_result(fn_name, result)
+  1423→  1423→
+  1424→  1424→                # Feed result back to LLM
+  1425→  1425→                if backend == "openai":
+  1426→  1426→                    messages.append({"role": "assistant", "content": None, "tool_calls": [tc]})
+  1427→  1427→                    messages.append({
+  1428→  1428→                        "role": "tool",
+  1429→  1429→                        "tool_call_id": tc.get("id", f"call_{fn_name}"),
+  1430→  1430→                        "content": result.output[:4000],
+  1431→  1431→                    })
+  1432→  1432→                else:
+  1433→  1433→                    messages.append({
+  1434→  1434→                        "role": "user",
+  1435→  1435→                        "content": f"Tool {fn_name} result: {result.output[:3000]}",
+  1436→  1436→                    })
+  1437→  1437→
+  1438→  1438→        summary = self._build_summary()
+  1439→  1439→        self._print_footer(summary)
+  1440→  1440→        return {
+  1441→  1441→            "goal": goal,
+  1442→  1442→            "steps": self._steps,
+  1443→  1443→            "targets": self._targets,
+  1444→  1444→            "total_findings": len(self._findings),
+  1445→  1445→            "findings": self._findings,
+  1446→  1446→            "summary": summary,
+  1447→  1447→            "backend": backend,
+  1448→  1448→        }
+  1449→  1449→
+  1450→  1450→    def _call_openai(self, messages: List[Dict]) -> Optional[Dict]:
+  1451→  1451→        """Call OpenAI API with tool calling."""
+  1452→  1452→        client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+  1453→  1453→        model = os.environ.get("RECONPRO_MODEL", "gpt-4o-mini")
+  1454→  1454→        response = client.chat.completions.create(
+  1455→  1455→            model=model,
+  1456→  1456→            messages=messages,
+  1457→  1457→            tools=self.registry.to_openai_tools(),
+  1458→  1458→            tool_choice="auto",
+  1459→  1459→            max_tokens=4096,
+  1460→  1460→            temperature=0.1,
+  1461→  1461→        )
+  1462→  1462→        choice = response.choices[0]
+  1463→  1463→        message = choice.message
+  1464→  1464→        tool_calls = []
+  1465→  1465→        if message.tool_calls:
+  1466→  1466→            for tc in message.tool_calls:
+  1467→  1467→                tool_calls.append({
+  1468→  1468→                    "id": tc.id,
+  1469→  1469→                    "type": "function",
+  1470→  1470→                    "function": {
+  1471→  1471→                        "name": tc.function.name,
+  1472→  1472→                        "arguments": tc.function.arguments,
+  1473→  1473→                    },
+  1474→  1474→                })
+  1475→  1475→        return {"content": message.content or "", "tool_calls": tool_calls}
+  1476→  1476→
+  1477→  1477→    def _call_anthropic(self, messages: List[Dict]) -> Optional[Dict]:
+  1478→  1478→        """Call Anthropic API with tool use."""
+  1479→  1479→        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+  1480→  1480→        model = os.environ.get("RECONPRO_MODEL", "claude-sonnet-4-20250514")
+  1481→  1481→
+  1482→  1482→        system_msg = ""
+  1483→  1483→        anthropic_messages = []
+  1484→  1484→        for m in messages:
+  1485→  1485→            if m["role"] == "system":
+  1486→  1486→                system_msg = m["content"]
+  1487→  1487→            else:
+  1488→  1488→                anthropic_messages.append(m)
+  1489→  1489→
+  1490→  1490→        response = client.messages.create(
+  1491→  1491→            model=model,
+  1492→  1492→            max_tokens=4096,
+  1493→  1493→            system=system_msg,
+  1494→  1494→            messages=anthropic_messages,
+  1495→  1495→            tools=self.registry.to_anthropic_tools(),
+  1496→  1496→        )
+  1497→  1497→
+  1498→  1498→        text_parts, tool_calls = [], []
+  1499→  1499→        for block in response.content:
+  1500→  1500→            if block.type == "text":
+  1501→  1501→                text_parts.append(block.text)
+  1502→  1502→            elif block.type == "tool_use":
+  1503→  1503→                tool_calls.append({
+  1504→  1504→                    "id": block.id,
+  1505→  1505→                    "type": "function",
+  1506→  1506→                    "function": {
+  1507→  1507→                        "name": block.name,
+  1508→  1508→                        "arguments": json.dumps(block.input),
+  1509→  1509→                    },
+  1510→  1510→                })
+  1511→  1511→
+  1512→  1512→        return {"content": "\n".join(text_parts), "tool_calls": tool_calls}
+  1513→  1513→
+  1514→  1514→    # ── RULE-BASED EXECUTION ──────────────────────────────────────────
+  1515→  1515→
+  1516→  1516→    def _execute_rules(self, goal: str) -> Dict[str, Any]:
+  1517→  1517→        """Execute using the intelligent rule-based planner."""
+  1518→  1518→        # THINK phase
+  1519→  1519→        scores = self.planner.classify_intent(goal)
+  1520→  1520→        targets = self.planner.extract_targets(goal)
+  1521→  1521→        target_type = self.planner.detect_target_type(goal, targets)
+  1522→  1522→
+  1523→  1523→        domain = ""
+  1524→  1524→        if targets:
+  1525→  1525→            domain = targets[0].replace("https://", "").replace("http://", "").split("/")[0]
+  1526→  1526→
+  1527→  1527→        # Build intent display
+  1528→  1528→        top_intents = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:4]
+  1529→  1529→        intent_str = " + ".join(f"{n} ({s:.1f})" for n, s in top_intents if s > 0.1)
+  1530→  1530→
+  1531→  1531→        self._print_header(goal, "rule-based planner")
+  1532→  1532→        self._emit(f"  [THINK] Analyzing goal...")
+  1533→  1533→        self._emit(f"    [dim]→ Target: {domain or target_type} ({target_type})[/]")
+  1534→  1534→        if intent_str:
+  1535→  1535→            self._emit(f"    [dim]→ Intent: {intent_str}[/]")
+  1536→  1536→        self._emit(f"    [dim]→ Strategy: plan → execute → adapt[/]")
+  1537→  1537→
+  1538→  1538→        # PLAN phase
+  1539→  1539→        plan = self.planner.generate_plan(goal, scores, targets, target_type)
+  1540→  1540→        self._emit(f"")
+  1541→  1541→        self._emit(f"  [PLAN] {len(plan)} step(s):")
+  1542→  1542→        for i, step in enumerate(plan, 1):
+  1543→  1543→            self._emit(f"    {i}. [bold]{step['tool']}[/] — {step['reason']}")
+  1544→  1544→
+  1545→  1545→        # EXECUTE phase with adaptation
+  1546→  1546→        completed: List[Tuple[Dict, ToolResult]] = []
+  1547→  1547→        step_idx = 0
+  1548→  1548→        total_steps = len(plan)
+  1549→  1549→
+  1550→  1550→        while step_idx < total_steps and step_idx < MAX_ITERATIONS:
+  1551→  1551→            step = plan[step_idx]
+  1552→  1552→            tool_name = step["tool"]
+  1553→  1553→            args = step["args"]
+  1554→  1554→            current_display = step_idx + 1
+  1555→  1555→
+  1556→  1556→            self._emit(f"")
+  1557→  1557→            self._emit(f"  [EXEC] Step {current_display}/{total_steps}: [bold]{tool_name}[/]...")
+  1558→  1558→            self._emit_status(f"Executing step {current_display}/{total_steps}: {tool_name}")
+  1559→  1559→
+  1560→  1560→            result = self.registry.execute(tool_name, **args)
+  1561→  1561→            success_mark = "[green]✓[/]" if result.success else "[red]✗[/]"
+  1562→  1562→            self._emit(f"    {success_mark} {result.output[:300]}")
+  1563→  1563→
+  1564→  1564→            self._steps.append(tool_name)
+  1565→  1565→            self._collect_result(tool_name, result)
+  1566→  1566→            completed.append((step, result))
+  1567→  1567→
+  1568→  1568→            # Track targets
+  1569→  1569→            if tool_name in ("remote_scan", "vibesec_benchmark", "subdomain_discover",
+  1570→  1570→                             "adversarial_loop", "swarm_run"):
+  1571→  1571→                if domain:
+  1572→  1572→                    self._targets.append(domain)
+  1573→  1573→            if tool_name == "blitz_scan" and result.data:
+  1574→  1574→                for t in result.data.get("results", {}):
+  1575→  1575→                    self._targets.append(t)
+  1576→  1576→
+  1577→  1577→            # VERIFY & ADAPT phase (after each step)
+  1578→  1578→            old_len = len(plan)
+  1579→  1579→            plan = self.planner.adapt_plan(plan, completed, step_idx)
+  1580→  1580→            new_steps = len(plan) - old_len
+  1581→  1581→            if new_steps > 0:
+  1582→  1582→                total_steps = len(plan)
+  1583→  1583→                added = plan[step_idx + 1: step_idx + 1 + new_steps]
+  1584→  1584→                self._emit(f"")
+  1585→  1585→                self._emit(f"  [ADAPT] Added {new_steps} step(s) based on results:")
+  1586→  1586→                for a in added:
+  1587→  1587→                    self._emit(f"    + [bold]{a['tool']}[/] — {a['reason']}")
+  1588→  1588→
+  1589→  1589→            step_idx += 1
+  1590→  1590→
+  1591→  1591→        summary = self._build_summary()
+  1592→  1592→        self._print_footer(summary)
+  1593→  1593→        return {
+  1594→  1594→            "goal": goal,
+  1595→  1595→            "steps": self._steps,
+  1596→  1596→            "targets": self._targets,
+  1597→  1597→            "total_findings": len(self._findings),
+  1598→  1598→            "findings": self._findings,
+  1599→  1599→            "summary": summary,
+  1600→  1600→            "backend": "rules",
+  1601→  1601→        }
+  1602→  1602→
+  1603→  1603→    # ── RESULT COLLECTION ─────────────────────────────────────────────
+  1604→  1604→
+  1605→  1605→    def _collect_result(self, tool_name: str, result: ToolResult) -> None:
+  1606→  1606→        """Extract findings from a tool result and store them."""
+  1607→  1607→        entry = {"tool": tool_name, "output": result.output[:500], "success": result.success}
+  1608→  1608→        if result.data:
+  1609→  1609→            entry["data"] = result.data
+  1610→  1610→            if isinstance(result.data, dict):
+  1611→  1611→                # Direct findings
+  1612→  1612→                for f in result.data.get("findings", []):
+  1613→  1613→                    if isinstance(f, dict):
+  1614→  1614→                        self._emit_finding(f)
+  1615→  1615→                # Blitz results
+  1616→  1616→                for t, td in result.data.get("results", {}).items():
+  1617→  1617→                    self._targets.append(t)
+  1618→  1618→                    if isinstance(td, dict):
+  1619→  1619→                        for f in td.get("findings", []):
+  1620→  1620→                            if isinstance(f, dict):
+  1621→  1621→                                self._emit_finding(f)
+  1622→  1622→        self._tool_results.append(entry)
+  1623→  1623→
+  1624→  1624→    # ── SUMMARY ───────────────────────────────────────────────────────
+  1625→  1625→
+  1626→  1626→    def _build_summary(self) -> str:
+  1627→  1627→        parts = [f"{len(self._findings)} findings"]
+  1628→  1628→        if self._targets:
+  1629→  1629→            parts.append(f"{len(set(self._targets))} target(s)")
+  1630→  1630→        if self._steps:
+  1631→  1631→            parts.append(f"{len(self._steps)} tool call(s)")
+  1632→  1632→        return ", ".join(parts)
+  1633→  1633→
+  1634→  1634→    # ── RICH OUTPUT ───────────────────────────────────────────────────
+  1635→  1635→
+  1636→  1636→    def _print_header(self, goal: str, engine: str) -> None:
+  1637→  1637→        """Print the agent header panel."""
+  1638→  1638→        if not self.verbose:
+  1639→  1639→            return
+  1640→  1640→        title = Text()
+  1641→  1641→        title.append(" NEXUS AGENT ", style="bold white on #1a1a2e")
+  1642→  1642→        title.append(f" [{engine}]", style="dim")
+  1643→  1643→
+  1644→  1644→        content = Text()
+  1645→  1645→        content.append(f"Goal: ", style="bold")
+  1646→  1646→        content.append(goal[:120], style="cyan")
+  1647→  1647→
+  1648→  1648→        console.print(Panel(content, title=title, border_style="bright_blue", padding=(0, 1)))
+  1649→  1649→
+  1650→  1650→    def _print_footer(self, summary: str) -> None:
+  1651→  1651→        """Print the completion footer."""
+  1652→  1652→        if not self.verbose:
+  1653→  1653→            return
+  1654→  1654→        content = Text()
+  1655→  1655→        content.append(f"[DONE] ", style="bold green")
+  1656→  1656→        content.append(f"Goal complete. {summary}.", style="white")
+  1657→  1657→
+  1658→  1658→        if self._findings:
+  1659→  1659→            critical = sum(1 for f in self._findings if f.get("severity") == "critical")
+  1660→  1660→            high = sum(1 for f in self._findings if f.get("severity") == "high")
+  1661→  1661→            if critical or high:
+  1662→  1662→                content.append("\n", style="")
+  1663→  1663→                if critical:
+  1664→  1664→                    content.append(f"  [red]{critical} CRITICAL[/]", style="")
+  1665→  1665→                if high:
+  1666→  1666→                    content.append(f"  [yellow]{high} HIGH[/]", style="")
+  1667→  1667→
+  1668→  1668→        console.print(Panel(content, border_style="green", padding=(0, 1)))
+  1669→  1669→
+  1670→  1670→
+  1671→  1671→# ══════════════════════════════════════════════════════════════════════
+  1672→  1672→#  MAIN ENTRY POINT
+  1673→  1673→# ══════════════════════════════════════════════════════════════════════
+  1674→  1674→
+  1675→  1675→
+  1676→  1676→def run_nexus_agent(goal: str, verbose: bool = True) -> dict:
+  1677→  1677→    """Run the Nexus Agent on a goal.
+  1678→  1678→
+  1679→  1679→    This is the main entry point for the agent system. It creates an agent,
+  1680→  1680→    executes the goal, and returns a results dictionary.
+  1681→  1681→
+  1682→  1682→    Args:
+  1683→  1683→        goal: Natural language goal (e.g., "Fully recon example.com and find all vulnerabilities").
+  1684→  1684→        verbose: If True, print rich output. If False, run silently.
+  1685→  1685→
+  1686→  1686→    Returns:
+  1687→  1687→        Dict with keys: goal, steps, targets, total_findings, findings, summary, backend.
+  1688→  1688→    """
+  1689→  1689→    if not goal or not goal.strip():
+  1690→  1690→        if verbose:
+  1691→  1691→            console.print("[yellow]No goal provided. Try something like:[/]")
+  1692→  1692→            console.print("  [dim]nexus 'scan example.com with all modules'[/]")
+  1693→  1693→            console.print("  [dim]nexus 'audit my local machine'[/]")
+  1694→  1694→            console.print("  [dim]nexus 'find secrets in my project'[/]")
+  1695→  1695→        return {"error": "No goal provided"}
+  1696→  1696→
+  1697→  1697→    def _on_message(msg: str, style: str = "") -> None:
+  1698→  1698→        if verbose:
+  1699→  1699→            if style:
+  1700→  1700→                console.print(msg)
+  1701→  1701→            else:
+  1702→  1702→                console.print(msg)
+  1703→  1703→
+  1704→  1704→    def _on_finding(finding: Dict) -> None:
+  1705→  1705→        pass  # Findings are collected internally
+  1706→  1706→
+  1707→  1707→    def _on_status(status: str) -> None:
+  1708→  1708→        pass  # Status updates handled internally
+  1709→  1709→
+  1710→  1710→    agent = NexusAgent(
+  1711→  1711→        on_message=_on_message,
+  1712→  1712→        on_finding=_on_finding,
+  1713→  1713→        on_status=_on_status,
+  1714→  1714→        verbose=verbose,
+  1715→  1715→    )
+  1716→  1716→    return agent.execute(goal)
+  1717→  1717→
