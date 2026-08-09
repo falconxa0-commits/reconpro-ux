@@ -973,7 +973,7 @@ def run_recon(target: str, base_url: str, timeout: int = 8,
     ip_list = dns.get("a", []) + dns.get("aaaa", [])
 
     # ── 2. Security headers ───────────────────────────────────────────────
-    root = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+    root = http_probe(base_url, timeout=timeout, verify_tls=verify_tls, extra_headers=_sig_headers)
     root_h = root.get("headers", {})
     for hdr, display, sev, pts in SECURITY_HEADERS:
         if hdr.lower() not in {k.lower() for k in root_h}:

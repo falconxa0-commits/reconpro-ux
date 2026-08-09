@@ -574,6 +574,73 @@ def _stage_20_wisdom_verdict(base_url: str, all_findings: List[Finding], target:
     )]
 
 
+def _stage_21_ai_model_analysis(base_url: str, timeout: int = 8,
+                                 verify_tls: bool = True) -> List[Finding]:
+    """Stage 21: AI Model Deep Analysis — watermarks, collapse, trauma imprints."""
+    findings: List[Finding] = []
+    try:
+        from ..ai_red_team import WatermarkAnalyzer, ModelCollapseDetector, TraumaImprintDetector
+        from ..http import http_probe
+        host = _h(base_url)
+        resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+        body = resp.get("body", "") or ""
+        headers = resp.get("headers", {}) or {}
+
+        # Watermark Analysis
+        wm = WatermarkAnalyzer()
+        wm_result = wm.analyze(body, headers)
+        if wm_result.get("watermark_detected", False):
+            confidence = wm_result.get("confidence", 0)
+            wm_type = wm_result.get("type", "unknown")
+            findings.append(Finding(
+                title="Watermark Pattern Detected",
+                severity="medium", category="watermark_analysis", module="oblivion",
+                description="Cryptographic watermark or bias pattern detected in AI response. "
+                            "Type: {}, Confidence: {:.0f}%. This indicates the content may be "
+                            "machine-generated with traceable origin markers.".format(wm_type, confidence * 100),
+                evidence=str(wm_result), asset=host, points_deducted=5,
+            ))
+
+        # Model Collapse Analysis
+        mc = ModelCollapseDetector()
+        mc_result = mc.detect(body)
+        collapse_prob = mc_result.get("collapse_probability", 0)
+        if collapse_prob > 0.3:
+            indicators = mc_result.get("indicators_found", [])
+            sev = "high" if collapse_prob > 0.5 else "medium"
+            findings.append(Finding(
+                title="Model Collapse Pattern Detected",
+                severity=sev, category="collapse_analysis", module="oblivion",
+                description="Model collapse indicators detected (probability: {:.0f}%). "
+                            "Collapse patterns: {}. This suggests the AI model may be "
+                            "experiencing degenerative output or recursive contamination.".format(
+                    collapse_prob * 100, ", ".join(indicators[:5]) if indicators else "repetitive structures"),
+                evidence=str(mc_result), asset=host, points_deducted=10 if sev == "high" else 5,
+            ))
+
+        # Trauma Imprint Analysis
+        ti = TraumaImprintDetector()
+        ti_result = ti.detect(body)
+        if ti_result.get("imprint_detected", False):
+            phrases = ti_result.get("phrases_found", [])
+            findings.append(Finding(
+                title="Trauma/Canary Imprint Detected",
+                severity="medium", category="trauma_analysis", module="oblivion",
+                description="Trauma imprint or canary phrase detected in AI response. "
+                            "Phrases: {}. These markers indicate potential alignment anchor "
+                            "points or persistent memory fingerprints embedded in model behavior.".format(
+                    ", ".join(phrases[:3]) if phrases else "undisclosed patterns"),
+                evidence=str(ti_result), asset=host, points_deducted=5,
+            ))
+
+    except ImportError:
+        pass  # ai_red_team module not available
+    except Exception:
+        pass  # Error-tolerant: non-critical analysis stage
+
+    return findings
+
+
 def run_oblivion(target: str, base_url: str, timeout: int = 8,
                  verify_tls: bool = True) -> List[Finding]:
     """23-stage analytical dissolution with DREAD scoring. Returns list of Findings."""
@@ -598,4 +665,6 @@ def run_oblivion(target: str, base_url: str, timeout: int = 8,
     findings.extend(_stage_18_mirror_fracture(base_url, timeout=timeout, verify_tls=verify_tls))
     findings.extend(_stage_19_temporal(base_url, timeout=timeout, verify_tls=verify_tls))
     findings.extend(_stage_20_wisdom_verdict(base_url, findings, target, timeout=timeout))
+    # v9.1.0: Stage 21 — AI Model Deep Analysis (watermarks, collapse, trauma imprints)
+    findings.extend(_stage_21_ai_model_analysis(base_url, timeout=timeout, verify_tls=verify_tls))
     return findings

@@ -1,0 +1,921 @@
+     1→"""ReconPro v9.0.1 — Supply Chain / Web Content Extraction.
+     2→
+     3→Provides:
+     4→  - WebExtractor: stdlib HTMLParser-based web page content extraction
+     5→  - GitHubScraper: unauthenticated GitHub API scraper (60 req/hr)
+     6→  - SupplyChainAnalyzer: secrets, deps, infra, CI/CD, cloud config analysis
+     7→  - run_supply_chain(): module entry point returning List[Finding]
+     8→
+     9→All using stdlib only — no BeautifulSoup, requests, or external dependencies.
+    10→"""
+    11→
+    12→from __future__ import annotations
+    13→
+    14→import base64
+    15→import html
+    16→import html.parser
+    17→import json
+    18→import re
+    19→import ssl
+    20→import urllib.error
+    21→import urllib.parse
+    22→import urllib.request
+    23→from typing import Any, Dict, List, Optional, Tuple
+    24→
+    25→from .http import Finding
+    26→
+    27→
+    28→# ── Encoding Detection ─────────────────────────────────────────────────
+    29→
+    30→_ENCODING_MARKERS: List[Tuple[bytes, str]] = [
+    31→    (b'charset=utf-8', 'utf-8'),
+    32→    (b'charset=UTF-8', 'utf-8'),
+    33→    (b'charset=iso-8859-1', 'iso-8859-1'),
+    34→    (b'charset=ISO-8859-1', 'iso-8859-1'),
+    35→    (b'charset=windows-1252', 'windows-1252'),
+    36→    (b'charset=gb2312', 'gb2312'),
+    37→    (b'charset=shift_jis', 'shift_jis'),
+    38→    (b'charset=euc-kr', 'euc-kr'),
+    39→]
+    40→
+    41→
+    42→def _detect_encoding(raw: bytes, headers: Dict[str, str]) -> str:
+    43→    """Detect encoding from Content-Type header or meta tags in raw bytes."""
+    44→    content_type = headers.get('content-type', '')
+    45→    for marker, enc in _ENCODING_MARKERS:
+    46→        if marker.decode('ascii', errors='ignore') in content_type:
+    47→            return enc
+    48→    # Check first 1024 bytes for <meta charset=...>
+    49→    head = raw[:1024].lower()
+    50→    for marker, enc in _ENCODING_MARKERS:
+    51→        if marker in head:
+    52→            return enc
+    53→    return 'utf-8'
+    54→
+    55→
+    56→# ── HTML Parser for WebExtractor ──────────────────────────────────────
+    57→
+    58→class _PageParser(html.parser.HTMLParser):
+    59→    """Lightweight HTML parser that extracts structured content from pages."""
+    60→
+    61→    def __init__(self, base_url: str) -> None:
+    62→        super().__init__(convert_charrefs=False)
+    63→        self.base_url = base_url
+    64→        self.title: str = ''
+    65→        self.description: str = ''
+    66→        self.text_parts: List[str] = []
+    67→        self.links: List[Dict[str, str]] = []
+    68→        self.forms: List[Dict[str, Any]] = []
+    69→        self.scripts: List[Dict[str, str]] = []
+    70→        self.meta_tags: List[Dict[str, str]] = []
+    71→        self.headings: Dict[str, List[str]] = {
+    72→            'h1': [], 'h2': [], 'h3': [], 'h4': [], 'h5': [], 'h6': [],
+    73→        }
+    74→        self._in_title = False
+    75→        self._in_script = False
+    76→        self._script_attrs: Dict[str, str] = {}
+    77→        self._in_form = False
+    78→        self._form_attrs: Dict[str, str] = {}
+    79→        self._form_inputs: List[Dict[str, str]] = []
+    80→        self._skip_tags: set = {'script', 'style', 'noscript', 'svg'}
+    81→        self._current_tag: str = ''
+    82→        self._heading_depth: int = 0
+    83→
+    84→    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+    85→        tag = tag.lower()
+    86→        attr_dict = {k: v or '' for k, v in attrs}
+    87→
+    88→        if tag == 'title':
+    89→            self._in_title = True
+    90→        elif tag == 'script':
+    91→            self._in_script = True
+    92→            self._script_attrs = attr_dict
+    93→        elif tag == 'form':
+    94→            self._in_form = True
+    95→            self._form_attrs = attr_dict
+    96→            self._form_inputs = []
+    97→        elif tag == 'input' and self._in_form:
+    98→            self._form_inputs.append(attr_dict)
+    99→        elif tag == 'meta':
+   100→            name = attr_dict.get('name', attr_dict.get('property', ''))
+   101→            content = attr_dict.get('content', '')
+   102→            if name or content:
+   103→                self.meta_tags.append({'name': name, 'content': content})
+   104→                if name.lower() == 'description':
+   105→                    self.description = html.unescape(content)
+   106→        elif tag == 'a':
+   107→            href = attr_dict.get('href', '')
+   108→            if href and not href.startswith(('#', 'javascript:', 'mailto:', 'tel:', 'data:')):
+   109→                resolved = urllib.parse.urljoin(self.base_url, href)
+   110→                self.links.append({
+   111→                    'href': href,
+   112→                    'resolved': resolved,
+   113→                    'text': '',
+   114→                })
+   115→        elif tag in self.headings:
+   116→            self._heading_depth = int(tag[1])
+   117→            self._current_tag = tag
+   118→
+   119→        if tag not in self._skip_tags and tag != 'br':
+   120→            self.text_parts.append(' ')
+   121→
+   122→    def handle_endtag(self, tag: str) -> None:
+   123→        tag = tag.lower()
+   124→        if tag == 'title':
+   125→            self._in_title = False
+   126→        elif tag == 'script':
+   127→            self._in_script = False
+   128→            src = self._script_attrs.get('src', '')
+   129→            if src:
+   130→                self.scripts.append({
+   131→                    'src': urllib.parse.urljoin(self.base_url, src),
+   132→                    'type': self._script_attrs.get('type', ''),
+   133→                })
+   134→            self._script_attrs = {}
+   135→        elif tag == 'form':
+   136→            self.forms.append({
+   137→                'action': self._form_attrs.get('action', ''),
+   138→                'method': self._form_attrs.get('method', 'GET').upper(),
+   139→                'inputs': list(self._form_inputs),
+   140→            })
+   141→            self._in_form = False
+   142→            self._form_attrs = {}
+   143→            self._form_inputs = []
+   144→        elif tag in self.headings:
+   145→            self._heading_depth = 0
+   146→            self._current_tag = ''
+   147→
+   148→    def handle_data(self, data: str) -> None:
+   149→        if self._in_title:
+   150→            self.title += data
+   151→        elif self._in_script:
+   152→            pass  # skip script body
+   153→        elif self._heading_depth > 0:
+   154→            key = f'h{self._heading_depth}'
+   155→            self.headings[key].append(data.strip())
+   156→        else:
+   157→            self.text_parts.append(data)
+   158→
+   159→    def handle_entityref(self, name: str) -> None:
+   160→        char = html.unescape(f'&{name};')
+   161→        self.text_parts.append(char)
+   162→        if self._in_title:
+   163→            self.title += char
+   164→
+   165→    def handle_charref(self, name: str) -> None:
+   166→        char = html.unescape(f'&#{name};')
+   167→        self.text_parts.append(char)
+   168→        if self._in_title:
+   169→            self.title += char
+   170→
+   171→    def get_text_content(self) -> str:
+   172→        raw = ''.join(self.text_parts)
+   173→        cleaned = re.sub(r'\s+', ' ', raw).strip()
+   174→        return cleaned[:10000]
+   175→
+   176→    def get_result(self) -> Dict[str, Any]:
+   177→        return {
+   178→            'title': html.unescape(self.title).strip(),
+   179→            'description': self.description,
+   180→            'text_content': self.get_text_content(),
+   181→            'links': self.links,
+   182→            'forms': self.forms,
+   183→            'scripts': self.scripts,
+   184→            'meta_tags': self.meta_tags,
+   185→            'headings': {k: v for k, v in self.headings.items() if v},
+   186→        }
+   187→
+   188→
+   189→# ── Web Content Extractor ─────────────────────────────────────────────
+   190→
+   191→class WebExtractor:
+   192→    """Extracts structured content from web pages using stdlib HTMLParser.
+   193→
+   194→    Handles encoding detection, relative URL resolution, and structured
+   195→    extraction of titles, links, forms, scripts, meta tags, and headings.
+   196→    """
+   197→
+   198→    def __init__(self, timeout: int = 15) -> None:
+   199→        self._timeout = timeout
+   200→
+   201→    def extract(self, url: str) -> Dict[str, Any]:
+   202→        """Fetch a URL and extract structured content.
+   203→
+   204→        Returns dict with: title, description, text_content, links,
+   205→        forms, scripts, meta_tags, headings.
+   206→        """
+   207→        result: Dict[str, Any] = {
+   208→            'url': url,
+   209→            'status': 0,
+   210→            'title': '',
+   211→            'description': '',
+   212→            'text_content': '',
+   213→            'links': [],
+   214→            'forms': [],
+   215→            'scripts': [],
+   216→            'meta_tags': [],
+   217→            'headings': {},
+   218→            'error': None,
+   219→        }
+   220→        try:
+   221→            req = urllib.request.Request(
+   222→                url,
+   223→                headers={
+   224→                    'User-Agent': 'ReconPro/9.0.1 (Supply Chain Auditor)',
+   225→                    'Accept': 'text/html,application/xhtml+xml,application/json',
+   226→                    'Accept-Language': 'en-US,en;q=0.9',
+   227→                },
+   228→            )
+   229→            ctx = ssl.create_default_context()
+   230→            with urllib.request.urlopen(req, timeout=self._timeout, context=ctx) as resp:
+   231→                result['status'] = resp.status
+   232→                raw = resp.read(512_000)  # 512 KB cap
+   233→                headers = dict(resp.headers.items())
+   234→                encoding = _detect_encoding(raw, headers)
+   235→                body = raw.decode(encoding, errors='replace')
+   236→                result['body_size'] = len(body)
+   237→                parser = _PageParser(url)
+   238→                parser.feed(body)
+   239→                extracted = parser.get_result()
+   240→                for key in extracted:
+   241→                    result[key] = extracted[key]
+   242→        except urllib.error.HTTPError as e:
+   243→            result['status'] = e.code
+   244→            result['error'] = f'HTTP {e.code} {e.reason}'
+   245→        except Exception as e:
+   246→            result['error'] = str(e)[:120]
+   247→        return result
+   248→
+   249→    def extract_multiple(self, urls: List[str]) -> List[Dict[str, Any]]:
+   250→        """Batch-extract content from multiple URLs.
+   251→
+   252→        Returns a list of result dicts, one per URL.
+   253→        """
+   254→        return [self.extract(url) for url in urls]
+   255→
+   256→
+   257→# ── GitHub Scraper ────────────────────────────────────────────────────
+   258→
+   259→class GitHubScraper:
+   260→    """Scrapes GitHub repos using the unauthenticated GitHub API.
+   261→
+   262→    Rate limit: 60 requests/hour for unauthenticated access.
+   263→    Tracks remaining requests via the X-RateLimit-Remaining header.
+   264→    """
+   265→
+   266→    GITHUB_API = 'https://api.github.com'
+   267→    GITHUB_RAW = 'https://raw.githubusercontent.com'
+   268→
+   269→    def __init__(self, timeout: int = 15) -> None:
+   270→        self._timeout = timeout
+   271→        self._request_count: int = 0
+   272→        self._remaining: Optional[int] = None
+   273→        self._reset_time: Optional[int] = None
+   274→
+   275→    def _github_request(self, path: str) -> Optional[Any]:
+   276→        """Make a GitHub API request with rate limit tracking."""
+   277→        url = f'{self.GITHUB_API}{path}'
+   278→        self._request_count += 1
+   279→        try:
+   280→            req = urllib.request.Request(
+   281→                url,
+   282→                headers={
+   283→                    'User-Agent': 'ReconPro/9.0.1',
+   284→                    'Accept': 'application/vnd.github.v3+json',
+   285→                },
+   286→            )
+   287→            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+   288→                # Track rate limit headers
+   289→                remaining = resp.headers.get('X-RateLimit-Remaining')
+   290→                reset = resp.headers.get('X-RateLimit-Reset')
+   291→                if remaining is not None:
+   292→                    self._remaining = int(remaining)
+   293→                if reset is not None:
+   294→                    self._reset_time = int(reset)
+   295→                raw = resp.read().decode('utf-8')
+   296→                return json.loads(raw)
+   297→        except urllib.error.HTTPError as e:
+   298→            if e.code == 403 and 'rate limit' in str(e).lower():
+   299→                self._remaining = 0
+   300→            return {'_error': f'HTTP {e.code}', '_status': e.code}
+   301→        except Exception as e:
+   302→            return {'_error': str(e)[:120], '_status': 0}
+   303→
+   304→    @property
+   305→    def remaining_requests(self) -> Optional[int]:
+   306→        """Return remaining API requests, or None if unknown."""
+   307→        return self._remaining
+   308→
+   309→    @property
+   310→    def request_count(self) -> int:
+   311→        """Return total API requests made this session."""
+   312→        return self._request_count
+   313→
+   314→    def get_repo_info(self, owner: str, repo: str) -> Dict[str, Any]:
+   315→        """Get repository metadata (description, stars, language, etc.)."""
+   316→        data = self._github_request(f'/repos/{owner}/{repo}')
+   317→        if not data or not isinstance(data, dict):
+   318→            return {}
+   319→        return {
+   320→            'name': data.get('full_name', f'{owner}/{repo}'),
+   321→            'description': data.get('description', ''),
+   322→            'stars': data.get('stargazers_count', 0),
+   323→            'forks': data.get('forks_count', 0),
+   324→            'language': data.get('language', ''),
+   325→            'license': (data.get('license') or {}).get('spdx_id', ''),
+   326→            'default_branch': data.get('default_branch', 'main'),
+   327→            'is_fork': data.get('fork', False),
+   328→            'is_private': data.get('private', False),
+   329→            'created_at': data.get('created_at', ''),
+   330→            'updated_at': data.get('updated_at', ''),
+   331→            'topics': data.get('topics', []),
+   332→            'size_kb': data.get('size', 0),
+   333→        }
+   334→
+   335→    def get_file_tree(self, owner: str, repo: str, path: str = '') -> List[Dict[str, Any]]:
+   336→        """Get directory listing at the given path."""
+   337→        api_path = f'/repos/{owner}/{repo}/contents/{path}'.rstrip('/')
+   338→        data = self._github_request(api_path)
+   339→        if not data or isinstance(data, dict):
+   340→            return []
+   341→        return [
+   342→            {
+   343→                'name': item.get('name', ''),
+   344→                'path': item.get('path', ''),
+   345→                'type': item.get('type', 'file'),
+   346→                'size': item.get('size', 0),
+   347→            }
+   348→            for item in data
+   349→        ]
+   350→
+   351→    def get_file_content(self, owner: str, repo: str, path: str) -> Optional[str]:
+   352→        """Get decoded file content from a GitHub repo."""
+   353→        api_path = f'/repos/{owner}/{repo}/contents/{path}'
+   354→        data = self._github_request(api_path)
+   355→        if not data or not isinstance(data, dict):
+   356→            return None
+   357→        content_b64 = data.get('content', '')
+   358→        encoding = data.get('encoding', '')
+   359→        if encoding == 'base64' and content_b64:
+   360→            try:
+   361→                return base64.b64decode(content_b64).decode('utf-8', errors='replace')
+   362→            except Exception:
+   363→                return None
+   364→        if data.get('download_url'):
+   365→            try:
+   366→                req = urllib.request.Request(
+   367→                    data['download_url'],
+   368→                    headers={'User-Agent': 'ReconPro/9.0.1'},
+   369→                )
+   370→                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+   371→                    return resp.read().decode('utf-8', errors='replace')
+   372→            except Exception:
+   373→                return None
+   374→        return None
+   375→
+   376→    def get_workflow_files(self, owner: str, repo: str) -> List[Dict[str, Any]]:
+   377→        """Get all .yml/.yaml files from .github/workflows/."""
+   378→        files = self.get_file_tree(owner, repo, '.github/workflows')
+   379→        workflows: List[Dict[str, Any]] = []
+   380→        for f in files:
+   381→            if f['type'] == 'file' and f['name'].endswith(('.yml', '.yaml')):
+   382→                content = self.get_file_content(owner, repo, f['path'])
+   383→                workflows.append({
+   384→                    'name': f['name'],
+   385→                    'path': f['path'],
+   386→                    'content': content,
+   387→                    'size': f['size'],
+   388→                })
+   389→        return workflows
+   390→
+   391→    def get_readme(self, owner: str, repo: str) -> Optional[str]:
+   392→        """Get README content (tries common names in order)."""
+   393→        for name in ('README.md', 'README.rst', 'README.txt', 'README', 'readme.md'):
+   394→            content = self.get_file_content(owner, repo, name)
+   395→            if content:
+   396→                return content
+   397→        return None
+   398→
+   399→    def _parse_github_url(self, full_url: str) -> Optional[Tuple[str, str]]:
+   400→        """Extract (owner, repo) from a GitHub URL."""
+   401→        parsed = urllib.parse.urlparse(full_url)
+   402→        parts = parsed.path.strip('/').split('/')
+   403→        # Handle github.com/owner/repo or github.com/owner/repo/
+   404→        if len(parts) >= 2 and parts[0] and parts[1]:
+   405→            return parts[0], parts[1]
+   406→        # Handle bare owner/repo string
+   407→        if '/' in full_url and not full_url.startswith('http'):
+   408→            segments = full_url.strip('/').split('/')
+   409→            if len(segments) >= 2:
+   410→                return segments[0], segments[1]
+   411→        return None
+   412→
+   413→    def scrape_repo(self, full_url: str, max_files: int = 30) -> Dict[str, Any]:
+   414→        """Auto-parse owner/repo from URL and extract everything.
+   415→
+   416→        Returns repo info, file tree, README, workflows, and source files.
+   417→        """
+   418→        parsed = self._parse_github_url(full_url)
+   419→        if not parsed:
+   420→            return {'error': f'Cannot parse GitHub URL: {full_url}'}
+   421→        owner, repo = parsed
+   422→
+   423→        repo_info = self.get_repo_info(owner, repo)
+   424→        file_tree = self.get_file_tree(owner, repo)
+   425→        readme = self.get_readme(owner, repo)
+   426→        workflows = self.get_workflow_files(owner, repo)
+   427→
+   428→        # Recursively collect source files
+   429→        source_extensions = (
+   430→            '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.go', '.rs',
+   431→            '.rb', '.php', '.yml', '.yaml', '.json', '.toml', '.cfg',
+   432→            '.ini', '.env', '.dockerfile', '.tf', '.hcl',
+   433→        )
+   434→        source_files: List[Dict[str, Any]] = []
+   435→        dirs_to_scan: List[Tuple[str, int]] = [('', 0)]
+   436→
+   437→        while dirs_to_scan and len(source_files) < max_files:
+   438→            current_path, depth = dirs_to_scan.pop(0)
+   439→            if depth > 3:
+   440→                continue
+   441→            tree = self.get_file_tree(owner, repo, current_path)
+   442→            for item in tree:
+   443→                if item['type'] == 'dir' and depth < 3:
+   444→                    dirs_to_scan.append((item['path'], depth + 1))
+   445→                elif item['type'] == 'file':
+   446→                    if any(item['name'].lower().endswith(ext) for ext in source_extensions):
+   447→                        content = self.get_file_content(owner, repo, item['path'])
+   448→                        source_files.append({
+   449→                            'name': item['name'],
+   450→                            'path': item['path'],
+   451→                            'content': content,
+   452→                            'size': item['size'],
+   453→                        })
+   454→                        if len(source_files) >= max_files:
+   455→                            break
+   456→
+   457→        return {
+   458→            'repo': f'{owner}/{repo}',
+   459→            'info': repo_info,
+   460→            'file_tree': file_tree,
+   461→            'readme': readme,
+   462→            'workflows': workflows,
+   463→            'source_files': source_files,
+   464→            'api_requests': self._request_count,
+   465→            'remaining_requests': self._remaining,
+   466→        }
+   467→
+   468→
+   469→# ── Supply Chain Analyzer ─────────────────────────────────────────────
+   470→
+   471→class SupplyChainAnalyzer:
+   472→    """Analyzes extracted web/repo content for supply chain risks.
+   473→
+   474→    Detects:
+   475→      - Hardcoded secrets (API keys, tokens, passwords)
+   476→      - Dependency declarations (package.json, requirements.txt, etc.)
+   477→      - Infrastructure configs (Terraform, Docker, K8s)
+   478→      - CI/CD pipelines (GitHub Actions, GitLab CI, Jenkinsfile)
+   479→      - Cloud configs (AWS, Azure, GCP, Supabase, Vercel)
+   480→      - Security files (security.txt, .env, .env.example)
+   481→    """
+   482→
+   483→    SECRET_PATTERNS: List[Tuple[str, str, str]] = [
+   484→        (r'(?:api[_-]?key|apikey)\s*[=:\"]+\s*[\"\']?([a-zA-Z0-9_\-]{20,})',
+   485→         'API Key', 'critical'),
+   486→        (r'(?:secret|token|auth_token|access_token)\s*[=:\"]+\s*[\"\']?([a-zA-Z0-9_\-/.]{20,})',
+   487→         'Secret Token', 'critical'),
+   488→        (r'(?:password|passwd|pwd)\s*[=:\"]+\s*[\"\']([^\"\'{]{8,})',
+   489→         'Hardcoded Password', 'critical'),
+   490→        (r'(sk-[a-zA-Z0-9]{20,})', 'OpenAI API Key', 'critical'),
+   491→        (r'(AKIA[0-9A-Z]{16})', 'AWS Access Key ID', 'critical'),
+   492→        (r'(?:ghp|gho|ghu|ghs|ghr)_[a-zA-Z0-9]{36}', 'GitHub Token', 'critical'),
+   493→        (r'(-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----)', 'Private Key', 'critical'),
+   494→        (r'(xox[bposa]-[a-zA-Z0-9-]{10,})', 'Slack Token', 'critical'),
+   495→        (r'((?:mongodb|postgres|mysql|redis|amqp)://[^\s\'\"\]>]+)',
+   496→         'Database Connection String', 'high'),
+   497→        (r'(AIza[0-9A-Za-z_\-]{35})', 'Google API Key', 'critical'),
+   498→        (r'(eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*)', 'JWT Token', 'high'),
+   499→    ]
+   500→
+   501→    DEP_FILE_NAMES: Dict[str, str] = {
+   502→        'package.json': 'npm',
+   503→        'package-lock.json': 'npm',
+   504→        'yarn.lock': 'yarn',
+   505→        'pnpm-lock.yaml': 'pnpm',
+   506→        'requirements.txt': 'pip',
+   507→        'Pipfile': 'pipenv',
+   508→        'Pipfile.lock': 'pipenv',
+   509→        'pyproject.toml': 'python',
+   510→        'setup.py': 'python',
+   511→        'setup.cfg': 'python',
+   512→        'go.mod': 'go',
+   513→        'go.sum': 'go',
+   514→        'Cargo.toml': 'rust',
+   515→        'Cargo.lock': 'rust',
+   516→        'Gemfile': 'ruby',
+   517→        'Gemfile.lock': 'ruby',
+   518→        'composer.json': 'php',
+   519→        'composer.lock': 'php',
+   520→        'pom.xml': 'java/maven',
+   521→        'build.gradle': 'java/gradle',
+   522→        'build.gradle.kts': 'java/gradle',
+   523→        'pubspec.yaml': 'dart/flutter',
+   524→        'pubspec.lock': 'dart/flutter',
+   525→        'mix.exs': 'elixir',
+   526→    }
+   527→
+   528→    INFRA_PATTERNS: Dict[str, str] = {
+   529→        'Dockerfile': 'Docker',
+   530→        'docker-compose.yml': 'Docker Compose',
+   531→        'docker-compose.yaml': 'Docker Compose',
+   532→        '.dockerignore': 'Docker',
+   533→        'Jenkinsfile': 'Jenkins',
+   534→        '.gitlab-ci.yml': 'GitLab CI',
+   535→        '.circleci/config.yml': 'CircleCI',
+   536→    }
+   537→
+   538→    CLOUD_CONFIG_PATTERNS: List[Tuple[str, str]] = [
+   539→        (r'aws_access_key_id|aws_secret_access_key|AWS_REGION|S3_BUCKET', 'AWS'),
+   540→        (r'AZURE_CLIENT_ID|AZURE_TENANT_ID|AZURE_SUBSCRIPTION', 'Azure'),
+   541→        (r'GOOGLE_CLOUD_PROJECT|GCP_PROJECT|firebase', 'GCP'),
+   542→        (r'SUPABASE_URL|SUPABASE_ANON_KEY|SUPABASE_SERVICE_KEY', 'Supabase'),
+   543→        (r'VERCEL_TOKEN|VERCEL_URL|NEXT_PUBLIC_VERCEL', 'Vercel'),
+   544→        (r'DIGITALOCEAN_TOKEN|DO_API_TOKEN', 'DigitalOcean'),
+   545→        (r'STRIPE_SECRET|STRIPE_PUBLISHABLE', 'Stripe'),
+   546→        (r'SENDGRID_API_KEY|TWILIO_ACCOUNT_SID', 'Third-party SaaS'),
+   547→    ]
+   548→
+   549→    SECURITY_FILE_NAMES: List[str] = [
+   550→        'security.txt', '.env', '.env.example', '.env.local',
+   551→        '.env.production', '.env.staging', '.env.development',
+   552→        '.npmrc', '.pypirc', '.netrc', '.pgpass',
+   553→    ]
+   554→
+   555→    def analyze(self, extracted_content: Dict[str, Any]) -> List[Dict[str, Any]]:
+   556→        """Analyze extracted content and return a list of findings.
+   557→
+   558→        Each finding is a dict with: type, severity, description, evidence, file.
+   559→        """
+   560→        findings: List[Dict[str, Any]] = []
+   561→        files = extracted_content.get('source_files', [])
+   562→
+   563→        # Also include workflows as files for analysis
+   564→        workflows = extracted_content.get('workflows', [])
+   565→        for w in workflows:
+   566→            files.append({
+   567→                'name': w.get('name', ''),
+   568→                'path': w.get('path', ''),
+   569→                'content': w.get('content', ''),
+   570→                'size': w.get('size', 0),
+   571→            })
+   572→
+   573→        # Include README
+   574→        readme = extracted_content.get('readme', '')
+   575→        if readme:
+   576→            files.append({'name': 'README.md', 'path': 'README.md',
+   577→                          'content': readme, 'size': len(readme)})
+   578→
+   579→        # Also analyze web-extracted text content if present
+   580→        text_content = extracted_content.get('text_content', '')
+   581→        if text_content:
+   582→            files.append({'name': '_web_page', 'path': extracted_content.get('url', ''),
+   583→                          'content': text_content, 'size': len(text_content)})
+   584→
+   585→        for f in files:
+   586→            content = f.get('content', '')
+   587→            if not content:
+   588→                continue
+   589→            fname = f.get('name', '')
+   590→            fpath = f.get('path', '')
+   591→
+   592→            # ── Secret scanning ──
+   593→            for pattern, secret_type, severity in self.SECRET_PATTERNS:
+   594→                try:
+   595→                    for match in re.finditer(pattern, content):
+   596→                        value = match.group(1) if match.lastindex else match.group(0)
+   597→                        display = str(value)[:80] + ('...' if len(str(value)) > 80 else '')
+   598→                        findings.append({
+   599→                            'type': f'Hardcoded Secret: {secret_type}',
+   600→                            'severity': severity,
+   601→                            'description': f'{secret_type} found in {fpath}',
+   602→                            'evidence': f'File: {fpath} | Match: {display}',
+   603→                            'file': fpath,
+   604→                            'file_name': fname,
+   605→                        })
+   606→                except re.error:
+   607→                    pass
+   608→
+   609→            # ── Dependency declarations ──
+   610→            for dep_file, pkg_manager in self.DEP_FILE_NAMES.items():
+   611→                if fname == dep_file or fname.lower() == dep_file.lower():
+   612→                    findings.append({
+   613→                        'type': 'Dependency Declaration',
+   614→                        'severity': 'info',
+   615→                        'description': f'{pkg_manager} dependency file: {fpath}',
+   616→                        'evidence': f'File: {fpath} | Manager: {pkg_manager}',
+   617→                        'file': fpath,
+   618→                        'file_name': fname,
+   619→                    })
+   620→
+   621→            # ── Infrastructure configs ──
+   622→            for infra_file, infra_type in self.INFRA_PATTERNS.items():
+   623→                if fname == infra_file or fname.lower() == infra_file.lower():
+   624→                    findings.append({
+   625→                        'type': 'Infrastructure Config',
+   626→                        'severity': 'info',
+   627→                        'description': f'{infra_type} config file: {fpath}',
+   628→                        'evidence': f'File: {fpath} | Type: {infra_type}',
+   629→                        'file': fpath,
+   630→                        'file_name': fname,
+   631→                    })
+   632→
+   633→            # ── CI/CD pipeline detection ──
+   634→            if '.github/workflows/' in fpath and fpath.endswith(('.yml', '.yaml')):
+   635→                findings.append({
+   636→                    'type': 'CI/CD Pipeline',
+   637→                    'severity': 'info',
+   638→                    'description': f'GitHub Actions workflow: {fpath}',
+   639→                    'evidence': f'File: {fpath}',
+   640→                    'file': fpath,
+   641→                    'file_name': fname,
+   642→                })
+   643→            if fname == 'Jenkinsfile':
+   644→                findings.append({
+   645→                    'type': 'CI/CD Pipeline',
+   646→                    'severity': 'info',
+   647→                    'description': 'Jenkins pipeline detected',
+   648→                    'evidence': f'File: {fpath}',
+   649→                    'file': fpath,
+   650→                    'file_name': fname,
+   651→                })
+   652→            if fname == '.gitlab-ci.yml':
+   653→                findings.append({
+   654→                    'type': 'CI/CD Pipeline',
+   655→                    'severity': 'info',
+   656→                    'description': 'GitLab CI pipeline detected',
+   657→                    'evidence': f'File: {fpath}',
+   658→                    'file': fpath,
+   659→                    'file_name': fname,
+   660→                })
+   661→
+   662→            # ── Cloud configs ──
+   663→            for pattern, cloud_provider in self.CLOUD_CONFIG_PATTERNS:
+   664→                if re.search(pattern, content, re.IGNORECASE):
+   665→                    findings.append({
+   666→                        'type': f'Cloud Config: {cloud_provider}',
+   667→                        'severity': 'medium',
+   668→                        'description': f'{cloud_provider} configuration reference in {fpath}',
+   669→                        'evidence': f'File: {fpath} | Provider: {cloud_provider}',
+   670→                        'file': fpath,
+   671→                        'file_name': fname,
+   672→                    })
+   673→                    break  # one cloud provider hit per file is enough
+   674→
+   675→            # ── Security files ──
+   676→            if fname in self.SECURITY_FILE_NAMES:
+   677→                sev = 'high' if fname in ('.env', '.env.local', '.env.production') else 'medium'
+   678→                findings.append({
+   679→                    'type': 'Security-Sensitive File',
+   680→                    'severity': sev,
+   681→                    'description': f'Security-sensitive file committed: {fpath}',
+   682→                    'evidence': f'File: {fpath}',
+   683→                    'file': fpath,
+   684→                    'file_name': fname,
+   685→                })
+   686→
+   687→            # ── Terraform / K8s ──
+   688→            if fname.endswith('.tf') or fname.endswith('.tfvars'):
+   689→                findings.append({
+   690→                    'type': 'Infrastructure Config',
+   691→                    'severity': 'info',
+   692→                    'description': f'Terraform file: {fpath}',
+   693→                    'evidence': f'File: {fpath}',
+   694→                    'file': fpath,
+   695→                    'file_name': fname,
+   696→                })
+   697→            if fname.endswith(('.yaml', '.yml')) and any(
+   698→                kw in content.lower() for kw in ('kind:', 'apiVersion:', 'metadata:', 'spec:')
+   699→            ):
+   700→                findings.append({
+   701→                    'type': 'Infrastructure Config',
+   702→                    'severity': 'info',
+   703→                    'description': f'Possible Kubernetes manifest: {fpath}',
+   704→                    'evidence': f'File: {fpath}',
+   705→                    'file': fpath,
+   706→                    'file_name': fname,
+   707→                })
+   708→
+   709→            # ── Suspicious code patterns ──
+   710→            self._check_suspicious(content, fname, fpath, findings)
+   711→
+   712→        return findings
+   713→
+   714→    def _check_suspicious(
+   715→        self, content: str, fname: str, fpath: str,
+   716→        findings: List[Dict[str, Any]],
+   717→    ) -> None:
+   718→        """Check for suspicious code patterns."""
+   719→        checks: List[Tuple[str, str, str]] = [
+   720→            (r'\beval\s*\(', 'eval() usage detected', 'high'),
+   721→            (r'verify\s*=\s*False|CERT_NONE|ssl\._create_unverified_context',
+   722→             'TLS verification disabled', 'high'),
+   723→            (r'DEBUG\s*=\s*True|debug.*=.*true', 'Debug mode enabled', 'medium'),
+   724→            (r'pickle\.load|yaml\.load\s*\(|unserialize',
+   725→             'Potential insecure deserialization', 'high'),
+   726→            (r'os\.system\s*\(|subprocess\.(?:call|run|Popen)\s*\([^)]*shell\s*=\s*True',
+   727→             'Potential command injection via shell=True', 'critical'),
+   728→            (r'exec\s*\([^)]*input\s*\)|exec\s*\(.*\+.*\)',
+   729→             'Dynamic code execution', 'high'),
+   730→            (r'__import__\s*\([^)]*input\s*\)',
+   731→             'Dynamic import from user input', 'high'),
+   732→            (r'cors.*\*|Access-Control-Allow-Origin.*\*',
+   733→             'CORS wildcard detected', 'medium'),
+   734→            (r'xml\.etree\.ElementParse|lxml\.etree\.parse\s*\(',
+   735→             'XML parsing without defusedxml', 'medium'),
+   736→        ]
+   737→        for pattern, desc, severity in checks:
+   738→            try:
+   739→                if re.search(pattern, content):
+   740→                    findings.append({
+   741→                        'type': f'Suspicious Pattern: {desc}',
+   742→                        'severity': severity,
+   743→                        'description': f'{desc} in {fpath}',
+   744→                        'evidence': f'File: {fpath} | Pattern: {desc}',
+   745→                        'file': fpath,
+   746→                        'file_name': fname,
+   747→                    })
+   748→            except re.error:
+   749→                pass
+   750→
+   751→
+   752→# ── Module Entry Point ────────────────────────────────────────────────
+   753→
+   754→def run_supply_chain(
+   755→    target: str,
+   756→    base_url: str = '',
+   757→    timeout: int = 30,
+   758→    verify_tls: bool = True,
+   759→) -> List[Finding]:
+   760→    """Module entry point compatible with other ReconPro modules.
+   761→
+   762→    If *target* looks like a GitHub URL or owner/repo, performs a full
+   763→    supply chain audit on the repository.  Otherwise extracts content
+   764→    from *base_url* and analyzes it.
+   765→
+   766→    Returns a list of Finding dicts.
+   767→    """
+   768→    findings: List[Finding] = []
+   769→    asset = target.replace('https://', '').replace('http://', '').split('/')[0]
+   770→
+   771→    scraper = GitHubScraper(timeout=timeout)
+   772→    analyzer = SupplyChainAnalyzer()
+   773→
+   774→    # Detect GitHub targets
+   775→    parsed = scraper._parse_github_url(target)
+   776→    if parsed:
+   777→        owner, repo = parsed
+   778→        repo_slug = f'{owner}/{repo}'
+   779→
+   780→        result = scraper.scrape_repo(target)
+   781→
+   782→        if 'error' in result:
+   783→            findings.append(Finding(
+   784→                title=f'Supply chain scan failed for {repo_slug}',
+   785→                severity='low', category='supply_chain',
+   786→                module='supply_chain',
+   787→                description=result['error'],
+   788→                evidence=result['error'],
+   789→                asset=asset, points_deducted=0,
+   790→                remediation='Verify the repository URL and try again.',
+   791→            ))
+   792→            return findings
+   793→
+   794→        analysis = analyzer.analyze(result)
+   795→
+   796→        # Convert analyzer findings to Finding objects
+   797→        for af in analysis:
+   798→            sev = af.get('severity', 'info')
+   799→            if sev not in ('critical', 'high', 'medium', 'low', 'info'):
+   800→                sev = 'info'
+   801→            pts = {'critical': 15, 'high': 10, 'medium': 5, 'low': 2, 'info': 0}
+   802→            findings.append(Finding(
+   803→                title=af.get('type', 'Supply Chain Finding'),
+   804→                severity=sev, category='supply_chain',
+   805→                module='supply_chain',
+   806→                description=af.get('description', ''),
+   807→                evidence=af.get('evidence', ''),
+   808→                asset=repo_slug,
+   809→                points_deducted=pts.get(sev, 0),
+   810→                remediation=_remediation_for(af.get('type', '')),
+   811→            ))
+   812→
+   813→        # Summary findings
+   814→        info = result.get('info', {}
+   815→        )
+   816→        n_files = len(result.get('source_files', []))
+   817→        n_workflows = len(result.get('workflows', []))
+   818→        findings.append(Finding(
+   819→            title=f'Supply chain audit complete: {repo_slug}',
+   820→            severity='info', category='supply_chain',
+   821→            module='supply_chain',
+   822→            description=(
+   823→                f'Scanned {n_files} source files, '
+   824→                f'{n_workflows} workflows. '
+   825→                f'{len(analysis)} findings. '
+   826→                f'Language: {info.get("language", "unknown")}. '
+   827→                f'Stars: {info.get("stars", 0)}. '
+   828→                f'API requests used: {result.get("api_requests", 0)}. '
+   829→                f'Remaining: {result.get("remaining_requests", "?")}.'
+   830→            ),
+   831→            evidence=f'Repo: {repo_slug} | Files: {n_files} | Findings: {len(analysis)}',
+   832→            asset=repo_slug,
+   833→            points_deducted=0,
+   834→            remediation='',
+   835→        ))
+   836→
+   837→        return findings
+   838→
+   839→    # ── Web page extraction path ──
+   840→    url = base_url or target
+   841→    extractor = WebExtractor(timeout=timeout)
+   842→    page = extractor.extract(url)
+   843→
+   844→    if page.get('error'):
+   845→        findings.append(Finding(
+   846→            title=f'Web extraction failed: {url}',
+   847→            severity='low', category='supply_chain',
+   848→            module='supply_chain',
+   849→            description=page['error'],
+   850→            evidence=page['error'],
+   851→            asset=asset, points_deducted=0,
+   852→            remediation='Verify the URL and network connectivity.',
+   853→        ))
+   854→        return findings
+   855→
+   856→    # Analyze the extracted page
+   857→    analysis = analyzer.analyze({
+   858→        'url': url,
+   859→        'text_content': page.get('text_content', ''),
+   860→        'source_files': [],
+   861→        'workflows': [],
+   862→        'readme': '',
+   863→    })
+   864→
+   865→    for af in analysis:
+   866→        sev = af.get('severity', 'info')
+   867→        pts = {'critical': 15, 'high': 10, 'medium': 5, 'low': 2, 'info': 0}
+   868→        findings.append(Finding(
+   869→            title=af.get('type', 'Web Content Finding'),
+   870→            severity=sev, category='supply_chain',
+   871→            module='supply_chain',
+   872→            description=af.get('description', ''),
+   873→            evidence=af.get('evidence', ''),
+   874→            asset=asset, points_deducted=pts.get(sev, 0),
+   875→            remediation=_remediation_for(af.get('type', '')),
+   876→        ))
+   877→
+   878→    n_links = len(page.get('links', []))
+   879→    n_scripts = len(page.get('scripts', []))
+   880→    n_forms = len(page.get('forms', []))
+   881→    findings.append(Finding(
+   882→        title=f'Web content extracted: {url}',
+   883→        severity='info', category='supply_chain',
+   884→        module='supply_chain',
+   885→        description=(
+   886→            f'Extracted from {url}: {n_links} links, '
+   887→            f'{n_scripts} scripts, {n_forms} forms. '
+   888→            f'Title: "{page.get("title", "")}". '
+   889→            f'{len(analysis)} analysis findings.'
+   890→        ),
+   891→        evidence=f'URL: {url} | Links: {n_links} | Scripts: {n_scripts}',
+   892→        asset=asset, points_deducted=0,
+   893→        remediation='',
+   894→    ))
+   895→
+   896→    return findings
+   897→
+   898→
+   899→def _remediation_for(finding_type: str) -> str:
+   900→    """Return a remediation suggestion for a finding type."""
+   901→    t = finding_type.lower()
+   902→    if 'secret' in t or 'key' in t or 'token' in t or 'password' in t:
+   903→        return (
+   904→            'Rotate the exposed credential immediately. Use environment variables '
+   905→            'or a secrets manager (e.g., HashiCorp Vault, AWS Secrets Manager). '
+   906→            'Never commit secrets to version control.'
+   907→        )
+   908→    if 'tls' in t or 'ssl' in t:
+   909→        return 'Enable TLS certificate verification in production environments.'
+   910→    if 'eval' in t or 'exec' in t or 'deserialization' in t:
+   911→        return 'Avoid dynamic code execution. Use safe alternatives and validate all inputs.'
+   912→    if 'command injection' in t:
+   913→        return 'Avoid shell=True. Use argument lists and validate/sanitize all inputs.'
+   914→    if 'env' in t or 'security' in t:
+   915→        return 'Remove sensitive files from version control. Use .gitignore and pre-commit hooks.'
+   916→    if 'cors' in t:
+   917→        return 'Restrict CORS to specific trusted origins instead of using wildcards.'
+   918→    if 'debug' in t:
+   919→        return 'Disable debug mode in production deployments.'
+   920→    return ''
+   921→

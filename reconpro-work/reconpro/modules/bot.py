@@ -212,6 +212,43 @@ def _check_threat_feeds(base_url: str, timeout: int = 8,
             except Exception:
                 pass
 
+            # Threat feed reputation check
+            try:
+                threat_mgr = ThreatFeedManager()
+                rep = check_ip_reputation(ip)
+                score = rep.get("score", 0)
+                if score > 0:
+                    if score > 70:
+                        severity = "critical"
+                    elif score > 40:
+                        severity = "high"
+                    elif score > 10:
+                        severity = "medium"
+                    else:
+                        severity = "low"
+                    feed_names = [f["feed"] for f in rep.get("threat_feeds", [])]
+                    dnsbl_hits = rep.get("dnsbl_hits", [])
+                    desc_parts = ["IP {} has a threat reputation score of {}.".format(ip, score)]
+                    if feed_names:
+                        desc_parts.append("Matched threat feeds: {}".format(", ".join(feed_names)))
+                    if dnsbl_hits:
+                        desc_parts.append("DNSBL hits: {}".format(", ".join(dnsbl_hits)))
+                    findings.append(Finding(
+                        title="Threat reputation: {} (score {})".format(ip, score),
+                        severity=severity, category="threat_intel",
+                        module="bot",
+                        description=" ".join(desc_parts),
+                        evidence="Threat score: {}, feeds: {}, DNSBL: {}".format(
+                            score,
+                            ", ".join(feed_names) if feed_names else "none",
+                            ", ".join(dnsbl_hits) if dnsbl_hits else "none",
+                        ),
+                        asset=host, points_deducted=5 if severity == "low" else 10 if severity == "medium" else 15,
+                        remediation="Investigate the IP against the identified threat feeds. Consider blocking if confirmed malicious.",
+                    ))
+            except Exception:
+                pass
+
             # GeoIP enrichment
             try:
                 from ..geoip import GeoIPLookup, is_hosting_ip, is_proxy_ip

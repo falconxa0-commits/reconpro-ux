@@ -45,7 +45,7 @@ from .widgets import (
 )
 from .nexus_help import HelpOverlay
 
-VERSION = "9.0.1"
+VERSION = "9.1.0"
 BG = Theme.current().BG
 CYAN = Theme.current().CYAN
 RED = Theme.current().RED
@@ -87,6 +87,8 @@ MODULE_NAMES: Dict[str, str] = {
     "oblivion": "OBLIVION",
     "vibesec": "VIBESEC",
     "nhi": "NHI GRAPH",
+    "pegasus": "PEGASUS HUNTER",
+    "cloud_recon": "CLOUD RECON",
     "host": "HOST AUDIT",
     "dev": "DEV SEC",
     "doctor": "DOCTOR",

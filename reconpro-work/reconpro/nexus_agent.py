@@ -580,6 +580,82 @@ def _tool_shell_command(command: str = "") -> ToolResult:
         return ToolResult(f"Command error: {e}", success=False)
 
 
+def _tool_geoip_enrich(self, **kwargs):
+    """GeoIP enrichment for IP addresses"""
+    from ..geoip import GeoIPLookup
+    ips = kwargs.get("ips", [])
+    geo = GeoIPLookup()
+    results = {}
+    for ip in ips:
+        results[ip] = geo.enrich_ip(ip)
+    return ToolResult(output=json.dumps(results, indent=2, default=str))
+
+
+def _tool_threat_feed_check(self, **kwargs):
+    """Check IPs against threat feeds and DNSBLs"""
+    from ..threat_feeds import check_ip_reputation
+    ip = kwargs.get("ip", "")
+    result = check_ip_reputation(ip) if ip else {"error": "No IP provided"}
+    return ToolResult(output=json.dumps(result, indent=2, default=str))
+
+
+def _tool_ai_red_team(self, **kwargs):
+    """AI endpoint discovery, vendor fingerprinting, and CVE matching"""
+    from ..ai_red_team import AIEndpointDiscovery, AIVendorFingerprinter, SecretExtractor
+    from ..ai_cve_db import AICVEDatabase
+    base_url = kwargs.get("base_url", kwargs.get("url", ""))
+    if not base_url:
+        return ToolResult(output="Error: No URL provided")
+    discovery = AIEndpointDiscovery()
+    endpoints = discovery.discover(base_url)
+    fingerprinter = AIVendorFingerprinter()
+    vendors = fingerprinter.fingerprint(base_url)
+    db = AICVEDatabase()
+    summary = db.get_threat_summary()
+    return ToolResult(output=json.dumps({"endpoints": len(endpoints), "vendors": vendors, "ai_threat_landscape": summary}, indent=2, default=str))
+
+
+def _tool_ai_model_audit(self, **kwargs):
+    """AI model analysis: watermarks, collapse, trauma imprints"""
+    from ..ai_red_team import WatermarkAnalyzer, ModelCollapseDetector, TraumaImprintDetector
+    url = kwargs.get("url", "")
+    if not url:
+        return ToolResult(output="Error: No URL provided")
+    import urllib.request
+    try:
+        resp = urllib.request.urlopen(url, timeout=10)
+        body = resp.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        body = ""
+    wm = WatermarkAnalyzer().analyze(body, dict(resp.headers) if 'resp' in dir() else {})
+    mc = ModelCollapseDetector().detect(body)
+    ti = TraumaImprintDetector().detect(body)
+    return ToolResult(output=json.dumps({"watermark": wm, "collapse": mc, "trauma_imprint": ti}, indent=2, default=str))
+
+
+def _tool_wishes_ritual(self, **kwargs):
+    """Execute 22-Wish orchestration ritual"""
+    from ..wishes import WishesOrchestrator
+    target = kwargs.get("target", "")
+    if not target:
+        return ToolResult(output="Error: No target provided")
+    orchestrator = WishesOrchestrator()
+    manifest = orchestrator.execute(target, f"https://{target}", timeout=8, verify_tls=True)
+    return ToolResult(output=json.dumps(manifest, indent=2, default=str))
+
+
+def _tool_cross_validate(self, **kwargs):
+    """Cross-validate scan findings independently"""
+    from ..cross_validator import CrossValidator
+    target = kwargs.get("target", "")
+    findings = kwargs.get("findings", [])
+    if not target:
+        return ToolResult(output="Error: No target provided")
+    cv = CrossValidator()
+    result = cv.validate(target, findings)
+    return ToolResult(output=json.dumps(result, indent=2, default=str))
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  BUILD DEFAULT REGISTRY
 # ══════════════════════════════════════════════════════════════════════
@@ -771,6 +847,48 @@ def build_registry() -> ToolRegistry:
             "command": {"type": "string", "description": "Shell command to execute"},
         },
         _tool_shell_command, category="system", dangerous=True,
+    ))
+
+    reg.register(Tool(
+        "geoip_enrich",
+        "GeoIP enrichment for IP addresses",
+        {"ips": {"type": "array", "items": {"type": "string"}}},
+        _tool_geoip_enrich, category="recon",
+    ))
+
+    reg.register(Tool(
+        "threat_feed_check",
+        "Check IPs against threat feeds and DNSBLs",
+        {"ip": {"type": "string"}},
+        _tool_threat_feed_check, category="recon",
+    ))
+
+    reg.register(Tool(
+        "ai_red_team",
+        "AI endpoint discovery, vendor fingerprinting, CVE matching",
+        {"base_url": {"type": "string"}},
+        _tool_ai_red_team, category="scan",
+    ))
+
+    reg.register(Tool(
+        "ai_model_audit",
+        "AI model analysis: watermarks, collapse, trauma imprints",
+        {"url": {"type": "string"}},
+        _tool_ai_model_audit, category="intel",
+    ))
+
+    reg.register(Tool(
+        "wishes_ritual",
+        "Execute 22-Wish orchestration ritual",
+        {"target": {"type": "string"}},
+        _tool_wishes_ritual, category="scan",
+    ))
+
+    reg.register(Tool(
+        "cross_validate",
+        "Cross-validate scan findings",
+        {"target": {"type": "string"}},
+        _tool_cross_validate, category="intel",
     ))
 
     return reg
