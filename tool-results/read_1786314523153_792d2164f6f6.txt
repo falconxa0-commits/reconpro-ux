@@ -1,0 +1,702 @@
+     1→"""Module: STEGANOGRAPHY DETECTOR — Hidden Data & Covert Channel Analysis.
+     2→
+     3→Detects hidden data and steganography in HTTP responses — techniques not
+     4→covered by any open-source scanner.
+     5→
+     6→10 detection categories:
+     7→  1. Whitespace Steganography in HTML/JSON
+     8→  2. Base64 Anomaly Detection
+     9→  3. HTTP Header Steganography
+    10→  4. Image LSB Detection
+    11→  5. CSS Steganography
+    12→  6. JavaScript Variable Naming Anomalies
+    13→  7. Response Size Anomalies
+    14→  8. Charset Encoding Tricks
+    15→  9. Metadata Steganography (EXIF/IPTC/XMP)
+    16→ 10. Timing Channel Detection
+    17→"""
+    18→from __future__ import annotations
+    19→
+    20→import base64
+    21→import hashlib
+    22→import html
+    23→import json
+    24→import re
+    25→import struct
+    26→import time
+    27→from collections import Counter
+    28→from typing import Any, Dict, List, Optional
+    29→from ..http import http_probe, Finding, default_limiter
+    30→
+    31→
+    32→# ═══════════════════════════════════════════════════════════════════════════
+    33→# Unicode Zero-Width Character Detection Tables
+    34→# ═══════════════════════════════════════════════════════════════════════════
+    35→
+    36→ZERO_WIDTH_CHARS: Dict[str, Dict[str, str]] = {
+    37→    "\u200b": {
+    38→        "name": "ZERO WIDTH SPACE",
+    39→        "unicode": "U+200B",
+    40→        "risk": "high",
+    41→        "use": "Widely used for invisible text encoding; can hide 1 bit per character",
+    42→    },
+    43→    "\u200c": {
+    44→        "name": "ZERO WIDTH NON-JOINER",
+    45→        "unicode": "U+200C",
+    46→        "risk": "high",
+    47→        "use": "Used in text steganography tools (zwc-stego, unicode-steganography); encodes binary data",
+    48→    },
+    49→    "\u200d": {
+    50→        "name": "ZERO WIDTH JOINER",
+    51→        "unicode": "U+200D",
+    52→        "risk": "high",
+    53→        "use": "Common in emoji-based steganography; encodes data in ZWJ sequences",
+    54→    },
+    55→    "\ufeff": {
+    56→        "name": "BYTE ORDER MARK (BOM)",
+    57→        "unicode": "U+FEFF",
+    58→        "risk": "medium",
+    59→        "use": "Can be used as steganographic channel when repeated or misplaced; signals encoding tricks",
+    60→    },
+    61→    "\u200e": {
+    62→        "name": "LEFT-TO-RIGHT MARK",
+    63→        "unicode": "U+200E",
+    64→        "risk": "medium",
+    65→        "use": "Bi-directional text control; can encode data in LTR/RTL alternation patterns",
+    66→    },
+    67→    "\u200f": {
+    68→        "name": "RIGHT-TO-LEFT MARK",
+    69→        "unicode": "U+200F",
+    70→        "risk": "medium",
+    71→        "use": "Bi-directional text control; RTL/LTR alternation encodes binary data",
+    72→    },
+    73→    "\u202a": {
+    74→        "name": "LEFT-TO-RIGHT EMBEDDING",
+    75→        "unicode": "U+202A",
+    76→        "risk": "low",
+    77→        "use": "Bidi control override; suspicious if present in non-Arabic/Hebrew content",
+    78→    },
+    79→    "\u202b": {
+    80→        "name": "RIGHT-TO-LEFT EMBEDDING",
+    81→        "unicode": "U+202B",
+    82→        "risk": "low",
+    83→        "use": "Bidi control override; rare outside RTL content, potential covert channel",
+    84→    },
+    85→    "\u202c": {
+    86→        "name": "POP DIRECTIONAL FORMATTING",
+    87→        "unicode": "U+202C",
+    88→        "risk": "low",
+    89→        "use": "Terminates bidi embedding; abnormal frequency suggests encoding",
+    90→    },
+    91→    "\u2060": {
+    92→        "name": "WORD JOINER",
+    93→        "unicode": "U+2060",
+    94→        "risk": "medium",
+    95→        "use": "Invisible character similar to ZWSP; used in some steganography tools",
+    96→    },
+    97→    "\u2061": {
+    98→        "name": "FUNCTION APPLICATION",
+    99→        "unicode": "U+2061",
+   100→        "risk": "low",
+   101→        "use": "Mathematical invisible operator; extremely rare in web content",
+   102→    },
+   103→    "\u2062": {
+   104→        "name": "INVISIBLE TIMES",
+   105→        "unicode": "U+2062",
+   106→        "risk": "low",
+   107→        "use": "Mathematical invisible operator; presence in web content is suspicious",
+   108→    },
+   109→    "\u2063": {
+   110→        "name": "INVISIBLE SEPARATOR",
+   111→        "unicode": "U+2063",
+   112→        "risk": "low",
+   113→        "use": "Mathematical invisible operator; can encode binary data",
+   114→    },
+   115→    "\u2064": {
+   116→        "name": "INVISIBLE PLUS",
+   117→        "unicode": "U+2064",
+   118→        "risk": "low",
+   119→        "use": "Mathematical invisible operator; presence is highly suspicious in web responses",
+   120→    },
+   121→    "\u034f": {
+   122→        "name": "COMBINING GRAPHEME JOINER",
+   123→        "unicode": "U+034F",
+   124→        "risk": "medium",
+   125→        "use": "Invisible combining character; used in advanced Unicode steganography",
+   126→    },
+   127→    "\u180e": {
+   128→        "name": "MONGOLIAN VOWEL SEPARATOR",
+   129→        "unicode": "U+180E",
+   130→        "risk": "low",
+   131→        "use": "Invisible in many renderers; deprecated but still usable as covert channel",
+   132→    },
+   133→    "\u00ad": {
+   134→        "name": "SOFT HYPHEN",
+   135→        "unicode": "U+00AD",
+   136→        "risk": "medium",
+   137→        "use": "Invisible unless at line break; can encode data via insertion patterns",
+   138→    },
+   139→    "\u2028": {
+   140→        "name": "LINE SEPARATOR",
+   141→        "unicode": "U+2028",
+   142→        "risk": "low",
+   143→        "use": "Unicode line break; can encode binary data (LS vs LF alternation)",
+   144→    },
+   145→    "\u2029": {
+   146→        "name": "PARAGRAPH SEPARATOR",
+   147→        "unicode": "U+2029",
+   148→        "risk": "low",
+   149→        "use": "Unicode paragraph break; abnormal usage suggests covert encoding",
+   150→    },
+   151→    "\u00a0": {
+   152→        "name": "NO-BREAK SPACE",
+   153→        "unicode": "U+00A0",
+   154→        "risk": "low",
+   155→        "use": "Non-breaking space; can replace regular spaces to encode binary data (NBSP=1, SP=0)",
+   156→    },
+   157→}
+   158→
+   159→HIGH_RISK_ZWC = {ch for ch, info in ZERO_WIDTH_CHARS.items() if info["risk"] == "high"}
+   160→ALL_ZWC_PATTERN = re.compile("|".join(re.escape(ch) for ch in ZERO_WIDTH_CHARS))
+   161→
+   162→
+   163→# ═══════════════════════════════════════════════════════════════════════════
+   164→# STEGANO_SIGNATURES — Known Steganographic Techniques Database
+   165→# ═══════════════════════════════════════════════════════════════════════════
+   166→
+   167→STEGANO_SIGNATURES: List[Dict[str, Any]] = [
+   168→    # ── Whitespace-based techniques ──
+   169→    {
+   170→        "id": "WS-001",
+   171→        "name": "Trailing Whitespace Binary Encoding",
+   172→        "category": "whitespace",
+   173→        "severity": "medium",
+   174→        "description": (
+   175→            "Encodes binary data in trailing whitespace of text lines. "
+   176→            "A trailing space = 1, a trailing tab = 0 (or vice versa). "
+   177→            "Each line of visible text carries one hidden bit."
+   178→        ),
+   179→        "detection": "Count lines with anomalous trailing whitespace; look for alternating space/tab patterns.",
+   180→        "tools": ["stegsnow", "whitespace-stego", "custom scripts"],
+   181→    },
+   182→    {
+   183→        "id": "WS-002",
+   184→        "name": "Unicode Zero-Width Character Encoding",
+   185→        "category": "whitespace",
+   186→        "severity": "high",
+   187→        "description": (
+   188→            "Embeds hidden data using invisible Unicode characters (U+200B, U+200C, U+200D). "
+   189→            "Each zero-width character can represent 1-2 bits. Messages are invisible to users "
+   190→            "but survive copy-paste. Commonly implemented in npm packages like unicode-steganography."
+   191→        ),
+   192→        "detection": "Scan response body for presence and frequency of zero-width Unicode characters.",
+   193→        "tools": ["unicode-steganography", "zwc-stego", "invisible-char-encoder"],
+   194→    },
+   195→    {
+   196→        "id": "WS-003",
+   197→        "name": "CRLF/LF Line Ending Steganography",
+   198→        "category": "whitespace",
+   199→        "severity": "low",
+   200→        "description": (
+   201→            "Encodes binary data by alternating between CRLF (\\r\\n) and LF (\\n) line endings. "
+   202→            "CRLF = 1, LF = 0. Subtle but detectable through line-ending analysis."
+   203→        ),
+   204→        "detection": "Analyze line ending consistency; mixed CRLF/LF in a single response is suspicious.",
+   205→        "tools": ["custom scripts", "steghide variants"],
+   206→    },
+   207→    {
+   208→        "id": "WS-004",
+   209→        "name": "Tab/Space Substitution Encoding",
+   210→        "category": "whitespace",
+   211→        "severity": "medium",
+   212→        "description": (
+   213→            "Replaces sequences of spaces with equivalent tab characters (or vice versa) "
+   214→            "using the fact that tab stops align to multiples of 8. Each indentation level "
+   215→            "can encode different bit patterns depending on the tab-to-space ratio used."
+   216→        ),
+   217→        "detection": "Look for inconsistent indentation that still produces visually identical output.",
+   218→        "tools": ["stegsnow", "tabspace-stego"],
+   219→    },
+   220→    # ── Base64 techniques ──
+   221→    {
+   222→        "id": "B64-001",
+   223→        "name": "Nested Base64 Encoding",
+   224→        "category": "base64",
+   225→        "severity": "medium",
+   226→        "description": (
+   227→            "Data is base64-encoded multiple times to obscure the true payload. "
+   228→            "Each layer adds ~33% size overhead. 3+ layers strongly suggest obfuscation."
+   229→        ),
+   230→        "detection": "Attempt recursive base64 decoding; count successful decode layers.",
+   231→        "tools": ["custom scripts", "shellcode obfuscators"],
+   232→    },
+   233→    {
+   234→        "id": "B64-002",
+   235→        "name": "Non-Standard Base64 Alphabet",
+   236→        "category": "base64",
+   237→        "severity": "high",
+   238→        "description": (
+   239→            "Uses a modified base64 alphabet (e.g., URL-safe, custom substitution cipher on the "
+   240→            "base64 character set) to evade standard decoders while still encoding data."
+   241→        ),
+   242→        "detection": "Check for base64-like strings that fail standard decoding or contain unusual characters.",
+   243→        "tools": ["custom obfuscation tools"],
+   244→    },
+   245→    {
+   246→        "id": "B64-003",
+   247→        "name": "Base64 with Suspicious Padding",
+   248→        "category": "base64",
+   249→        "severity": "medium",
+   250→        "description": (
+   251→            "Deliberately incorrect padding (extra =, missing =, or = in the middle) "
+   252→            "can encode additional bits or serve as a marker for hidden data."
+   253→        ),
+   254→        "detection": "Validate base64 padding rules; flag deviations from RFC 4648.",
+   255→        "tools": ["custom steganography tools"],
+   256→    },
+   257→    {
+   258→        "id": "B64-004",
+   259→        "name": "Base64 Character Frequency Anomaly",
+   260→        "category": "base64",
+   261→        "severity": "medium",
+   262→        "description": (
+   263→            "Normal base64 has roughly uniform character distribution (each of 64 chars ~1.56%). "
+   264→            "Significant deviation (chi-squared test) suggests the 'base64' is actually "
+   265→            "a cipher or encodes structured data with non-random content."
+   266→        ),
+   267→        "detection": "Compute chi-squared statistic against uniform distribution; flag p < 0.05.",
+   268→        "tools": ["frequency analysis tools"],
+   269→    },
+   270→    # ── HTTP Header techniques ──
+   271→    {
+   272→        "id": "HH-001",
+   273→        "name": "ETag Steganography",
+   274→        "category": "header",
+   275→        "severity": "high",
+   276→        "description": (
+   277→            "Encodes hidden data in ETag header values. Since ETags are opaque strings "
+   278→            "returned by the server, they can carry arbitrary data without raising suspicion. "
+   279→            "Common in C2 (command-and-control) communication channels."
+   280→        ),
+   281→        "detection": "Analyze ETag values for base64 patterns, unusual length, or encoded content.",
+   282→        "tools": ["custom C2 frameworks", "Apache mod_headers stego"],
+   283→    },
+   284→    {
+   285→        "id": "HH-002",
+   286→        "name": "Custom Header Data Exfiltration",
+   287→        "category": "header",
+   288→        "severity": "high",
+   289→        "description": (
+   290→            "Uses non-standard or unusual HTTP headers (X-*, custom names) to carry "
+   291→            "encoded data. Headers are often logged but rarely inspected, making them "
+   292→            "ideal covert channels."
+   293→        ),
+   294→        "detection": "Flag custom headers with base64-encoded, hex-encoded, or unusually long values.",
+   295→        "tools": ["custom webshells", "C2 frameworks"],
+   296→    },
+   297→    {
+   298→        "id": "HH-003",
+   299→        "name": "Date Header Encoding",
+   300→        "category": "header",
+   301→        "severity": "medium",
+   302→        "description": (
+   303→            "Manipulates the Date header timestamp encoding. The seconds value or "
+   304→            "sub-second precision can encode binary data (even seconds = 1, odd = 0)."
+   305→        ),
+   306→        "detection": "Compare Date header with current time; flag unusual precision or encoding patterns.",
+   307→        "tools": ["custom server modules"],
+   308→    },
+   309→    {
+   310→        "id": "HH-004",
+   311→        "name": "Server Header Fingerprint Steganography",
+   312→        "category": "header",
+   313→        "severity": "low",
+   314→        "description": (
+   315→            "Hides data in the Server header by appending invisible characters or "
+   316→            "modifying minor version strings that appear legitimate."
+   317→        ),
+   318→        "detection": "Check Server header for trailing whitespace, unusual characters, or version anomalies.",
+   319→        "tools": ["custom server configurations"],
+   320→    },
+   321→    # ── Image techniques ──
+   322→    {
+   323→        "id": "IMG-001",
+   324→        "name": "LSB (Least Significant Bit) Steganography",
+   325→        "category": "image",
+   326→        "severity": "high",
+   327→        "description": (
+   328→            "Modifies the least significant bits of image pixel values to embed data. "
+   329→            "Changes are imperceptible to the human eye but detectable through statistical "
+   330→            "analysis of the byte/pixel value distribution (chi-squared test on LSB plane)."
+   331→        ),
+   332→        "detection": "Analyze LSB distribution of image bytes; uniform distribution suggests LSB steganography.",
+   333→        "tools": ["steghide", "outguess", "jsteg", "openstego", "SilentEye"],
+   334→    },
+   335→    {
+   336→        "id": "IMG-002",
+   337→        "name": "EXIF Metadata Embedding",
+   338→        "category": "image",
+   339→        "severity": "medium",
+   340→        "description": (
+   341→            "Hides data in EXIF metadata fields (comments, artist, copyright, user comment). "
+   342→            "EXIF data is preserved through many transformations and is often not displayed."
+   343→        ),
+   344→        "detection": "Parse image metadata; look for unusually long or encoded EXIF field values.",
+   345→        "tools": ["exiftool", "jhead", "steghide", "custom scripts"],
+   346→    },
+   347→    {
+   348→        "id": "IMG-003",
+   349→        "name": "Palette-based Image Steganography",
+   350→        "category": "image",
+   351→        "severity": "medium",
+   352→        "description": (
+   353→            "In palette-based images (GIF, PNG-8), data is hidden by reordering the color "
+   354→            "palette entries or using unused palette indices to encode bits."
+   355→        ),
+   356→        "detection": "Analyze color palette for unused or duplicate entries; check palette index distribution.",
+   357→        "tools": ["EzStego", "S-Tools", "custom palette manipulators"],
+   358→    },
+   359→    # ── CSS techniques ──
+   360→    {
+   361→        "id": "CSS-001",
+   362→        "name": "CSS Comment Steganography",
+   363→        "category": "css",
+   364→        "severity": "medium",
+   365→        "description": (
+   366→            "Hides data in CSS comments (/* ... */). Comments are ignored by the browser "
+   367→            "but preserved in the source. Can contain encoded messages, commands, or exfiltrated data."
+   368→        ),
+   369→        "detection": "Extract all CSS comments and analyze for encoded content (base64, hex, binary patterns).",
+   370→        "tools": ["custom CSS generators", "webshell payloads"],
+   371→    },
+   372→    {
+   373→        "id": "CSS-002",
+   374→        "name": "CSS Class Name Encoding",
+   375→        "category": "css",
+   376→        "severity": "medium",
+   377→        "description": (
+   378→            "Encodes data in CSS class names using base64 or hex encoding. "
+   379→            "Long, unusual class names that decode to meaningful data are suspicious."
+   380→        ),
+   381→        "detection": "Extract class names; attempt base64/hex decoding; flag meaningful decoded results.",
+   382→        "tools": ["obfuscated CSS frameworks", "custom build tools"],
+   383→    },
+   384→    {
+   385→        "id": "CSS-003",
+   386→        "name": "CSS Property Value Encoding",
+   387→        "category": "css",
+   388→        "severity": "low",
+   389→        "description": (
+   390→            "Hides data in CSS property values using unusual encoding (e.g., encoding data "
+   391→            "in color values, z-index values, or content property)."
+   392→        ),
+   393→        "detection": "Look for suspicious property values with encoded patterns or unusual numeric sequences.",
+   394→        "tools": ["custom CSS obfuscators"],
+   395→    },
+   396→    # ── JavaScript techniques ──
+   397→    {
+   398→        "id": "JS-001",
+   399→        "name": "Base64 Variable Name Encoding",
+   400→        "category": "javascript",
+   401→        "severity": "high",
+   402→        "description": (
+   403→            "Uses base64-encoded strings as JavaScript variable or function names. "
+   404→            "When decoded, these names may reveal hidden messages, commands, or exfiltrated data."
+   405→        ),
+   406→        "detection": "Extract variable/function names; attempt base64 decoding; flag meaningful results.",
+   407→        "tools": ["obfuscated malware", "webshell generators", "custom minifiers"],
+   408→    },
+   409→    {
+   410→        "id": "JS-002",
+   411→        "name": "Hex-Encoded String Literals",
+   412→        "category": "javascript",
+   413→        "severity": "medium",
+   414→        "description": (
+   415→            "JavaScript code contains hex-encoded string literals (\\x41\\x42...) that "
+   416→            "decode to meaningful content beyond normal obfuscation patterns."
+   417→        ),
+   418→        "detection": "Scan for hex escape sequences; decode and check if the result contains sensitive keywords.",
+   419→        "tools": ["obfuscated JavaScript", "malware loaders"],
+   420→    },
+   421→    {
+   422→        "id": "JS-003",
+   423→        "name": "Unicode Escape Variable Names",
+   424→        "category": "javascript",
+   425→        "severity": "medium",
+   426→        "description": (
+   427→            "Uses Unicode escape sequences (\\uXXXX) for variable names that decode to "
+   428→            "suspicious or meaningful strings when resolved."
+   429→        ),
+   430→        "detection": "Extract Unicode-escaped identifiers; decode and analyze for hidden meaning.",
+   431→        "tools": ["advanced JavaScript obfuscators"],
+   432→    },
+   433→    # ── Response anomaly techniques ──
+   434→    {
+   435→        "id": "RA-001",
+   436→        "name": "Response Size Anomaly",
+   437→        "category": "response_anomaly",
+   438→        "severity": "medium",
+   439→        "description": (
+   440→            "Response body is significantly larger than expected for the content type. "
+   441→            "Embedded data, steganographic payloads, or hidden sections inflate the size."
+   442→        ),
+   443→        "detection": "Compare response size against expected baselines for the content type.",
+   444→        "tools": ["custom server-side steganography"],
+   445→    },
+   446→    # ── Encoding tricks ──
+   447→    {
+   448→        "id": "ENC-001",
+   449→        "name": "Charset Declaration Manipulation",
+   450→        "category": "charset",
+   451→        "severity": "high",
+   452→        "description": (
+   453→            "Declares a misleading charset (e.g., claiming UTF-8 but containing UTF-16 data) "
+   454→            "to cause browsers to misinterpret content, potentially revealing or hiding data."
+   455→        ),
+   456→        "detection": "Validate declared charset against actual byte patterns; flag mismatches.",
+   457→        "tools": ["custom server configurations", "XSS payloads"],
+   458→    },
+   459→    {
+   460→        "id": "ENC-002",
+   461→        "name": "BOM (Byte Order Mark) Manipulation",
+   462→        "category": "charset",
+   463→        "severity": "medium",
+   464→        "description": (
+   465→            "Uses BOM markers (U+FEFF) as a steganographic channel. Multiple or misplaced BOMs "
+   466→            "can encode data. A BOM in the middle of content is always suspicious."
+   467→        ),
+   468→        "detection": "Scan for BOM occurrences beyond the first byte; count total BOM occurrences.",
+   469→        "tools": ["custom encoding tools"],
+   470→    },
+   471→    {
+   472→        "id": "ENC-003",
+   473→        "name": "Multi-Byte Encoding Abuse",
+   474→        "category": "charset",
+   475→        "severity": "medium",
+   476→        "description": (
+   477→            "Exploits multi-byte encoding (UTF-8 overlong encoding, Shift-JIS, etc.) to "
+   478→            "hide data in character sequences that appear as different characters when "
+   479→            "decoded with different encodings."
+   480→        ),
+   481→        "detection": "Look for overlong UTF-8 sequences, invalid byte patterns, and encoding anomalies.",
+   482→        "tools": ["custom encoding exploits", "filter evasion tools"],
+   483→    },
+   484→    # ── Timing techniques ──
+   485→    {
+   486→        "id": "TM-001",
+   487→        "name": "Response Timing Binary Encoding",
+   488→        "category": "timing",
+   489→        "severity": "high",
+   490→        "description": (
+   491→            "Encodes binary data in response timing: fast response = 0, slow response = 1. "
+   492→            "Multiple sequential requests decode the hidden message bit by bit. Used in "
+   493→            "covert C2 channels and DNS tunneling."
+   494→        ),
+   495→        "detection": "Send multiple requests and analyze timing patterns for binary encoding.",
+   496→        "tools": ["custom C2 frameworks", "timing-covert-channels"],
+   497→    },
+   498→    {
+   499→        "id": "TM-002",
+   500→        "name": "Timing Delta Modulation",
+   501→        "category": "timing",
+   502→        "severity": "medium",
+   503→        "description": (
+   504→            "Uses the precise timing difference between responses to encode data. "
+   505→            "Each bit is represented by a specific delay magnitude. Requires multiple "
+   506→            "requests to the same endpoint to detect the pattern."
+   507→        ),
+   508→        "detection": "Send repeated requests; compute inter-request timing; look for discrete timing levels.",
+   509→        "tools": ["advanced C2 frameworks"],
+   510→    },
+   511→]
+   512→
+   513→# Build lookup by category and id
+   514→_SIG_BY_CAT: Dict[str, List[Dict[str, Any]]] = {}
+   515→for _sig in STEGANO_SIGNATURES:
+   516→    _SIG_BY_CAT.setdefault(_sig["category"], []).append(_sig)
+   517→
+   518→
+   519→# ═══════════════════════════════════════════════════════════════════════════
+   520→# Compiled patterns
+   521→# ═══════════════════════════════════════════════════════════════════════════
+   522→
+   523→# Base64 pattern (standard + URL-safe, min 16 chars)
+   524→_BASE64_RE = re.compile(
+   525→    r'[A-Za-z0-9+/]{16,}={0,2}'
+   526→)
+   527→_BASE64_URL_RE = re.compile(
+   528→    r'[A-Za-z0-9_-]{16,}={0,2}'
+   529→)
+   530→
+   531→# Hex-encoded string pattern
+   532→_HEX_STRING_RE = re.compile(
+   533→    r'(?:\\x[0-9a-fA-F]{2}){4,}'
+   534→)
+   535→
+   536→# Unicode escape pattern
+   537→_UNICODE_ESC_RE = re.compile(
+   538→    r'(?:\\u[0-9a-fA-F]{4}){2,}'
+   539→)
+   540→
+   541→# CSS comment pattern
+   542→_CSS_COMMENT_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
+   543→
+   544→# CSS class name pattern (in class attributes or CSS rules)
+   545→_CSS_CLASS_RE = re.compile(r'(?:class\s*=\s*["\']([^"\']*)["\'])|(?:(\.[\w-]+)\s*\{)', re.DOTALL)
+   546→
+   547→# JS variable declaration pattern
+   548→_JS_VAR_RE = re.compile(
+   549→    r"(?:var|let|const|function)\s+([\w$]+)"
+   550→    r"|(?:([\w$]+)\s*=\s*(?:function|['\"`]))"
+   551→)
+   552→
+   553→# EXIF/IPTC/XMP tag patterns in raw image data
+   554→_EXIF_MARKER = b'\xff\xe1'
+   555→_IPTC_MARKER = b'\xff\xed'
+   556→_XMP_START = b'<x:xmpmeta'
+   557→_XMP_END = b'</x:xmpmeta>'
+   558→_EXIF_COMMENT_TAG = b'\x87\x69'  # ASCII 'iC' for ImageDescription / UserComment
+   559→
+   560→# Image type signatures
+   561→_JPEG_SIG = b'\xff\xd8\xff'
+   562→_PNG_SIG = b'\x89PNG\r\n\x1a\n'
+   563→_GIF_SIG = b'GIF8'
+   564→_BMP_SIG = b'BM'
+   565→_WEBP_SIG = b'RIFF'
+   566→
+   567→# Whitespace patterns
+   568→_TRAILING_WS_RE = re.compile(r'[ \t]+$')
+   569→_MIXED_LINE_ENDINGS_RE = re.compile(r'\r\n')
+   570→_TAB_SPACE_MIX_RE = re.compile(r'(\t+| {2,})')
+   571→
+   572→# Overlong UTF-8 detection
+   573→_OVERLONG_UTF8_RE = re.compile(
+   574→    r'[\xc0-\xc1][\x80-\xbf]'           # 2-byte overlong (encodes 0x00-0x7F)
+   575→    r'|[\xe0][\x80-\x9f][\x80-\xbf]'   # 3-byte overlong
+   576→    r'|[\xf0][\x80-\x8f][\x80-\xbf]{2}' # 4-byte overlong
+   577→)
+   578→
+   579→# Charset declaration patterns
+   580→_CHARSET_META_RE = re.compile(
+   581→    r'<meta[^>]+charset\s*=\s*["\']?([^"\'\s>]+)', re.I
+   582→)
+   583→_CHARSET_HEADER_RE = re.compile(
+   584→    r'charset=([^;\s]+)', re.I
+   585→)
+   586→
+   587→# Sensitive keyword list for decoded content
+   588→_SENSITIVE_KEYWORDS = [
+   589→    "password", "secret", "token", "api_key", "apikey", "private_key",
+   590→    "credential", "auth", "admin", "root", "shell", "exec", "cmd",
+   591→    "eval", "system", "payload", "exfil", "c2", "beacon", "callback",
+   592→    "keylog", "screen", "capture", "dump", "upload", "download",
+   593→    "exploit", "shellcode", "backdoor", "trojan", "malware", "ransom",
+   594→]
+   595→
+   596→# Expected content-type sizes (bytes) — rough baselines
+   597→_CONTENT_SIZE_BASELINES: Dict[str, tuple] = {
+   598→    "text/html": (200, 500000),
+   599→    "text/plain": (10, 100000),
+   600→    "application/json": (2, 1000000),
+   601→    "text/css": (10, 500000),
+   602→    "application/javascript": (10, 2000000),
+   603→    "image/jpeg": (500, 20000000),
+   604→    "image/png": (100, 50000000),
+   605→    "image/gif": (100, 10000000),
+   606→    "image/webp": (100, 20000000),
+   607→    "image/svg+xml": (10, 500000),
+   608→    "application/xml": (10, 500000),
+   609→    "text/xml": (10, 500000),
+   610→}
+   611→
+   612→
+   613→# ═══════════════════════════════════════════════════════════════════════════
+   614→# Helper utilities
+   615→# ═══════════════════════════════════════════════════════════════════════════
+   616→
+   617→def _safe_b64_decode(s: str) -> Optional[bytes]:
+   618→    """Attempt base64 decode, returning None on failure."""
+   619→    try:
+   620→        # Try standard base64
+   621→        padded = s + "=" * (-len(s) % 4)
+   622→        return base64.b64decode(padded, validate=True)
+   623→    except Exception:
+   624→        try:
+   625→            # Try URL-safe base64
+   626→            padded = s + "=" * (-len(s) % 4)
+   627→            return base64.urlsafe_b64decode(padded)
+   628→        except Exception:
+   629→            return None
+   630→
+   631→
+   632→def _safe_b64_decode_recursive(s: str, max_depth: int = 5) -> tuple[int, Optional[str]]:
+   633→    """Recursively base64-decode a string. Returns (depth, final_decoded_str)."""
+   634→    depth = 0
+   635→    current = s.strip()
+   636→    for _ in range(max_depth):
+   637→        decoded = _safe_b64_decode(current)
+   638→        if decoded is None:
+   639→            break
+   640→        try:
+   641→            text = decoded.decode("utf-8")
+   642→        except Exception:
+   643→            break
+   644→        if not text or not all(32 <= ord(c) < 127 or c in "\n\r\t" for c in text):
+   645→            break
+   646→        current = text
+   647→        depth += 1
+   648→    return depth, current
+   649→
+   650→
+   651→def _chi_squared_uniform(observed_counts: List[int]) -> float:
+   652→    """Compute chi-squared statistic against uniform distribution."""
+   653→    if not observed_counts:
+   654→        return 0.0
+   655→    n = sum(observed_counts)
+   656→    if n == 0:
+   657→        return 0.0
+   658→    expected = n / len(observed_counts)
+   659→    return sum((o - expected) ** 2 / expected for o in observed_counts if expected > 0)
+   660→
+   661→
+   662→def _contains_sensitive_keywords(text: str) -> List[str]:
+   663→    """Check if text contains any sensitive keywords (case-insensitive)."""
+   664→    lower = text.lower()
+   665→    return [kw for kw in _SENSITIVE_KEYWORDS if kw in lower]
+   666→
+   667→
+   668→def _is_printable_meaningful(text: str) -> bool:
+   669→    """Check if decoded text contains mostly printable, meaningful content."""
+   670→    if not text:
+   671→        return False
+   672→    printable = sum(1 for c in text if 32 <= ord(c) < 127 or c in "\n\r\t")
+   673→    return printable / len(text) > 0.85
+   674→
+   675→
+   676→def _get_content_type(headers: Dict[str, str]) -> str:
+   677→    """Extract and normalize content type from headers."""
+   678→    ct = headers.get("content-type", "")
+   679→    return ct.split(";")[0].strip().lower()
+   680→
+   681→
+   682→def _detect_image_type(raw: bytes) -> Optional[str]:
+   683→    """Detect image type from raw bytes."""
+   684→    if raw[:3] == _JPEG_SIG:
+   685→        return "jpeg"
+   686→    if raw[:8] == _PNG_SIG:
+   687→        return "png"
+   688→    if raw[:4] == _GIF_SIG:
+   689→        return "gif"
+   690→    if raw[:2] == _BMP_SIG:
+   691→        return "bmp"
+   692→    if raw[:4] == _WEBP_SIG:
+   693→        return "webp"
+   694→    return None
+   695→
+   696→
+   697→# ═══════════════════════════════════════════════════════════════════════════
+   698→# Detection functions
+   699→# ═══════════════════════════════════════════════════════════════════════════
+   700→
+
+[showing lines 1-700 of 1382; use offset=701 with limit to continue reading]

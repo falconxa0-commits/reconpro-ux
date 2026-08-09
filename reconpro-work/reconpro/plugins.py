@@ -7,9 +7,12 @@ that returns a list of Finding objects.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from .http import Finding
 
@@ -17,7 +20,10 @@ PLUGIN_DIR = Path.home() / ".reconpro" / "plugins"
 
 
 def _ensure_plugin_dir() -> None:
-    PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning("Could not create plugin directory %s: %s", PLUGIN_DIR, e)
 
 
 def discover_plugins() -> Dict[str, Dict[str, Any]]:
@@ -48,7 +54,7 @@ def discover_plugins() -> Dict[str, Dict[str, Any]]:
                         "description": desc,
                     }
         except Exception:
-            pass
+            logger.debug("Failed to load plugin %s", py_file, exc_info=True)
 
     return plugins
 
@@ -71,7 +77,19 @@ def run_plugin(plugin_id: str, target: str, base_url: str = "",
         result = runner(target=target, base_url=base_url,
                         timeout=timeout, verify_tls=verify_tls)
         if isinstance(result, list):
-            return result
+            _REQUIRED_KEYS = {"title", "severity", "category"}
+            validated = [
+                item for item in result
+                if isinstance(item, dict) and _REQUIRED_KEYS.issubset(item)
+            ]
+            dropped = len(result) - len(validated)
+            if dropped:
+                logger.warning(
+                    "Plugin '%s' returned %d item(s) missing required keys %s, dropping them",
+                    plugin_id, dropped, _REQUIRED_KEYS,
+                )
+            return validated
+        logger.warning("Plugin '%s' returned non-list result, ignoring", plugin_id)
         return []
     except Exception as e:
         return [Finding(
@@ -180,7 +198,7 @@ class HookManager:
                 if result is not None:
                     return result  # Short-circuit
             except Exception:
-                pass
+                logger.debug("Hook callback error in '%s': %s", hook_name, callback, exc_info=True)
         return None
     
     @classmethod
@@ -198,7 +216,12 @@ class HookManager:
     
     @classmethod
     def save_hooks(cls):
-        """Persist hook registrations to disk."""
+        """Persist hook metadata to disk.
+
+        NOTE: Only function names/paths are saved as strings — the actual
+        callable objects cannot be serialized. Use load_hooks() to inspect
+        what was registered, but callables must be re-registered manually.
+        """
         _ensure_plugin_dir()
         data = {}
         for name, callbacks in _HOOK_REGISTRY.items():
@@ -208,7 +231,13 @@ class HookManager:
     
     @classmethod
     def load_hooks(cls):
-        """Load hook metadata from disk (informational only — callbacks must be re-registered)."""
+        """Load hook metadata from disk.
+
+        Returns a dict mapping hook names to lists of qualified function-name
+        strings that were registered at save time.  This is **metadata only**;
+        the actual callback callables cannot be restored from a JSON file.
+        Plugins must re-register their hooks at import time.
+        """
         if _PLUGIN_HOOKS_FILE.exists():
             try:
                 with open(_PLUGIN_HOOKS_FILE, "r") as f:

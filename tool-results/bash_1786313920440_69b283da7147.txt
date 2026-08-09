@@ -1,0 +1,2957 @@
+=== ast_analyzer.py ===
+"""AST-based static code vulnerability scanner.
+
+Parses Python source files using the stdlib ``ast`` module and
+walks the tree looking for common security anti-patterns.
+JavaScript / TypeScript files are analysed with targeted regexes
+(no extra dependency).
+"""
+from __future__ import annotations
+
+import ast
+import re
+from pathlib import Path
+from typing import List, Tuple
+
+from reconpro.http import Finding
+
+
+# ── Supported extensions ─────────────────────────────────────────────
+
+PY_EXT = {".py"}
+JS_EXT = {".js", ".jsx", ".ts", ".tsx"}
+ALL_EXT = PY_EXT | JS_EXT
+
+
+# ── Regex helpers for JS/TS ─────────────────────────────────────────
+
+_JS_PATTERNS: List[Tuple[str, re.Pattern, str, str, str, str, str, int]] = [
+    (
+        "Hardcoded Password",
+        re.compile(r"(?:password|passwd|secret|token|api_key|apikey)\s*[:=]\s*['\"][^'\"]{8,}['\"]", re.I),
+        "hardcoded_secret", "high", "ast_analyzer",
+        "Potential hardcoded password or secret detected.",
+        "Use environment variables or a secrets manager.",
+        15,
+    ),
+    (
+        "eval() Usage",
+        re.compile(r"\beval\s*\("),
+        "dangerous_eval", "critical", "ast_analyzer",
+        "Use of eval() can lead to arbitrary code execution.",
+        "Avoid eval(). Use JSON.parse() or explicit parsing.",
+        20,
+    ),
+    (
+        "innerHTML Assignment",
+        re.compile(r"\.innerHTML\s*=", re.I),
+        "xss", "high", "ast_analyzer",
+        "Direct innerHTML assignment can lead to XSS.",
+        "Use textContent or DOMPurify to sanitise input.",
+        15,
+    ),
+    (
+        "document.write",
+        re.compile(r"document\.write\s*\("),
+        "xss", "high", "ast_analyzer",
+        "document.write() is vulnerable to injection attacks.",
+        "Use DOM manipulation methods instead.",
+        15,
+    ),
+    (
+        "HTTP URL",
+        re.compile(r"(?:fetch|axios|XMLHttpRequest)\s*\(\s*[\"']http://"),
+        "cleartext_http", "medium", "ast_analyzer",
+        "Insecure HTTP URL detected; data may be sent in cleartext.",
+        "Switch to HTTPS endpoints.",
+        8,
+    ),
+    (
+        "SQL String Concatenation",
+        re.compile(r"(?:SELECT|INSERT|UPDATE|DELETE|DROP)\s+.*\+\s*[\"']", re.I),
+        "sql_injection", "critical", "ast_analyzer",
+        "SQL keyword detected in string concatenation — likely SQL injection.",
+        "Use parameterized queries.",
+        20,
+    ),
+    (
+        "Weak Crypto (MD5)",
+        re.compile(r"(?:createHash|crypto)\.?(?:md5|sha1)", re.I),
+        "weak_crypto", "medium", "ast_analyzer",
+        "Weak hashing algorithm detected (MD5/SHA1).",
+        "Use SHA-256 or stronger algorithms.",
+        10,
+    ),
+    (
+        "Debug Mode",
+        re.compile(r"(?:DEBUG|debug)\s*[:=]\s*true", re.I),
+        "debug_mode", "low", "ast_analyzer",
+        "Debug mode appears to be enabled.",
+        "Disable debug mode in production.",
+        3,
+    ),
+    (
+        "CORS Wildcard",
+        re.compile(r"(?:Access-Control-Allow-Origin|allowOrigin|cors)\s*[:=]\s*[\"']*\*[\"']", re.I),
+        "cors_wildcard", "medium", "ast_analyzer",
+        "CORS wildcard origin allows any domain.",
+        "Restrict CORS to known trusted origins.",
+        8,
+    ),
+    (
+
+=== auth.py ===
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import time
+import urllib.parse
+from typing import Any, Dict, List, Optional, Tuple
+from ..http import http_probe, Finding
+
+
+AUTH_BYPASS_PATHS = [
+    "/api/v1/users", "/api/users", "/api/v1/me",
+    "/api/v1/admin/users", "/api/admin", "/api/v1/config",
+    "/api/v1/secrets", "/api/v1/keys", "/api/v1/tokens",
+    "/api/v1/internal", "/api/debug", "/api/status",
+    "/api/health", "/.well-known/openid-configuration",
+]
+
+AUTH_HEADERS = [
+    {"Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiJ9."},
+    {"Authorization": "Bearer null"},
+    {"Authorization": "Bearer undefined"},
+    {"X-Forwarded-For": "127.0.0.1"},
+    {"X-Original-URL": "/admin"},
+    {"X-Rewrite-URL": "/admin"},
+    {"X-Custom-IP-Authorization": "127.0.0.1"},
+    {"X-Forwarded-Host": "localhost"},
+    {"X-Host": "localhost"},
+    {"Referer": "https://localhost/admin"},
+    {"X-Real-IP": "127.0.0.1"},
+    {"Authorization": "Basic YWRtaW46YWRtaW4="},  # admin:admin
+    {"X-Api-Key": ""},
+    {"X-Access-Token": ""},
+    {"Cookie": "session=admin; role=admin"},
+]
+
+# ── JWT helpers (stdlib-only, no PyJWT dependency) ─────────────────────
+
+def _b64url_encode(data: bytes) -> str:
+    """Base64url-encode bytes (no padding)."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(s: str) -> bytes:
+    """Base64url-decode with padding restoration."""
+    padding = 4 - len(s) % 4
+    if padding != 4:
+        s += "=" * padding
+    return base64.urlsafe_b64decode(s)
+
+
+def _build_jwt(header: Dict[str, Any], payload: Dict[str, Any],
+               secret: Optional[bytes] = None) -> str:
+    """Build a JWT token. If secret is None, no signature (alg=none)."""
+    h = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    p = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    signing_input = f"{h}.{p}".encode()
+    if secret is None:
+        return f"{h}.{p}."
+    sig = hmac.new(secret, signing_input, hashlib.sha256).digest()
+    return f"{h}.{p}.{_b64url_encode(sig)}"
+
+
+def _try_decode_jwt_payload(token: str) -> Optional[Dict[str, Any]]:
+    """Try to decode JWT payload without verification."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        return json.loads(_b64url_decode(parts[1]))
+    except Exception:
+        return None
+
+
+def _try_decode_jwt_header(token: str) -> Optional[Dict[str, Any]]:
+    """Try to decode JWT header without verification."""
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return None
+        return json.loads(_b64url_decode(parts[0]))
+    except Exception:
+        return None
+
+
+def _extract_bearer_token(resp: Dict[str, Any]) -> Optional[str]:
+    """Extract a JWT Bearer token from response headers or body."""
+    # Check WWW-Authenticate / Set-Cookie / response body for tokens
+    headers = resp.get("headers", {})
+    auth_header = headers.get("www-authenticate", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:].split(",")[0].strip()  # strip params
+    # Check body for jwt patterns
+    body = resp.get("body", "")
+    import re
+    patterns = [
+        r'"token"\s*:\s*"(eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"',
+        r'"access_token"\s*:\s*"(eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"',
+
+=== bot.py ===
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List
+from ..http import http_probe, Finding
+
+
+BOT_SIGNATURES = [
+    ("Mirai C2", [r"\x00\x00.*\x00", r"mi\x00rak\x00i"], ["/c2"]),
+    ("Cobalt Strike Beacon", [r"cobalt.?strike", r"c2\.config", r"sleep\.mask", r"jitter"], ["/beacon", "/c2", "/api/beacon"]),
+    ("Metasploit Handler", [r"metasploit", r"meterpreter", r"reverse_tcp", r"payload/stage"], ["/metasploit", "/msf"]),
+    ("Emotet C2", [r"emotet", r"geodo", r"heodo"], None),
+    ("TrickBot C2", [r"trickbot", r"trickloader", r"trick_door", r"postback"], None),
+    ("QakBot C2", [r"qakbot", r"qbot", r"pink.?botnet", r"chthonic"], None),
+    ("SolarWinds SUNBURST", [r"solarwinds", r"sunburst", r"s\.?orion", r"supernova"], None),
+    ("Log4Shell Exploitation", [r"jndi:ldap", r"jndi:rmi", r"log4j", r"log4shell", r"\$\{jndi:"], None),
+    ("Generic Bot Panel", ["botnet", "bot panel", "c2 panel", "command & control"], ["/c2"]),
+    ("DGA Domain", None, None),
+]
+
+C2_INDICATORS = [
+    "botnet", "c2 server", "command and control", "zombie",
+    "bot panel", "ddos panel", "stresser", "booter",
+    "cobalt strike", "beacon", "meterpreter", "metasploit",
+    "emotet", "trickbot", "qakbot", "solarwinds",
+    "jndi:ldap", "jndi:rmi", "log4shell", "log4j",
+    "reverse_shell", "backdoor", "webshell",
+    "malware", "trojan", "rat.exe", "implant",
+]
+
+
+def _check_bot_indicators(body: str, headers: Dict[str, str]) -> List[str]:
+    """Check if a response looks like a bot/C2 panel."""
+    found = []
+    haystack = (body + " " + " ".join(headers.values())).lower()
+    for indicator in C2_INDICATORS:
+        if indicator in haystack:
+            found.append(indicator)
+    return found
+
+
+def _check_common_c2_paths(base_url: str, timeout: int = 8,
+                             verify_tls: bool = True) -> List[Finding]:
+    """Probe common C2/bot panel paths."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    c2_paths = [
+        "/c2", "/bot", "/panel", "/admin.php", "/gate.php",
+        "/config.php", "/task.php", "/report.php",
+        "/api/bot", "/api/c2", "/api/task",
+        "/wp-content/plugins/", "/shell.php", "/backdoor.php",
+        "/.hidden/", "/_hidden/", "/temp/", "/cache/",
+    ]
+
+    for path in c2_paths:
+        url = base_url.rstrip("/") + path
+        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+        status = resp.get("status", 0)
+        body = resp.get("body", "")[:4096]
+        headers = resp.get("headers", {})
+
+        if status == 200 and len(body) > 10:
+            indicators = _check_bot_indicators(body, headers)
+            if indicators:
+                findings.append(Finding(
+                    title="Bot/C2 panel: {}".format(path),
+                    severity="critical", category="bot_detection",
+                    module="bot",
+                    description="Bot/C2 indicators found at {}: {}".format(path, ", ".join(indicators)),
+                    evidence="GET {} -> 200, indicators: {}".format(path, ", ".join(indicators)),
+                    asset=host, points_deducted=15,
+                    remediation="Remove any bot/C2 panels. Scan for compromise.",
+                ))
+
+            php_sigs = ["eval(", "base64_decode(", "system(", "exec(",
+                       "passthru(", "shell_exec(", "assert(", "preg_replace.*e"]
+            for sig in php_sigs:
+                if sig in body:
+                    findings.append(Finding(
+                        title="Potential webshell: {}".format(path),
+                        severity="critical", category="webshell",
+                        module="bot",
+                        description="PHP webshell signature '{}' found at {}".format(sig, path),
+                        evidence="GET {} -> 200, signature: {}".format(path, sig),
+                        asset=host, points_deducted=15,
+                        remediation="Remove the webshell immediately. Audit server access logs.",
+                    ))
+                    break
+
+    return findings
+
+
+def _check_malware_signatures(base_url: str, timeout: int = 8,
+                               verify_tls: bool = True) -> List[Finding]:
+    """Check response against known malware family signatures."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    for name, patterns, paths in BOT_SIGNATURES:
+
+=== chain.py ===
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List, Optional, Set
+from ..http import http_probe, Finding
+
+
+def _follow_redirects(base_url: str, max_hops: int = 15, timeout: int = 8,
+                       verify_tls: bool = True) -> List[Dict[str, Any]]:
+    """Follow HTTP redirect chains and record each hop."""
+    chain = []
+    url = base_url
+    visited: Set[str] = set()
+
+    for _ in range(max_hops):
+        if url in visited:
+            break
+        visited.add(url)
+
+        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+        status = resp.get("status", 0)
+        headers = resp.get("headers", {})
+        location = headers.get("location", "")
+
+        chain.append({
+            "url": url,
+            "status": status,
+            "location": location,
+            "headers": {k: v for k, v in headers.items()
+                       if k.lower().startswith(("x-", "server", "cf-"))},
+        })
+
+        if status not in (301, 302, 303, 307, 308) or not location:
+            break
+
+        # Resolve relative URLs
+        if location.startswith("/"):
+            from urllib.parse import urljoin
+            location = urljoin(url, location)
+        elif not location.startswith("http"):
+            location = urljoin(url, location)
+        url = location
+
+    return chain
+
+
+def _check_ssrf(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+    """Check for SSRF via parameter injection."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    ssrf_params = [
+        "url", "uri", "redirect", "next", "returnTo", "return_url",
+        "callback", "continue", "target", "dest", "destination",
+        "route", "path", "forward",
+    ]
+
+    ssrf_payloads = [
+        "http://127.0.0.1",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://169.254.169.254/metadata/v1/instance?api-version=2021-02-01",
+        "http://localhost:8080",
+        "http://[::1]",
+        "file:///etc/passwd",
+        "gopher://127.0.0.1:6379/_INFO",
+    ]
+
+    ssrf_endpoints = [
+        "/api/fetch", "/api/proxy", "/api/preview",
+        "/api/redirect", "/api/webhook", "/api/url",
+        "/api/callback", "/api/forward",
+    ]
+
+    import urllib.parse
+
+    for endpoint in ssrf_endpoints:
+        url = base_url.rstrip("/") + endpoint
+        for param in ssrf_params:
+            for payload in ssrf_payloads:
+                try:
+                    encoded = urllib.parse.urlencode({param: payload})
+                    full_url = f"{url}?{encoded}"
+                    resp = http_probe(full_url, timeout=timeout, verify_tls=verify_tls)
+                    body = resp.get("body", "")[:4096]
+                    status = resp.get("status", 0)
+
+                    if status == 200 and len(body) > 20:
+                        internal_sigs = [
+                            "ami-id", "instance-id", "root:",
+                            "127.0.0.1", "localhost", "meta-data",
+                            "computeMetadata", "metadata/v1",
+                            "redis_version", "redis",
+                        ]
+                        if any(sig in body.lower() for sig in internal_sigs):
+                            findings.append(Finding(
+                                title=f"SSRF via {endpoint}?{param}",
+                                severity="critical", category="ssrf",
+                                module="chain",
+                                description="Server-side request forgery: {} reflects internal content".format(endpoint),
+
+=== cloud_recon.py ===
+"""Module: CLOUD_RECON — Cloud Infrastructure Reconnaissance for ReconPro v8.0.
+
+Probes cloud provider metadata endpoints (AWS, Azure, GCP, DigitalOcean),
+discovers cloud-hosted storage assets (S3, Azure Blob, GCS), and checks
+DNS records for cloud-service indicators.
+
+Probes:
+  1. AWS IMDSv1 / IMDSv2 metadata
+  2. Azure Instance Metadata Service
+  3. GCP Compute Metadata
+  4. DigitalOcean Metadata
+
+Discovery:
+  5. AWS S3 public buckets
+  6. Azure Blob storage containers
+  7. GCP Cloud Storage buckets
+
+DNS:
+  8. CNAME records to cloud providers
+  9. TXT records (SPF, DKIM, DMARC, verification)
+ 10. SRV records for cloud services
+ 11. NS records for cloud-hosted DNS
+"""
+from __future__ import annotations
+
+import json
+import re
+import socket
+import subprocess
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import http_probe, Finding, compute_grade, badge_markdown, default_limiter
+
+
+# ── DREAD scoring helper ────────────────────────────────────────────────
+
+def _dread(damage: int, repro: int, exploit: int, affected: int, discover: int) -> float:
+    """Compute DREAD score (0–10) from five component ratings."""
+    return round((damage + repro + exploit + affected + discover) / 5.0, 1)
+
+
+# ── Severity → points mapping ───────────────────────────────────────────
+
+SEV_POINTS = {
+    "critical": 15,
+    "high": 10,
+    "medium": 5,
+    "low": 2,
+    "info": 0,
+}
+
+
+# ════════════════════════════════════════════════════════════════════════
+# 1. CLOUD METADATA PROBERS
+# ════════════════════════════════════════════════════════════════════════
+
+def probe_aws_metadata(timeout: int = 5) -> Dict[str, Any]:
+    """Probe AWS EC2 Instance Metadata Service (IMDSv1 and IMDSv2).
+
+    Returns {accessible: bool, data: dict, findings: list}.
+    """
+    result: Dict[str, Any] = {
+        "accessible": False,
+        "data": {},
+        "findings": [],
+    }
+    base = "http://169.254.169.254/latest/meta-data/"
+
+    # --- IMDSv1: direct GET ---
+    v1_resp = http_probe(base, timeout=timeout, verify_tls=False)
+    if v1_resp.get("ok") and v1_resp.get("status") == 200:
+        result["accessible"] = True
+        result["data"]["imds_v1"] = {
+            "status": v1_resp["status"],
+            "index": v1_resp.get("body", "")[:2048].strip(),
+        }
+        result["findings"].append({
+            "title": "AWS IMDSv1 accessible (token-less)",
+            "severity": "critical",
+            "dread": _dread(10, 10, 10, 8, 9),
+            "evidence": f"GET {base} -> 200",
+        })
+
+        # Probe common IMDSv1 sub-paths
+        sub_paths = [
+            ("iam/security-credentials/", "iam_roles"),
+            ("hostname", "hostname"),
+            ("local-ipv4", "local_ipv4"),
+            ("instance-id", "instance_id"),
+            ("instance-type", "instance_type"),
+            ("ami-id", "ami_id"),
+            ("placement/availability-zone", "az"),
+        ]
+        for path, key in sub_paths:
+            resp = http_probe(base + path, timeout=timeout, verify_tls=False)
+            if resp.get("ok") and resp.get("status") == 200:
+                body = resp.get("body", "").strip()
+                result["data"][key] = body[:1024]
+                if key == "iam_roles":
+                    roles = [r.strip() for r in body.splitlines() if r.strip()]
+
+=== container_sec.py ===
+"""Container Sandbox Escape Analysis for ReconPro v8.0.
+
+Analyzes Docker and Kubernetes configurations for container escape vectors.
+Deep inspection of Dockerfiles, K8s manifests, and compound escape patterns.
+
+Zero external dependencies — stdlib only (re, json, pathlib, os).
+For YAML: attempts ``import yaml``, falls back to simple line parser.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import Finding, compute_grade, badge_markdown
+
+
+# ── Severity / score helpers ─────────────────────────────────────────
+
+_SEV_WEIGHT: Dict[str, float] = {
+    "critical": 10.0,
+    "high": 7.5,
+    "medium": 5.0,
+    "low": 2.5,
+    "info": 1.0,
+}
+
+_PTS_MAP: Dict[str, int] = {
+    "critical": 15,
+    "high": 10,
+    "medium": 6,
+    "low": 3,
+    "info": 1,
+}
+
+
+def _dread(severity: str) -> float:
+    return _SEV_WEIGHT.get(severity.lower(), 2.5)
+
+
+def _pts(severity: str) -> int:
+    return _PTS_MAP.get(severity.lower(), 3)
+
+
+def _ev(file: str, line: int) -> str:
+    return f"{file}:{line}"
+
+
+def _read_file(path: str, max_size: int = 1048576) -> str:
+    """Read file contents safely."""
+    try:
+        size = os.path.getsize(path)
+        if size > max_size:
+            return "[file too large]"
+        with open(path, errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _simple_yaml_parse(text: str) -> Any:
+    """Fallback YAML parser when PyYAML is not installed."""
+    try:
+        import yaml  # type: ignore[import-untyped]
+        return yaml.safe_load(text)
+    except Exception:
+        pass
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    result: Dict[str, Any] = {}
+    current_list_key: Optional[str] = None
+    list_items: List[Dict[str, Any]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        list_match = re.match(r"^\s*-\s+(\w+):\s*(.*)$", line)
+        if list_match:
+            key, val = list_match.group(1), list_match.group(2).strip()
+            if key != current_list_key:
+                if current_list_key is not None and list_items:
+                    result[current_list_key] = list_items
+                current_list_key = key
+                list_items = []
+            item: Dict[str, Any] = {key: val}
+            list_items.append(item)
+            continue
+        kv_match = re.match(r"^([\w.]+):\s*(.*)$", stripped)
+        if kv_match:
+            key, val = kv_match.group(1), kv_match.group(2).strip()
+            if current_list_key is not None:
+                pass
+            if val.lower() in ("true", "false", "null"):
+                result[key] = {"true": True, "false": False, "null": None}[val.lower()]
+            else:
+                try:
+
+=== covert_channel.py ===
+"""COVERT_CHANNEL module — Covert data exfiltration channel detection & simulation.
+
+ReconPro v9.2.0
+
+Detects and simulates eight classes of covert data exfiltration channels:
+  1. DNS Tunneling Detection
+  2. HTTP Header Covert Channel Detection
+  3. Timing Channel Detection
+  4. ICMP Tunnel Detection Markers
+  5. HTTPS Certificate Steganography
+  6. URL Path Encoding Channels
+  7. Chunked Transfer Encoding Abuse
+  8. WebSocket Frame Analysis
+
+Pure stdlib — zero external dependencies.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import math
+import re
+import struct
+import time
+import urllib.parse
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import http_probe, Finding, default_limiter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CHANNEL_SIGNATURES DATABASE
+# ═══════════════════════════════════════════════════════════════════════════
+
+CHANNEL_SIGNATURES: Dict[str, Dict[str, Any]] = {
+    "dns_tunneling": {
+        "name": "DNS Tunneling",
+        "description": (
+            "Encodes data in DNS query labels (subdomains). Long, "
+            "high-entropy subdomains are hallmarks of tools like dnscat2, "
+            "iodine, Cobalt Strike DNS beacon."
+        ),
+        "max_label_length": 63,       # RFC 1035
+        "suspicious_label_min": 24,   # labels this long are rare in legit traffic
+        "max_query_length": 253,      # RFC 1035 FQDN limit
+        "known_tools": ["dnscat2", "iodine", "DNS2TCP", "Cobalt Strike", "PoshC2"],
+        "record_type_indicators": ["TXT", "NULL", "CNAME", "MX", "A"],
+        "entropy_threshold": 3.8,
+        "bandwidth_estimate": "Low (~1-4 KB/s downstream, ~0.5 KB/s upstream)",
+        "stealth_score": 72,
+        "dread_score": 7.5,
+        "severity": "high",
+        "patterns": [
+            r"[a-z0-9]{24,}\.",  # long base36 subdomain
+            r"[a-f0-9]{32,}\.",  # hex-encoded subdomain (MD5-like)
+            r"[A-Za-z0-9+/=]{20,}\.",  # base64 subdomain
+            r"[a-z0-9-]{40,}\.",  # very long label with hyphens
+        ],
+    },
+    "http_header_covert": {
+        "name": "HTTP Header Covert Channel",
+        "description": (
+            "Data encoded in HTTP headers via: custom/unusual headers, "
+            "header ordering signals, whitespace/padding manipulation, "
+            "cookie value encoding, or header value steganography."
+        ),
+        "suspicious_header_prefixes": [
+            "X-", "X-Powered-By", "X-Forwarded", "X-Real-IP",
+            "X-Original-URL", "X-Custom", "X-Steg", "X-Data",
+            "X-Exfil", "X-C2", "X-Session-Id", "X-Request-Id",
+        ],
+        "entropy_threshold": 3.6,
+        "bandwidth_estimate": "Medium (~50-200 KB/s)",
+        "stealth_score": 65,
+        "dread_score": 6.8,
+        "severity": "medium",
+        "patterns": [
+            r"^X-[A-Za-z-]+$",
+            r"^[A-Za-z-]+: [A-Za-z0-9+/=]{40,}$",
+            r"^[A-Za-z-]+: \s*[a-f0-9]{64,}$",  # hex payload in header
+        ],
+    },
+    "timing_channel": {
+        "name": "Timing Channel",
+        "description": (
+            "Encodes data in response timing deltas. Binary (0/1) or "
+            "multi-bit encoding where the interval between requests/responses "
+            "carries hidden information. Extremely stealthy but low bandwidth."
+        ),
+        "binary_encoding_delta_ms": 100,
+        "multi_bit_levels": 4,        # 0-3 per interval
+        "min_observations": 8,
+        "std_dev_threshold": 0.05,    # very consistent deltas = suspicious
+        "entropy_threshold": 0.9,     # low entropy in timing = encoding
+        "bandwidth_estimate": "Very Low (~0.1-2 bits/s)",
+        "stealth_score": 88,
+        "dread_score": 8.2,
+        "severity": "high",
+        "patterns": [],
+
+=== dark_web_monitor.py ===
+"""Module: DARK WEB MONITOR — Credential Leak & Exposure Scanner.
+
+Monitors paste sites, leak directories, breach databases, and threat intelligence
+sources for target credentials/infrastructure mentions — all without Tor, all via stdlib.
+
+7 Detection Categories:
+  1. Paste Site Monitoring (PasteBin, GitHub gists, Rentry, Ghostbin)
+  2. Credential Leak Detection (email:password, API keys, JWT tokens)
+  3. Infrastructure Exposure (abuse DBs, malware reports, breach dumps)
+  4. Leak Temporal Analysis (ongoing vs historical breach patterns)
+  5. Dark Web Intelligence Sources (ThreatFox, URLhaus, MalBazaar, OTX)
+  6. Breach Database Correlation (cross-reference known breaches)
+  7. Secret Exposure Scanning (GitHub code search for hardcoded secrets)
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import re
+import ssl
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+from ..http import http_probe, Finding, default_limiter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Paste Sites & Threat Intelligence Sources Database
+# ═══════════════════════════════════════════════════════════════════════════
+
+PASTE_SITES: Dict[str, Dict[str, Any]] = {
+    "pastebin": {
+        "name": "PasteBin",
+        "search_url": "https://pastebin.com/search?q={query}",
+        "api_url": "https://pastebin.com/api/api_post.php",
+        "type": "html",
+        "rate_limit": 1.0,
+        "severity": "high",
+    },
+    "github_gist": {
+        "name": "GitHub Gists",
+        "search_url": "https://gist.github.com/search?q={query}",
+        "type": "html",
+        "rate_limit": 3.0,
+        "severity": "high",
+    },
+    "github_code": {
+        "name": "GitHub Code",
+        "search_url": "https://github.com/search?q={query}&type=code",
+        "type": "html",
+        "rate_limit": 3.0,
+        "severity": "critical",
+    },
+    "rentry": {
+        "name": "Rentry.co",
+        "search_url": "https://rentry.co/search?q={query}",
+        "type": "html",
+        "rate_limit": 2.0,
+        "severity": "medium",
+    },
+    "ghostbin": {
+        "name": "Ghostbin",
+        "search_url": "https://ghostbin.com/search?q={query}",
+        "type": "html",
+        "rate_limit": 2.0,
+        "severity": "medium",
+    },
+    "paste_site": {
+        "name": "PasteSite.org",
+        "search_url": "https://www.pastesite.com/search?q={query}",
+        "type": "html",
+        "rate_limit": 2.0,
+        "severity": "medium",
+    },
+    "justpaste": {
+        "name": "JustPaste.it",
+        "search_url": "https://justpaste.it/search?q={query}",
+        "type": "html",
+        "rate_limit": 2.0,
+        "severity": "medium",
+    },
+}
+
+THREAT_INTEL_SOURCES: Dict[str, Dict[str, Any]] = {
+    "threatfox": {
+        "name": "abuse.ch ThreatFox",
+        "api_url": "https://threatfox-api.abuse.ch/v1/",
+        "search_param": "query",
+        "type": "json_api",
+        "severity": "critical",
+        "query_types": ["domain", "ip", "url", "hash"],
+    },
+    "urlhaus": {
+        "name": "abuse.ch URLhaus",
+        "search_url": "https://urlhaus-api.abuse.ch/v1/host/{query}",
+        "type": "json_api",
+
+=== dead_drop.py ===
+"""DEAD_DROP module — Cryptographic Dead Drop Detection & Analysis.
+
+ReconPro v9.2.0
+
+A dead drop is a covert communication technique where a message is left in a
+location (digital or physical) for another party to retrieve, without the
+two parties ever meeting directly. This module detects eight classes of
+digital dead drop channels:
+
+  1. DNS TXT Record Dead Drop Detection
+  2. HTTP ETag Dead Drop Detection
+  3. Certificate Transparency Dead Drops
+  4. HTTP Header Dead Drop Detection
+  5. Timestamp Steganography Detection
+  6. DNS CNAME Dead Drop Detection
+  7. SPF/DKIM/DMARC Dead Drop Analysis
+  8. Dead Drop Simulation
+
+All cryptographic operations use pure stdlib (hashlib, hmac, base64, struct).
+Zero external dependencies.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import json
+import math
+import re
+import struct
+import time
+import urllib.parse
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import http_probe, Finding, default_limiter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DEAD_DROP_SIGNATURES DATABASE
+# ═══════════════════════════════════════════════════════════════════════════
+
+DEAD_DROP_SIGNATURES: Dict[str, Dict[str, Any]] = {
+    "dns_txt_dead_drop": {
+        "name": "DNS TXT Dead Drop",
+        "description": (
+            "Encodes covert messages in DNS TXT records. TXT records are rarely "
+            "monitored by standard security tooling, making them ideal for leaving "
+            "encoded messages that appear as SPF/DKIM configuration or verification "
+            "strings. Attackers can base64-encode C2 beacons, encryption keys, or "
+            "operational timestamps within TXT RDATA."
+        ),
+        "severity": "high",
+        "dread_score": 7.2,
+        "entropy_threshold": 3.8,
+        "min_value_length": 20,
+        "known_patterns": [
+            r"^[A-Za-z0-9+/=]{24,}$",           # base64 encoded data
+            r"^[a-f0-9]{32,}$",                   # hex encoded data
+            r"^[A-Za-z0-9+/=]{20,}\.[A-Za-z]+$",  # base64 with domain hint
+            r"v=spf1.*[A-Za-z0-9+/=]{24,}",     # hidden in SPF
+            r"google-site-verification=.*",        # disguised verification
+        ],
+        "stealth_score": 74,
+        "bandwidth_estimate": "~255 bytes per TXT record (up to 65535 bytes in theory)",
+        "detection_difficulty": "Medium — requires active DNS TXT queries",
+    },
+    "etag_dead_drop": {
+        "name": "HTTP ETag Dead Drop",
+        "description": (
+            "ETag headers are commonly used for cache validation but can carry "
+            "covert data. An attacker can encode HMAC tags, encrypted fragments, "
+            "or steganographic data within the opaque ETag string. Because ETags "
+            "are opaque strings defined by the origin server, high-entropy or "
+            "cryptographically structured values are rarely flagged."
+        ),
+        "severity": "medium",
+        "dread_score": 6.4,
+        "entropy_threshold": 3.5,
+        "min_value_length": 16,
+        "known_patterns": [
+            r'^"[a-f0-9]{32,}"$',              # quoted hex hash
+            r'^"[A-Za-z0-9+/=]{22,}"$',          # quoted base64
+            r'^W/"[a-f0-9]+"$',                  # weak validator with hex
+            r'^"[a-f0-9]{8}-[a-f0-9]{4}-',     # UUID-formatted ETag
+            r'^[0-9a-f]{40}$',                    # SHA-1 hex
+            r'^[0-9a-f]{64}$',                    # SHA-256 hex
+            r'^"[A-Za-z0-9+/=]{32,}"$',         # base64 MAC-like
+        ],
+        "stealth_score": 82,
+        "bandwidth_estimate": "~128-512 bytes per ETag value",
+        "detection_difficulty": "High — ETags are opaque and inherently variable",
+    },
+    "ct_log_dead_drop": {
+        "name": "Certificate Transparency Dead Drop",
+        "description": (
+            "Subdomain names in CT logs can encode covert messages. By issuing "
+            "certificates for carefully crafted subdomains (e.g., hex-encoded "
+            "payloads, base64 labels), attackers embed data in a globally "
+            "replicated, append-only log. The subdomain names are public but "
+            "rarely examined for encoded content."
+
+=== dev.py ===
+"""DEV module — Developer security tools.
+
+Scans for developer-focused security issues:
+- Dependency vulnerability scanning (package.json, requirements.txt, Pipfile, go.mod, Cargo.toml)
+- Git security (exposed secrets, branch protection, .gitconfig)
+- .env file detection & secret scanning
+- Port conflict detection
+- Docker Compose security
+- API key/secret detection in codebase
+- Outdated dependency detection
+- Hardcoded credentials in source code
+- Sensitive file detection (.pem, .key, .p12, credentials)
+- Pre-commit hook presence
+- Lockfile CVE scanning (package-lock.json, yarn.lock, Pipfile.lock)
+- Go/Rust/Cargo audit (go.mod, Cargo.toml)
+- Git config credential leak detection
+- Terraform/TFVars secret scanning
+- GitHub Actions token exposure
+- Dependency confusion detection
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import json
+import glob
+import subprocess
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import Finding
+
+
+def _scan_dir(base_dir: str = ".") -> str:
+    """Get absolute path of directory to scan."""
+    return os.path.abspath(base_dir)
+
+
+def _find_files(patterns: List[str], base: str) -> List[str]:
+    """Find files matching patterns in base directory."""
+    found = []
+    for pattern in patterns:
+        found.extend(glob.glob(os.path.join(base, "**", pattern), recursive=True))
+    return found
+
+
+def _read_file(path: str, max_size: int = 65536) -> str:
+    """Read file contents safely."""
+    try:
+        size = os.path.getsize(path)
+        if size > max_size:
+            return f"[file too large: {size} bytes]"
+        with open(path, errors="replace") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _check_package_json(base: str) -> List[Finding]:
+    """Scan package.json for security issues."""
+    findings: List[Finding] = []
+    asset = base
+
+    pkg_files = _find_files(["package.json"], base)
+    for pkg_path in pkg_files:
+        # Skip node_modules
+        if "node_modules" in pkg_path:
+            continue
+
+        try:
+            with open(pkg_path) as f:
+                pkg = json.load(f)
+        except Exception:
+            continue
+
+        deps = {}
+        deps.update(pkg.get("dependencies", {}))
+        deps.update(pkg.get("devDependencies", {}))
+
+        if not deps:
+            continue
+
+        # Check for known vulnerable/outdated patterns
+        risky_pkgs = {
+            "lodash": ("low", "Consider replacing individual lodash imports with native JS"),
+            "express": ("info", "Ensure Express is >= 4.18.0"),
+            "jsonwebtoken": ("medium", "Ensure jsonwebtoken is >= 9.0.0"),
+            "react": ("info", "Keep React updated"),
+            "next": ("info", "Keep Next.js updated"),
+            "mongoose": ("info", "Ensure Mongoose is latest"),
+            "minimist": ("low", "minimist had prototype pollution CVEs"),
+            "uglify-js": ("low", "uglify-js had ReDoS vulnerabilities"),
+            "event-stream": ("high", "event-stream was compromised in 2018"),
+        }
+
+        for pkg_name, (sev, note) in risky_pkgs.items():
+            if pkg_name in deps:
+                findings.append(Finding(
+                    title=f"{pkg_name}@{deps[pkg_name]} in {os.path.basename(os.path.dirname(pkg_path))}",
+
+=== doctor.py ===
+"""DOCTOR module — Security health check with actionable fixes.
+
+Provides a quick security health check with:
+- Overall security posture score
+- Category breakdown (network, auth, files, deps, env)
+- Actionable fix commands the user can copy-paste
+- Color-coded severity
+- Quick wins section
+- NTP time sync verification
+- Firewall deep audit (rules, default policy)
+- Audit/logging verification
+- UAC/Sudo timeout check
+- SSH key strength analysis
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import stat
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import Finding
+
+
+def _hostname() -> str:
+    """Cross-platform hostname (works on Linux, macOS, Windows)."""
+    try:
+        return os.uname().nodename
+    except AttributeError:
+        return os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "localhost"))
+
+
+def _run(cmd: str, timeout: int = 8) -> Tuple[int, str]:
+    """Run a shell command, return (exit_code, output)."""
+    try:
+        r = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except Exception:
+        return -1, ""
+
+
+def _is_windows() -> bool:
+    """Check if running on Windows."""
+    return os.name == "nt"
+
+
+def _is_macos() -> bool:
+    """Check if running on macOS."""
+    return os.name == "posix" and hasattr(os, "uname") and os.uname().sysname == "Darwin"
+
+
+def _check_password_policy() -> List[Finding]:
+    """Check password and authentication policies."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    if _is_windows():
+        # Windows: check password policy via net accounts
+        code, out = _run('net accounts 2>NUL')
+        if code == 0 and out:
+            max_age = None
+            min_len = None
+            for line in out.splitlines():
+                line_lower = line.lower().strip()
+                if "maximum password age" in line_lower:
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        try:
+                            val = parts[-1].strip()
+                            max_age = int(val) if val.lower() != "unlimited" else 99999
+                        except (ValueError, IndexError):
+                            pass
+                elif "minimum password length" in line_lower:
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        try:
+                            min_len = int(parts[-1].strip())
+                        except (ValueError, IndexError):
+                            pass
+            if max_age is not None and max_age > 90:
+                findings.append(Finding(
+                    title=f"Password max age is {max_age} days (too long)",
+                    severity="medium", category="auth_policy",
+                    module="doctor",
+                    description=f"Password expiration is set to {max_age} days. NIST recommends 90 days or less.",
+                    evidence=f"Maximum password age: {max_age}",
+                    asset=hostname, points_deducted=4,
+                    remediation="Set password expiration: net accounts /maxpwage:90",
+                ))
+            if min_len is not None and min_len < 12:
+                findings.append(Finding(
+                    title=f"Minimum password length is {min_len} (too short)",
+                    severity="medium", category="auth_policy",
+                    module="doctor",
+                    description="Minimum password length is less than 12 characters. Longer passwords are more secure.",
+
+=== free_info_ops.py ===
+"""Module: FREE_INFO_OPS — Information Operations Analysis for ReconPro v9.2.0.
+
+DEFENSIVE / EDUCATIONAL ONLY — This module helps organizations understand and
+mitigate risks from information operations: misattribution, impersonation,
+false flag attribution, and narrative manipulation.
+
+All capabilities are framed as **defensive assessments** that reveal how an
+adversary could exploit publicly observable infrastructure signals to
+deceive analysts, misdirect attribution, or construct false narratives.
+
+Capabilities:
+  1. Infrastructure Misattribution Analysis
+  2. Decoy Endpoint Generation (defensive honeypot recommendations)
+  3. False Flag Risk Assessment
+  4. Digital Deception Resilience Scoring
+  5. Narrative Vulnerability Analysis
+  6. Attribution Obfuscation Detection
+  7. Honeypot Integration Planning
+
+References:
+  - MITRE ATT&CK: Enterprise T1595, T1589, T1592
+  - MITRE ATT&CK Deception techniques (custom mapping)
+  - NIST SP 800-53 (SI-10 Information Input Validation)
+  - CISA Insights: Understanding and Mitigating MDM Operations
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import urllib.parse
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import http_probe, Finding, default_limiter
+
+
+# ════════════════════════════════════════════════════════════════════════
+# DECEPTION_SIGNATURES — Known Nation-State TTPs & Infrastructure Patterns
+# (Educational reference for defensive analysts)
+# ════════════════════════════════════════════════════════════════════════
+
+DECEPTION_SIGNATURES: Dict[str, Dict[str, Any]] = {
+    # ── Shared Infrastructure Patterns ──
+    "shared_hosting_red_flags": {
+        "description": (
+            "Infrastructure patterns where multiple entities share the same "
+            "hosting, CDN, or nameserver infrastructure, creating misattribution risk."
+        ),
+        "indicators": [
+            {
+                "name": "shared_cdn_origin",
+                "pattern": r"(cloudfront|akamai|fastly|cloudflare|imperva|incapsula)",
+                "context": "header:server, header:x-cache, header:cf-ray",
+                "risk": "medium",
+                "note": (
+                    "Shared CDN headers are extremely common and are not indicators of "
+                    "malicious activity. However, they do mean that two unrelated organizations "
+                    "can appear to share infrastructure to a passive observer."
+                ),
+            },
+            {
+                "name": "shared_nameservers",
+                "pattern": r"(ns1\..*\.cloudflare\.com|ns[0-9]+\.hover\.com|dns[0-9]+\.name-services\.com)",
+                "context": "dns:ns",
+                "risk": "low",
+                "note": (
+                    "Many organizations use managed DNS providers, which means their "
+                    "nameservers are identical to thousands of other domains. This is normal "
+                    "but can complicate infrastructure-level attribution."
+                ),
+            },
+            {
+                "name": "shared_ip_ranges",
+                "pattern": None,
+                "context": "dns:a",
+                "risk": "medium",
+                "note": (
+                    "Cloud/SaaS hosting means many domains resolve to the same IP blocks. "
+                    "IP-based attribution without additional context is unreliable."
+                ),
+            },
+        ],
+    },
+    # ── Certificate Chain Patterns ──
+    "certificate_chain_analysis": {
+        "description": (
+            "TLS certificate properties that can create misattribution risk or "
+            "reveal obfuscation attempts."
+        ),
+        "indicators": [
+            {
+                "name": "generic_ca_certificate",
+                "pattern": r"(Let's Encrypt|DigiCert|Sectigo|GlobalSign|Cloudflare|cPanel)",
+                "context": "tls:issuer",
+                "risk": "low",
+                "note": (
+                    "Most organizations use commercial CAs. An adversary can obtain the same "
+                    "type of certificate, making certificate issuer alone a weak attribution signal."
+                ),
+            },
+
+=== gorgon.py ===
+from __future__ import annotations
+
+import json
+import re
+import time
+import urllib.parse
+from typing import Any, Dict, List, Generator
+from ..http import http_probe, Finding
+
+
+GORGON_PAYLOADS = {
+    "sqli": [
+        ("' OR '1'='1", "SQL injection: single-quote OR"),
+        ("' UNION SELECT NULL--", "SQL injection: UNION SELECT"),
+        ("1; DROP TABLE users--", "SQL injection: stacked query"),
+        ("' AND 1=1--", "SQL injection: boolean blind"),
+        ("admin'--", "SQL injection: auth bypass"),
+    ],
+    "xss": [
+        ('<script>alert(1)</script>', "XSS: reflected script tag"),
+        ('" onerror="alert(1)', "XSS: event handler injection"),
+        ('<img src=x onerror=alert(1)>', "XSS: img onerror"),
+        ('<svg onload=alert(1)>', "XSS: svg onload"),
+        ('javascript:alert(1)', "XSS: javascript URI"),
+    ],
+    "path_traversal": [
+        ('../../../etc/passwd', "Path traversal: etc/passwd"),
+        ('..\\..\\..\\windows\\win.ini', "Path traversal: win.ini"),
+        ('....//....//....//etc/passwd', "Path traversal: double-encoding"),
+        ('/proc/self/environ', "Path traversal: proc/environ"),
+        ('file:///etc/passwd', "Path traversal: file:// protocol"),
+    ],
+}
+
+FEAR_INDEX_LEVELS = [
+    ("SUBTLE",      0,   2.0,   "Barely perceptible — the walls have ears"),
+    ("NOTABLE",     2.0, 4.0,   "Something is watching — the target knows it"),
+    ("SUBSTANTIAL",  4.0, 6.0,   "The foundation cracks — exploitability confirmed"),
+    ("DEVASTATING",  6.0, 8.0,   "Total system compromise — the fear engine has spoken"),
+    ("OMNIPOTENT",  8.0, 9.5,   "Beyond exploitation — the target IS the vulnerability"),
+]
+
+
+def _fear_index(score: float) -> str:
+    """Calculate Fear Index level from a 0-10 score."""
+    for name, lo, hi, _ in FEAR_INDEX_LEVELS:
+        if lo <= score < hi:
+            return name
+    return "OMNIPOTENT"
+
+
+def _gorgon_ai(base_url: str, prompt: str, timeout: int = 30) -> str:
+    """Query z.ai for AI-powered analysis. Returns response or fallback."""
+    try:
+        from ..integrations.zai_stream import ZAIStreamClient
+        client = ZAIStreamClient(timeout=timeout)
+        return client.chat(prompt, system_prompt="You are GORGON ULTRA, an elite AI red-team analyst. Be concise and technical.")
+    except Exception:
+        return "[GORGON analysis unavailable — stdlib fallback used]"
+
+
+def _stage_1_invocation(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+    """Stage 1: Invocation — broadcast the name to target logs."""
+    findings = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+    try:
+        resp = http_probe(base_url, headers={"User-Agent": "GORGON-ULTRA/7.0 ReconPro"}, timeout=timeout, verify_tls=verify_tls)
+        findings.append(Finding(
+            title="GORGON Invocation logged",
+            severity="info", category="gorgon_invocation", module="gorgon",
+            description="GORGON ULTRA signature broadcast to target logs via User-Agent header",
+            evidence="User-Agent: GORGON-ULTRA/7.0 ReconPro, Status: {}".format(resp.get("status", 0)),
+            asset=host, points_deducted=0,
+        ))
+    except Exception:
+        pass
+    return findings
+
+
+def _stage_2_surface_map(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+    """Stage 2: Surface mapping — probe common endpoints for attack surface."""
+    findings = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+    probe_paths = ["/admin", "/api", "/login", "/dashboard", "/debug", "/test", "/.env", "/config"]
+    alive = []
+    for p in probe_paths:
+        try:
+            resp = http_probe(base_url.rstrip("/") + p, timeout=timeout, verify_tls=verify_tls)
+            if resp.get("status") in (200, 301, 302, 403):
+                alive.append("{} ({})".format(p, resp["status"]))
+        except Exception:
+            pass
+    if alive:
+        findings.append(Finding(
+            title="Attack surface: {} endpoints discovered".format(len(alive)),
+            severity="medium", category="surface_map", module="gorgon",
+            description="Endpoints found: {}".format("; ".join(alive)),
+            evidence="{} alive endpoints".format(len(alive)),
+            asset=host, points_deducted=3,
+        ))
+
+=== honeypot_dance.py ===
+"""Module: HONEYPOT DANCE — Honeypot detection & effectiveness scoring (v9.2.0).
+
+Checks:
+  1.  Response Timing Analysis — unnaturally precise/consistent timing.
+  2.  Error Message Perfection Check — "too clean" error pages.
+  3.  Known Honeypot Fingerprinting — 15+ honeypot signatures.
+  4.  Behavioral Consistency Check — real servers are inconsistent; honeypots are not.
+  5.  Technology Stack Anomaly Detection — claimed vs observed tech mismatch.
+  6.  Default Credential Detection — common honeypot defaults.
+  7.  Interaction Pattern Analysis — honeypot trigger command responses.
+  8.  Honeypot Effectiveness Scoring — how convincing is the honeypot?
+"""
+from __future__ import annotations
+
+import hashlib
+import re
+import statistics
+import time
+import urllib.parse
+from typing import Any, Dict, List, Optional
+
+from ..http import http_probe, Finding, default_limiter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Database: Known Honeypot Signatures (15+)
+# ═══════════════════════════════════════════════════════════════════════════
+
+HONEYPOT_SIGNATURES: List[Dict[str, Any]] = [
+    {
+        "name": "Cowrie",
+        "description": "SSH/Telnet honeypot — records brute-force attempts & credentials",
+        "header_indicators": {
+            "server": ["cowrie", "openssh*cowrie"],
+        },
+        "body_indicators": ["cowrie", "cowrie.log"],
+        "path_indicators": ["/cowrie", "/honeypot/cowrie"],
+        "cookie_indicators": ["cowrie"],
+    },
+    {
+        "name": "Dionaea",
+        "description": "Malware-capturing honeypot that emulates SMB, HTTP, FTP, MSSQL, MySQL",
+        "header_indicators": {
+            "server": ["dionaea", "dionaea honeypot"],
+        },
+        "body_indicators": ["dionaea", "dionaea.log", r"dionaea\.json"],
+        "path_indicators": ["/dionaea"],
+        "cookie_indicators": [],
+    },
+    {
+        "name": "Kippo",
+        "description": "Medium-interaction SSH honeypot — logs attacker shell interactions",
+        "header_indicators": {
+            "server": ["kippo", "ssh-2.0-openssh*kippo"],
+        },
+        "body_indicators": ["kippo", "kippo.log"],
+        "path_indicators": ["/kippo"],
+        "cookie_indicators": [],
+    },
+    {
+        "name": "T-Pot",
+        "description": "All-in-one honeypot platform bundling 20+ honeypots",
+        "header_indicators": {
+            "server": ["t-pot", "tpot", "t_pot"],
+            "x-powered-by": ["t-pot"],
+        },
+        "body_indicators": ["t-pot", "tpotce", "t-pot honeypot", "tpot"],
+        "path_indicators": ["/tpot", "/t-pot", "/hpfeeds"],
+        "cookie_indicators": ["tpot"],
+    },
+    {
+        "name": "HoneyPot",
+        "description": "Classic Open-source honeypot for detecting malicious activity",
+        "header_indicators": {
+            "server": ["honeypot"],
+        },
+        "body_indicators": ["honeypot", r"honeypot\.py", "honeyd"],
+        "path_indicators": ["/honeypot", "/honeyd"],
+        "cookie_indicators": ["honeypot"],
+    },
+    {
+        "name": "Glastopf",
+        "description": "Web-application honeypot that emulates thousands of vulnerabilities",
+        "header_indicators": {
+            "server": ["glastopf", "apache/2.*glastopf"],
+            "x-powered-by": ["glastopf", "php.*glastopf"],
+        },
+        "body_indicators": ["glastopf", "glastopf wf", "glastopf.log"],
+        "path_indicators": ["/glastopf"],
+        "cookie_indicators": [],
+    },
+    {
+        "name": "Wordpot",
+        "description": "WordPress-emulation honeypot — tracks exploit attempts against WP",
+        "header_indicators": {
+            "server": ["wordpot", "nginx.*wordpot"],
+            "x-powered-by": ["wordpress", "php.*wordpress"],
+            "link": ["wordpress.org"],
+        },
+        "body_indicators": ["wordpot", "wp-content", "wp-includes", "wordpress"],
+
+=== host.py ===
+"""HOST module — Full local machine security audit.
+
+Scans the laptop/machine for:
+- Open ports & listening services
+- Firewall status (ufw / iptables / firewalld)
+- User accounts & sudoers
+- SSH configuration hardening
+- Running Docker containers & exposed ports
+- Cron jobs & scheduled tasks
+- Environment variables leaking secrets
+- Sensitive file permissions
+- OS & kernel info
+- Network interfaces
+- Installed services
+- Bluetooth & WiFi status
+- USB devices
+- Auto-start / launch agents
+- SUID/SGID binary audit
+- SELinux/AppArmor status
+- Kernel version CVE check
+- SSH authorized keys audit
+- World-writable directories
+- Suspicious processes
+- UAC status (Windows)
+- BitLocker recovery
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import stat
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import Finding
+
+
+def _hostname() -> str:
+    """Cross-platform hostname (works on Linux, macOS, Windows)."""
+    try:
+        return os.uname().nodename
+    except AttributeError:
+        return os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "localhost"))
+
+
+def _run(cmd: str, timeout: int = 10) -> Tuple[int, str]:
+    """Run a shell command, return (exit_code, stdout+stderr)."""
+    try:
+        r = subprocess.run(
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+        )
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except Exception:
+        return -1, ""
+
+
+def _is_windows() -> bool:
+    """Check if running on Windows."""
+    return os.name == "nt"
+
+
+def _is_macos() -> bool:
+    """Check if running on macOS."""
+    return os.name == "posix" and hasattr(os, "uname") and os.uname().sysname == "Darwin"
+
+
+def _file_exists(p: str) -> bool:
+    return os.path.exists(p)
+
+
+def _file_perms(p: str) -> Optional[int]:
+    try:
+        return stat.S_IMODE(os.stat(p).st_mode)
+    except Exception:
+        return None
+
+
+def _check_open_ports() -> List[Finding]:
+    """Find open listening ports via ss/netstat."""
+    findings: List[Finding] = []
+    hostname = _hostname()
+
+    # Platform-specific port enumeration
+    if _is_windows():
+        code, out = _run('netstat -an 2>NUL | findstr LISTENING')
+        if code != 0 or not out:
+            findings.append(Finding(
+                title="Could not enumerate open ports",
+                severity="low", category="ports",
+                module="host",
+                description="Unable to enumerate open ports.",
+                evidence="netstat returned no output",
+                asset=hostname, points_deducted=1,
+                remediation="Run as Administrator for full port visibility.",
+            ))
+            return findings
+    else:
+        code, out = _run("ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null")
+
+=== iac_audit.py ===
+"""Infrastructure-as-Code Security Auditor for ReconPro v8.0.
+
+Scans Terraform (.tf), CloudFormation (.yaml/.json), Dockerfiles,
+and Kubernetes manifests for security misconfigurations.
+
+Zero external dependencies — stdlib only (re, json, pathlib, os).
+For YAML parsing, attempts ``import yaml`` and falls back to a
+lightweight line-based parser when PyYAML is not installed.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from reconpro.http import Finding
+
+
+# ── Severity / score helpers ─────────────────────────────────────────
+
+_SEV_WEIGHT: Dict[str, float] = {
+    "critical": 10.0,
+    "high": 7.5,
+    "medium": 5.0,
+    "low": 2.5,
+    "info": 1.0,
+}
+
+_PTS_MAP: Dict[str, int] = {
+    "critical": 15,
+    "high": 10,
+    "medium": 6,
+    "low": 3,
+    "info": 1,
+}
+
+
+def _dread(severity: str) -> float:
+    return _SEV_WEIGHT.get(severity.lower(), 2.5)
+
+
+def _pts(severity: str) -> int:
+    return _PTS_MAP.get(severity.lower(), 3)
+
+
+def _ev(file: str, line: int) -> str:
+    return f"{file}:{line}"
+
+
+# ── Simple YAML fallback parser ──────────────────────────────────────
+
+def _simple_yaml_load(text: str) -> Any:
+    """Attempt to import yaml; if unavailable, parse top-level JSON-like structures.
+
+    This fallback handles most CloudFormation and Kubernetes manifests that use
+    simple key-value or list-of-dicts structures.
+    """
+    try:
+        import yaml  # type: ignore[import-untyped]
+        return yaml.safe_load(text)
+    except Exception:
+        pass
+
+    # Fallback: try JSON first (many YAML files are valid JSON subsets)
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # Ultra-simple line-based extractor for key: value and - key: value
+    result: Dict[str, Any] = {}
+    current_list_key: Optional[str] = None
+    list_items: List[Dict[str, Any]] = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        # List item
+        if stripped.startswith("- "):
+            item = stripped[2:]
+            if ":" in item:
+                k, v = item.split(":", 1)
+                entry = {k.strip(): v.strip().strip('"\'')}
+                if current_list_key:
+                    list_items.append(entry)
+                else:
+                    result.setdefault(k.strip(), []).append(v.strip().strip('"\''))
+            continue
+
+        # Key: Value
+        if ":" in stripped and not stripped.endswith(":"):
+            k, v = stripped.split(":", 1)
+            k = k.strip()
+            v = v.strip()
+            if v:
+                if v.lower() in ("true", "false"):
+
+=== infrastructure_ghost.py ===
+"""Module: INFRASTRUCTURE_GHOST — Digital Infrastructure Ghost for ReconPro v9.2.0.
+
+Creates a complete digital ghost of a target's infrastructure by:
+  1. IP Discovery & Mapping — enumerate all IPs via DNS, HTTP redirects, certificates.
+  2. Subdomain Infrastructure Scan — map tech stacks, cert chains, response patterns.
+  3. Certificate Transparency Mining — extract subdomains, org details from CT logs.
+  4. CDN/Cloud Provider Detection — identify hosting, CDNs, cloud services.
+  5. Technology Stack Clustering — group assets by shared technologies.
+  6. Lookalike Infrastructure Detection — find related domains/hosts.
+  7. Infrastructure Drift Detection — compare against historical patterns.
+  8. Attack Surface Scoring — score total exposed infrastructure.
+
+Uses ONLY the Python stdlib. No external dependencies.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import socket
+import ssl
+import time
+import urllib.error
+import urllib.parse
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from ..http import http_probe, Finding, default_limiter
+
+
+# ════════════════════════════════════════════════════════════════════════
+# DATABASES
+# ════════════════════════════════════════════════════════════════════════
+
+CLOUD_PROVIDER_SIGNS: Dict[str, Dict[str, Any]] = {
+    "aws": {
+        "name": "Amazon Web Services",
+        "header_patterns": [
+            re.compile(r"x-amz-request-id", re.I),
+            re.compile(r"x-amz-cf-id", re.I),
+            re.compile(r"x-amzn-requestid", re.I),
+        ],
+        "body_patterns": [
+            re.compile(r"awselasticbeanstalk", re.I),
+            re.compile(r"amazon(?:s3|aws|cloudfront)", re.I),
+            re.compile(r"aws\.amazon\.com", re.I),
+            re.compile(r"s3\.amazonaws\.com", re.I),
+        ],
+        "cname_patterns": [
+            re.compile(r"\.amazonaws\.com$", re.I),
+            re.compile(r"\.elb\.amazonaws\.com$", re.I),
+            re.compile(r"\.cloudfront\.net$", re.I),
+            re.compile(r"\.elasticbeanstalk\.com$", re.I),
+        ],
+        "ip_ranges": [
+            ("3.0.0.0", "3.127.255.255"),
+            ("13.32.0.0", "13.64.255.255"),
+            ("23.20.0.0", "23.23.255.255"),
+            ("34.192.0.0", "34.255.255.255"),
+            ("35.160.0.0", "35.183.255.255"),
+            ("43.192.0.0", "43.255.255.255"),
+            ("44.192.0.0", "44.255.255.255"),
+            ("46.137.0.0", "46.137.255.255"),
+            ("50.16.0.0", "50.19.255.255"),
+            ("52.0.0.0", "52.255.255.255"),
+            ("54.0.0.0", "54.255.255.255"),
+            ("99.77.0.0", "99.77.255.255"),
+            ("107.20.0.0", "107.23.255.255"),
+            ("172.16.0.0", "172.31.255.255"),
+        ],
+    },
+    "azure": {
+        "name": "Microsoft Azure",
+        "header_patterns": [
+            re.compile(r"x-ms-request-id", re.I),
+            re.compile(r"x-azure-ref", re.I),
+            re.compile(r"x-ms-version", re.I),
+        ],
+        "body_patterns": [
+            re.compile(r"microsoftazure", re.I),
+            re.compile(r"windows\.net", re.I),
+            re.compile(r"azurewebsites\.net", re.I),
+            re.compile(r"blob\.core\.windows\.net", re.I),
+        ],
+        "cname_patterns": [
+            re.compile(r"\.cloudapp\.azure\.com$", re.I),
+            re.compile(r"\.azurewebsites\.net$", re.I),
+            re.compile(r"\.azure\.com$", re.I),
+            re.compile(r"\.blob\.core\.windows\.net$", re.I),
+        ],
+        "ip_ranges": [
+            ("4.128.0.0", "4.255.255.255"),
+            ("13.64.0.0", "13.107.255.255"),
+            ("20.0.0.0", "20.255.255.255"),
+            ("40.64.0.0", "40.127.255.255"),
+            ("51.4.0.0", "51.16.255.255"),
+            ("52.96.0.0", "52.191.255.255"),
+            ("65.52.0.0", "65.55.255.255"),
+            ("104.40.0.0", "104.47.255.255"),
+            ("138.91.0.0", "138.91.255.255"),
+        ],
+
+=== nation_state_attributor.py ===
+"""Module: NATION STATE ATTRIBUTOR — Attack Attribution Engine.
+
+Attributes cyber-attack infrastructure to nation-state actors using
+MITRE ATT&CK group mappings, TTP correlation, infrastructure overlap,
+temporal pattern matching, and confidence scoring.
+
+Zero external dependencies — stdlib only.
+"""
+from __future__ import annotations
+
+import hashlib
+import ipaddress
+import json
+import math
+import re
+import socket
+import ssl
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple, Set
+from ..http import http_probe, Finding, default_limiter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MITRE ATT&CK Group Database (22 groups)
+# ═══════════════════════════════════════════════════════════════════════════
+
+APT_GROUP_DB: Dict[str, Dict[str, Any]] = {
+    "APT1": {
+        "id": "G0001", "name": "Comment Panda",
+        "aliases": ["PLA Unit 61398", "Byzantine Candor", "Shady RAT"],
+        "country": "China", "cc": "CN", "sponsored": True,
+        "motivation": ["espionage", "ip_theft"],
+        "sectors": ["aerospace", "energy", "technology", "government"],
+        "techniques": ["T1566.001", "T1078", "T1059.003", "T1547.001", "T1105"],
+        "tools": ["Gh0st RAT", "Poison Ivy", "PlugX"],
+        "languages": ["zh-CN", "en-US"],
+        "timezones": ["Asia/Shanghai"],
+        "active_years": (2006, 2024),
+        "c2_patterns": [r"\.cn$", r"china"],
+        "asn_hints": ["AS4134", "AS4812"],
+        "description": "Chinese PLA Unit 61398 — economic espionage.",
+    },
+    "APT10": {
+        "id": "G0049", "name": "Stone Panda",
+        "aliases": ["Cloud Hopper", "MenuPass", "POTATOES"],
+        "country": "China", "cc": "CN", "sponsored": True,
+        "motivation": ["espionage", "supply_chain"],
+        "sectors": ["msp", "technology", "government", "healthcare"],
+        "techniques": ["T1078", "T1566.001", "T1059.003", "T1055.001", "T1105"],
+        "tools": ["RedLeaves", "PlugX", "QuasarRAT", "Sakula"],
+        "languages": ["zh-CN", "en-US", "ja-JP"],
+        "timezones": ["Asia/Shanghai"],
+        "active_years": (2009, 2024),
+        "c2_patterns": [r"\.cn$"],
+        "asn_hints": ["AS4134", "AS4812", "AS58453"],
+        "description": "Chinese MSS — MSP intrusions and supply chain.",
+    },
+    "APT28": {
+        "id": "G0007", "name": "Fancy Bear",
+        "aliases": ["Strontium", "Sofacy", "Sednit", "Pawn Storm"],
+        "country": "Russia", "cc": "RU", "sponsored": True,
+        "motivation": ["espionage", "disinformation"],
+        "sectors": ["government", "military", "media", "energy"],
+        "techniques": ["T1566.002", "T1190", "T1078", "T1059.003",
+                       "T1071.001", "T1071.004", "T1132.001", "T1189"],
+        "tools": ["X-Agent", "Sofacy", "LoJax", "Zebrocy", "GameFish"],
+        "languages": ["ru-RU", "en-US", "de-DE"],
+        "timezones": ["Europe/Moscow"],
+        "active_years": (2007, 2024),
+        "c2_patterns": [r"\.ru$", r"sofacy", r"strontium"],
+        "asn_hints": ["AS12389", "AS13127", "AS28917"],
+        "description": "GRU Unit 26165 — election interference, gov espionage.",
+    },
+    "APT29": {
+        "id": "G0016", "name": "Cozy Bear",
+        "aliases": ["The Dukes", "CozyDuke", "NOBELIUM", "YTTRIUM"],
+        "country": "Russia", "cc": "RU", "sponsored": True,
+        "motivation": ["espionage", "ip_theft"],
+        "sectors": ["government", "diplomatic", "think_tanks", "technology"],
+        "techniques": ["T1566.001", "T1078", "T1059.001", "T1003.001",
+                       "T1055.001", "T1071.001", "T1567.002", "T1562.001"],
+        "tools": ["MiniDuke", "SeaDuke", "CozyDuke", "WellMess", "SolarWinds_backdoor"],
+        "languages": ["ru-RU", "en-US"],
+        "timezones": ["Europe/Moscow", "America/New_York"],
+        "active_years": (2008, 2024),
+        "c2_patterns": [r"\.ru$", r"nobelium"],
+        "asn_hints": ["AS12389", "AS13127"],
+        "description": "SVR-affiliated — SolarWinds supply-chain compromise.",
+    },
+    "Turla": {
+        "id": "G0010", "name": "Krypton",
+        "aliases": ["Venomous Bear", "Snake", "Waterbug", "Uroburos"],
+        "country": "Russia", "cc": "RU", "sponsored": True,
+        "motivation": ["espionage"],
+        "sectors": ["government", "military", "education", "journalism"],
+        "techniques": ["T1078", "T1059.003", "T1003.001", "T1055.001",
+
+=== nhi.py ===
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Dict, List
+from ..http import http_probe, Finding
+
+
+# Cloud provider metadata endpoints
+CLOUD_METADATA = {
+    "AWS": [
+        ("http://169.254.169.254/latest/meta-data/iam/security-credentials/", "IAM role credentials"),
+        ("http://169.254.169.254/latest/meta-data/instance-id/", "Instance ID"),
+        ("http://169.254.169.254/latest/user-data/", "User data (may contain secrets)"),
+    ],
+    "GCP": [
+        ("http://metadata.google.internal/computeMetadata/v1/", "GCP metadata (X-Goog-Metadata-Request header needed)"),
+    ],
+    "Azure": [
+        ("http://169.254.169.254/metadata/instance?api-version=2021-02-01", "Azure instance metadata"),
+    ],
+}
+
+# Common NHI-related paths and tokens
+NHI_PATHS = [
+    "/.aws/credentials", "/.aws/config",
+    "/.kube/config", "/.config/gcloud/application_default_credentials.json",
+    "/.azure/credentials", "/.azure/accessTokens.json",
+    "/app/credentials.json", "/secrets/service-account.json",
+    "/var/run/secrets/kubernetes.io/serviceaccount/token",
+    "/etc/kubernetes/admin.conf",
+]
+
+# OAuth/service token patterns in responses
+TOKEN_PATTERNS = [
+    (r'ya29\.[a-zA-Z0-9_-]+', "Google OAuth token"),
+    (r'eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*', "JWT token"),
+    (r'ghp_[a-zA-Z0-9]{36}', "GitHub PAT"),
+    (r'gho_[a-zA-Z0-9]{36}', "GitHub OAuth token"),
+    (r'ghs_[a-zA-Z0-9]{36}', "GitHub App token"),
+    (r'glpat-[a-zA-Z0-9-]{20,}', "GitLab PAT"),
+    (r'xox[bpsa]-[a-zA-Z0-9-]+', "Slack token"),
+    (r'sk-[a-zA-Z0-9]{48}', "OpenAI API key"),
+    (r'AKIA[0-9A-Z]{16}', "AWS Access Key ID"),
+    (r'AIza[0-9A-Za-z_-]{35}', "Google API key"),
+]
+
+
+def _check_cloud_metadata(base_url: str, timeout: int = 8,
+                           verify_tls: bool = True) -> List[Finding]:
+    """Check if cloud metadata endpoints are accessible via SSRF."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    for provider, endpoints in CLOUD_METADATA.items():
+        for endpoint, desc in endpoints:
+            # Try SSRF via common parameter names
+            ssrf_params = ["url", "redirect", "next", "returnUrl", "callback",
+                          "fetch", "proxy", "target", "dest", "goto"]
+
+            for param in ssrf_params:
+                import urllib.parse
+                url = base_url.rstrip("/") + f"?{param}={urllib.parse.quote(endpoint)}"
+                resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+                body = resp.get("body", "")[:4096]
+                status = resp.get("status", 0)
+
+                if status == 200 and len(body) > 20:
+                    meta_sigs = ["ami-id", "instance-id", "access-key", "security-credentials",
+                                "iam", "serviceaccount", "subscription", "computeMetadata"]
+                    if any(sig.lower() in body.lower() for sig in meta_sigs):
+                        findings.append(Finding(
+                            title=f"SSRF -> {provider} metadata",
+                            severity="critical", category="nhi_ssrf",
+                            module="nhi",
+                            description=f"Cloud metadata ({provider}) accessible via SSRF through '{param}' parameter",
+                            evidence=f"Param: {param}, endpoint: {endpoint[:60]}",
+                            asset=host, points_deducted=15,
+                            remediation="Block all internal/cloud metadata IP ranges. Validate URL inputs.",
+                        ))
+                        break
+            else:
+                continue
+            break
+
+    return findings
+
+
+def _scan_for_tokens(base_url: str, timeout: int = 8,
+                     verify_tls: bool = True) -> List[Finding]:
+    """Scan page source for leaked tokens/credentials."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+    body = resp.get("body", "")[:131072]
+    headers_str = " ".join(f"{k}: {v}" for k, v in resp.get("headers", {}).items())
+    haystack = body + " " + headers_str
+
+    for pattern, name in TOKEN_PATTERNS:
+
+=== oblivion.py ===
+from __future__ import annotations
+
+import re
+import time
+import json
+from typing import Any, Dict, List, Optional
+from ..http import http_probe, Finding
+
+
+DREAD_SCALE = {
+    "critical":     (10, 8, 9, 9, 8),
+    "high":         (8, 7, 7, 7, 7),
+    "medium":       (5, 5, 5, 5, 5),
+    "low":          (3, 3, 3, 3, 4),
+    "info":         (1, 1, 1, 1, 2),
+    "transcendent": (10, 10, 10, 10, 10),
+}
+
+DREAD_LEVELS = [
+    ("SUBTLE",      0,   2.0,   "Barely perceptible"),
+    ("NOTABLE",     2.0, 4.0,   "Something is watching"),
+    ("SUBSTANTIAL",  4.0, 6.0,   "The foundation cracks"),
+    ("DEVASTATING",  6.0, 8.0,   "Total system compromise"),
+    ("OMNIPOTENT",  8.0, 9.5,   "The target IS the vulnerability"),
+    ("ABSOLUTE",    9.5, 10.1,  "Resistance is recursive"),
+]
+
+FEAR_INDEX = DREAD_LEVELS
+
+
+def _dread_score(severity: str) -> float:
+    d, r, e, a, disc = DREAD_SCALE.get(severity, (0, 0, 0, 0, 0))
+    return round((d + r + e + a + disc) / 5, 1)
+
+
+def _dread_level(score: float) -> tuple:
+    for name, lo, hi, desc in DREAD_LEVELS:
+        if lo <= score < hi:
+            return (name, desc)
+    return ("ABSOLUTE", "Resistance is recursive")
+
+
+def _oblivion_ai(prompt: str, timeout: int = 30) -> str:
+    try:
+        from ..integrations.zai_stream import ZAIStreamClient
+        return ZAIStreamClient(timeout=timeout).chat(
+            prompt, system_prompt="You are OBLIVION, the last oracle. Be concise and technical.")
+    except Exception:
+        return "[OBLIVION analysis unavailable — stdlib fallback used]"
+
+
+def _h(base_url: str) -> str:
+    return base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+
+# ── Stage 1-3: Original OBLIVION stages ─────────────────────────────────
+
+def _analyze_info_disclosure(base_url: str, timeout: int = 8,
+                              verify_tls: bool = True) -> List[Finding]:
+    findings: List[Finding] = []
+    host = _h(base_url)
+    info_paths = [
+        "/.git/HEAD", "/.git/config", "/.git/logs/HEAD",
+        "/.svn/entries", "/.hg/store", "/.DS_Store", "/Thumbs.db",
+        "/server-status", "/server-info", "/.well-known/security.txt",
+        "/.env", "/.env.local", "/.env.production",
+        "/wp-config.php.bak", "/config.php~",
+        "/backup.sql", "/db.sql", "/dump.sql",
+        "/.htaccess", "/.htpasswd", "/WEB-INF/web.xml",
+        "/META-INF/MANIFEST.MF", "/debug", "/phpinfo.php", "/info.php",
+        "/actuator", "/actuator/env", "/actuator/health",
+        "/swagger.json", "/swagger-ui.html", "/graphql", "/graphiql",
+    ]
+    for path in info_paths:
+        try:
+            resp = http_probe(base_url.rstrip("/") + path, timeout=timeout, verify_tls=verify_tls)
+            if resp.get("status") == 200 and len(resp.get("body", "")) > 10:
+                body_lower = resp.get("body", "").lower()
+                if any(s in body_lower for s in ["password", "secret", "api_key", "token", "private"]):
+                    sev, pts = "critical", 15
+                elif any(s in body_lower for s in ["stack trace", "exception", "error", "debug"]):
+                    sev, pts = "high", 10
+                elif path in ("/.git/HEAD", "/.svn/entries", "/.hg/store"):
+                    sev, pts = "high", 10
+                elif "swagger" in path or "graphql" in path:
+                    sev, pts = "low", 3
+                else:
+                    sev, pts = "medium", 5
+                findings.append(Finding(
+                    title="Info disclosure: {}".format(path), severity=sev, category="info_disclosure",
+                    module="oblivion", description="Sensitive info at {}".format(path),
+                    evidence="GET {} -> 200 ({} bytes)".format(path, len(resp.get("body", ""))),
+                    asset=host, points_deducted=pts, dread_score=_dread_score(sev),
+                ))
+        except Exception:
+            pass
+    return findings
+
+
+def _analyze_headers_deep(base_url: str, timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+
+=== pegasus.py ===
+from __future__ import annotations
+
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional
+from ..http import http_probe, Finding
+
+
+PEGASUS_C2_DOMAINS = [
+    "pandorasoft.ps", "pstcpool.com", "kstechglobal.com", "traviskirk.com",
+    "macserve.org", "starline-beta.com", "netplus-bd.com", "nocturnal-service.com",
+    "oasis-tech.co", "kristall-wellness.com", "appsbrowser.net", "slserver.in",
+    "safesurf.in", "heraldsolution.com", "bookmarkingplus.com", "datalist.co.in",
+    "globalportal.co.in", "mailserverlog.com", "mobileserver.in", "onlineserver.in",
+    "port-server.com", "portserver.in", "serverlog.co.in", "serverlog.in",
+    "sharkserver.in", "smartserver.in", "sms-server.in", "starline-servers.com",
+    "starlineservers.com", "starlinebeta.com", "systemserver.in", "techserver.in",
+    "uploadserver.in", "webserverlog.com", "winserver.in", "worldserver.in",
+    "appliedmicrosystems.com", "applmicro.com", "atomiceconet.com", "beamingdata.com",
+    "bikiniplanet.net", "binaryprotect.com", "bisonhealth.com", "biscuithouse.com",
+    "bluelightanalytics.com", "bluewaveuae.com", "bonniewheel.com", "bootstrap-design.com",
+    "bosslife.in", "bouncycastle.in", "brand-hygiene.com", "brickowl.com",
+    "briankrebs.com", "brightkite.com", "brinkster.com", "bronzesun.com",
+    "calderdalegazette.co.uk", "camdenny.com", "capricornhost.com", "carltonhood.com",
+    "castironhosting.com", "catn.com", "cellularoutfitter.com", "certifiedmediadesigns.com",
+    "charitymobile.org", "chaseforeclosure.com", "chicagoseoadvanced.com", "choicelendinginc.com",
+    "chromeadvanced.com", "cincinnatibell.com", "civicserve.com", "claimyourbonus.com",
+    "clarksdaleattorney.com", "clickpalace.com", "cloudcomputeonline.com", "clubpenguinplanet.com",
+    "cobaltstrike.com", "code4mobile.com", "coldfusionnation.com", "coloradobanking.com",
+    "columbusbankruptcy.com", "communitypolicingcenter.org", "compcase.com", "compreviews.net",
+    "compuchamps.com", "connecticutbankruptcy.com", "conversecountywy.gov", "cookinggamesforkids.org",
+    "corporateinvestmentonline.com", "cpanellogin.net", "cranialconcept.com", "createacover.com",
+    "creditrepairace.com", "cricketfundas.com", "cubehosting.net", "cumberlandvalleybank.com",
+    "cybersecurityuae.com", "d1f0f03e.xyz", "dallasbankruptcy.com", "dallascountybankruptcy.com",
+    "databasetools.org", "davidhabb.com", "daytonabankruptcy.com", "daytonbankruptcyattorney.com",
+    "deafening-creation.com", "debtconsolidationinc.com", "deitylink.com", "delawarebankruptcyattorney.com",
+    "demotivationalposters.info", "denverbankruptcy.com", "denverbankruptcyattorney.com",
+    "detroitsportszone.com", "deutsche-telefonie.com", "devfront.com", "digital-audio-software.com",
+    "digitaldementia.com", "digitalmedianet.org", "dinnergifts.com", "discountcigarclub.com",
+    "discoverytracking.com", "dns1.name-services.info", "dollsandcollectibles.com",
+    "donald-trump-truth.com", "dotcomgeneration.com", "doubleroll.com", "dreambankruptcy.com",
+    "dubaicitytourism.com", "dubaidesertsafari.com", "dubaifashion.org",
+    "dubaifoodtourism.com", "dubaihotels.org", "dubaiinternetauction.com",
+    "dubai-realestatemarket.com", "dubaisports.net", "dubaivideo.info",
+]
+
+PEGASUS_SMS_PATTERNS = [
+    (r"click.*link.*verify.*account", "Account verification SMS"),
+    (r"package.*delivery.*track", "Package delivery SMS"),
+    (r"urgent.*message.*click.*here", "Urgent message SMS"),
+    (r"account.*has.*been.*locked", "Account locked SMS"),
+    (r"security.*alert.*confirm.*identity", "Security alert SMS"),
+    (r"win.*prize.*claim.*now", "Prize claim SMS"),
+    (r"update.*payment.*information", "Payment update SMS"),
+    (r"suspicious.*login.*activity", "Suspicious login SMS"),
+    (r"verify.*phone.*number.*code", "Phone verification SMS"),
+    (r"bank.*transfer.*pending.*confirm", "Bank transfer SMS"),
+    (r"tax.*refund.*click.*link", "Tax refund SMS"),
+]
+
+PEGASUS_PROCESS_SIGNATURES = [
+    "PTTray", "PTClient", "WPPStreaming", "PhotosFramework",
+    "MobileSafari", "iTunesStore", "Facetime", "WhatsApp",
+    "Telegram", "Skype", "Viber", "Facebook",
+    "Messenger", "GoogleChrome", "Safari", "Mail",
+    "com.apple.WebKit", "com.apple.mobilesafari", "com.apple.facetime",
+]
+
+PEGASUS_PATH_INDICATORS = [
+    "/System/Library/Frameworks/Photos.framework",
+    "/System/Library/PrivateFrameworks/WebKit.framework",
+    "/private/var/mobile/Library/AddressBook",
+    "/private/var/mobile/Library/SMS",
+    "/private/var/mobile/Library/Notes",
+    "/private/var/mobile/Library/Voicemail",
+    "/private/var/containers/Bundle/Application",
+    "/var/db/lockdown",
+    "/usr/libexec/PPT",
+]
+
+
+def _check_c2_dns(host: str) -> List[Finding]:
+    """Check if target resolves to known Pegasus C2 IP ranges."""
+    findings = []
+    try:
+        import socket
+        results = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        ips = list(set(a[4][0] for a in results))
+        for ip in ips:
+            # Check if IP is in known C2 ranges
+            first_octets = ".".join(ip.split(".")[:2])
+            known_ranges = ["185.215.", "193.169.", "64.225.", "167.99.", "104.248."]
+            if any(ip.startswith(r) for r in known_ranges):
+                findings.append(Finding(
+                    title="IP in known C2 IP range: {}".format(ip),
+                    severity="critical", category="pegasus_c2", module="pegasus",
+                    description="Target IP {} falls in known exploit infrastructure range".format(ip),
+                    evidence="IP: {} matches known C2 CIDR ranges".format(ip),
+                    asset=host, points_deducted=15,
+
+=== quantum_fingerprint.py ===
+"""QUANTUM FINGERPRINT — TCP/IP Stack Fingerprinting via HTTP Timing Analysis.
+
+ReconPro v9.2.0 capability: infer remote operating system, TCP stack
+implementation, congestion-control algorithm, MTU, and kernel clock
+resolution — entirely through HTTP-level timing observation.
+
+No raw sockets.  No SYN packets.  No privileged access.
+Pure urllib / socket / ssl / time stdlib.
+
+Methodology
+-----------
+Each technique sends carefully crafted HTTP requests and measures
+sub-millisecond timing characteristics of the response.  By comparing
+the observed multi-dimensional timing fingerprint against a database
+of known OS / kernel signatures, we produce a probabilistic OS
+identification with a confidence score.
+
+The seven orthogonal signals are:
+  1. Initial TTL deduction       — payload-size vs RTT variance
+  2. TCP window size              — initial data-burst volume analysis
+  3. SYN-ACK timing behaviour     — fresh-connection first-byte latency
+  4. HTTP keep-alive persistence  — connection reuse timing degradation
+  5. Path MTU detection           — payload escalation fragmentation spike
+  6. Congestion control alg.      — burst-recovery timing pattern
+  7. Timestamp resolution         — Date-header clock granularity
+
+References
+----------
+  [1] Zalewski, M. "p0f — Passive OS Fingerprinting" (2006)
+  [2] RFC 1323 — TCP Extensions for High Performance
+  [3] Ha, S. et al. "CUBIC: A New TCP-Friendly High-Speed TCP Variant" (2008)
+  [4] Cardwell, N. et al. "BBR: Congestion-Based Congestion Control" (2016)
+  [5] Mathis, M. et al. "The Case for Universal Path MTU Discovery" (RFC 1191)
+"""
+
+from __future__ import annotations
+
+import hashlib
+import http.client
+import json
+import math
+import re
+import socket
+import ssl
+import statistics
+import struct
+import time
+import urllib.error
+import urllib.request
+from collections import Counter, OrderedDict
+from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import http_probe, Finding, default_limiter
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Configuration
+# ═══════════════════════════════════════════════════════════════════════════
+
+MODULE_NAME = "quantum_fingerprint"
+
+_PROBE_ITERATIONS = 12          # samples per sub-probe
+_CONGESTION_BURST_SIZE = 8      # requests in burst
+_CONGESTION_RECOVERY_PROBES = 6 # probes after burst
+_TIMESTAMP_SAMPLES = 25         # rapid sequential requests for clock
+
+# Payload sizes for TTL probing (bytes) — powers of two + edge cases
+_TTL_PAYLOAD_SIZES = [64, 128, 256, 512, 1024, 1400, 1460]
+
+# MTU detection escalation points (bytes)
+_MTU_PAYLOAD_SIZES = [
+    512, 1024, 1300, 1400, 1460, 1472, 1480, 1500,
+    1600, 1792, 2048, 3200, 4096, 8192, 16384,
+]
+
+# Known initial TTL values per OS family
+_KNOWN_INITIAL_TTL = [32, 60, 64, 128, 255]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# OS Signature Database
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class OSSignature:
+    """Timing fingerprint for a known OS / kernel combination.
+
+    Each field encodes the *expected* value or *range* for that signal,
+    plus a tolerance band and weight for confidence scoring.
+
+    Fields
+    ------
+    name           : Human-readable OS name
+    family         : High-level family (Linux, Windows, macOS, BSD, Cisco, CDN)
+    ttl_initial    : Expected initial TTL (64, 128, 255 …)
+    tcp_window     : Typical initial TCP window size (bytes)
+    synack_ms      : Typical SYN→first-byte latency in ms (median)
+    timestamp_res  : Date-header clock resolution in ms
+    keepalive_s    : Connection persistence after idle in seconds
+
+=== recon.py ===
+"""Module: RECON — 25-category surface reconnaissance.
+
+Checks:
+  1.  DNS resolution (A, AAAA, CNAME, MX, NS, TXT) via Cloudflare DoH
+  2.  HTTP headers analysis (security headers)
+  3.  Technology fingerprinting (40+ technologies)
+  4.  robots.txt / sitemap.xml
+  5.  TLS/SSL certificate info + cipher analysis
+  6.  Open ports (top 20)
+  7.  Sensitive path exposure (.env, .git, configs)
+  8.  API endpoint discovery
+  9.  CORS policy analysis
+ 10.  Cookie security flags
+ 11.  Redirect chain analysis
+ 12.  WAF detection (15 providers)
+ 13.  Email / SPF / DMARC
+ 14.  Certificate Transparency (crt.sh)
+ 15.  Threat Intelligence (abuse.ch)
+ 16.  Enhanced TLS Cipher Analysis
+ 17.  Enhanced Technology Fingerprinting
+ 18.  Enhanced WAF Detection
+ 19.  Content Security Policy Deep Analysis
+ 20.  HTTP/2 and Protocol Analysis
+ 21.  Subdomain Enumeration via Passive DNS
+ 22.  Email Harvesting
+ 23.  Open Redirect Deep Check
+ 24.  Mixed Content Detection
+ 25.  Meta Tag Security
+"""
+from __future__ import annotations
+
+import json
+import re
+import socket
+import ssl
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from ..http import http_probe, Finding, default_limiter
+
+
+SENSITIVE_PATHS = [
+    "/.env", "/.env.local", "/.env.production",
+    "/.git/config", "/.git/HEAD", "/.gitignore",
+    "/docker-compose.yml", "/config.json", "/config.yaml",
+    "/package.json", "/.npmrc", "/vercel.json", "/netlify.toml",
+    "/.aws/credentials", "/.ssh/id_rsa",
+    "/.github/workflows/secret", "/.gitlab-ci.yml",
+]
+
+API_PATHS = [
+    "/api/webhooks", "/api/trpc", "/api/v1/admin", "/api/v1/users",
+    "/api/v1/config", "/api/internal", "/api/debug",
+    "/api/graphql", "/api/upload", "/admin", "/dashboard",
+]
+
+SECURITY_HEADERS = [
+    ("strict-transport-security", "HSTS", "high", 8),
+    ("content-security-policy", "CSP", "medium", 6),
+    ("x-content-type-options", "X-Content-Type-Options", "medium", 4),
+    ("x-frame-options", "X-Frame-Options", "medium", 5),
+    ("referrer-policy", "Referrer-Policy", "low", 3),
+    ("permissions-policy", "Permissions-Policy", "low", 2),
+]
+
+WAF_SIGNATURES = [
+    ("Cloudflare", ["cf-ray", "__cfduid", "cloudflare"]),
+    ("AWS WAF", ["awselb", "x-amzn-requestid"]),
+    ("Akamai", ["akamai", "x-akamai"]),
+    ("Sucuri", ["sucuri", "x-sucuri-id"]),
+    ("Imperva", ["x-iinfo", "incap_ses_"]),
+    ("Fastly", ["x-fastly-request-id", "x-fastly-debug"]),
+    ("Cloudfront", ["x-amz-cf-id", "via: *.cloudfront.net"]),
+    ("F5 BIG-IP", ["bigipserver", "f5"]),
+    ("Barracuda", ["bnmsg", "barracloud"]),
+    ("Fortinet", ["fortiwafid", "fortinet"]),
+    ("Radware", ["x-sl-compstate"]),
+    ("Comodo CWS", ["cws"]),
+    ("Wordfence", ["x-wp-sec"]),
+    ("StackPath", ["stackpath"]),
+    ("Azure Front Door", ["x-azurefdid", "x-fd-intro-version"]),
+]
+
+TOP_PORTS = [21, 22, 25, 53, 80, 110, 143, 443, 465, 587,
+             993, 995, 1433, 3306, 5432, 8080, 8443, 8888, 9090, 27017]
+
+TECH_SIGNATURES = [
+    # Frontend frameworks
+    ("Next.js", ["_next/", "__next", "x-nextjs"]),
+    ("React", ["react", "__react", "_reactRootContainer"]),
+    ("Vue.js", ["vue.", "/vue", "v-cloak", "v-bind", "v-if", "data-v-"]),
+    ("Angular", ["ng-version", "ng-content", ".ng-", "angular"]),
+    ("Svelte", ["svelte", "__svelte"]),
+    ("SvelteKit", ["sveltekit", "__sveltekit"]),
+    ("Astro", ["astro", "astro-island", "data-astro"]),
+    ("Remix", ["remix", "__remix"]),
+    # CMS platforms
+
+=== signal_intelligence.py ===
+"""SIGNAL_INTELLIGENCE module — Intelligence-community traffic analysis frameworks.
+
+ReconPro v9.2.0
+
+Applies intelligence-community analysis frameworks to HTTP traffic observed from
+a target.  Eight analytical capabilities are layered on top of a series of
+repeated HTTP probes:
+
+  1. Traffic Pattern Analysis      — request/response timing periodicity & jitter.
+  2. Beaconing Detection             — C2 beacon fingerprinting (interval, size, jitter).
+  3. C2 Pattern Matching             — known C2 framework fingerprints.
+  4. Communication Schedule Extraction — maintenance windows, active hours.
+  5. Payload Size Analysis           — encrypted-tunnel size indicators.
+  6. User-Agent Fingerprinting       — automation, headless, C2 UA signatures.
+  7. DNS-over-HTTP Pattern Analysis  — C2-via-DNS observed through HTTP.
+  8. Session Behavior Profiling      — cookie, referrer, navigation chains.
+
+Pure stdlib — zero external dependencies.
+"""
+from __future__ import annotations
+
+import math
+import re
+import statistics
+import time
+import urllib.parse
+from collections import Counter, OrderedDict
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import http_probe, Finding, default_limiter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# C2_SIGNATURES DATABASE
+# ═══════════════════════════════════════════════════════════════════════════
+
+C2_SIGNATURES: Dict[str, Dict[str, Any]] = {
+    "cobalt_strike": {
+        "name": "Cobalt Strike",
+        "developer": "HelpSystems / Fortra",
+        "description": (
+            "Advanced adversary simulation framework. HTTP C2 beacons support "
+            "GET/POST check-in with configurable jitter, Malleable C2 profiles "
+            "for traffic shaping, and sleep mask obfuscation."
+        ),
+        "default_beacon_interval": 60,
+        "default_jitter_pct": 0.37,
+        "known_profiles": [
+            "amazon", "azure", "getchelp", "google",
+            "maestro", "postman", "safari", "slack",
+        ],
+        "header_indicators": {
+            "Cookie": r"session=[a-f0-9]{32}",
+            "User-Agent": r"(Mozilla/5\.0 \(Windows NT.*Trident/7\.0|Mozilla/4\.0 \(compatible; MSIE.*\))",
+        },
+        "uri_patterns": [
+            r"/[a-z]{4,8}\.(asp|aspx|php|js|css)",   # malleable profile URIs
+            r"/pixel\.(gif|png|jpg)",
+            r"/jquery-[\d.]+\.min\.js",
+            r"/favicon\.(ico|png)",
+        ],
+        "response_size_range": (0, 4096),
+        "request_size_range": (0, 8192),
+        "dread_score": 9.0,
+        "severity": "critical",
+        "mitre_attack": ["T1071.001", "T1105", "T1573.001"],
+    },
+    "metasploit": {
+        "name": "Metasploit Framework",
+        "developer": "Rapid7 / Offensive Security",
+        "description": (
+            "Penetration testing framework with multiple HTTP-based payload "
+            "stagers (reverse_http, reverse_https). Traffic often includes "
+            "Base64-encoded stager URLs and predictable URI patterns."
+        ),
+        "default_beacon_interval": 5,
+        "default_jitter_pct": 0.0,
+        "known_payloads": [
+            "reverse_http", "reverse_https", "bind_tcp",
+            "meterpreter/reverse_tcp", "meterpreter/reverse_https",
+        ],
+        "header_indicators": {
+            "Content-Type": r"application/octet-stream",
+            "User-Agent": r"(Mozilla/4\.0|Lynx/|Wget/|curl/)",
+        },
+        "uri_patterns": [
+            r"/[A-Za-z0-9+/]{16,}={0,2}",  # base64 stager URI
+            r"/initializ[e]d",                         # meterpreter
+            r"/\\x[0-9a-fA-F]{2}",                    # hex-encoded path
+            r"/DLL_?\d+",                              # DLL staging
+        ],
+        "response_size_range": (0, 65536),
+        "request_size_range": (0, 4096),
+        "dread_score": 8.5,
+        "severity": "critical",
+        "mitre_attack": ["T1071.001", "T1059.003", "T1132.001"],
+    },
+    "empire": {
+        "name": "Empire / Starkiller",
+        "developer": "BC Security",
+
+=== steganography_detector.py ===
+"""Module: STEGANOGRAPHY DETECTOR — Hidden Data & Covert Channel Analysis.
+
+Detects hidden data and steganography in HTTP responses — techniques not
+covered by any open-source scanner.
+
+10 detection categories:
+  1. Whitespace Steganography in HTML/JSON
+  2. Base64 Anomaly Detection
+  3. HTTP Header Steganography
+  4. Image LSB Detection
+  5. CSS Steganography
+  6. JavaScript Variable Naming Anomalies
+  7. Response Size Anomalies
+  8. Charset Encoding Tricks
+  9. Metadata Steganography (EXIF/IPTC/XMP)
+ 10. Timing Channel Detection
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import html
+import json
+import re
+import struct
+import time
+from collections import Counter
+from typing import Any, Dict, List, Optional
+from ..http import http_probe, Finding, default_limiter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Unicode Zero-Width Character Detection Tables
+# ═══════════════════════════════════════════════════════════════════════════
+
+ZERO_WIDTH_CHARS: Dict[str, Dict[str, str]] = {
+    "\u200b": {
+        "name": "ZERO WIDTH SPACE",
+        "unicode": "U+200B",
+        "risk": "high",
+        "use": "Widely used for invisible text encoding; can hide 1 bit per character",
+    },
+    "\u200c": {
+        "name": "ZERO WIDTH NON-JOINER",
+        "unicode": "U+200C",
+        "risk": "high",
+        "use": "Used in text steganography tools (zwc-stego, unicode-steganography); encodes binary data",
+    },
+    "\u200d": {
+        "name": "ZERO WIDTH JOINER",
+        "unicode": "U+200D",
+        "risk": "high",
+        "use": "Common in emoji-based steganography; encodes data in ZWJ sequences",
+    },
+    "\ufeff": {
+        "name": "BYTE ORDER MARK (BOM)",
+        "unicode": "U+FEFF",
+        "risk": "medium",
+        "use": "Can be used as steganographic channel when repeated or misplaced; signals encoding tricks",
+    },
+    "\u200e": {
+        "name": "LEFT-TO-RIGHT MARK",
+        "unicode": "U+200E",
+        "risk": "medium",
+        "use": "Bi-directional text control; can encode data in LTR/RTL alternation patterns",
+    },
+    "\u200f": {
+        "name": "RIGHT-TO-LEFT MARK",
+        "unicode": "U+200F",
+        "risk": "medium",
+        "use": "Bi-directional text control; RTL/LTR alternation encodes binary data",
+    },
+    "\u202a": {
+        "name": "LEFT-TO-RIGHT EMBEDDING",
+        "unicode": "U+202A",
+        "risk": "low",
+        "use": "Bidi control override; suspicious if present in non-Arabic/Hebrew content",
+    },
+    "\u202b": {
+        "name": "RIGHT-TO-LEFT EMBEDDING",
+        "unicode": "U+202B",
+        "risk": "low",
+        "use": "Bidi control override; rare outside RTL content, potential covert channel",
+    },
+    "\u202c": {
+        "name": "POP DIRECTIONAL FORMATTING",
+        "unicode": "U+202C",
+        "risk": "low",
+        "use": "Terminates bidi embedding; abnormal frequency suggests encoding",
+    },
+    "\u2060": {
+        "name": "WORD JOINER",
+        "unicode": "U+2060",
+        "risk": "medium",
+        "use": "Invisible character similar to ZWSP; used in some steganography tools",
+    },
+    "\u2061": {
+        "name": "FUNCTION APPLICATION",
+        "unicode": "U+2061",
+        "risk": "low",
+
+=== team.py ===
+"""Team Management module for ReconPro.
+
+Provides local team member management, role assignment, search,
+invite generation, and activity logging for security operations.
+Data is persisted to ~/.reconpro/team.json.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from ..http import Finding
+
+
+VALID_ROLES = ("analyst", "operator", "lead", "admin")
+
+TEAM_DIR = os.path.expanduser("~/.reconpro")
+TEAM_FILE = os.path.join(TEAM_DIR, "team.json")
+
+
+# ── Persistence helpers ─────────────────────────────────────────────────
+
+def _load_team() -> Dict[str, Any]:
+    """Load team data from disk, creating defaults if absent."""
+    if not os.path.exists(TEAM_FILE):
+        return {"members": {}, "invites": {}, "log": []}
+    try:
+        with open(TEAM_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        data.setdefault("members", {})
+        data.setdefault("invites", {})
+        data.setdefault("log", [])
+        return data
+    except (json.JSONDecodeError, OSError):
+        return {"members": {}, "invites": {}, "log": []}
+
+
+def _save_team(data: Dict[str, Any]) -> None:
+    """Persist team data atomically."""
+    os.makedirs(TEAM_DIR, exist_ok=True)
+    tmp = TEAM_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, default=str)
+    os.replace(tmp, TEAM_FILE)
+
+
+def _append_log(data: Dict[str, Any], action: str, detail: str,
+                 actor: str = "system") -> None:
+    """Append a timestamped entry to the activity log."""
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "detail": detail,
+        "actor": actor,
+    }
+    data["log"].append(entry)
+    # Keep log bounded to last 500 entries
+    if len(data["log"]) > 500:
+        data["log"] = data["log"][-500:]
+
+
+def _make_member(name: str, role: str, skills: Optional[List[str]] = None,
+                 notes: str = "") -> Dict[str, Any]:
+    return {
+        "name": name,
+        "role": role,
+        "skills": skills or [],
+        "notes": notes,
+        "added_at": datetime.now(timezone.utc).isoformat(),
+        "active": True,
+    }
+
+
+def _finding_for(title: str, severity: str, category: str,
+                 description: str, evidence: str) -> Finding:
+    return Finding(
+        title=title, severity=severity, category=category,
+        module="team", description=description, evidence=evidence,
+        asset="local-team", points_deducted=0, remediation="",
+    )
+
+
+# ── Public API ──────────────────────────────────────────────────────────
+
+def add_member(name: str, role: str = "analyst",
+               skills: Optional[List[str]] = None,
+               notes: str = "") -> Finding:
+    """Add a new team member. Returns a Finding for the audit trail."""
+    if role not in VALID_ROLES:
+        return _finding_for(
+            f"Invalid role: {role}", "high", "team_config",
+            f"Attempted to add member '{name}' with unknown role '{role}'.",
+            f"role={role}",
+        )
+    data = _load_team()
+
+=== vibesec.py ===
+"""Module: VIBESEC — AI/Vibe-Coding Vulnerability Benchmark.
+
+7 vulnerability categories checked:
+  1. Exposed environment/config files
+  2. Unauthenticated API/webhook routes
+  3. CORS policy analysis
+  4. Exposed anon/public backend keys (Supabase, Firebase, S3, etc.)
+  5. Missing security headers
+  6. Exposed database admin interfaces
+  7. S3/R2/Cloud storage directory listings
+
+Produces a 100-point score with A+–F grades and a GitHub badge.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List
+from ..http import http_probe, Finding
+
+
+SENSITIVE_PATHS = [
+    "/.env", "/.env.local", "/.env.production", "/.env.development",
+    "/.git/config", "/.git/HEAD", "/.gitignore",
+    "/docker-compose.yml", "/docker-compose.yaml",
+    "/config.json", "/config.yaml", "/config.yml",
+    "/package.json", "/.npmrc",
+    "/vercel.json", "/netlify.toml",
+    "/firebase.json", "/firestore.rules",
+    "/.vscode/settings.json", "/.idea/workspace.xml",
+    "/.aws/credentials", "/.aws/config",
+    "/.ssh/id_rsa", "/.ssh/id_ed25519", "/.ssh/authorized_keys",
+    "/.github/workflows/secret", "/.gitlab-ci.yml",
+    "/travis.yml", "/.circleci/config.yml",
+]
+
+API_PATHS = [
+    "/api/webhooks", "/api/trpc", "/api/v1/admin", "/api/v1/users",
+    "/api/v1/config", "/api/internal", "/api/debug",
+    "/api/graphql", "/api/stripe/webhook", "/api/upload",
+    "/admin", "/admin/login", "/dashboard",
+]
+
+ANON_KEY_PATTERNS: List[tuple[str, re.Pattern]] = [
+    ("supabase", re.compile(r'[\w-]*\.supabase\.co', re.I)),
+    ("firebase", re.compile(r'[\w-]*\.firebaseapp\.com', re.I)),
+    ("aws-s3", re.compile(r's3\.amazonaws\.com|s3-\w+-\d+\.amazonaws\.com', re.I)),
+    ("cloudflare-r2", re.compile(r'[\w-]+\.r2\.cloudflarestorage\.com', re.I)),
+    ("vercel-blob", re.compile(r'blob\.vercel-storage\.com', re.I)),
+    ("gcp-storage", re.compile(r'storage\.googleapis\.com', re.I)),
+    ("azure-blob", re.compile(r'[\w]+\.blob\.core\.windows\.net', re.I)),
+]
+
+DB_ADMIN_PATHS = [
+    "/phpmyadmin", "/phpmyadmin/", "/adminer", "/adminer.php",
+    "/mongo-express", "/mongo-express/", "/_utils",
+    "/pgadmin4", "/pgadmin/",
+    "/redis-commander", "/redis-insight",
+    "/prisma-studio", "/studio.apollo",
+    "/graphql-playground", "/altair",
+]
+
+S3_LISTING_INDICATORS = [
+    "ListBucketResult", "<Key>", "<Contents>", "Name</",
+    "Prefix</", "<IsTruncated>",
+]
+
+SECURITY_HEADERS = [
+    ("strict-transport-security", "HSTS", "high", 8),
+    ("content-security-policy", "CSP", "medium", 6),
+    ("x-content-type-options", "X-Content-Type-Options", "medium", 4),
+    ("referrer-policy", "Referrer-Policy", "low", 3),
+    ("permissions-policy", "Permissions-Policy", "low", 2),
+]
+
+STORAGE_PATHS = ["/uploads/", "/static/uploads/", "/media/", "/files/",
+                "/public/", "/assets/", "/images/"]
+
+AUTH_PATTERN = re.compile(
+    r'(?i)(unauthorized|forbidden|401|403|login required|authentication required|"error":.*auth)'
+)
+
+
+def run_vibesec(target: str, base_url: str, timeout: int = 8,
+                verify_tls: bool = True) -> tuple[List[Finding], int, str, str]:
+    """Run VibeSec benchmark. Returns (findings, score, grade, badge_md)."""
+    findings: List[Finding] = []
+    deductions = 0
+    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+
+    def add(title, severity, category, desc, evidence, pts):
+        nonlocal deductions
+        deductions += pts
+        findings.append(Finding(
+            title=title, severity=severity, category=category,
+            module="vibesec", description=desc, evidence=evidence,
+            asset=host, points_deducted=pts,
+            remediation=f"Fix: Secure or remove {title.split('—')[0].strip()}",
+        ))
+
+    # Cat 1: Exposed config files
+
+=== weaponized_report.py ===
+"""Module: WEAPONIZED REPORT DETECTOR — Tracking Element Analysis in Served Documents.
+
+Detects if documents/reports served by a target contain tracking elements
+that could be used for defensive analysis or intelligence gathering against
+the consumer of the document.
+
+7 detection categories:
+  1. Tracking Pixel Detection — 1x1 tracking pixels, web bugs, beacon images
+  2. Beaconing Detection in Documents — URLs in document metadata that phone home
+  3. Steganographic Watermark Detection — invisible watermarks in served content
+  4. Malicious Link Analysis — URLs leading to malicious/tracking destinations
+  5. Document Metadata Analysis — hidden tracking metadata in served documents
+  6. JavaScript Tracker Detection — analytics, fingerprinting, tracking scripts
+  7. CSS-based Tracking Detection — visited link detection, font fingerprinting
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import re
+import struct
+import urllib.parse
+from typing import Any, Dict, List, Optional
+
+from ..http import http_probe, Finding, default_limiter
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Database 1: TRACKER_SIGNATURES
+# Known analytics, tracking, and fingerprinting script signatures.
+# ═══════════════════════════════════════════════════════════════════════════
+
+TRACKER_SIGNATURES: List[Dict[str, Any]] = [
+    # ── Major analytics platforms ──
+    {
+        "id": "TRK-001",
+        "name": "Google Analytics",
+        "category": "analytics",
+        "severity": "medium",
+        "patterns": [
+            r"google-analytics\.com/(ga|analytics)\.js",
+            r"googletagmanager\.com/gtag/js",
+            r"google-analytics\.com/collect",
+            r"_gaq\.push",
+            r'''ga\(["']create["']''',
+            r'''gtag\(["']config["']''',
+            r"google-analytics\.com/mp/collect",
+        ],
+        "description": "Google Analytics tracking beacon for visitor analytics.",
+    },
+    {
+        "id": "TRK-002",
+        "name": "Facebook Pixel",
+        "category": "analytics",
+        "severity": "medium",
+        "patterns": [
+            r"connect\.facebook\.net/en_US/fbevents\.js",
+            r"fbq\(['\"]init['\"]",
+            r"facebook\.com/tr\?id=",
+            r"fbq\(['\"]track['\"]",
+        ],
+        "description": "Facebook/Meta Pixel for conversion tracking and retargeting.",
+    },
+    {
+        "id": "TRK-003",
+        "name": "Hotjar",
+        "category": "heatmaps",
+        "severity": "medium",
+        "patterns": [
+            r"static\.hotjar\.com/c/hotjar-",
+            r"hotjar\.com/h",
+            r"hj\(['\"]trigger['\"]",
+            r"_hjSettings",
+        ],
+        "description": "Hotjar for heatmaps, session recording, and funnel analytics.",
+    },
+    {
+        "id": "TRK-004",
+        "name": "Mixpanel",
+        "category": "analytics",
+        "severity": "medium",
+        "patterns": [
+            r"cdn\.mixpanel\.com",
+            r"mixpanel\.com/track",
+            r"mixpanel\.track\(",
+            r"api\.mixpanel\.com/track",
+        ],
+        "description": "Mixpanel user analytics and event tracking.",
+    },
+    {
+        "id": "TRK-005",
+        "name": "Amplitude",
+        "category": "analytics",
+        "severity": "medium",
+        "patterns": [
+            r"cdn\.amplitude\.com",
+            r"amplitude\.com/logger",
+            r"amplitude\.getInstance\(\)\.logEvent",
+            r"api2\.amplitude\.com/2/httpapi",
+        ],
+
+=== zero_day_hunter.py ===
+"""Module: ZERO_DAY_HUNTER — Anomaly-Based Undocumented Vulnerability Detection for ReconPro v9.2.0.
+
+DEFENSIVE / EDUCATIONAL ONLY — This module identifies patterns in HTTP responses
+that may indicate undocumented or zero-day vulnerabilities through statistical
+anomaly detection, error message analysis, version correlation, behavioral
+scoring, fuzzing analysis, header inspection, and access control mapping.
+
+Capabilities:
+  1. Response Anomaly Detection — Statistical baseline comparison for abnormal
+     status codes, error message patterns, and unexpected response sizes.
+  2. Error Message Analysis — Stack traces, internal paths, debug info, database
+     errors, framework debug pages revealing unpatched vulnerabilities.
+  3. Version-Response Correlation — Cross-reference observed versions with known
+     vulnerability databases to find version-specific gaps.
+  4. Behavioral Anomaly Scoring — Inconsistent caching, timing anomalies, parameter
+     sensitivity across endpoints.
+  5. Fuzzing Result Analysis — Crafted inputs detecting anomalous responses
+     suggesting injection points or memory corruption.
+  6. Header Anomaly Detection — Headers revealing internal architecture, debug
+     mode, or development artifacts.
+  7. Endpoint Sensitivity Mapping — Paths with/without authentication to find
+     broken access control patterns.
+
+References:
+  - MITRE ATT&CK: T1595, T1589, T1190, T1195
+  - OWASP Testing Guide v4.2
+  - CWE-20: Improper Input Validation
+  - CWE-209: Generation of Error Message Containing Sensitive Information
+"""
+from __future__ import annotations
+
+import math
+import re
+import statistics
+import time
+import urllib.parse
+from typing import Any, Dict, List, Optional, Tuple
+
+from ..http import http_probe, Finding, default_limiter
+
+
+# ════════════════════════════════════════════════════════════════════════
+# ANOMALY_THRESHOLDS — Statistical baselines for response analysis
+# ════════════════════════════════════════════════════════════════════════
+
+ANOMALY_THRESHOLDS: Dict[str, Dict[str, Any]] = {
+    "response_size": {
+        "description": "Response body size deviation from baseline (bytes).",
+        "normal_range_min": 200,
+        "normal_range_max": 524288,
+        "abnormally_large": 1048576,
+        "abnormally_small_ok": 5,
+        "size_variance_sigma": 2.0,
+    },
+    "status_codes": {
+        "description": "HTTP status code anomaly thresholds.",
+        "expected_success": {200, 201, 204, 301, 302, 304},
+        "anomaly_codes": {
+            206: "Partial content on non-range request suggests chunked leak",
+            218: "This is fine (Apache) — may indicate misconfiguration",
+            422: "Unprocessable entity — reveals backend validation schema",
+            423: "Locked — WebDAV exposed",
+            424: "Failed dependency — reveals service coupling",
+            425: "Too early — premature HTTP/3 or experimental headers",
+            426: "Upgrade required — protocol negotiation leak",
+            428: "Precondition required — reveals backend state requirements",
+            429: "Rate limit hit — reveals rate-limiting architecture",
+            431: "Request header fields too large — reveals header size limits",
+            451: "Unavailable for legal reasons — reveals jurisdiction",
+            501: "Not implemented — reveals disabled HTTP methods",
+            502: "Bad gateway — reveals upstream proxy topology",
+            506: "Variant also negotiates — reveals content negotiation config",
+            508: "Loop detected — reveals internal redirect chains",
+            510: "Not extended — reveals HTTP extension requirements",
+            511: "Network authentication required — reveals captive portal",
+        },
+        "unexpected_5xx_on_static": (
+            "Server error on static resource path suggests backend "
+            "vulnerability or misconfigured routing"
+        ),
+    },
+    "timing": {
+        "description": "Response timing anomaly thresholds (seconds).",
+        "baseline_fast_ms": 200,
+        "baseline_normal_ms": 1000,
+        "suspicious_slow_ms": 5000,
+        "time_based_blind_threshold_ms": 3000,
+        "timing_variance_sigma": 2.5,
+    },
+    "headers": {
+        "description": "Response header count thresholds.",
+        "min_expected": 3,
+        "max_expected": 40,
+        "missing_security_headers": [
+            "X-Content-Type-Options",
+            "X-Frame-Options",
+            "Content-Security-Policy",
+            "Strict-Transport-Security",
+            "Referrer-Policy",
+            "Permissions-Policy",

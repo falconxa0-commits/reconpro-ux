@@ -1053,8 +1053,8 @@ class CVSSScorer:
             derived_sev = "info"
 
         # Use the more severe of original vs derived
-        severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
-        final_sev = original_sev if severity_order.get(original_sev, -1) >= severity_order.get(derived_sev, -1) else derived_sev
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        final_sev = original_sev if severity_order.get(original_sev, 99) <= severity_order.get(derived_sev, 99) else derived_sev
 
         vector = f"CVSS:3.1/AV:{profile['av']}/AC:{profile['ac']}/PR:{profile['pr']}/UI:{profile['ui']}/C:{cls._cia_label(c)}/I:{cls._cia_label(i)}/A:{cls._cia_label(a)}"
 
@@ -1972,7 +1972,7 @@ class AdaptiveDeepeningEngine:
         },
     ]
 
-    _SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+    _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
     @classmethod
     def suggest(
@@ -1999,8 +1999,8 @@ class AdaptiveDeepeningEngine:
             # Check if any finding matches the trigger patterns
             matching_findings: List[str] = []
             for f in findings:
-                f_sev = cls._SEVERITY_ORDER.get((f.get("severity") or "").lower(), 0)
-                if f_sev < threshold:
+                f_sev = cls._SEVERITY_ORDER.get((f.get("severity") or "").lower(), 99)
+                if f_sev > threshold:
                     continue
                 f_text = f"{(f.get('title') or '').lower()} {(f.get('description') or '').lower()}"
                 for pattern in rule["trigger_patterns"]:

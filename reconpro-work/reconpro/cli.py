@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="reconpro",
         description=(
-            "ReconPro Nexus v7 — Async Engine. Evasion. Swarm. Knowledge Graph. 40+ Subcommands.\n"
+            "ReconPro Nexus v10 — Async Engine. Evasion. Swarm. Knowledge Graph. 40+ Subcommands.\n"
             "The next-gen security platform with AI agent, swarm, and attack-path chaining.\n\n"
             "Quick Start:  reconpro nexus           (mind-blowing agent TUI)\n"
             "AI Agent:     reconpro agent <goal>   (LLM-powered, 18 tools)\n"

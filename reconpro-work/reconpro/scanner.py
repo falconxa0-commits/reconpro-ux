@@ -1,69 +1,27 @@
+"""ReconPro v10 — Scan Engine.
+
+Core synchronous scan orchestration. Runs modules against targets,
+aggregates findings, computes scores and grades.
+
+All module registries are imported from registry.py (single source of truth).
+All shared utilities come from utils.py.
+All constants come from constants.py.
+"""
+
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from .modules import (
-    run_recon, run_vibesec, run_auth, run_chain,
-    run_bot, run_gorgon, run_oblivion, run_nhi,
-    run_host, run_dev, run_doctor, run_pegasus,
-    run_cloud_recon, run_team,
-    # v9.2.0: 12 new terrifying modules
-    run_quantum_fingerprint, run_dark_web_monitor, run_info_ops,
-    run_steganography_detector, run_covert_channel, run_zero_day_hunter,
-    run_infrastructure_ghost, run_signal_intelligence, run_nation_state_attributor,
-    run_weaponized_report, run_honeypot_dance, run_dead_drop,
+from .registry import (
+    MODULE_REGISTRY, LOCAL_MODULES, ALL_MODULES,
+    DEFAULT_MODULES, DEFAULT_LOCAL_MODULES, get_module_runner,
 )
-from .http import http_probe, Finding, compute_grade, badge_markdown, default_limiter
-
-
-# ── Remote scan modules (require a URL target) ─────────────────────────
-MODULE_REGISTRY = {
-    "recon":    {"name": "RECON",         "runner": run_recon,    "color": "cyan"},
-    "auth":     {"name": "AUTH BYPASS",   "runner": run_auth,     "color": "yellow"},
-    "chain":    {"name": "CHAIN HUNTER",  "runner": run_chain,    "color": "magenta"},
-    "bot":      {"name": "BOT HUNTER",    "runner": run_bot,      "color": "red"},
-    "gorgon":   {"name": "GORGON ULTRA",  "runner": run_gorgon,   "color": "bright_red"},
-    "oblivion": {"name": "OBLIVION",      "runner": run_oblivion, "color": "bright_magenta"},
-    "vibesec":  {"name": "VIBESEC",       "runner": None,         "color": "bright_green"},
-    "nhi":      {"name": "NHI GRAPH",     "runner": run_nhi,      "color": "cyan"},
-    "pegasus":  {"name": "PEGASUS HUNTER", "runner": run_pegasus,  "color": "bright_red"},
-    "cloud_recon": {"name": "CLOUD RECON", "runner": run_cloud_recon, "color": "bright_cyan"},
-    # v9.2.0: 12 new terrifying modules
-    "quantum_fingerprint": {"name": "QUANTUM FINGERPRINT", "runner": run_quantum_fingerprint, "color": "bright_cyan"},
-    "dark_web_monitor": {"name": "DARK WEB MONITOR", "runner": run_dark_web_monitor, "color": "bright_red"},
-    "info_ops": {"name": "INFO OPS", "runner": run_info_ops, "color": "magenta"},
-    "steganography_detector": {"name": "STEGANO DETECTOR", "runner": run_steganography_detector, "color": "yellow"},
-    "covert_channel": {"name": "COVERT CHANNEL", "runner": run_covert_channel, "color": "red"},
-    "zero_day_hunter": {"name": "ZERO-DAY HUNTER", "runner": run_zero_day_hunter, "color": "bright_red"},
-    "infrastructure_ghost": {"name": "INFRA GHOST", "runner": run_infrastructure_ghost, "color": "cyan"},
-    "signal_intelligence": {"name": "SIGINT", "runner": run_signal_intelligence, "color": "bright_magenta"},
-    "nation_state_attributor": {"name": "NATION-STATE ATTR", "runner": run_nation_state_attributor, "color": "bright_red"},
-    "weaponized_report": {"name": "WEAPONIZED REPORT", "runner": run_weaponized_report, "color": "red"},
-    "honeypot_dance": {"name": "HONEYPOT DANCE", "runner": run_honeypot_dance, "color": "yellow"},
-    "dead_drop": {"name": "DEAD DROP", "runner": run_dead_drop, "color": "bright_cyan"},
-}
-
-# ── Local scan modules (scan the machine, not a URL) ────────────────────
-LOCAL_MODULES = {
-    "host":   {"name": "HOST AUDIT",   "runner": run_host,   "color": "bright_yellow"},
-    "dev":    {"name": "DEV SEC",      "runner": run_dev,    "color": "bright_cyan"},
-    "doctor": {"name": "DOCTOR",       "runner": run_doctor, "color": "bright_green"},
-}
-
-# Merge all for --all scans
-ALL_MODULES = list(MODULE_REGISTRY.keys()) + list(LOCAL_MODULES.keys())
-
-DEFAULT_MODULES = [
-    "recon", "vibesec", "auth", "chain", "oblivion", "gorgon", "bot", "pegasus",
-    # v9.2.0: all 12 new modules are default-enabled
-    "quantum_fingerprint", "dark_web_monitor", "info_ops",
-    "steganography_detector", "covert_channel", "zero_day_hunter",
-    "infrastructure_ghost", "signal_intelligence", "nation_state_attributor",
-    "weaponized_report", "honeypot_dance", "dead_drop",
-]
-DEFAULT_LOCAL_MODULES = ["host", "dev", "doctor"]
+from .http import Finding, RateLimiter
+from .utils import (
+    extract_host, normalize_base_url, validate_target,
+    count_severities, compute_score, compute_grade, badge_markdown,
+)
 
 
 @dataclass
@@ -117,17 +75,23 @@ def scan(
     Returns:
         ReconProResult with all findings, scores, and grades.
     """
-    global default_limiter
-    from .http import RateLimiter
-    default_limiter = RateLimiter(rate_limit)
+    # Validate target
+    valid, reason = validate_target(target)
+    if not valid:
+        raise ValueError(f"Invalid scan target: {reason}")
 
-    base_url = target if target.startswith("http") else f"https://{target}"
-    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+    # Create dedicated rate limiter (no global mutation)
+    limiter = RateLimiter(rate_limit)
 
+    base_url = normalize_base_url(target)
+    host = extract_host(target)
+
+    # Resolve module list
     if all_modules:
         mods = [m for m in ALL_MODULES if m in MODULE_REGISTRY]
     elif modules:
-        mods = [m.strip().lower() for m in modules if m.strip().lower() in MODULE_REGISTRY]
+        mods = [m.strip().lower() for m in modules
+                if m.strip().lower() in MODULE_REGISTRY]
     else:
         mods = list(DEFAULT_MODULES)
 
@@ -138,9 +102,13 @@ def scan(
     vibesec_badge = None
 
     for mod_id in mods:
+        runner = get_module_runner(mod_id)
+        if runner is None:
+            continue
+
+        # vibesec returns (findings, score, grade, badge_md)
         if mod_id == "vibesec":
-            from .modules.vibesec import run_vibesec
-            findings, score, grade, badge_md = run_vibesec(
+            findings, score, grade, badge_md = runner(
                 target, base_url, timeout=timeout, verify_tls=verify_tls
             )
             all_findings.extend(findings)
@@ -152,29 +120,21 @@ def scan(
                 "score": score, "grade": grade, "badge": badge_md,
             }
         else:
-            entry = MODULE_REGISTRY[mod_id]
-            runner = entry["runner"]
-            if runner:
-                findings = runner(target, base_url, timeout=timeout, verify_tls=verify_tls)
-                all_findings.extend(findings)
-                module_results[mod_id] = {
-                    "findings": [f.to_dict() for f in findings],
-                    "count": len(findings),
-                }
+            findings = runner(target, base_url,
+                              timeout=timeout, verify_tls=verify_tls)
+            all_findings.extend(findings)
+            module_results[mod_id] = {
+                "findings": [f.to_dict() for f in findings],
+                "count": len(findings),
+            }
 
-    # Calculate overall score
-    total_deductions = sum(f.points_deducted for f in all_findings)
-    total_score = max(0, min(100, 100 - total_deductions))
-    if not all_findings:
-        total_score = 100
+    # Calculate overall score using shared utility
+    total_score = compute_score(all_findings)
     grade = compute_grade(total_score)
     badge = badge_markdown(host, grade)
 
-    # Severity counts
-    sev_counts: Dict[str, int] = {}
-    for f in all_findings:
-        s = f.severity
-        sev_counts[s] = sev_counts.get(s, 0) + 1
+    # Count severities using shared utility
+    sev_counts = count_severities(all_findings)
 
     return ReconProResult(
         target=host,
@@ -208,7 +168,8 @@ def audit_scan(
     if all_modules:
         mods = list(DEFAULT_LOCAL_MODULES)
     elif modules:
-        mods = [m.strip().lower() for m in modules if m.strip().lower() in LOCAL_MODULES]
+        mods = [m.strip().lower() for m in modules
+                if m.strip().lower() in LOCAL_MODULES]
     else:
         mods = list(DEFAULT_LOCAL_MODULES)
 
@@ -216,29 +177,23 @@ def audit_scan(
     module_results: Dict[str, Dict[str, Any]] = {}
 
     for mod_id in mods:
-        entry = LOCAL_MODULES[mod_id]
-        runner = entry["runner"]
-        if runner:
-            findings = runner(target=target, base_url="", timeout=8, verify_tls=True)
-            all_findings.extend(findings)
-            module_results[mod_id] = {
-                "findings": [f.to_dict() for f in findings],
-                "count": len(findings),
-            }
+        runner = get_module_runner(mod_id)
+        if runner is None:
+            continue
+        findings = runner(target=target, base_url="", timeout=8, verify_tls=True)
+        all_findings.extend(findings)
+        module_results[mod_id] = {
+            "findings": [f.to_dict() for f in findings],
+            "count": len(findings),
+        }
 
-    # Calculate score
-    total_deductions = sum(f.points_deducted for f in all_findings)
-    total_score = max(0, min(100, 100 - total_deductions))
-    if not all_findings:
-        total_score = 100
+    # Calculate score using shared utility
+    total_score = compute_score(all_findings)
     grade = compute_grade(total_score)
     badge = badge_markdown(target if target != "." else "local-audit", grade)
 
-    # Severity counts
-    sev_counts: Dict[str, int] = {}
-    for f in all_findings:
-        s = f.severity
-        sev_counts[s] = sev_counts.get(s, 0) + 1
+    # Count severities using shared utility
+    sev_counts = count_severities(all_findings)
 
     return ReconProResult(
         target=target if target != "." else "local-audit",

@@ -1,4 +1,4 @@
-"""Async HTTP engine for ReconPro v7.0.
+"""Async HTTP engine for ReconPro v10.0.
 
 Architecture
 ────────────

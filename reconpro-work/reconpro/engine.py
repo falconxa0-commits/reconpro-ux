@@ -1,4 +1,4 @@
-"""Async scan orchestration engine for ReconPro v7.0.
+"""Async scan orchestration engine for ReconPro v10.0.
 
 Runs modules concurrently with an event-driven architecture.  The public
 ``scan()`` function is a drop-in replacement for ``scanner.scan()`` — it
@@ -22,15 +22,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from .scanner import (
+from .registry import (
     ALL_MODULES,
     DEFAULT_LOCAL_MODULES,
     DEFAULT_MODULES,
     LOCAL_MODULES,
     MODULE_REGISTRY,
-    ReconProResult,
 )
-from .http import Finding, RateLimiter, badge_markdown, compute_grade, default_limiter
+from .scanner import ReconProResult
+from .http import Finding, RateLimiter
+from .utils import compute_grade, badge_markdown
 
 
 # ── Scan Event ──────────────────────────────────────────────────────────
@@ -391,10 +392,8 @@ class ScanEngine:
         ReconProResult
             Identical shape to what ``scanner.scan`` returns.
         """
-        global default_limiter  # noqa: PLW0603
-
         effective_rate = rate_limit if rate_limit is not None else self._default_rate_limit
-        default_limiter = RateLimiter(effective_rate)
+        _limiter = RateLimiter(effective_rate)
 
         # Resolve modules list.
         registry = LOCAL_MODULES if is_local else MODULE_REGISTRY

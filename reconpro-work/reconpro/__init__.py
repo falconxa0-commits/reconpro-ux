@@ -1,6 +1,7 @@
-"""ReconPro Enterprise — The Security Reconnaissance Platform.
+"""ReconPro Enterprise v10 — The Security Reconnaissance Platform.
 
-Eleven Blades. One Target. One Verdict.
+Twenty-Seven Blades. One Target. One Verdict.
+Pure Python. Zero external dependencies. Enterprise-grade.
 
 Remote Modules:
     recon      13-category surface reconnaissance
@@ -15,7 +16,7 @@ Remote Modules:
     cloud_recon Cloud infrastructure reconnaissance
     team       Team collaboration & shared scans
 
-Advanced Modules (v9.2.0):
+Advanced Modules:
     quantum_fingerprint  OS/kernel fingerprinting via HTTP timing
     dark_web_monitor     Credential leak & exposure scanner
     info_ops             Information operations & deception analysis
@@ -36,7 +37,7 @@ Local Modules:
 
 Powers:
     chat       Interactive REPL — talk to ReconPro naturally
-    tui        Visual terminal dashboard
+    nexus      Visual terminal dashboard with mouse + keyboard
     blitz      Parallel multi-target scanning
     agent      Autonomous goal-driven scanning
     subdomains Subdomain discovery (CT logs + DNS)
@@ -46,19 +47,21 @@ Powers:
     history    Scan history with diff/comparison
     plugin     Custom module system
     screenshot Browser screenshots (Playwright)
+    swarm      Multi-agent attack swarm
+    adversarial Self-play hacker vs coder
 
 Usage:
     reconpro example.com                    # Remote scan
     reconpro chat                          # Talk to it
-    reconpro tui                           # Visual dashboard
-    reconpro audit                          # Scan your laptop
-    reconpro blitz t1.com t2.com t3.com     # Parallel scan
+    reconpro nexus                         # Visual dashboard
+    reconpro audit                         # Scan your laptop
+    reconpro blitz t1.com t2.com t3.com    # Parallel scan
     reconpro agent scan everything          # Autonomous
     reconpro subdomains example.com         # Discover subs
     reconpro serve                          # API server
 """
 
-__version__ = "9.2.0"
+__version__ = "10.0.0"
 __all__ = ["scan", "ReconProResult", "audit_scan", "__version__"]
 
 from .scanner import scan, ReconProResult, audit_scan  # noqa: E402
