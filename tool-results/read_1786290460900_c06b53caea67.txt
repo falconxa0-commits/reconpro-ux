@@ -1,0 +1,1197 @@
+   490→    if headers:
+   491→        ct = headers.get("content-type", "")
+   492→        if "application/json" in ct:
+   493→            return "api_response"
+   494→        if "text/xml" in ct or "application/xml" in ct:
+   495→            return "xml_endpoint"
+   496→    return "web_application"
+   497→
+   498→
+   499→def _assess_indicators(
+   500→    headers: Optional[Dict[str, str]],
+   501→    body: str,
+   502→    title: str,
+   503→    cert_info: Optional[Dict[str, Any]],
+   504→) -> List[str]:
+   505→    """Assess decay indicators from response signals."""
+   506→    indicators: List[str] = []
+   507→    if headers:
+   508→        server = headers.get("server", "")
+   509→        for old in DecayIndicators.OUTDATED_SERVER_HEADERS:
+   510→            if old.lower() in server.lower():
+   511→                indicators.append("server_header_outdated")
+   512→                break
+   513→        header_names = {k.lower() for k in headers}
+   514→        if "strict-transport-security" not in header_names:
+   515→            indicators.append("no_hsts")
+   516→        if "content-security-policy" not in header_names:
+   517→            indicators.append("no_csp")
+   518→        for sec_h in DecayIndicators.MISSING_SECURITY_HEADERS:
+   519→            if sec_h not in header_names:
+   520→                pass  # already captured the most critical
+   521→        if "last-modified" not in header_names:
+   522→            indicators.append("no_last_modified")
+   523→    if title:
+   524→        for default_title in DecayIndicators.DEFAULT_PAGE_TITLES:
+   525→            if default_title.lower() in title.lower():
+   526→                indicators.append("default_install_page")
+   527→                break
+   528→        if "index of" in title.lower():
+   529→            indicators.append("directory_listing")
+   530→    if body:
+   531→        if "wp-content" in body or "wp-includes" in body:
+   532→            for pat in DecayIndicators.WORDPRESS_OLD_SIGNATURES:
+   533→                if pat.search(body):
+   534→                    indicators.append("old_wordpress")
+   535→                    break
+   536→        for pat in DecayIndicators.OUTDATED_JS_SIGNATURES:
+   537→            if pat.search(body):
+   538→                indicators.append("outdated_js_libs")
+   539→                break
+   540→        if re.search(r'<[^>]+(?:notice|warning|error|fatal|deprecated)[^>]*>.*?(?:on line \d+|in .*\.php)', body, re.I | re.S):
+   541→            indicators.append("php_errors_visible")
+   542→        if "stack trace" in body.lower() or "traceback (most recent" in body.lower():
+   543→            indicators.append("stack_trace_exposed")
+   544→        if "debug" in body.lower() and ("debug_mode" in body.lower() or "DEBUG" in body):
+   545→            indicators.append("debug_mode_on")
+   546→        if not re.search(r'<link[^>]+favicon', body, re.I):
+   547→            indicators.append("no_favicon")
+   548→    if cert_info:
+   549→        if cert_info.get("expired"):
+   550→            indicators.append("expired_cert")
+   551→        if cert_info.get("self_signed"):
+   552→            indicators.append("self_signed_cert")
+   553→        if cert_info.get("near_expiry"):
+   554→            indicators.append("near_expiry_cert")
+   555→        if not cert_info.get("hostname_match", False) and cert_info.get("subject"):
+   556→            indicators.append("cert_hostname_mismatch")
+   557→    return list(dict.fromkeys(indicators))
+   558→
+   559→
+   560→def _calculate_decay_from_indicators(
+   561→    indicators: List[str],
+   562→    headers: Optional[Dict[str, str]],
+   563→    cert_info: Optional[Dict[str, Any]],
+   564→) -> int:
+   565→    """Calculate a 0-100 decay score based on collected indicators."""
+   566→    score = 0
+   567→    weight_map: Dict[str, int] = {
+   568→        "expired_cert": 25,
+   569→        "self_signed_cert": 15,
+   570→        "near_expiry_cert": 12,
+   571→        "cert_hostname_mismatch": 10,
+   572→        "default_install_page": 20,
+   573→        "directory_listing": 18,
+   574→        "server_header_outdated": 15,
+   575→        "old_wordpress": 18,
+   576→        "outdated_js_libs": 10,
+   577→        "no_hsts": 5,
+   578→        "no_csp": 5,
+   579→        "no_favicon": 3,
+   580→        "no_last_modified": 2,
+   581→        "no_robots_txt": 3,
+   582→        "http_only_no_redirect": 8,
+   583→        "php_errors_visible": 15,
+   584→        "stack_trace_exposed": 20,
+   585→        "debug_mode_on": 18,
+   586→    }
+   587→    for ind in indicators:
+   588→        score += weight_map.get(ind, 5)
+   589→    if cert_info and cert_info.get("days_until_expiry") is not None:
+   590→        days = cert_info["days_until_expiry"]
+   591→        if days < 0:
+   592→            score = max(score, 60)
+   593→        elif days <= 7:
+   594→            score += 20
+   595→        elif days <= 30:
+   596→            score += 10
+   597→    if cert_info and cert_info.get("age_days") is not None:
+   598→        age = cert_info["age_days"]
+   599→        if age > 730:
+   600→            score += 8
+   601→        elif age > 365:
+   602→            score += 5
+   603→    return min(score, 100)
+   604→
+   605→
+   606→# ---------------------------------------------------------------------------
+   607→# ShadowITScanner
+   608→# ---------------------------------------------------------------------------
+   609→
+   610→class ShadowITScanner:
+   611→    """
+   612→    Scans a target for Shadow IT and abandoned/decaying infrastructure.
+   613→
+   614→    Pure Python, zero external dependencies — uses only the standard library.
+   615→
+   616→    Usage::
+   617→
+   618→        from reconpro.shadow_it import ShadowITScanner
+   619→        scanner = ShadowITScanner()
+   620→        results = scanner.scan("example.com", "https://example.com")
+   621→    """
+   622→
+   623→    # Common subdomain prefixes for brute-force enumeration
+   624→    COMMON_SUBDOMAIN_PREFIXES: List[str] = [
+   625→        "www", "mail", "smtp", "pop", "imap", "ftp", "sftp", "ssh", "vpn",
+   626→        "api", "api-v2", "api2", "v2", "v3", "app", "apps", "portal",
+   627→        "admin", "administrator", "manage", "manager", "management", "cpanel",
+   628→        "staging", "stage", "stg", "dev", "development", "devel", "test",
+   629→        "testing", "qa", "uat", "pre-prod", "preprod", "pre-production",
+   630→        "ci", "cd", "ci-cd", "cicd", "build", "jenkins", "gitlab", "github",
+   631→        "bitbucket", "runner", "deploy", "deployment", "release",
+   632→        "devops", "infra", "infra-internal", "ops", "monitoring", "grafana",
+   633→        "kibana", "prometheus", "alert", "alerts", "alertmanager",
+   634→        "log", "logs", "logging", "elk", "elasticsearch", "splunk",
+   635→        "sentry", "rollbar", "datadog", "newrelic", "pagerduty",
+   636→        "db", "database", "db-admin", "phpmyadmin", "pgadmin", "redis",
+   637→        "mongo", "mongodb", "memcached", "redis-commander",
+   638→        "search", "solr", "elastic",
+   639→        "static", "assets", "cdn", "media", "images", "img", "files",
+   640→        "docs", "documentation", "wiki", "kb", "knowledge",
+   641→        "blog", "news", "press", "marketing", "shop", "store", "pay",
+   642→        "auth", "login", "sso", "oauth", "oidc", "identity",
+   643→        "crm", "erp", "hr", "finance", "billing", "support", "help",
+   644→        "chat", "webhook", "webhooks", "hook", "hooks",
+   645→        "internal", "private", "intranet", "backoffice", "back-office",
+   646→        "demo", "sandbox", "poc", "prototype", "mock",
+   647→        "old", "legacy", "archive", "backup", "bak", "migrate", "migration",
+   648→        "ns1", "ns2", "ns3", "mx", "mx1", "mx2",
+   649→        "status", "health", "ping", "ready", "live", "prod",
+   650→        "stg1", "stg2", "dev1", "dev2", "test1", "test2",
+   651→        "us", "eu", "uk", "asia", "emea", "apac",
+   652→        "dashboard", "dash", "panel", "console", "control",
+   653→        "mqtt", "amqp", "rabbitmq", "kafka", "queue",
+   654→        "minio", "s3", "storage", "bucket",
+   655→        "trace", "jaeger", "zipkin",
+   656→        "vault", "secrets", "config", "settings",
+   657→    ]
+   658→
+   659→    # Staging / non-production subdomain patterns
+   660→    STAGING_PATTERNS: List[str] = [
+   661→        "staging", "stage", "stg", "stg1", "stg2", "stg3",
+   662→        "dev", "dev1", "dev2", "dev3", "development", "devel",
+   663→        "test", "test1", "test2", "test3", "testing",
+   664→        "uat", "uat1", "uat2", "pre-prod", "preprod", "preproduction",
+   665→        "ci", "ci1", "ci2", "cd", "build", "builds", "jenkins",
+   666→        "gitlab", "runner", "runners", "deploy", "deployment",
+   667→        "demo", "sandbox", "poc", "prototype", "mock", "mockup",
+   668→        "qa", "qa1", "qa2", "review", "staging-internal",
+   669→        "dev-api", "test-api", "staging-api",
+   670→        "ci-api", "dev-admin", "test-admin", "staging-admin",
+   671→    ]
+   672→
+   673→    # Known shadow API / debug / documentation paths
+   674→    SHADOW_API_PATHS: List[str] = [
+   675→        "/api", "/api/", "/api/v1", "/api/v2", "/api/v3", "/api/v1/",
+   676→        "/api/v2/", "/api/internal", "/api/admin", "/api/debug",
+   677→        "/api-docs", "/api/docs", "/swagger", "/swagger.json",
+   678→        "/swagger-ui", "/swagger-ui/", "/openapi.json", "/openapi.yaml",
+   679→        "/graphql", "/graphql/explorer", "/graphiql", "/playground",
+   680→        "/api/graphql", "/api/v1/graphql", "/query",
+   681→        "/debug", "/debug/", "/debug/pprof", "/debug/vars",
+   682→        "/healthz", "/health", "/healthcheck", "/ready", "/readyz",
+   683→        "/metrics", "/metrics/", "/prometheus/metrics",
+   684→        "/status", "/status.php", "/status.json", "/server-status",
+   685→        "/info", "/info.php", "/phpinfo", "/phpinfo.php",
+   686→        "/.env", "/.env.example", "/.env.local", "/.env.production",
+   687→        "/wp-json", "/wp-json/wp/v2", "/wp-json/oembed/1.0/embed",
+   688→        "/robots.txt", "/sitemap.xml", "/humans.txt",
+   689→        "/config.json", "/config.yml", "/config.yaml", "/settings.json",
+   690→        "/actuator", "/actuator/health", "/actuator/info", "/actuator/env",
+   691→        "/management", "/management/health", "/management/info",
+   692→        "/_status", "/_health", "/__status", "/__health",
+   693→        "/trace", "/traces", "/spans",
+   694→        "/console", "/debug/console", "/_debug", "/_debug/",
+   695→        "/server-info", "/server-info.php", "/test", "/test/",
+   696→        "/version", "/version.json", "/revision", "/build-info",
+   697→        "/.well-known/security.txt", "/security.txt",
+   698→        "/crossdomain.xml", "/clientaccesspolicy.xml",
+   699→        "/cgi-bin/", "/cgi-sys/",
+   700→        "/elmah.axd", "/trace.axd",
+   701→    ]
+   702→
+   703→    # Paths for known admin / management services
+   704→    FORGOTTEN_SERVICE_PATHS: List[str] = [
+   705→        "/phpmyadmin", "/phpMyAdmin", "/pma", "/php-my-admin",
+   706→        "/phpmyadmin/index.php", "/pma/index.php",
+   707→        "/jenkins", "/jenkins/", "/jenkins/login",
+   708→        "/grafana", "/grafana/", "/grafana/login",
+   709→        "/kibana", "/kibana/", "/kibana/app/kibana",
+   710→        "/app/kibana", "/kibana#/discover",
+   711→        "/redis-commander", "/redis-commander/", "/redis/commander",
+   712→        "/pgadmin4", "/pgadmin", "/pgadmin4/browser",
+   713→        "/mongo-express", "/mongo-express/", "/me",
+   714→        "/solr", "/solr/", "/solr/admin", "/solr/#/",
+   715→        "/manager/html", "/manager/status", "/host-manager/html",
+   716→        "/admin", "/admin/", "/admin/login",
+   717→        "/adminer", "/adminer.php", "/_adminer",
+   718→        "/portainer", "/portainer/", "/portainer/#/dashboard",
+   719→        "/registry", "/v2/_catalog", "/v2/",
+   720→        "/rabbitmq", "/rabbitmq/#/", "/rabbitmq/management",
+   721→        "/#bucket", "/minio", "/minio/", "/minio/login",
+   722→        "/strapi", "/strapi/admin", "/directus",
+   723→        "/prisma", "/prisma/studio",
+   724→        "/_dash", "/dashboards", "/dashboard",
+   725→        "/sonarqube", "/sonar/", "/sonarqube/dashboard",
+   726→        "/nexus", "/nexus/", "/nexus/#browse",
+   727→        "/artifactory", "/artifactory/", "/artifactory/webapp/",
+   728→        "/gitlab", "/gitlab/", "/gitlab/users/sign_in",
+   729→    ]
+   730→
+   731→    # Cloud leak indicator paths and patterns
+   732→    CLOUD_LEAK_PATHS: List[str] = [
+   733→        "/.aws/credentials", "/.aws/config",
+   734→        "/s3.amazonaws.com", "/s3-website", "/.s3cfg",
+   735→        "/_aws", "/aws-config.json", "/aws-credentials.json",
+   736→        "/service-account.json", "/gcp-key.json", "/gcp-credentials.json",
+   737→        "/appsettings.json", "/appsettings.Development.json",
+   738→        "/firebase-config.json", "/firebase.js", "/firebase-init.js",
+   739→        "/supabase", "/supabase/", "/.supabase",
+   740→        "/.env.production", "/.env.staging", "/.env.local",
+   741→        "/credentials.json", "/key.json", "/private-key.pem",
+   742→        "/id_rsa", "/id_dsa", "/.ssh/",
+   743→        "/config/secrets.json", "/secrets.json", "/secrets.yaml",
+   744→        "/terraform.tfstate", "/.terraform", "/tfstate.json",
+   745→        "/docker-compose.yml", "/docker-compose.override.yml",
+   746→        "/kubeconfig", "/.kube/config", "/k8s/config",
+   747→        "/vault", "/vault/", "/vault/secrets",
+   748→        "/.npmrc", "/.pypirc", "/.gradle",
+   749→        "/wp-config.php.bak", "/wp-config.php.save", "/wp-config.php~",
+   750→        "/database.yml", "/database.yml.bak", "/secrets.yml",
+   751→        "/application.properties", "/application.yml",
+   752→        "/connection-string", "/connection.json", "/connection.yml",
+   753→        "/web.config", "/web.config.bak",
+   754→    ]
+   755→
+   756→    # Internal tool / dashboard paths
+   757→    INTERNAL_EXPOSURE_PATHS: List[str] = [
+   758→        "/internal", "/internal/", "/internal/dashboard",
+   759→        "/admin/dashboard", "/admin/panel", "/admin/console",
+   760→        "/monitor", "/monitoring", "/monitoring/",
+   761→        "/alertmanager", "/alertmanager/", "/alerts",
+   762→        "/prometheus", "/prometheus/graph", "/prometheus/",
+   763→        "/sentry", "/sentry/", "/sentry/dashboard",
+   764→        "/rollbar", "/rollbar/", "/bugsnag",
+   765→        "/datadog", "/datadog/", "/newrelic",
+   766→        "/elk", "/elk/", "/kibana", "/kibana/",
+   767→        "/logstash", "/logstash/", "/elasticsearch",
+   768→        "/jenkins", "/jenkins/", "/jenkins/job",
+   769→        "/gitlab", "/gitlab/", "/gitlab/admin",
+   770→        "/sonar", "/sonarqube", "/sonarqube/",
+   771→        "/jira", "/jira/", "/confluence",
+   772→        "/backoffice", "/backoffice/", "/intranet",
+   773→        "/helpdesk", "/helpdesk/", "/zendesk",
+   774→        "/statuspage", "/status", "/uptime",
+   775→        
+   776→/"adminer", "/adminer/", "/pgadmin/",
+   777→        "/netdata", "/netdata/", "/netdata/dashboard",
+   778→        "/cockpit", "/cockpit/", "/webmin",
+   779→        "/cpanel", "/cpanel/", "/whm", "/plesk",
+   780→        "/portainer", "/portainer/",
+   781→        "/rancher", "/rancher/",
+   782→        "/argocd", "/argocd/", "/argo-cd",
+   783→        "/traefik", "/traefik/", "/traefik/dashboard",
+   784→        "/consul", "/consul/", "/consul/ui",
+   785→        "/nomad", "/nomad/", "/fabio",
+   786→        "/vault", "/vault/", "/vault/ui",
+   787→        
+   788→"/_internal", "/_admin", "/_monitoring",
+   789→    ]
+   790→
+   791→    # Patterns in response body that indicate cloud credential exposure
+   792→    CLOUD_CREDENTIAL_PATTERNS: List[re.Pattern] = [
+   793→        re.compile(r'AKIA[0-9A-Z]{16}'),                              # AWS Access Key
+   794→        re.compile(r'(?:A3T[A-Z0-9]|ABIA|ACCA|AGPA|AIDA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}'),
+   795→        re.compile(r'"type"\s*:\s*"service_account"'),             # GCP Service Account
+   796→        re.compile(r'AIza[0-9A-Za-z\-_]{35}'),                        # Firebase/Google API key
+   797→        re.compile(r'ya29\.[0-9A-Za-z\-_]+'),                        # Google OAuth token
+   798→        re.compile(r'xox[bpras]-[0-9a-zA-Z-]+'),                       # Slack tokens
+   799→        re.compile(r'ghp_[0-9a-zA-Z]{36}'),                             # GitHub PAT
+   800→        re.compile(r'gho_[0-9a-zA-Z]{36}'),                             # GitHub OAuth
+   801→        re.compile(r'ghs_[0-9a-zA-Z]{36}'),                             # GitHub App token
+   802→        re.compile(r'glpat-[0-9a-zA-Z\-_]{20}'),                      # GitLab PAT
+   803→        re.compile(r'glptt-[0-9a-zA-Z\-_]{20}'),                      # GitLab trigger token
+   804→        re.compile(r'eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+'),  # JWT
+   805→        re.compile(r'sk-[0-9a-zA-Z]{48}'),                              # OpenAI-style key
+   806→        re.compile(r'sk_live_[0-9a-zA-Z]{24}'),                         # Stripe live key
+   807→        re.compile(r'rk_live_[0-9a-zA-Z]{24}'),                         # Stripe restricted key
+   808→        re.compile(r'-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----'),   # Private keys
+   809→        re.compile(r'AZURE_CLIENT_SECRET\s*[=:]\s*["\']?[a-zA-Z0-9_-]{20,}'),
+   810→        re.compile(r'SUPABASE_URL\s*[=:]\s*["\']?https://[a-z0-9]+\.supabase\.co'),
+   811→        re.compile(r'FIREBASE_API_KEY\s*[=:]\s*["\']?AIza'),
+   812→        re.compile(r'NEXT_PUBLIC_SUPABASE'),
+   813→        re.compile(r'VITE_SUPABASE'),
+   814→        re.compile(r'REACT_APP_FIREBASE'),
+   815→        re.compile(r'mongodb(?:\\+srv)?://[^\s""]+'),               # MongoDB URI
+   816→        re.compile(r'postgres(?:ql)?://[^\s""]+'),                    # PostgreSQL URI
+   817→        re.compile(r'redis://[^\s""]+'),                              # Redis URI
+   818→        re.compile(r'amqp://[^\s""]+'),                                # AMQP URI
+   819→        re.compile(r'mysql://[^\s""]+'),                               # MySQL URI
+   820→    ]
+   821→
+   822→    def __init__(self, timeout: int = 8) -> None:
+   823→        """Initialise the scanner with a default connection timeout."""
+   824→        self.timeout = timeout
+   825→        self._session_headers = {
+   826→            "User-Agent": "ReconPro/9.2.0 (Security Scanner; https://reconpro.dev)",
+   827→            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+   828→            "Accept-Language": "en-US,en;q=0.5",
+   829→            "Connection": "close",
+   830→        }
+   831→
+   832→    # ---------------------------------------------------------------------
+   833→    # Main orchestrator
+   834→    # ---------------------------------------------------------------------
+   835→
+   836→    def scan(self, target: str, base_url: str, timeout: int = 8) -> Dict[str, Any]:
+   837→        """
+   838→        Run a full Shadow IT scan against *target* (domain) and *base_url*.
+   839→
+   840→        Returns a dictionary with keys for every scan category, each containing
+   841→        a list of :class:`AssetProfile` dicts.
+   842→        """
+   843→        self.timeout = timeout
+   844→        timestamp = datetime.now(timezone.utc).isoformat()
+   845→
+   846→        results: Dict[str, Any] = {
+   847→            "target": target,
+   848→            "base_url": base_url,
+   849→            "timestamp": timestamp,
+   850→            "scanner": "ReconPro ShadowIT v9.2.0",
+   851→            "summary": {
+   852→                "total_assets": 0,
+   853→                "critical": 0,
+   854→                "high": 0,
+   855→                "medium": 0,
+   856→                "low": 0,
+   857→                "info": 0,
+   858→                "categories_with_findings": 0,
+   859→            },
+   860→            "findings": {},
+   861→        }
+   862→
+   863→        categories = [
+   864→            ("forgotten_subdomains", self.discover_forgotten_subdomains, [target]),
+   865→            ("staging_environments", self.discover_staging_environments, [target]),
+   866→            ("abandoned_infrastructure", self.discover_abandoned_infrastructure, [base_url]),
+   867→            ("shadow_apis", self.discover_shadow_apis, [base_url]),
+   868→            ("orphaned_dns", self.discover_orphaned_dns, [target]),
+   869→            ("forgotten_services", self.discover_forgotten_services, [base_url]),
+   870→            ("cloud_leaks", self.discover_cloud_leaks, [base_url]),
+   871→            ("internal_exposure", self.discover_internal_exposure, [base_url]),
+   872→        ]
+   873→
+   874→        for cat_name, cat_func, cat_args in categories:
+   875→            try:
+   876→                assets = cat_func(*cat_args)
+   877→                if isinstance(assets, list):
+   878→                    results["findings"][cat_name] = [a.to_dict() if isinstance(a, AssetProfile) else a for a in assets]
+   879→                elif isinstance(assets, dict):
+   880→                    results["findings"][cat_name] = assets
+   881→                else:
+   882→                    results["findings"][cat_name] = assets
+   883→            except Exception as exc:
+   884→                results["findings"][cat_name] = {"error": str(exc)}
+   885→
+   886→        # Build summary counts
+   887→        total = 0
+   888→        risk_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+   889→        cats_with_findings = 0
+   890→        for cat_key, cat_val in results["findings"].items():
+   891→            if isinstance(cat_val, list):
+   892→                for item in cat_val:
+   893→                    if isinstance(item, dict):
+   894→                        total += 1
+   895→                        rl = item.get("risk_level", "info")
+   896→                        if rl in risk_counts:
+   897→                            risk_counts[rl] += 1
+   898→                if cat_val:
+   899→                    cats_with_findings += 1
+   900→            elif isinstance(cat_val, dict) and "assets" in cat_val:
+   901→                for item in cat_val["assets"]:
+   902→                    if isinstance(item, dict):
+   903→                        total += 1
+   904→                        rl = item.get("risk_level", "info")
+   905→                        if rl in risk_counts:
+   906→                            risk_counts[rl] += 1
+   907→                if cat_val["assets"]:
+   908→                    cats_with_findings += 1
+   909→
+   910→        results["summary"]["total_assets"] = total
+   911→        results["summary"]["critical"] = risk_counts["critical"]
+   912→        results["summary"]["high"] = risk_counts["high"]
+   913→        results["summary"]["medium"] = risk_counts["medium"]
+   914→        results["summary"]["low"] = risk_counts["low"]
+   915→        results["summary"]["info"] = risk_counts["info"]
+   916→        results["summary"]["categories_with_findings"] = cats_with_findings
+   917→
+   918→        return results
+   919→
+   920→    # ---------------------------------------------------------------------
+   921→    # 1. Forgotten subdomains
+   922→    # ---------------------------------------------------------------------
+   923→
+   924→    def discover_forgotten_subdomains(self, target: str) -> List[AssetProfile]:
+   925→        """
+   926→        Enumerate subdomains via cert transparency (crt.sh) and common-prefix
+   927→        brute-force DNS resolution.
+   928→        """
+   929→        found: List[AssetProfile] = []
+   930→        resolved_hosts: Dict[str, str] = {}
+   931→
+   932→        # --- Phase 1: crt.sh certificate transparency ---
+   933→        ct_hosts = self._query_crtsh(target)
+   934→        for host in ct_hosts:
+   935→            if host not in resolved_hosts:
+   936→                ip = self._resolve_host(host)
+   937→                if ip:
+   938→                    resolved_hosts[host] = ip
+   939→
+   940→        # --- Phase 2: Brute-force common prefixes ---
+   941→        for prefix in self.COMMON_SUBDOMAIN_PREFIXES:
+   942→            fqdn = f"{prefix}.{target}"
+   943→            if fqdn not in resolved_hosts:
+   944→                ip = self._resolve_host(fqdn)
+   945→                if ip:
+   946→                    resolved_hosts[fqdn] = ip
+   947→
+   948→        # --- Phase 3: Profile each discovered subdomain ---
+   949→        for host, ip in resolved_hosts.items():
+   950→            if host == target or host == f"www.{target}":
+   951→                continue
+   952→            profile = self._profile_host(host, ip)
+   953→            profile.discovered_by = "subdomain_enum"
+   954→            found.append(profile)
+   955→
+   956→        return found
+   957→
+   958→    def _query_crtsh(self, domain: str) -> List[str]:
+   959→        """Query crt.sh for certificate transparency subdomains."""
+   960→        hosts: List[str] = []
+   961→        url = f"https://crt.sh/?q=%.{domain}&output=json"
+   962→        try:
+   963→            resp_headers, status, body, final_url = _make_request(
+   964→                url, timeout=12, headers=self._session_headers
+   965→            )
+   966→            if body and status == 200:
+   967→                try:
+   968→                    entries = json.loads(body)
+   969→                    for entry in entries:
+   970→                        name_value = entry.get("name_value", "")
+   971→                        for name in name_value.split("\n"):
+   972→                            name = name.strip().lstrip("*.")
+   973→                            if name and name.endswith(f".{domain}") and name != domain:
+   974→                                if name not in hosts:
+   975→                                    hosts.append(name)
+   976→                except (json.JSONDecodeError, KeyError, TypeError):
+   977→                    pass
+   978→                # Fallback: regex extraction
+   979→                if not hosts:
+   980→                    pattern = re.compile(r'([a-zA-Z0-9][a-zA-Z0-9-]*\.' + re.escape(domain) + r')')
+   981→                    matches = pattern.findall(body)
+   982→                    for m in matches:
+   983→                        m = m.lstrip("*.")
+   984→                        if m not in hosts and m != domain:
+   985→                            hosts.append(m)
+   986→        except Exception:
+   987→            pass
+   988→        return hosts
+   989→
+   990→    def _resolve_host(self, host: str) -> Optional[str]:
+   991→        """Resolve a hostname to an IP address via DNS. Returns IP or None."""
+   992→        try:
+   993→            result = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+   994→            if result:
+   995→                return result[0][4][0]
+   996→        except (socket.gaierror, socket.herror, OSError):
+   997→            pass
+   998→        return None
+   999→
+  1000→    def _profile_host(self, host: str, ip: str) -> AssetProfile:
+  1001→        """Build an AssetProfile for a discovered host."""
+  1002→        cert_info = _check_certificate_age(host)
+  1003→        # Try HTTPS first, then HTTP
+  1004→        resp_headers = None
+  1005→        status_code = None
+  1006→        body = ""
+  1007→        title = ""
+  1008→        for scheme in ("https", "http"):
+  1009→            url = f"{scheme}://{host}/"
+  1010→            resp_headers, status_code, body, final_url = _make_request(url, self.timeout, headers=self._session_headers)
+  1011→            if status_code is not None:
+  1012→                break
+  1013→        title = _extract_title(body)
+  1014→ tech_stack = _detect_tech_stack(resp_headers, body)
+  1015→        indicators = _assess_indicators(resp_headers, body, title, cert_info)
+  1016→        asset_type = _classify_asset(resp_headers, body, title, cert_info)
+  1017→        decay = _calculate_decay_from_indicators(indicators, resp_headers, cert_info)
+  1018→        return AssetProfile(
+  1019→            url=f"https://{host}/" if status_code else f"http://{host}/",
+  1020→            asset_type=asset_type,
+  1021→            status_code=status_code,
+  1022→            decay_score=decay,
+  1023→            indicators=indicators,
+  1024→            last_modified=resp_headers.get("last-modified") if resp_headers else None,
+  1025→            server_header=resp_headers.get("server") if resp_headers else None,
+  1026→            title=title,
+  1027→            cert_info=cert_info,
+  1028→            tech_stack=tech_stack,
+  1029→            discovered_by="dns_resolution",
+  1030→        )
+  1031→
+  1032→    # ---------------------------------------------------------------------
+  1033→    # 2. Staging environments
+  1034→    # ---------------------------------------------------------------------
+  1035→
+  1036→    def discover_staging_environments(self, target: str) -> List[AssetProfile]:
+  1037→        """
+  1038→        Probe for staging / dev / test / UAT / CI environments using
+  1039→        well-known subdomain prefixes.
+  1040→        """
+  1041→        found: List[AssetProfile] = []
+  1042→        checked: set = set()
+  1043→
+  1044→        for prefix in self.STAGING_PATTERNS:
+  1045→            fqdn = f"{prefix}.{target}"
+  1046→            if fqdn in checked:
+  1047→                continue
+  1048→            checked.add(fqdn)
+  1049→            ip = self._resolve_host(fqdn)
+  1050→            if ip:
+  1051→                profile = self._profile_host(fqdn, ip)
+  1052→                if profile.status_code is not None:
+  1053→                    profile.discovered_by = "staging_subdomain"
+  1054→                    profile.asset_type = "staging_environment"
+  1055→                    found.append(profile)
+  1056→
+  1057→        return found
+  1058→
+  1059→    # ---------------------------------------------------------------------
+  1060→    # 3. Abandoned infrastructure
+  1061→    # ---------------------------------------------------------------------
+  1062→
+  1063→    def discover_abandoned_infrastructure(self, base_url: str) -> List[AssetProfile]:
+  1064→        """
+  1065→        Check the base URL and common paths for signs of abandonment:
+  1066→        old WordPress, default pages, expired certificates, outdated headers,
+  1067→        missing HSTS, HTTP-only.
+  1068→        """
+  1069→        found: List[AssetProfile] = []
+  1070→        parsed = urlparse(base_url)
+  1071→        host = parsed.hostname or ""
+  1072→
+  1073→        # Check the base URL itself
+  1074→        profile = _probe_path(base_url, "/", self.timeout)
+  1075→        if profile.status_code is not None:
+  1076→            profile.discovered_by = "abandoned_infrastructure_scan"
+  1077→            # Additional: check HTTP-only
+  1078→            if parsed.scheme == "http":
+  1079→                https_url = f"https://{host}/"
+  1080→                _, https_status, _, _ = _make_request(https_url, self.timeout)
+  1081→                if https_status is None or https_status >= 400:
+  1082→                    if "http_only_no_redirect" not in profile.indicators:
+  1083→                        profile.indicators.append("http_only_no_redirect")
+  1084→                    profile.decay_score = _calculate_decay_from_indicators(
+  1085→                        profile.indicators, None, profile.cert_info
+  1086→                    )
+  1087→                    # Re-evaluate risk level
+  1088→                    if profile.decay_score >= 75:
+  1089→                        profile.risk_level = "critical"
+  1090→                    elif profile.decay_score >= 55:
+  1091→                        profile.risk_level = "high"
+  1092→                    elif profile.decay_score >= 35:
+  1093→                        profile.risk_level = "medium"
+  1094→                    elif profile.decay_score >= 15:
+  1095→                        profile.risk_level = "low"
+  1096→                    else:
+  1097→                        profile.risk_level = "info"
+  1098→            found.append(profile)
+  1099→
+  1100→        # Probe common abandoned paths
+  1101→        abandoned_paths = [
+  1102→            "/", "/index.html", "/index.php", "/default.html",
+  1103→            "/old/", "/archive/", "/backup/", "/legacy/", "/deprecated/",
+  1104→            "/wordpress/wp-login.php", "/wp-login.php",
+  1105→            "/wp-admin/", "/wp-admin/install.php",
+  1106→            "/server-status", "/server-info",
+  1107→            "/info.php", "/phpinfo.php", "/test.php",
+  1108→            "/README.md", "/README.txt", "/CHANGELOG.md",
+  1109→            "/.git/HEAD", "/.git/config", "/.svn/entries",
+  1110→            "/.DS_Store", "/Thumbs.db",
+  1111→            "/WEB-INF/web.xml", "/META-INF/MANIFEST.MF",
+  1112→            "/crossdomain.xml", "/clientaccesspolicy.xml",
+  1113→        ]
+  1114→        for path in abandoned_paths:
+  1115→            if path == "/":
+  1116→                continue  # already probed
+  1117→            p = _probe_path(base_url, path, self.timeout)
+  1118→            if p.status_code is not None and p.status_code < 400:
+  1119→                p.discovered_by = "abandoned_infrastructure_scan"
+  1120→                found.append(p)
+  1121→
+  1122→        return found
+  1123→
+  1124→    # ---------------------------------------------------------------------
+  1125→    # 4. Shadow APIs
+  1126→    # ---------------------------------------------------------------------
+  1127→
+  1128→    def discover_shadow_apis(self, base_url: str) -> List[AssetProfile]:
+  1129→        """
+  1130→        Find undocumented / hidden APIs: common API paths, debug endpoints,
+  1131→        Swagger/OpenAPI specs, GraphQL introspection.
+  1132→        """
+  1133→        found: List[AssetProfile] = []
+  1134→        probed_urls: set = set()
+  1135→
+  1136→        for path in self.SHADOW_API_PATHS:
+  1137→            url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+  1138→            if url in probed_urls:
+  1139→                continue
+  1140→            probed_urls.add(url)
+  1141→            resp_headers, status_code, body, final_url = _make_request(url, self.timeout, headers=self._session_headers)
+  1142→            if status_code is None:
+  1143→                continue
+  1144→            # Skip 404s, focus on real hits
+  1145→            if status_code == 404:
+  1146→                continue
+  1147→            cert_info = _check_certificate_age(urlparse(url).hostname or "")
+  1148→            title = _extract_title(body or "")
+  1149→            tech_stack = _detect_tech_stack(resp_headers, body or "")
+  1150→            indicators = _assess_indicators(resp_headers, body or "", title, cert_info)
+  1151→            asset_type = _classify_asset(resp_headers, body or "", title, cert_info)
+  1152→            decay = _calculate_decay_from_indicators(indicators, resp_headers, cert_info)
+  1153→            profile = AssetProfile(
+  1154→                url=url,
+  1155→                asset_type=asset_type,
+  1156→                status_code=status_code,
+  1157→                decay_score=decay,
+  1158→                indicators=indicators,
+  1159→                last_modified=resp_headers.get("last-modified") if resp_headers else None,
+  1160→                server_header=resp_headers.get("server") if resp_headers else None,
+  1161→                title=title,
+  1162→                cert_info=cert_info,
+  1163→                tech_stack=tech_stack,
+  1164→                discovered_by="shadow_api_scan",
+  1165→            )
+  1166→            found.append(profile)
+  1167→
+  1168→            # GraphQL introspection probe
+  1169→            if "graphql" in path.lower() and status_code == 200:
+  1170→                introspection = self._probe_graphql_introspection(url)
+  1171→                if introspection:
+  1172→                    profile.indicators.append("graphql_introspection_enabled")
+  1173→                    profile.tech_stack.append("GraphQL (introspection open)")
+  1174→
+  1175→            # Swagger schema extraction
+  1176→            if status_code == 200 and body and ("swagger" in path.lower() or "openapi" in path.lower()):
+  1177→                try:
+  1178→                    schema = json.loads(body)
+  1179→                    if schema.get("swagger") or schema.get("openapi"):
+  1180→                        paths_count = len(schema.get("paths", {}))
+  1181→                        profile.indicators.append(f"openapi_spec_exposed ({paths_count} endpoints)")
+  1182→                        profile.tech_stack.append(f"OpenAPI ({paths_count} paths)")
+  1183→                except (json.JSONDecodeError, TypeError):
+  1184→                    pass
+  1185→
+  1186→        return found
+  1187→
+  1188→    def _probe_graphql_introspection(self, graphql_url: str) -> bool:
+  1189→        """Send a GraphQL introspection query and check for a valid response."""
+  1190→        introspection_query = {
+  1191→            "query": """{
+  1192→                __schema {
+  1193→                    types {
+  1194→                        name
+  1195→                        kind
+  1196→                        fields {
+  1197→                            name
+  1198→                        }
+  1199→                    }
+  1200→                }
+  1201→            }"""
+  1202→        }
+  1203→        data = json.dumps(introspection_query).encode("utf-8")
+  1204→        try:
+  1205→            req = Request(
+  1206→                graphql_url,
+  1207→                data=data,
+  1208→                headers={
+  1209→                    **self._session_headers,
+  1210→                    "Content-Type": "application/json",
+  1211→                },
+  1212→                method="POST",
+  1213→            )
+  1214→            resp = urlopen(req, timeout=self.timeout)
+  1215→            body = resp.read(65536).decode("utf-8", errors="replace")
+  1216→            result = json.loads(body)
+  1217→            return "data" in result and "__schema" in result.get("data", {})
+  1218→        except Exception:
+  1219→            return False
+  1220→
+  1221→    # ---------------------------------------------------------------------
+  1222→    # 5. Orphaned DNS
+  1223→    # ---------------------------------------------------------------------
+  1224→
+  1225→    def discover_orphaned_dns(self, target: str) -> Dict[str, Any]:
+  1226→        """
+  1227→        Check for DNS records pointing to dead infrastructure, orphaned NS
+  1228→        records, and stale MX records.
+  1229→        """
+  1230→        findings: Dict[str, Any] = {
+  1231→            "target": target,
+  1232→            "records": {},
+  1233→            "assets": [],
+  1234→        }
+  1235→
+  1236→        # Resolve A / AAAA
+  1237→        ipv4 = self._resolve_host(target)
+  1238→        findings["records"]["A"] = ipv4
+  1239→
+  1240→        # NS records
+  1241→        ns_records = self._dns_lookup(target, "NS")
+  1242→        findings["records"]["NS"] = ns_records
+  1243→
+  1244→        # MX records
+  1245→        mx_records = self._dns_lookup(target, "MX")
+  1246→        findings["records"]["MX"] = mx_records
+  1247→
+  1248→        # TXT records
+  1249→        txt_records = self._dns_lookup(target, "TXT")
+  1250→        findings["records"]["TXT"] = txt_records
+  1251→
+  1252→        # CNAME records
+  1253→        cname_records = self._dns_lookup(target, "CNAME")
+  1254→        findings["records"]["CNAME"] = cname_records
+  1255→
+  1256→        # Check for orphaned NS: NS records pointing to hosts that don't resolve
+  1257→        orphaned_ns: List[str] = []
+  1258→        for ns in ns_records:
+  1259→            ns_host = ns.rstrip(".")
+  1260→            if not self._resolve_host(ns_host):
+  1261→                orphaned_ns.append(ns_host)
+  1262→        findings["orphaned_ns"] = orphaned_ns
+  1263→
+  1264→        # Check for stale MX: MX records pointing to unreachable hosts
+  1265→        stale_mx: List[Dict[str, Any]] = []
+  1266→        for mx in mx_records:
+  1267→            mx_host = mx.rstrip(".")
+  1268→            ip = self._resolve_host(mx_host)
+  1269→            if ip:
+  1270→                # Check if SMTP port is open
+  1271→                smtp_open = self._check_port_open(mx_host, 25, timeout=4)
+  1272→                if not smtp_open:
+  1273→                    stale_mx.append({"host": mx_host, "ip": ip, "issue": "smtp_port_closed"})
+  1274→            else:
+  1275→                stale_mx.append({"host": mx_host, "ip": None, "issue": "unresolvable"})
+  1276→        findings["stale_mx"] = stale_mx
+  1277→
+  1278→        # Check for dangling CNAME
+  1279→        dangling_cname: List[str] = []
+  1280→        for cname in cname_records:
+  1281→            cname_target = cname.rstrip(".")
+  1282→            if not self._resolve_host(cname_target):
+  1283→                dangling_cname.append(cname_target)
+  1284→        findings["dangling_cname"] = dangling_cname
+  1285→
+  1286→        # Build asset profiles for orphaned records
+  1287→        for ns_host in orphaned_ns:
+  1288→            profile = AssetProfile(
+  1289→                url=f"dns://{ns_host}",
+  1290→                asset_type="orphaned_ns",
+  1291→                status_code=None,
+  1292→                decay_score=70,
+  1293→                indicators=["orphaned_ns_record"],
+  1294→                discovered_by="dns_analysis",
+  1295→            )
+  1296→            findings["assets"].append(profile.to_dict())
+  1297→
+  1298→        for mx_info in stale_mx:
+  1299→            profile = AssetProfile(
+  1300→                url=f"dns://{mx_info['host']}",
+  1301→                asset_type="stale_mx",
+  1302→                status_code=None,
+  1303→                decay_score=60 if mx_info["issue"] == "smtp_port_closed" else 80,
+  1304→                indicators=[f"stale_mx_{mx_info['issue']}"],
+  1305→                discovered_by="dns_analysis",
+  1306→            )
+  1307→            findings["assets"].append(profile.to_dict())
+  1308→
+  1309→        for cname_host in dangling_cname:
+  1310→            profile = AssetProfile(
+  1311→                url=f"dns://{cname_host}",
+  1312→                asset_type="dangling_cname",
+  1313→                status_code=None,
+  1314→                decay_score=75,
+  1315→                indicators=["dangling_cname_record"],
+  1316→                discovered_by="dns_analysis",
+  1317→            )
+  1318→            findings["assets"].append(profile.to_dict())
+  1319→
+  1320→        return findings
+  1321→
+  1322→    def _dns_lookup(self, domain: str, record_type: str) -> List[str]:
+  1323→        """Perform a DNS lookup using system resolver (dig fallback or getaddrinfo)."""
+  1324→        results: List[str] = []
+  1325→        if record_type in ("A", "AAAA"):
+  1326→            try:
+  1327→                family = socket.AF_INET if record_type == "A" else socket.AF_INET6
+  1328→                addrs = socket.getaddrinfo(domain, None, family, socket.SOCK_STREAM)
+  1329→                for addr in addrs:
+  1330→                    ip = addr[4][0]
+  1331→                    if ip not in results:
+  1332→                        results.append(ip)
+  1333→            except (socket.gaierror, OSError):
+  1334→                pass
+  1335→            return results
+  1336→
+  1337→        # For NS, MX, TXT, CNAME — try system dig/host commands
+  1338→        try:
+  1339→            cmd = ["dig", "+short", record_type, domain]
+  1340→            proc = subprocess.run(
+  1341→                cmd, capture_output=True, text=True, timeout=8,
+  1342→                stdin=subprocess.DEVNULL,
+  1343→            )
+  1344→            if proc.returncode == 0 and proc.stdout.strip():
+  1345→                for line in proc.stdout.strip().split("\n"):
+  1346→                    line = line.strip()
+  1347→                    if line and line not in results:
+  1348→                        results.append(line)
+  1349→                return results
+  1350→        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+  1351→            pass
+  1352→
+  1353→        # Fallback: try host command
+  1354→        try:
+  1355→            cmd = ["host", "-t", record_type, domain]
+  1356→            proc = subprocess.run(
+  1357→                cmd, capture_output=True, text=True, timeout=8,
+  1358→                stdin=subprocess.DEVNULL,
+  1359→            )
+  1360→            if proc.returncode == 0 and proc.stdout.strip():
+  1361→                for line in proc.stdout.strip().split("\n"):
+  1362→                    line = line.strip()
+  1363→                    # Extract the value from host output (typically after "is an alias for" or "mail is handled by")
+  1364→                    parts = line.split()
+  1365→                    if len(parts) >= 2:
+  1366→                        value = parts[-1].rstrip(".")
+  1367→                        if value and value not in results:
+  1368→                            results.append(value + ".")
+  1369→                return results
+  1370→        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+  1371→            pass
+  1372→
+  1373→        return results
+  1374→
+  1375→    def _check_port_open(self, host: str, port: int, timeout: int = 4) -> bool:
+  1376→        """Check if a TCP port is open on a host."""
+  1377→        try:
+  1378→            with socket.create_connection((host, port), timeout=timeout):
+  1379→                return True
+  1380→        except (socket.timeout, socket.gaierror, OSError):
+  1381→            return False
+  1382→
+  1383→    # ---------------------------------------------------------------------
+  1384→    # 6. Forgotten services
+  1385→    # ---------------------------------------------------------------------
+  1386→
+  1387→    def discover_forgotten_services(self, base_url: str) -> List[AssetProfile]:
+  1388→        """
+  1389→        Check for services left running: phpMyAdmin, Jenkins, Grafana, Kibana,
+  1390→        Redis Commander, pgAdmin, MongoDB Express, Solr admin, Tomcat manager.
+  1391→        """
+  1392→        found: List[AssetProfile] = []
+  1393→        probed_urls: set = set()
+  1394→
+  1395→        for path in self.FORGOTTEN_SERVICE_PATHS:
+  1396→            url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+  1397→            if url in probed_urls:
+  1398→                continue
+  1399→            probed_urls.add(url)
+  1400→            resp_headers, status_code, body, final_url = _make_request(url, self.timeout, headers=self._session_headers)
+  1401→            if status_code is None or status_code == 404:
+  1402→                continue
+  1403→            # Focus on hits that look like real services (2xx, 3xx, 401, 403)
+  1404→            if status_code not in (200, 201, 202, 301, 302, 303, 307, 308, 401, 403):
+  1405→                continue
+  1406→            cert_info = _check_certificate_age(urlparse(url).hostname or "")
+  1407→            title = _extract_title(body or "")
+  1408→            tech_stack = _detect_tech_stack(resp_headers, body or "")
+  1409→            indicators = _assess_indicators(resp_headers, body or "", title, cert_info)
+  1410→            asset_type = _classify_asset(resp_headers, body or "", title, cert_info)
+  1411→            decay = _calculate_decay_from_indicators(indicators, resp_headers, cert_info)
+  1412→            profile = AssetProfile(
+  1413→                url=url,
+  1414→                asset_type=asset_type,
+  1415→                status_code=status_code,
+  1416→                decay_score=decay,
+  1417→                indicators=indicators,
+  1418→                last_modified=resp_headers.get("last-modified") if resp_headers else None,
+  1419→                server_header=resp_headers.get("server") if resp_headers else None,
+  1420→                title=title,
+  1421→                cert_info=cert_info,
+  1422→                tech_stack=tech_stack,
+  1423→                discovered_by="forgotten_services_scan",
+  1424→            )
+  1425→            found.append(profile)
+  1426→
+  1427→        return found
+  1428→
+  1429→    # ---------------------------------------------------------------------
+  1430→    # 7. Cloud leaks
+  1431→    # ---------------------------------------------------------------------
+  1432→
+  1433→    def discover_cloud_leaks(self, base_url: str) -> List[AssetProfile]:
+  1434→        """
+  1435→        Probe for cloud storage / config exposure: AWS credentials, GCP service
+  1436→        accounts, Azure app config, S3 bucket references, Firebase config,
+  1437→        Supabase URL, and embedded secrets in page source.
+  1438→        """
+  1439→        found: List[AssetProfile] = []
+  1440→        probed_urls: set = set()
+  1441→
+  1442→        # Phase 1: Probe cloud-related paths
+  1443→        for path in self.CLOUD_LEAK_PATHS:
+  1444→            url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+  1445→            if url in probed_urls:
+  1446→                continue
+  1447→            probed_urls.add(url)
+  1448→            resp_headers, status_code, body, final_url = _make_request(url, self.timeout, headers=self._session_headers)
+  1449→            if status_code is None or status_code == 404:
+  1450→                continue
+  1451→            cert_info = _check_certificate_age(urlparse(url).hostname or "")
+  1452→            title = _extract_title(body or "")
+  1453→            tech_stack = _detect_tech_stack(resp_headers, body or "")
+  1454→            indicators = _assess_indicators(resp_headers, body or "", title, cert_info)
+  1455→            asset_type = _classify_asset(resp_headers, body or "", title, cert_info)
+  1456→
+  1457→            # Check for credential patterns in the body
+  1458→            credential_hits = self._scan_for_credentials(body or "")
+  1459→            for hit in credential_hits:
+  1460→                if hit not in indicators:
+  1461→                    indicators.append(hit)
+  1462→                if asset_type == "web_application":
+  1463→                    asset_type = "cloud_credentials"
+  1464→
+  1465→            decay = _calculate_decay_from_indicators(indicators, resp_headers, cert_info)
+  1466→            # Cloud leaks are inherently high risk
+  1467→            if credential_hits:
+  1468→                decay = max(decay, 80)
+  1469→
+  1470→            profile = AssetProfile(
+  1471→                url=url,
+  1472→                asset_type=asset_type,
+  1473→                status_code=status_code,
+  1474→                decay_score=decay,
+  1475→                indicators=indicators,
+  1476→                last_modified=resp_headers.get("last-modified") if resp_headers else None,
+  1477→                server_header=resp_headers.get("server") if resp_headers else None,
+  1478→                title=title,
+  1479→                cert_info=cert_info,
+  1480→                tech_stack=tech_stack,
+  1481→                discovered_by="cloud_leak_scan",
+  1482→            )
+  1483→            found.append(profile)
+  1484→
+  1485→        # Phase 2: Scan the main page for leaked credentials in JS/HTML
+  1486→        resp_headers, status_code, body, _ = _make_request(base_url, self.timeout, headers=self._session_headers)
+  1487→        if body and status_code in (200, 301, 302):
+  1488→            credential_hits = self._scan_for_credentials(body)
+  1489→            if credential_hits:
+  1490→                cert_info = _check_certificate_age(urlparse(base_url).hostname or "")
+  1491→                title = _extract_title(body)
+  1492→                profile = AssetProfile(
+  1493→                    url=base_url,
+  1494→                    asset_type="cloud_credentials",
+  1495→                    status_code=status_code,
+  1496→                    decay_score=max(80, len(credential_hits) * 15),
+  1497→                    indicators=credential_hits[:10],
+  1498→                    title=title,
+  1499→                    cert_info=cert_info,
+  1500→                    discovered_by="cloud_leak_body_scan",
+  1501→                )
+  1502→                found.append(profile)
+  1503→
+  1504→        return found
+  1505→
+  1506→    def _scan_for_credentials(self, body: str) -> List[str]:
+  1507→        """Scan response body for known credential/secret patterns."""
+  1508→        hits: List[str] = []
+  1509→        seen_types: set = set()
+  1510→        for pattern in self.CLOUD_CREDENTIAL_PATTERNS:
+  1511→            matches = pattern.findall(body)
+  1512→            if matches:
+  1513→                # Determine credential type from pattern
+  1514→                match_str = matches[0][:20]  # truncated for safety
+  1515→                # Classify the type
+  1516→                for label, detect_pat in [
+  1517→                    ("aws_access_key_detected", re.compile(r'AKIA')),
+  1518→                    ("gcp_service_account_detected", re.compile(r'"type"\s*:\s*"service_account"')),
+  1519→                    ("firebase_api_key_detected", re.compile(r'AIza')),
+  1520→                    ("google_oauth_detected", re.compile(r'ya29\\.')),
+  1521→                    ("slack_token_detected", re.compile(r'xox[bpras]-')),
+  1522→                    ("github_pat_detected", re.compile(r'ghp_')),
+  1523→                    ("github_oauth_detected", re.compile(r'gho_')),
+  1524→                    ("gitlab_pat_detected", re.compile(r'glpat-')),
+  1525→                    ("jwt_token_detected", re.compile(r'^eyJ', re.M)),
+  1526→                    ("private_key_detected", re.compile(r'BEGIN.*PRIVATE KEY')),
+  1527→                    ("stripe_key_detected", re.compile(r'sk_live_')),
+  1528→                    ("azure_secret_detected", re.compile(r'AZURE_CLIENT_SECRET')),
+  1529→                    ("supabase_url_detected", re.compile(r'supabase\\.co')),
+  1530→                    ("mongodb_uri_detected", re.compile(r'mongodb://')),
+  1531→                    ("postgres_uri_detected", re.compile(r'postgres://')),
+  1532→                    ("redis_uri_detected", re.compile(r'redis://')),
+  1533→                    ("amqp_uri_detected", re.compile(r'amqp://')),
+  1534→                    ("mysql_uri_detected", re.compile(r'mysql://')),
+  1535→                    ("openai_key_detected", re.compile(r'sk-[0-9a-zA-Z]{48}')),
+  1536→                ]:
+  1537→                    if detect_pat.search(body) and label not in seen_types:
+  1538→                        hits.append(label)
+  1539→                        seen_types.add(label)
+  1540→        return hits
+  1541→
+  1542→    # ---------------------------------------------------------------------
+  1543→    # 8. Internal exposure
+  1544→    # ---------------------------------------------------------------------
+  1545→
+  1546→    def discover_internal_exposure(self, base_url: str) -> List[AssetProfile]:
+  1547→        """
+  1548→        Find accidentally exposed internal tools: internal dashboards, monitoring
+  1549→        panels, error tracking (Sentry), logging (ELK), CI/CD dashboards.
+  1550→        """
+  1551→        found: List[AssetProfile] = []
+  1552→        probed_urls: set = set()
+  1553→
+  1554→        for path in self.INTERNAL_EXPOSURE_PATHS:
+  1555→            url = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+  1556→            if url in probed_urls:
+  1557→                continue
+  1558→            probed_urls.add(url)
+  1559→            resp_headers, status_code, body, final_url = _make_request(url, self.timeout, headers=self._session_headers)
+  1560→            if status_code is None or status_code == 404:
+  1561→                continue
+  1562→            if status_code not in (200, 201, 202, 301, 302, 303, 307, 308, 401, 403):
+  1563→                continue
+  1564→            cert_info = _check_certificate_age(urlparse(url).hostname or "")
+  1565→            title = _extract_title(body or "")
+  1566→            tech_stack = _detect_tech_stack(resp_headers, body or "")
+  1567→            indicators = _assess_indicators(resp_headers, body or "", title, cert_info)
+  1568→            asset_type = _classify_asset(resp_headers, body or "", title, cert_info)
+  1569→            decay = _calculate_decay_from_indicators(indicators, resp_headers, cert_info)
+  1570→
+  1571→            # Internal tools exposed publicly are high risk regardless of decay
+  1572→            if status_code in (200, 401, 403):
+  1573→                decay = max(decay, 50)
+  1574→                if asset_type == "web_application":
+  1575→                    # Try to infer internal tool type from path/title
+  1576→                    bl = (body or "").lower()
+  1577→                    tl = title.lower()
+  1578→                    if any(kw in bl or kw in tl for kw in ["monitoring", "grafana", "kibana", "prometheus", "alert"]):
+  1579→                        asset_type = "monitoring_exposed"
+  1580→                        indicators.append("internal_monitoring_exposed")
+  1581→                        decay = max(decay, 70)
+  1582→                    elif any(kw in bl or kw in tl for kw in ["jenkins", "gitlab", "ci", "pipeline", "build"]):
+  1583→                        asset_type = "cicd_exposed"
+  1584→                        indicators.append("internal_cicd_exposed")
+  1585→                        decay = max(decay, 70)
+  1586→                    elif any(kw in bl or kw in tl for kw in ["sentry", "rollbar", "bugsnag", "datadog", "newrelic"]):
+  1587→                        asset_type = "error_tracking_exposed"
+  1588→                        indicators.append("internal_error_tracking_exposed")
+  1589→                        decay = max(decay, 60)
+  1590→                    elif any(kw in bl or kw in tl for kw in ["admin", "dashboard", "backoffice", "intranet"]):
+  1591→                        asset_type = "internal_dashboard_exposed"
+  1592→                        indicators.append("internal_dashboard_exposed")
+  1593→                        decay = max(decay, 65)
+  1594→                    elif any(kw in bl or kw in tl for kw in ["log", "elk", "elasticsearch", "logstash"]):
+  1595→                        asset_type = "logging_exposed"
+  1596→                        indicators.append("internal_logging_exposed")
+  1597→                        decay = max(decay, 65)
+  1598→
+  1599→            profile = AssetProfile(
+  1600→                url=url,
+  1601→                asset_type=asset_type,
+  1602→                status_code=status_code,
+  1603→                decay_score=min(decay, 100),
+  1604→                indicators=indicators,
+  1605→                last_modified=resp_headers.get("last-modified") if resp_headers else None,
+  1606→                server_header=resp_headers.get("server") if resp_headers else None,
+  1607→                title=title,
+  1608→                cert_info=cert_info,
+  1609→                tech_stack=tech_stack,
+  1610→                discovered_by="internal_exposure_scan",
+  1611→            )
+  1612→            found.append(profile)
+  1613→
+  1614→        return found
+  1615→
+  1616→    # ---------------------------------------------------------------------
+  1617→    # Decay scoring
+  1618→    # ---------------------------------------------------------------------
+  1619→
+  1620→    def calculate_decay_score(self, asset_info: Dict[str, Any]) -> int:
+  1621→        """
+  1622→        Calculate how "abandoned" an asset is on a 0-100 scale.
+  1623→
+  1624→        Factors:
+  1625→        - Certificate expiry proximity (expired = +25, near expiry = +12)
+  1626→        - Outdated server headers (+15)
+  1627→        - Default content pages (+20)
+  1628→        - Missing security headers (HSTS, CSP) (+5 each)
+  1629→        - HTTP-only with no redirect (+8)
+  1630→        - No robots.txt (+3), no favicon (+3)
+  1631→        - Old WordPress version signatures (+18)
+  1632→        - Outdated JS libraries (jQuery 1.x, Bootstrap 3.x) (+10)
+  1633→        - Visible PHP errors (+15)
+  1634→        - Stack traces exposed (+20)
+  1635→        - Debug mode indicators (+18)
+  1636→        - Directory listings (+18)
+  1637→        - Self-signed certificates (+15)
+  1638→        - Certificate age > 1 year (+5), > 2 years (+8)
+  1639→        - No Last-Modified header (+2)
+  1640→
+  1641→        :param asset_info: Dictionary with keys like ``headers``, ``body``,
+  1642→            ``title``, ``cert_info``, ``status_code``.
+  1643→        :returns: Integer 0-100 where 100 means fully abandoned/decayed.
+  1644→        """
+  1645→        headers = asset_info.get("headers") or {}
+  1646→        body = asset_info.get("body", "")
+  1647→        title = asset_info.get("title", "")
+  1648→        cert_info = asset_info.get("cert_info")
+  1649→        status_code = asset_info.get("status_code")
+  1650→
+  1651→        indicators = _assess_indicators(headers, body, title, cert_info)
+  1652→        score = _calculate_decay_from_indicators(indicators, headers, cert_info)
+  1653→
+  1654→        # Additional: check for HTTP-only
+  1655→        if asset_info.get("http_only") and not asset_info.get("has_https_redirect"):
+  1656→            score += 8
+  1657→
+  1658→        # Check for no robots.txt
+  1659→        if asset_info.get("no_robots_txt"):
+  1660→            score += 3
+  1661→
+  1662→        # High status codes suggest degradation
+  1663→        if status_code and status_code >= 500:
+  1664→            score += 10
+  1665→        elif status_code and status_code == 403:
+  1666→            score += 5
+  1667→
+  1668→        return min(score, 100)
+  1669→
+  1670→
+  1671→# ---------------------------------------------------------------------------
+  1672→# Convenience entry-point
+  1673→# ---------------------------------------------------------------------------
+  1674→
+  1675→def quick_scan(target: str, base_url: Optional[str] = None, timeout: int = 8) -> Dict[str, Any]:
+  1676→    """
+  1677→    Convenience function: run a full shadow IT scan with minimal setup.
+  1678→
+  1679→    >>> from reconpro.shadow_it import quick_scan
+  1680→    >>> results = quick_scan("example.com")
+  1681→    """
+  1682→    if base_url is None:
+  1683→        base_url = f"https://{target}"
+  1684→    scanner = ShadowITScanner(timeout=timeout)
+  1685→    return scanner.scan(target, base_url, timeout)
+  1686→

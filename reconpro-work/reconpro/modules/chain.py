@@ -264,4 +264,28 @@ def run_chain(target: str, base_url: str, timeout: int = 8,
     except Exception:
         pass  # Cross-validation is supplementary; don't fail the scan
 
+    # v9.2.0: Infrastructure drift detection
+    try:
+        from ..drift_monitor import InfrastructureDriftMonitor
+        dm = InfrastructureDriftMonitor()
+        drift_result = dm.detect_drift(host, base_url, timeout=min(timeout, 5))
+        drift_events = drift_result.get("drift_events", [])
+        drift_risk = drift_result.get("drift_risk_score", 0)
+        if drift_events:
+            sev = "high" if drift_risk >= 60 else "medium" if drift_risk >= 30 else "low"
+            findings.append(Finding(
+                title="Infrastructure drift: {} changes detected (risk {})".format(
+                    len(drift_events), drift_risk),
+                severity=sev, category="infrastructure_drift",
+                module="chain",
+                description="Infrastructure changes detected since last scan: {}".format(
+                    ", ".join(e.get("field_changed", "?") for e in drift_events[:5])),
+                evidence="Risk score: {}, Changes: {}".format(
+                    drift_risk, ", ".join(e.get("severity", "?") for e in drift_events[:5])),
+                asset=host, points_deducted=int(drift_risk / 10),
+                remediation="Review infrastructure changes. Unauthorized drift may indicate compromise.",
+            ))
+    except Exception:
+        pass
+
     return findings

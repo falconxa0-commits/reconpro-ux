@@ -9,6 +9,11 @@ from .modules import (
     run_bot, run_gorgon, run_oblivion, run_nhi,
     run_host, run_dev, run_doctor, run_pegasus,
     run_cloud_recon, run_team,
+    # v9.2.0: 12 new terrifying modules
+    run_quantum_fingerprint, run_dark_web_monitor, run_info_ops,
+    run_steganography_detector, run_covert_channel, run_zero_day_hunter,
+    run_infrastructure_ghost, run_signal_intelligence, run_nation_state_attributor,
+    run_weaponized_report, run_honeypot_dance, run_dead_drop,
 )
 from .http import http_probe, Finding, compute_grade, badge_markdown, default_limiter
 
@@ -25,6 +30,19 @@ MODULE_REGISTRY = {
     "nhi":      {"name": "NHI GRAPH",     "runner": run_nhi,      "color": "cyan"},
     "pegasus":  {"name": "PEGASUS HUNTER", "runner": run_pegasus,  "color": "bright_red"},
     "cloud_recon": {"name": "CLOUD RECON", "runner": run_cloud_recon, "color": "bright_cyan"},
+    # v9.2.0: 12 new terrifying modules
+    "quantum_fingerprint": {"name": "QUANTUM FINGERPRINT", "runner": run_quantum_fingerprint, "color": "bright_cyan"},
+    "dark_web_monitor": {"name": "DARK WEB MONITOR", "runner": run_dark_web_monitor, "color": "bright_red"},
+    "info_ops": {"name": "INFO OPS", "runner": run_info_ops, "color": "magenta"},
+    "steganography_detector": {"name": "STEGANO DETECTOR", "runner": run_steganography_detector, "color": "yellow"},
+    "covert_channel": {"name": "COVERT CHANNEL", "runner": run_covert_channel, "color": "red"},
+    "zero_day_hunter": {"name": "ZERO-DAY HUNTER", "runner": run_zero_day_hunter, "color": "bright_red"},
+    "infrastructure_ghost": {"name": "INFRA GHOST", "runner": run_infrastructure_ghost, "color": "cyan"},
+    "signal_intelligence": {"name": "SIGINT", "runner": run_signal_intelligence, "color": "bright_magenta"},
+    "nation_state_attributor": {"name": "NATION-STATE ATTR", "runner": run_nation_state_attributor, "color": "bright_red"},
+    "weaponized_report": {"name": "WEAPONIZED REPORT", "runner": run_weaponized_report, "color": "red"},
+    "honeypot_dance": {"name": "HONEYPOT DANCE", "runner": run_honeypot_dance, "color": "yellow"},
+    "dead_drop": {"name": "DEAD DROP", "runner": run_dead_drop, "color": "bright_cyan"},
 }
 
 # ── Local scan modules (scan the machine, not a URL) ────────────────────

@@ -548,10 +548,10 @@ def _stage_16_ai_endpoint_discovery(base_url: str, timeout: int = 8,
 
 def run_gorgon(target: str, base_url: str, timeout: int = 8,
                 verify_tls: bool = True) -> List[Finding]:
-    """15-stage + AI red team. v9.1.0 adds AI endpoint discovery, vendor fingerprinting,
-    AI CVE matching, and secret extraction.
+    """16-stage + AI red team + Kill Chain integration.
 
-    Returns list of Findings.
+    v9.1.0: AI endpoint discovery, vendor fingerprinting, AI CVE matching, secrets.
+    v9.2.0: Kill Chain phase scoring, shadow IT discovery, social graph attack surface.
     """
     findings: List[Finding] = []
     findings.extend(_stage_1_invocation(base_url, timeout=timeout, verify_tls=verify_tls))
@@ -571,4 +571,64 @@ def run_gorgon(target: str, base_url: str, timeout: int = 8,
     findings.extend(_stage_15_fear_assessment(base_url, findings, timeout=timeout))
     # v9.1.0: AI endpoint discovery, vendor fingerprinting, AI CVE matching, secrets
     findings.extend(_stage_16_ai_endpoint_discovery(base_url, timeout=timeout, verify_tls=verify_tls))
+    # v9.2.0: Kill Chain scoring + Shadow IT
+    findings.extend(_stage_17_kill_chain(base_url, timeout=timeout, verify_tls=verify_tls))
+    return findings
+
+
+def _stage_17_kill_chain(base_url: str, timeout: int = 8,
+                          verify_tls: bool = True) -> List[Finding]:
+    """v9.2.0 Stage 17: Kill Chain completion scoring + Shadow IT discovery."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    # Kill Chain analysis
+    try:
+        from ..kill_chain import KillChainEngine
+        kc = KillChainEngine()
+        kc_result = kc.run_kill_chain(host, base_url, timeout=min(timeout, 5), verify_tls=verify_tls)
+        completion = kc_result.get("kill_chain_completion", 0)
+        overall_risk = kc_result.get("overall_risk", {}).get("risk_score", 0)
+        risk_level = kc_result.get("overall_risk", {}).get("risk_level", "unknown")
+        findings.append(Finding(
+            title="Kill Chain: {:.0f}% complete (risk: {}/10)".format(completion * 100, overall_risk),
+            severity="critical" if overall_risk >= 7 else "high" if overall_risk >= 4 else "medium",
+            category="kill_chain",
+            module="gorgon",
+            description="Full Cyber Kill Chain analysis: {} completion, risk level {}, "
+                        "{} attack paths identified.".format(
+                "{:.0f}%".format(completion * 100), risk_level,
+                kc_result.get("attack_tree", {}).get("path_count", 0)),
+            evidence="Phases: {}".format(", ".join(
+                "{}={}".format(p.get("phase", "?"), p.get("status", "?"))
+                for p in kc_result.get("phases", [])[:7])),
+            asset=host, points_deducted=int(overall_risk),
+            remediation="Address each completed kill chain phase to increase defensive posture.",
+        ))
+    except Exception:
+        pass
+
+    # Shadow IT discovery
+    try:
+        from ..shadow_it import ShadowITScanner
+        sis = ShadowITScanner()
+        shadow = sis.scan(host, base_url, timeout=min(timeout, 5))
+        shadow_findings = shadow.get("findings", [])
+        high_decay = [f for f in shadow_findings if f.get("decay_score", 0) >= 60]
+        if high_decay:
+            findings.append(Finding(
+                title="Shadow IT: {} abandoned assets detected".format(len(high_decay)),
+                severity="high" if len(high_decay) >= 5 else "medium",
+                category="shadow_it",
+                module="gorgon",
+                description="Abandoned/forgotten infrastructure discovered: {}".format(
+                    ", ".join(f.get("url", "?")[:60] for f in high_decay[:5])),
+                evidence="Decay scores: {}".format(", ".join(
+                    str(f.get("decay_score", 0)) for f in high_decay[:5])),
+                asset=host, points_deducted=8,
+                remediation="Audit and decommission abandoned infrastructure. Shadow IT increases attack surface.",
+            ))
+    except Exception:
+        pass
+
     return findings

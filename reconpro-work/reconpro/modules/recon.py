@@ -1176,4 +1176,72 @@ def run_recon(target: str, base_url: str, timeout: int = 8,
     # ── 25. Meta Tag Security ─────────────────────────────────────────────
     findings.extend(_check_meta_tags(body, host))
 
+    # ── v9.2.0: Social Graph + Sovereignty ─────────────────────────────
+    findings.extend(_check_social_graph(target, base_url, timeout=timeout, verify_tls=verify_tls))
+    findings.extend(_check_sovereignty(target, base_url, ip_list, timeout=timeout))
+
+    return findings
+
+
+def _check_social_graph(target: str, base_url: str, timeout: int = 8,
+                         verify_tls: bool = True) -> List[Finding]:
+    """v9.2.0: Build social graph and identify critical bridge entities."""
+    findings: List[Finding] = []
+    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+
+    try:
+        from ..social_graph import GraphIntelligence
+        gi = GraphIntelligence()
+        graph = gi.build_graph(host, base_url)
+        stats = graph.stats()
+        if stats.get("entity_count", 0) > 3:
+            clusters = stats.get("cluster_count", 0)
+            bridges = graph.find_bridge_entities()
+            findings.append(Finding(
+                title="Social graph: {} entities, {} clusters".format(
+                    stats["entity_count"], clusters),
+                severity="medium", category="social_graph",
+                module="recon",
+                description="OSINT relationship graph: {} entities, {} relationships, "
+                            "{} clusters, {} bridge entities.".format(
+                    stats["entity_count"], stats.get("relationship_count", 0),
+                    clusters, len(bridges)),
+                evidence="Bridges: {}".format(", ".join(str(b) for b in bridges[:5])),
+                asset=host, points_deducted=5 if len(bridges) > 2 else 3,
+                remediation="Bridge entities are critical nodes — securing them collapses multiple attack paths.",
+            ))
+    except Exception:
+        pass
+
+    return findings
+
+
+def _check_sovereignty(target: str, base_url: str, ip_list: list,
+                        timeout: int = 8) -> List[Finding]:
+    """v9.2.0: Digital sovereignty and jurisdiction mapping."""
+    findings: List[Finding] = []
+    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+
+    try:
+        from ..sovereignty import SovereigntyMapper
+        sm = SovereigntyMapper()
+        profile = sm.map_sovereignty(host, base_url, timeout=min(timeout, 5))
+        jurisdictions = profile.get("jurisdictions", [])
+        surveillance = profile.get("surveillance_risk", "low")
+        if jurisdictions:
+            countries = [j.get("country", "?") for j in jurisdictions[:3]]
+            findings.append(Finding(
+                title="Digital sovereignty: {}".format(", ".join(countries)),
+                severity="medium" if surveillance == "high" else "low",
+                category="sovereignty",
+                module="recon",
+                description="Infrastructure sovereignty spans: {}. Surveillance risk: {}.".format(
+                    ", ".join(countries), surveillance),
+                evidence="Jurisdictions: {}".format(len(jurisdictions)),
+                asset=host, points_deducted=5 if surveillance == "high" else 2,
+                remediation="Review data residency compliance for identified jurisdictions.",
+            ))
+    except Exception:
+        pass
+
     return findings

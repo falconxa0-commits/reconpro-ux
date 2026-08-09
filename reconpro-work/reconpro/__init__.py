@@ -11,6 +11,23 @@ Remote Modules:
     oblivion   23-stage analytical dissolution (DREAD)
     vibesec    AI/vibe-coding vulnerability benchmark
     nhi        Non-Human Identity & blast-radius mapping
+    pegasus    Pegasus spyware/surveillance detection
+    cloud_recon Cloud infrastructure reconnaissance
+    team       Team collaboration & shared scans
+
+Advanced Modules (v9.2.0):
+    quantum_fingerprint  OS/kernel fingerprinting via HTTP timing
+    dark_web_monitor     Credential leak & exposure scanner
+    info_ops             Information operations & deception analysis
+    steganography_detector Hidden data & covert channel detection
+    covert_channel       Covert channel detection & simulation
+    zero_day_hunter      Anomaly-based zero-day pattern detection
+    infrastructure_ghost Complete infrastructure ghosting
+    signal_intelligence  SIGINT for HTTP (beaconing, C2)
+    nation_state_attributor Nation-state attack attribution engine
+    weaponized_report    Tracking & beacon detection in documents
+    honeypot_dance       Honeypot detection & effectiveness scoring
+    dead_drop            Cryptographic dead drop detection
 
 Local Modules:
     host       Full laptop/machine security audit
@@ -41,7 +58,7 @@ Usage:
     reconpro serve                          # API server
 """
 
-__version__ = "9.1.0"
+__version__ = "9.2.0"
 __all__ = ["scan", "ReconProResult", "audit_scan", "__version__"]
 
 from .scanner import scan, ReconProResult, audit_scan  # noqa: E402

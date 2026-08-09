@@ -14,21 +14,27 @@ from .doctor import run_doctor
 from .cloud_recon import run_cloud_recon
 from .pegasus import run_pegasus
 from .team import run_team
+from .quantum_fingerprint import run_quantum_fingerprint
+from .dark_web_monitor import run_dark_web_monitor
+from .free_info_ops import run_info_ops
+from .steganography_detector import run_steganography_detector
+from .covert_channel import run_covert_channel
+from .zero_day_hunter import run_zero_day_hunter
+from .infrastructure_ghost import run_infrastructure_ghost
+from .signal_intelligence import run_signal_intelligence
+from .nation_state_attributor import run_nation_state_attributor
+from .weaponized_report import run_weaponized_report
+from .honeypot_dance import run_honeypot_dance
+from .dead_drop import run_dead_drop
 
 __all__ = [
     "run_recon", "run_vibesec", "run_auth", "run_chain",
     "run_bot", "run_gorgon", "run_oblivion", "run_nhi",
     "run_host", "run_dev", "run_doctor", "run_cloud_recon",
     "run_pegasus", "run_team",
+    # v9.2.0: 12 new terrifying modules
+    "run_quantum_fingerprint", "run_dark_web_monitor", "run_info_ops",
+    "run_steganography_detector", "run_covert_channel", "run_zero_day_hunter",
+    "run_infrastructure_ghost", "run_signal_intelligence", "run_nation_state_attributor",
+    "run_weaponized_report", "run_honeypot_dance", "run_dead_drop",
 ]
-
-# v9.1.0: New capabilities are in top-level modules, not scanning sub-modules.
-# They can be imported directly:
-#   from reconpro.wishes import WishesOrchestrator
-#   from reconpro.geoip import GeoIPLookup
-#   from reconpro.threat_feeds import ThreatFeedManager
-#   from reconpro.ai_cve_db import AICVEDatabase
-#   from reconpro.ai_red_team import AIEndpointDiscovery, AIVendorFingerprinter
-#   from reconpro.cross_validator import CrossValidator
-#   from reconpro.supply_chain import SCCAudit
-#   from reconpro.ansi_capture import ANSICapture

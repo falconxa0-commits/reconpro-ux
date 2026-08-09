@@ -284,10 +284,10 @@ def _check_threat_feeds(base_url: str, timeout: int = 8,
 
 def run_bot(target: str, base_url: str, timeout: int = 8,
              verify_tls: bool = True) -> List[Finding]:
-    """C2 / bot infrastructure detection with threat feeds, DNSBL, and GeoIP enrichment.
+    """C2 / bot infrastructure detection with threat feeds, DNSBL, GeoIP,
+    tunnel detection, and exfiltration channel mapping.
 
-    v9.1.0: Now integrates threat feed ingestion, DNSBL checking,
-    and GeoIP enrichment from the new v9.1.0 capabilities.
+    v9.2.0: Adds protocol tunnel detection and exfil channel analysis.
     """
     findings: List[Finding] = []
     findings.extend(_check_common_c2_paths(base_url, timeout=timeout, verify_tls=verify_tls))
@@ -295,4 +295,61 @@ def run_bot(target: str, base_url: str, timeout: int = 8,
     findings.extend(_check_honeypot_signs(base_url, timeout=timeout, verify_tls=verify_tls))
     # v9.1.0: Threat feeds + DNSBL + GeoIP
     findings.extend(_check_threat_feeds(base_url, timeout=timeout, verify_tls=verify_tls))
+    # v9.2.0: Tunnel detection + Exfil channel mapping
+    findings.extend(_check_tunnel_exfil(base_url, timeout=timeout, verify_tls=verify_tls))
+    return findings
+
+
+def _check_tunnel_exfil(base_url: str, timeout: int = 8,
+                         verify_tls: bool = True) -> List[Finding]:
+    """v9.2.0: Detect protocol tunnels and exfiltration channels."""
+    findings: List[Finding] = []
+    host = base_url.replace("https://", "").replace("http://", "").split("/")[0]
+
+    # Tunnel detection
+    try:
+        from ..tunnel_detect import TunnelDetector
+        td = TunnelDetector()
+        tunnels = td.detect_all(host, timeout=min(timeout, 5))
+        for t in tunnels[:5]:
+            if t.confidence > 0.3:
+                findings.append(Finding(
+                    title="Tunnel detected: {} (confidence {:.0f}%)".format(
+                        t.tunnel_type.value, t.confidence * 100),
+                    severity="high" if t.confidence > 0.7 else "medium",
+                    category="tunnel_detection",
+                    module="bot",
+                    description="Potential {} tunnel detected on {}".format(t.tunnel_type.value, host),
+                    evidence=t.evidence[:200],
+                    asset=host,
+                    points_deducted=8 if t.confidence > 0.7 else 4,
+                    remediation="Investigate and block {} tunnels if not authorized.".format(t.tunnel_type.value),
+                ))
+    except Exception:
+        pass
+
+    # Exfil channel analysis
+    try:
+        from ..exfil_channels import ExfilChannelMapper
+        mapper = ExfilChannelMapper()
+        channels = mapper.map_all_channels(host, base_url, timeout=min(timeout, 5))
+        high_risk = [c for c in channels.get("channels", []) if c.overall_risk >= 60]
+        if high_risk:
+            ch_names = [c.channel_type for c in high_risk[:5]]
+            max_risk = max(c.overall_risk for c in high_risk)
+            findings.append(Finding(
+                title="High-risk exfil channels: {} (max risk {})".format(
+                    len(high_risk), max_risk),
+                severity="high" if max_risk >= 80 else "medium",
+                category="exfil_channel",
+                module="bot",
+                description="{} data exfiltration channels detected with risk >= 60: {}".format(
+                    len(high_risk), ", ".join(ch_names)),
+                evidence="Channels: {}".format(", ".join(ch_names)),
+                asset=host, points_deducted=10 if max_risk >= 80 else 5,
+                remediation="Harden exfiltration channels: restrict outbound DNS, block ICMP tunnels, enforce TLS everywhere.",
+            ))
+    except Exception:
+        pass
+
     return findings

@@ -667,4 +667,82 @@ def run_oblivion(target: str, base_url: str, timeout: int = 8,
     findings.extend(_stage_20_wisdom_verdict(base_url, findings, target, timeout=timeout))
     # v9.1.0: Stage 21 — AI Model Deep Analysis (watermarks, collapse, trauma imprints)
     findings.extend(_stage_21_ai_model_analysis(base_url, timeout=timeout, verify_tls=verify_tls))
+    # v9.2.0: Stage 22 — Threat attribution + Stage 23 — Cognitive security
+    findings.extend(_stage_22_attribution(base_url, timeout=timeout, verify_tls=verify_tls))
+    findings.extend(_stage_23_cognitive_security(base_url, timeout=timeout, verify_tls=verify_tls))
+    return findings
+
+
+def _stage_22_attribution(base_url: str, timeout: int = 8,
+                            verify_tls: bool = True) -> List[Finding]:
+    """v9.2.0 Stage 22: Threat actor attribution and APT matching."""
+    findings: List[Finding] = []
+    host = _h(base_url)
+
+    try:
+        from ..attribution import AttributionEngine
+        ae = AttributionEngine()
+        report = ae.analyze(host, base_url, timeout=min(timeout, 5))
+        top_matches = report.get("attributions", [])[:3]
+        if top_matches:
+            for attr in top_matches:
+                group_name = attr.get("group_name", "Unknown")
+                confidence = attr.get("confidence", 0)
+                country = attr.get("country", "?")
+                if confidence > 0.2:
+                    findings.append(Finding(
+                        title="APT attribution: {} ({})".format(group_name, country),
+                        severity="critical" if confidence > 0.5 else "high" if confidence > 0.3 else "medium",
+                        category="threat_attribution",
+                        module="oblivion",
+                        description="Threat actor {} ({}) matched with {:.0f}% confidence. "
+                                    "Known targets: {}".format(
+                            group_name, country, confidence * 100,
+                            ", ".join(attr.get("sectors", [])[:3])),
+                        evidence="TTPs: {}".format(", ".join(attr.get("matched_techniques", [])[:5])),
+                        asset=host, points_deducted=int(confidence * 15),
+                        remediation="Implement mitigations specific to {} TTPs.".format(group_name),
+                    ))
+        else:
+            findings.append(Finding(
+                title="Threat attribution: No APT match",
+                severity="info", category="threat_attribution",
+                module="oblivion",
+                description="No known APT group patterns matched the target's profile.",
+                evidence="Attribution scan completed", asset=host, points_deducted=0,
+            ))
+    except Exception:
+        pass
+
+    return findings
+
+
+def _stage_23_cognitive_security(base_url: str, timeout: int = 8,
+                                   verify_tls: bool = True) -> List[Finding]:
+    """v9.2.0 Stage 23: Cognitive security and influence operations detection."""
+    findings: List[Finding] = []
+    host = _h(base_url)
+
+    try:
+        from ..cognitive_sec import CognitiveSecurityEngine
+        cs = CognitiveSecurityEngine()
+        result = cs.analyze(host, base_url, timeout=min(timeout, 5))
+        indicators = result.get("indicators", [])
+        cognitive_risk = result.get("overall_risk", 0)
+        if indicators:
+            findings.append(Finding(
+                title="Cognitive security: {} indicators (risk {:.0f})".format(
+                    len(indicators), cognitive_risk),
+                severity="high" if cognitive_risk >= 0.6 else "medium" if cognitive_risk >= 0.3 else "low",
+                category="cognitive_security",
+                module="oblivion",
+                description="Cognitive/influence indicators detected: {}".format(
+                    ", ".join(i.get("type", "?") for i in indicators[:5])),
+                evidence="Risk score: {:.0f}/100".format(cognitive_risk * 100),
+                asset=host, points_deducted=int(cognitive_risk * 10),
+                remediation="Review content for influence operation markers and implement content integrity checks.",
+            ))
+    except Exception:
+        pass
+
     return findings

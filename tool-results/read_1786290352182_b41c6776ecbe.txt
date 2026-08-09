@@ -1,0 +1,1376 @@
+     1→"""
+     2→ReconPro v9.2.0 — Data Exfiltration Channel Mapping Module
+     3→
+     4→Identifies, scores, and reports all possible channels through which data
+     5→could leave a target network. Pure Python implementation with zero external
+     6→dependencies — stdlib only.
+     7→
+     8→Usage:
+     9→    from reconpro.exfil_channels import ExfilChannelMapper
+    10→    mapper = ExfilChannelMapper()
+    11→    report = mapper.map_all_channels("example.com", "https://example.com")
+    12→"""
+    13→
+    14→from __future__ import annotations
+    15→
+    16→import base64
+    17→import hashlib
+    18→import json
+    19→import math
+    20→import os
+    21→import re
+    22→import socket
+    23→import ssl
+    24→import struct
+    25→import subprocess
+    26→import time
+    27→import urllib.error
+    28→import urllib.parse
+    29→import urllib.request
+    30→from dataclasses import dataclass, field
+    31→from enum import Enum
+    32→from typing import Dict, List, Optional, Tuple
+    33→
+    34→
+    35→# ──────────────────────────────────────────────────────────────────────────────
+    36→# Data Structures
+    37→# ──────────────────────────────────────────────────────────────────────────────
+    38→
+    39→
+    40→class ChannelType(str, Enum):
+    41→    """Enumeration of all exfiltration channel categories."""
+    42→    DNS = "dns"
+    43→    HTTP = "http"
+    44→    HTTPS = "https"
+    45→    ICMP = "icmp"
+    46→    EMAIL = "email"
+    47→    WEBSOCKET = "websocket"
+    48→    TIMING = "timing"
+    49→    STEGANOGRAPHY = "steganography"
+    50→    CLOUD_STORAGE = "cloud_storage"
+    51→    FILE_SHARING = "file_sharing"
+    52→
+    53→
+    54→@dataclass
+    55→class ExfilChannel:
+    56→    """Represents a single exfiltration channel with risk metrics.
+    57→
+    58→    Attributes:
+    59→        channel_type: Category of the exfiltration vector.
+    60→        viability_score: 0-100 score of how practical the channel is.
+    61→        bandwidth_estimate: Estimated throughput in bytes/second.
+    62→        stealth_score: 0-100 score of how covert the channel is.
+    63→        detection_difficulty: 0-100 score of how hard it is to detect.
+    64→        indicators: List of observed evidence strings.
+    65→        remediation: Recommended fix or mitigation.
+    66→        overall_risk: Computed composite risk (set by ExfilRiskScorer).
+    67→    """
+    68→    channel_type: ChannelType
+    69→    viability_score: float = 0.0
+    70→    bandwidth_estimate: float = 0.0
+    71→    stealth_score: float = 0.0
+    72→    detection_difficulty: float = 0.0
+    73→    indicators: List[str] = field(default_factory=list)
+    74→    remediation: str = ""
+    75→    overall_risk: float = 0.0
+    76→
+    77→    def to_dict(self) -> Dict:
+    78→        """Serialize channel to a plain dictionary."""
+    79→        return {
+    80→            "channel_type": self.channel_type.value,
+    81→            "viability_score": round(self.viability_score, 1),
+    82→            "bandwidth_estimate_bps": round(self.bandwidth_estimate, 1),
+    83→            "stealth_score": round(self.stealth_score, 1),
+    84→            "detection_difficulty": round(self.detection_difficulty, 1),
+    85→            "overall_risk": round(self.overall_risk, 1),
+    86→            "indicators": self.indicators,
+    87→            "remediation": self.remediation,
+    88→        }
+    89→
+    90→    def __repr__(self) -> str:
+    91→        return (
+    92→            f"ExfilChannel(type={self.channel_type.value}, "
+    93→            f"risk={self.overall_risk:.1f}, viability={self.viability_score:.1f})"
+    94→        )
+    95→
+    96→
+    97→# ──────────────────────────────────────────────────────────────────────────────
+    98→# DNS Helper Functions
+    99→# ──────────────────────────────────────────────────────────────────────────────
+   100→
+   101→
+   102→def _build_dns_query(domain: str, qtype: int = 1) -> bytes:
+   103→    """Build a raw DNS query packet for the given domain.
+   104→
+   105→    Args:
+   106→        domain: The domain name to query.
+   107→        qtype: DNS record type (1=A, 16=TXT, 28=AAAA, 15=MX).
+   108→
+   109→    Returns:
+   110→        Wire-format DNS query packet bytes.
+   111→    """
+   112→    txn_id = os.urandom(2)
+   113→    flags = struct.pack(">H", 0x0100)  # Standard query, recursion desired
+   114→    qdcount = struct.pack(">H", 1)
+   115→    ancount = struct.pack(">H", 0)
+   116→    nscount = struct.pack(">H", 0)
+   117→    arcount = struct.pack(">H", 0)
+   118→    header = txn_id + flags + qdcount + ancount + nscount + arcount
+   119→
+   120→    question = b""
+   121→    for label in domain.rstrip(".").split("."):
+   122→        encoded = label.encode("ascii")
+   123→        question += struct.pack("B", len(encoded)) + encoded
+   124→    question += b"\x00"  # Root label
+   125→    question += struct.pack(">H", qtype)  # Query type
+   126→    question += struct.pack(">H", 1)     # Query class (IN)
+   127→
+   128→    return header + question
+   129→
+   130→
+   131→def _parse_dns_name(data: bytes, offset: int) -> Tuple[str, int]:
+   132→    """Parse a DNS name from wire format, handling compressed pointers.
+   133→
+   134→    Args:
+   135→        data: Full DNS response bytes.
+   136→        offset: Starting byte offset for the name.
+   137→
+   138→    Returns:
+   139→        Tuple of (parsed domain name, new offset).
+   140→    """
+   141→    labels: List[str] = []
+   142→    jumped = False
+   143→    original_offset = offset
+   144→    max_offset = offset
+   145→
+   146→    while offset < len(data):
+   147→        length = data[offset]
+   148→        if length == 0:
+   149→            offset += 1
+   150→            break
+   151→        if (length & 0xC0) == 0xC0:
+   152→            if not jumped:
+   153→                max_offset = offset + 2
+   154→            pointer = struct.unpack(">H", data[offset:offset + 2])[0] & 0x3FFF
+   155→            offset = pointer
+   156→            jumped = True
+   157→        else:
+   158→            offset += 1
+   159→            labels.append(data[offset:offset + length].decode("ascii", errors="replace"))
+   160→            offset += length
+   161→
+   162→    return ".".join(labels), max_offset if jumped else offset
+   163→
+   164→
+   165→def dns_query_udp(
+   166→    domain: str,
+   167→    server: str = "8.8.8.8",
+   168→    port: int = 53,
+   169→    qtype: int = 1,
+   170→    timeout: float = 5.0,
+   171→) -> Optional[Dict]:
+   172→    """Perform a raw DNS query via UDP and parse the response.
+   173→
+   174→    Args:
+   175→        domain: Domain name to resolve.
+   176→        server: DNS server IP address.
+   177→        port: DNS server port.
+   178→        qtype: Record type to query.
+   179→        timeout: Socket timeout in seconds.
+   180→
+   181→    Returns:
+   182→        Dictionary with 'answers', 'rcode', 'ttl_range', 'raw_size' or None.
+   183→    """
+   184→    sock = None
+   185→    try:
+   186→        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+   187→        sock.settimeout(timeout)
+   188→        packet = _build_dns_query(domain, qtype)
+   189→        start = time.time()
+   190→        sock.sendto(packet, (server, port))
+   191→        data, _ = sock.recvfrom(4096)
+   192→        elapsed = time.time() - start
+   193→
+   194→        if len(data) < 12:
+   195→            return None
+   196→
+   197→        rcode = data[3] & 0x0F
+   198→        ancount = struct.unpack(">H", data[6:8])[0]
+   199→        nscount = struct.unpack(">H", data[8:10])[0]
+   200→        arcount = struct.unpack(">H", data[10:12])[0]
+   201→
+   202→        # Skip question section
+   203→        offset = 12
+   204→        _, offset = _parse_dns_name(data, offset)
+   205→        offset += 4  # qtype + qclass
+   206→
+   207→        answers: List[Dict] = []
+   208→        ttls: List[int] = []
+   209→
+   210→        for _ in range(ancount):
+   211→            if offset >= len(data):
+   212→                break
+   213→            name, offset = _parse_dns_name(data, offset)
+   214→            if offset + 10 > len(data):
+   215→                break
+   216→            rtype = struct.unpack(">H", data[offset:offset + 2])[0]
+   217→            rclass = struct.unpack(">H", data[offset + 2:offset + 4])[0]
+   218→            ttl = struct.unpack(">I", data[offset + 4:offset + 8])[0]
+   219→            rdlen = struct.unpack(">H", data[offset + 8:offset + 10])[0]
+   220→            offset += 10
+   221→
+   222→            rdata_end = min(offset + rdlen, len(data))
+   223→            rdata_raw = data[offset:rdata_end]
+   224→            offset = rdata_end
+   225→
+   226→            ttls.append(ttl)
+   227→            rdata_str = ""
+   228→            rtype_names = {1: "A", 5: "CNAME", 16: "TXT", 28: "AAAA", 15: "MX"}
+   229→            rtype_name = rtype_names.get(rtype, str(rtype))
+   230→
+   231→            if rtype == 1 and len(rdata_raw) == 4:
+   232→                rdata_str = socket.inet_ntoa(rdata_raw)
+   233→            elif rtype == 28 and len(rdata_raw) == 16:
+   234→                rdata_str = socket.inet_ntop(socket.AF_INET6, rdata_raw)
+   235→            elif rtype == 16:
+   236→                rdata_str = rdata_raw[1:].decode("ascii", errors="replace") if rdata_raw else ""
+   237→            elif rtype == 5 or rtype == 15:
+   238→                rdata_str, _ = _parse_dns_name(data, offset - rdlen)
+   239→            else:
+   240→                rdata_str = rdata_raw.hex()
+   241→
+   242→            answers.append({
+   243→                "name": name,
+   244→                "type": rtype_name,
+   245→                "type_id": rtype,
+   246→                "class": rclass,
+   247→                "ttl": ttl,
+   248→                "rdata": rdata_str,
+   249→                "rdata_len": rdlen,
+   250→            })
+   251→
+   252→        ttl_range = (min(ttls), max(ttls)) if ttls else (0, 0)
+   253→        return {
+   254→            "answers": answers,
+   255→            "rcode": rcode,
+   256→            "ttl_range": ttl_range,
+   257→            "total_records": ancount + nscount + arcount,
+   258→            "raw_size": len(data),
+   259→            "elapsed_ms": elapsed * 1000,
+   260→        }
+   261→    except (socket.timeout, OSError, struct.error, UnicodeDecodeError):
+   262→        return None
+   263→    finally:
+   264→        if sock:
+   265→            sock.close()
+   266→
+   267→
+   268→def _check_open_resolver(target_ip: str, timeout: float = 4.0) -> bool:
+   269→    """Check whether the target IP acts as an open DNS resolver.
+   270→
+   271→    Sends a recursive query for a known domain and checks if the target
+   272→    responds with a valid answer.
+   273→
+   274→    Args:
+   275→        target_ip: IP address to test as a resolver.
+   276→        timeout: Query timeout in seconds.
+   277→
+   278→    Returns:
+   279→        True if the target responds to recursive DNS queries.
+   280→    """
+   281→    result = dns_query_udp(
+   282→        "www.google.com", server=target_ip, qtype=1, timeout=timeout
+   283→    )
+   284→    if result and result["answers"] and result["rcode"] == 0:
+   285→        for ans in result["answers"]:
+   286→            if ans["type"] == "A" and ans["rdata"]:
+   287→                return True
+   288→    return False
+   289→
+   290→
+   291→# ──────────────────────────────────────────────────────────────────────────────
+   292→# ICMP Helper Functions
+   293→# ──────────────────────────────────────────────────────────────────────────────
+   294→
+   295→
+   296→def icmp_ping(
+   297→    host: str,
+   298→    count: int = 3,
+   299→    timeout: float = 5.0,
+   300→    payload_size: int = 56,
+   301→) -> Dict:
+   302→    """Send ICMP echo requests via system ping and parse results.
+   303→
+   304→    Falls back to raw socket if available; otherwise uses subprocess.
+   305→
+   306→    Args:
+   307→        host: Target hostname or IP.
+   308→        count: Number of ping probes.
+   309→        timeout: Per-probe timeout.
+   310→        payload_size: ICMP payload size in bytes.
+   311→
+   312→    Returns:
+   313→        Dict with 'reachable', 'avg_rtt_ms', 'packet_loss_pct', 'max_payload_accepted'.
+   314→    """
+   315→    result: Dict = {
+   316→        "reachable": False,
+   317→        "avg_rtt_ms": 0.0,
+   318→        "packet_loss_pct": 100.0,
+   319→        "max_payload_accepted": 0,
+   320→        "rtt_samples": [],
+   321→    }
+   322→
+   323→    # Try system ping first
+   324→    ping_cmd = "ping" if os.name != "nt" else "ping.exe"
+   325→    try:
+   326→        proc = subprocess.run(
+   327→            [ping_cmd, "-c", str(count), "-W", str(int(timeout)), "-s", str(payload_size), host],
+   328→            capture_output=True,
+   329→            text=True,
+   330→            timeout=timeout * count + 5,
+   331→        )
+   332→        output = proc.stdout + proc.stderr
+   333→
+   334→        # Parse packet loss
+   335→        loss_match = re.search(r"(\d+(?:\.\d+)?)%\s*packet loss", output)
+   336→        if loss_match:
+   337→            result["packet_loss_pct"] = float(loss_match.group(1))
+   338→
+   339→        # Parse RTT statistics
+   340→        rtt_match = re.search(
+   341→            r"(?:rtt|round-trip).*?=\s*([\d.]+)/([\d.]+)/([\d.]+)", output, re.IGNORECASE
+   342→        )
+   343→        if rtt_match:
+   344→            result["avg_rtt_ms"] = float(rtt_match.group(2))
+   345→            result["rtt_samples"].append(float(rtt_match.group(1)))
+   346→            result["rtt_samples"].append(float(rtt_match.group(2)))
+   347→            result["rtt_samples"].append(float(rtt_match.group(3)))
+   348→
+   349→        result["reachable"] = result["packet_loss_pct"] < 100
+   350→
+   351→        # Parse time from individual packets
+   352→        time_matches = re.findall(r"time=([\d.]+)\s*ms", output)
+   353→        if time_matches:
+   354→            result["rtt_samples"] = [float(t) for t in time_matches]
+   355→            result["avg_rtt_ms"] = sum(result["rtt_samples"]) / len(result["rtt_samples"])
+   356→
+   357→        if result["reachable"]:
+   358→            result["max_payload_accepted"] = payload_size
+   359→
+   360→    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+   361→        # Fallback: try socket-based connectivity check
+   362→        try:
+   363→            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   364→            sock.settimeout(timeout)
+   365→            start = time.time()
+   366→            sock.connect((host, 80))
+   367→            rtt = (time.time() - start) * 1000
+   368→            sock.close()
+   369→            result["reachable"] = True
+   370→            result["avg_rtt_ms"] = rtt
+   371→            result["rtt_samples"].append(rtt)
+   372→            result["packet_loss_pct"] = 0.0
+   373→        except (socket.timeout, OSError):
+   374→            pass
+   375→
+   376→    return result
+   377→
+   378→
+   379→def _icmp_payload_tolerance(host: str, timeout: float = 5.0) -> int:
+   380→    """Determine the maximum ICMP payload size the target will accept.
+   381→
+   382→    Sends pings with increasing payload sizes and returns the largest
+   383→    size that received a reply.
+   384→
+   385→    Args:
+   386→        host: Target hostname or IP.
+   387→        timeout: Per-probe timeout.
+   388→
+   389→    Returns:
+   390→        Maximum accepted payload size in bytes.
+   391→    """
+   392→    test_sizes = [64, 256, 512, 1024, 1500, 2048, 4096, 8192]
+   393→    max_accepted = 0
+   394→
+   395→    for size in test_sizes:
+   396→        try:
+   397→            ping_cmd = "ping" if os.name != "nt" else "ping.exe"
+   398→            proc = subprocess.run(
+   399→                [ping_cmd, "-c", "1", "-W", str(int(timeout)), "-s", str(size), host],
+   400→                capture_output=True,
+   401→                text=True,
+   402→                timeout=timeout + 2,
+   403→            )
+   404→            output = proc.stdout + proc.stderr
+   405→            if "time=" in output or "ttl=" in output.lower() or "bytes from" in output.lower():
+   406→                max_accepted = size
+   407→            else:
+   408→                break  # Larger payloads likely won't work either
+   409→        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+   410→            break
+   411→
+   412→    return max_accepted
+   413→
+   414→
+   415→# ──────────────────────────────────────────────────────────────────────────────
+   416→# HTTP / Timing Helper Functions
+   417→# ──────────────────────────────────────────────────────────────────────────────
+   418→
+   419→
+   420→def _http_request(
+   421→    url: str,
+   422→    method: str = "GET",
+   423→    data: Optional[bytes] = None,
+   424→    headers: Optional[Dict[str, str]] = None,
+   425→    timeout: float = 8.0,
+   426→) -> Dict:
+   427→    """Perform an HTTP request and return detailed response metadata.
+   428→
+   429→    Args:
+   430→        url: Full URL to request.
+   431→        method: HTTP method (GET, POST, OPTIONS, HEAD).
+   432→        data: Request body bytes.
+   433→        headers: Additional request headers.
+   434→        timeout: Request timeout in seconds.
+   435→
+   436→    Returns:
+   437→        Dict with 'status', 'headers', 'body_length', 'elapsed_ms', 'error'.
+   438→    """
+   439→    result: Dict = {
+   440→        "status": 0,
+   441→        "headers": {},
+   442→        "body_length": 0,
+   443→        "elapsed_ms": 0.0,
+   444→        "error": None,
+   445→        "body_preview": "",
+   446→    }
+   447→
+   448→    req_headers = headers or {}
+   449→    if data and "Content-Type" not in req_headers:
+   450→        req_headers["Content-Type"] = "application/octet-stream"
+   451→    if "User-Agent" not in req_headers:
+   452→        req_headers["User-Agent"] = "ReconPro/9.2.0 (Security Scanner)"
+   453→
+   454→    req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+   455→    start = time.time()
+   456→    try:
+   457→        resp = urllib.request.urlopen(req, timeout=timeout)
+   458→        elapsed = (time.time() - start) * 1000
+   459→        body = resp.read()
+   460→        result["status"] = resp.getcode()
+   461→        result["headers"] = dict(resp.getheaders())
+   462→        result["body_length"] = len(body)
+   463→        result["elapsed_ms"] = elapsed
+   464→        result["body_preview"] = body[:512].decode("utf-8", errors="replace")
+   465→    except urllib.error.HTTPError as e:
+   466→        elapsed = (time.time() - start) * 1000
+   467→        result["status"] = e.code
+   468→        try:
+   469→            body = e.read()
+   470→            result["body_length"] = len(body)
+   471→            result["body_preview"] = body[:512].decode("utf-8", errors="replace")
+   472→        except Exception:
+   473→            pass
+   474→        result["elapsed_ms"] = elapsed
+   475→    except (urllib.error.URLError, OSError, socket.timeout) as e:
+   476→        result["elapsed_ms"] = (time.time() - start) * 1000
+   477→        result["error"] = str(e)
+   478→
+   479→    return result
+   480→
+   481→
+   482→def _measure_response_times(url: str, count: int = 8, timeout: float = 8.0) -> List[float]:
+   483→    """Collect multiple response time samples for a URL.
+   484→
+   485→    Args:
+   486→        url: URL to measure.
+   487→        count: Number of samples to collect.
+   488→        timeout: Per-request timeout.
+   489→
+   490→    Returns:
+   491→        List of response times in milliseconds.
+   492→    """
+   493→    times: List[float] = []
+   494→    for _ in range(count):
+   495→        result = _http_request(url, method="HEAD", timeout=timeout)
+   496→        if result["elapsed_ms"] > 0:
+   497→            times.append(result["elapsed_ms"])
+   498→        time.sleep(0.1)  # Brief pause between requests
+   499→    return times
+   500→
+   501→
+   502→def _compute_timing_jitter(samples: List[float]) -> float:
+   503→    """Compute the coefficient of variation (jitter) of timing samples.
+   504→
+   505→    A higher coefficient of variation indicates more timing variability,
+   506→    which could support timing-based exfiltration channels.
+   507→
+   508→    Args:
+   509→        samples: List of timing measurements in milliseconds.
+   510→
+   511→    Returns:
+   512→        Coefficient of variation (stddev / mean), or 0.0 if insufficient data.
+   513→    """
+   514→    if len(samples) < 3:
+   515→        return 0.0
+   516→    mean = sum(samples) / len(samples)
+   517→    if mean == 0:
+   518→        return 0.0
+   519→    variance = sum((s - mean) ** 2 for s in samples) / len(samples)
+   520→    stddev = math.sqrt(variance)
+   521→    return stddev / mean
+   522→
+   523→
+   524→# ──────────────────────────────────────────────────────────────────────────────
+   525→# TLS Cipher Analysis
+   526→# ──────────────────────────────────────────────────────────────────────────────
+   527→
+   528→
+   529→def _tls_probe(host: str, port: int = 443, timeout: float = 8.0) -> Dict:
+   530→    """Probe TLS configuration of the target host.
+   531→
+   532→    Tests supported TLS versions, extracts certificate details, and
+   533→    evaluates cipher suite strength.
+   534→
+   535→    Args:
+   536→        host: Target hostname.
+   537→        port: TLS port.
+   538→        timeout: Connection timeout.
+   539→
+   540→    Returns:
+   541→        Dict with TLS version info, cipher details, and certificate metadata.
+   542→    """
+   543→    result: Dict = {
+   544→        "tls_version": None,
+   545→        "cipher_name": None,
+   546→        "cipher_bits": 0,
+   547→        "cert_subject": "",
+   548→        "cert_issuer": "",
+   549→        "cert_expiry": "",
+   550→        "cert_serial": "",
+   551→        "hsts_present": False,
+   552→        "forward_secrecy": False,
+   553→        "ssl_errors": [],
+   554→        "supported_protocols": [],
+   555→    }
+   556→
+   557→    # Test each TLS version
+   558→    tls_versions = [
+   559→        (ssl.TLSVersion.TLSv1_3, "TLSv1.3"),
+   560→        (ssl.TLSVersion.TLSv1_2, "TLSv1.2"),
+   561→        (ssl.TLSVersion.TLSv1_1, "TLSv1.1"),
+   562→        (ssl.TLSVersion.TLSv1, "TLSv1.0"),
+   563→    ]
+   564→
+   565→    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+   566→    context.check_hostname = False
+   567→    context.verify_mode = ssl.CERT_NONE
+   568→
+   569→    for tls_ver, ver_name in tls_versions:
+   570→        try:
+   571→            test_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+   572→            test_ctx.check_hostname = False
+   573→            test_ctx.verify_mode = ssl.CERT_NONE
+   574→            test_ctx.maximum_version = tls_ver
+   575→            test_ctx.minimum_version = tls_ver
+   576→
+   577→            with socket.create_connection((host, port), timeout=timeout) as sock:
+   578→                with test_ctx.wrap_socket(sock, server_hostname=host) as ssock:
+   579→                    result["supported_protocols"].append(ver_name)
+   580→                    result["tls_version"] = ver_name
+   581→                    cipher = ssock.cipher()
+   582→                    if cipher:
+   583→                        result["cipher_name"] = cipher[0]
+   584→                        result["cipher_bits"] = cipher[2] if len(cipher) > 2 else cipher[1]
+   585→                    cert = ssock.getpeercert(binary_form=False)
+   586→                    if cert:
+   587→                        subject_parts = []
+   588→                        for rdn in cert.get("subject", ()):
+   589→                            for attr_type, attr_value in rdn:
+   590→                                subject_parts.append(f"{attr_type}={attr_value}")
+   591→                        result["cert_subject"] = ", ".join(subject_parts)
+   592→
+   593→                        issuer_parts = []
+   594→                        for rdn in cert.get("issuer", ()):
+   595→                            for attr_type, attr_value in rdn:
+   596→                                issuer_parts.append(f"{attr_type}={attr_value}")
+   597→                        result["cert_issuer"] = ", ".join(issuer_parts)
+   598→
+   599→                        result["cert_serial"] = str(cert.get("serialNumber", ""))
+   600→
+   601→                        not_after = cert.get("notAfter", "")
+   602→                        if not_after:
+   603→                            result["cert_expiry"] = not_after
+   604→        except (ssl.SSLError, OSError, socket.timeout):
+   605→            result["ssl_errors"].append(f"{ver_name} not supported or failed")
+   606→
+   607→    # Use the most secure protocol for full analysis
+   608→    try:
+   609→        with socket.create_connection((host, port), timeout=timeout) as sock:
+   610→            with context.wrap_socket(sock, server_hostname=host) as ssock:
+   611→                cipher = ssock.cipher()
+   612→                if cipher:
+   613→                    result["cipher_name"] = cipher[0]
+   614→                    result["cipher_bits"] = cipher[2] if len(cipher) > 2 else cipher[1]
+   615→
+   616→                # Check for forward secrecy via cipher name heuristics
+   617→                fs_ciphers = {
+   618→                    "ECDHE", "DHE", "AESGCM", "CHACHA20",
+   619→                    "AES_256_GCM", "AES_128_GCM", "TLS_AES_256_GCM_SHA384",
+   620→                    "TLS_CHACHA20_POLY1305_SHA256", "TLS_AES_128_GCM_SHA256",
+   621→                }
+   622→                if cipher and any(fs in cipher[0].upper() for fs in fs_ciphers):
+   623→                    result["forward_secrecy"] = True
+   624→
+   625→                # Check HSTS via a quick HTTP request
+   626→                try:
+   627→                    ssock.sendall(
+   628→                        f"HEAD / HTTP/1.1\r\nHost: {host}\r\n"
+   629→                        f"Connection: close\r\n\r\n".encode()
+   630→                    )
+   631→                    resp_data = b""
+   632→                    while True:
+   633→                        chunk = ssock.recv(4096)
+   634→                        if not chunk:
+   635→                            break
+   636→                        resp_data += chunk
+   637→                        if b"\r\n\r\n" in resp_data:
+   638→                            break
+   639→                    resp_str = resp_data.decode("utf-8", errors="replace")
+   640→                    if "strict-transport-security" in resp_str.lower():
+   641→                        result["hsts_present"] = True
+   642→                except (OSError, ssl.SSLError):
+   643→                    pass
+   644→    except (ssl.SSLError, OSError, socket.timeout) as e:
+   645→        result["ssl_errors"].append(str(e))
+   646→
+   647→    return result
+   648→
+   649→
+   650→# ──────────────────────────────────────────────────────────────────────────────
+   651→# BandwidthEstimator
+   652→# ──────────────────────────────────────────────────────────────────────────────
+   653→
+   654→
+   655→class BandwidthEstimator:
+   656→    """Estimates theoretical exfiltration bandwidth for various channels.
+   657→
+   658→    These are upper-bound theoretical estimates based on protocol
+   659→    characteristics, not actual throughput measurements.
+   660→    """
+   661→
+   662→    def __init__(self, timeout: float = 5.0) -> None:
+   663→        self.timeout = timeout
+   664→
+   665→    def estimate_dns_bandwidth(self, host: str) -> float:
+   666→        """Estimate DNS tunneling bandwidth in bytes/second.
+   667→
+   668→        DNS exfiltration works by encoding data in subdomain labels.
+   669→        Each label is limited to 63 characters, and the total FQDN
+   670→        to 253 characters. TXT records allow ~255 bytes per response.
+   671→
+   672→        Args:
+   673→            host: Target domain to estimate DNS bandwidth for.
+   674→
+   675→        Returns:
+   676→            Estimated bandwidth in bytes/second.
+   677→        """
+   678→        # Base measurements
+   679→        max_label_len = 63
+   680→        max_fqdn_len = 253
+   681→        base64_efficiency = 0.75  # 3 bytes → 4 base64 chars
+   682→        overhead_per_char = 0.2  # DNS protocol overhead
+   683→
+   684→        # Perform actual DNS timing to calibrate
+   685→        result = dns_query_udp(host, qtype=1, timeout=self.timeout)
+   686→        if result:
+   687→            rtt_ms = result.get("elapsed_ms", 50)
+   688→        else:
+   689→            rtt_ms = 50.0  # Conservative default
+   690→
+   691→        if rtt_ms < 1:
+   692→            rtt_ms = 1.0
+   693→
+   694→        # Usable data per query: FQDN overhead minus domain itself
+   695→        domain_len = len(host)
+   696→        available_label_space = max(0, max_fqdn_len - domain_len - 5)  # dots + padding
+   697→        usable_chars_per_query = min(max_label_len, available_label_space)
+   698→        bytes_per_query = usable_chars_per_query * base64_efficiency * (1 - overhead_per_char)
+   699→
+   700→        queries_per_second = 1000.0 / rtt_ms
+   701→        bandwidth = bytes_per_query * queries_per_second
+   702→
+   703→        # Check TXT record capacity (response channel)
+   704→        txt_result = dns_query_udp(host, qtype=16, timeout=self.timeout)
+   705→        if txt_result and txt_result["answers"]:
+   706→            for ans in txt_result["answers"]:
+   707→                if ans["type"] == "TXT" and ans["rdata_len"] > 0:
+   708→                    # Can exfiltrate via TXT response data
+   709→                    txt_bandwidth = ans["rdata_len"] * queries_per_second
+   710→                    bandwidth = max(bandwidth, txt_bandwidth)
+   711→
+   712→        return round(bandwidth, 1)
+   713→
+   714→    def estimate_http_bandwidth(self, base_url: str) -> float:
+   715→        """Estimate HTTP-based exfiltration bandwidth in bytes/second.
+   716→
+   717→        Measures actual POST throughput by sending data and observing
+   718→        accepted payload sizes and response times.
+   719→
+   720→        Args:
+   721→            base_url: Base URL of the target.
+   722→
+   723→        Returns:
+   724→            Estimated bandwidth in bytes/second.
+   725→        """
+   726→        test_url = base_url.rstrip("/")
+   727→        # Try POST to common endpoints
+   728→        endpoints = ["/", "/api/upload", "/upload", "/api/data", "/submit"]
+   729→        best_bandwidth = 0.0
+   730→
+   731→        for endpoint in endpoints:
+   732→            url = test_url + endpoint
+   733→            # Test with increasing payload sizes
+   734→            for size in [1024, 4096, 16384, 65536]:
+   735→                payload = os.urandom(size)
+   736→                result = _http_request(
+   737→                    url, method="POST", data=payload, timeout=self.timeout
+   738→                )
+   739→                if result["status"] > 0 and result["error"] is None:
+   740→                    elapsed = result["elapsed_ms"] / 1000.0
+   741→                    if elapsed > 0:
+   742→                        bw = size / elapsed
+   743→                        if bw > best_bandwidth:
+   744→                            best_bandwidth = bw
+   745→                    break  # Largest accepted size found
+   746→                elif result["status"] in (413, 431):
+   747→                    break  # Payload too large
+   748→
+   749→        # If no POST accepted, estimate from GET response times
+   750→        if best_bandwidth == 0:
+   751→            times = _measure_response_times(test_url + "/", count=5, timeout=self.timeout)
+   752→            if times:
+   753→                avg_time = sum(times) / len(times) / 1000.0
+   754→                if avg_time > 0:
+   755→                    # Conservative: assume URL-encoded data in query strings
+   756→                    best_bandwidth = 2000.0 / avg_time  # ~2KB in query string
+   757→
+   758→        return round(best_bandwidth, 1)
+   759→
+   760→    def estimate_icmp_bandwidth(self, host: str) -> float:
+   761→        """Estimate ICMP tunneling bandwidth in bytes/second.
+   762→
+   763→        ICMP exfiltration encodes data in echo request payload bytes.
+   764→        Bandwidth is limited by max payload size and packet rate.
+   765→
+   766→        Args:
+   767→            host: Target host.
+   768→
+   769→        Returns:
+   770→            Estimated bandwidth in bytes/second.
+   771→        """
+   772→        ping_result = icmp_ping(host, count=2, timeout=self.timeout)
+   773→        if not ping_result["reachable"]:
+   774→            return 0.0
+   775→
+   776→        max_payload = _icmp_payload_tolerance(host, self.timeout)
+   777→        if max_payload == 0:
+   778→            max_payload = ping_result.get("max_payload_accepted", 64)
+   779→
+   780→        rtt_ms = ping_result["avg_rtt_ms"]
+   781→        if rtt_ms < 1:
+   782→            rtt_ms = 20.0  # Reasonable default
+   783→
+   784→        # ICMP tunneling: data encoded in payload, need round-trip for bidirectional
+   785→        # But unidirectional exfil only needs outgoing packets
+   786→        # Conservative estimate: 10 packets/second to avoid detection
+   787→        packets_per_second = min(1000.0 / rtt_ms, 50.0)  # Capped at 50 pps
+   788→        bandwidth = max_payload * packets_per_second * 0.7  # 70% efficiency for encoding
+   789→
+   790→        return round(bandwidth, 1)
+   791→
+   792→    def estimate_timing_bandwidth(self) -> float:
+   793→        """Estimate theoretical bandwidth via timing channels in bits/second.
+   794→
+   795→        Timing channels encode data in inter-packet delays. With
+   796→        millisecond-precision timing, each delay slot can encode
+   797→        ~10 bits (1024 distinct values). At ~10 packets/second,
+   798→        this yields ~100 bits/second.
+   799→
+   800→        Returns:
+   801→            Estimated bandwidth in bits/second.
+   802→        """
+   803→        # Assume millisecond timing precision
+   804→        precision_ms = 1.0
+   805→        # Distinct delay values we can reliably encode
+   806→        max_delay_ms = 2000.0
+   807→        distinct_values = int(max_delay_ms / precision_ms)
+   808→        bits_per_symbol = math.log2(max(distinct_values, 2))
+   809→
+   810→        # Conservative packet rate (low and slow to avoid detection)
+   811→        packets_per_second = 5.0
+   812→        bandwidth_bps = bits_per_symbol * packets_per_second
+   813→
+   814→        return round(bandwidth_bps, 1)
+   815→
+   816→    def estimate_websocket_bandwidth(self, base_url: str) -> float:
+   817→        """Estimate WebSocket exfiltration bandwidth.
+   818→
+   819→        Args:
+   820→            base_url: Base URL to test WebSocket endpoints.
+   821→
+   822→        Returns:
+   823→            Estimated bandwidth in bytes/second.
+   824→        """
+   825→        # Test common WebSocket endpoints
+   826→        ws_endpoints = ["/ws", "/websocket", "/socket", "/live", "/realtime"]
+   827→        test_url = base_url.rstrip("/")
+   828→
+   829→        # Attempt HTTP upgrade to detect WebSocket support
+   830→        for endpoint in ws_endpoints:
+   831→            url = test_url + endpoint
+   832→            headers = {
+   833→                "Connection": "Upgrade",
+   834→                "Upgrade": "websocket",
+   835→                "Sec-WebSocket-Version": "13",
+   836→                "Sec-WebSocket-Key": base64.b64encode(os.urandom(16)).decode(),
+   837→            }
+   838→            result = _http_request(url, method="GET", headers=headers, timeout=self.timeout)
+   839→            if result["status"] == 101:
+   840→                # WebSocket upgrade successful
+   841→                elapsed = result["elapsed_ms"] / 1000.0
+   842→                if elapsed > 0:
+   843→                    # Assume 64KB frames at connection latency rate
+   844→                    return round(65536.0 / elapsed, 1)
+   845→            elif result["status"] in (400, 403, 404, 405, 502, 503):
+   846→                continue
+   847→
+   848→        # No WebSocket found; return zero
+   849→        return 0.0
+   850→
+   851→
+   852→# ──────────────────────────────────────────────────────────────────────────────
+   853→# ExfilRiskScorer
+   854→# ──────────────────────────────────────────────────────────────────────────────
+   855→
+   856→
+   857→class ExfilRiskScorer:
+   858→    """Computes composite risk scores for exfiltration channels.
+   859→
+   860→    Scoring model:
+   861→        overall_risk = w1*viability + w2*stealth + w3*detection_difficulty + w4*bandwidth_factor
+   862→    """
+   863→
+   864→    # Scoring weights
+   865→    W_VIABILITY = 0.30
+   866→    W_STEALTH = 0.25
+   867→    W_DETECTION_DIFFICULTY = 0.25
+   868→    W_BANDWIDTH = 0.20
+   869→
+   870→    # Bandwidth normalization: the bandwidth value that maps to a score of 50
+   871→    BANDWIDTH_MIDPOINT = 5000.0  # bytes/sec
+   872→
+   873→    def score_channel(self, channel: ExfilChannel) -> float:
+   874→        """Compute composite risk score for a single channel.
+   875→
+   876→        The score is a weighted average of viability, stealth,
+   877→        detection difficulty, and a log-scaled bandwidth factor,
+   878→        all normalized to 0-100.
+   879→
+   880→        Args:
+   881→            channel: The ExfilChannel to score.
+   882→
+   883→        Returns:
+   884→            Composite risk score from 0 to 100.
+   885→        """
+   886→        # Log-scale bandwidth to 0-100 range
+   887→        if channel.bandwidth_estimate > 0:
+   888→            bw_factor = 50.0 + 50.0 * math.log10(
+   889→                1.0 + channel.bandwidth_estimate / self.BANDWIDTH_MIDPOINT
+   890→            ) / math.log10(1.0 + 100.0)  # 100x midpoint = score 100
+   891→            bw_factor = max(0.0, min(100.0, bw_factor))
+   892→        else:
+   893→            bw_factor = 0.0
+   894→
+   895→        composite = (
+   896→            self.W_VIABILITY * channel.viability_score
+   897→            + self.W_STEALTH * channel.stealth_score
+   898→            + self.W_DETECTION_DIFFICULTY * channel.detection_difficulty
+   899→            + self.W_BANDWIDTH * bw_factor
+   900→        )
+   901→
+   902→        # Indicator count bonus: more evidence = slightly higher risk
+   903→        indicator_bonus = min(len(channel.indicators) * 2.0, 10.0)
+   904→        composite = min(composite + indicator_bonus, 100.0)
+   905→
+   906→        channel.overall_risk = round(composite, 1)
+   907→        return channel.overall_risk
+   908→
+   909→    def score_overall(self, channels: List[ExfilChannel]) -> Dict:
+   910→        """Compute organization-level exfiltration risk from all channels.
+   911→
+   912→        Args:
+   913→            channels: List of analyzed ExfilChannel objects.
+   914→
+   915→        Returns:
+   916→            Dict with 'overall_score', 'risk_level', 'highest_risk_channel',
+   917→            'channel_summary', and 'recommendations'.
+   918→        """
+   919→        if not channels:
+   920→            return {
+   921→                "overall_score": 0.0,
+   922→                "risk_level": "NONE",
+   923→                "highest_risk_channel": None,
+   924→                "channel_summary": [],
+   925→                "recommendations": [
+   926→                    "No channels analyzed. Ensure the target is reachable."
+   927→                ],
+   928→            }
+   929→
+   930→        # Sort by risk descending
+   931→        scored = sorted(channels, key=lambda c: c.overall_risk, reverse=True)
+   932→        highest = scored[0]
+   933→
+   934→        # Weighted overall: top channels matter more
+   935→        weights = [0.30, 0.20, 0.15, 0.10, 0.08, 0.07, 0.05, 0.03, 0.02]
+   936→        overall = 0.0
+   937→        for i, ch in enumerate(scored):
+   938→            w = weights[i] if i < len(weights) else 0.01
+   939→            overall += w * ch.overall_risk
+   940→        overall = min(overall * 2.5, 100.0)  # Scale up to make range meaningful
+   941→
+   942→        # Risk level classification
+   943→        if overall >= 80:
+   944→            level = "CRITICAL"
+   945→        elif overall >= 60:
+   946→            level = "HIGH"
+   947→        elif overall >= 40:
+   948→            level = "MEDIUM"
+   949→        elif overall >= 20:
+   950→            level = "LOW"
+   951→        else:
+   952→            level = "MINIMAL"
+   953→
+   954→        # Aggregate recommendations
+   955→        seen_recs: set = set()
+   956→        recommendations: List[str] = []
+   957→        for ch in scored:
+   958→            if ch.remediation and ch.remediation not in seen_recs:
+   959→                seen_recs.add(ch.remediation)
+   960→                recommendations.append(ch.remediation)
+   961→
+   962→        summary = [
+   963→            {
+   964→                "channel": ch.channel_type.value,
+   965→                "risk": ch.overall_risk,
+   966→                "viability": ch.viability_score,
+   967→                "bandwidth_bps": ch.bandwidth_estimate,
+   968→            }
+   969→            for ch in scored
+   970→        ]
+   971→
+   972→        return {
+   973→            "overall_score": round(overall, 1),
+   974→            "risk_level": level,
+   975→            "highest_risk_channel": highest.channel_type.value,
+   976→            "channel_summary": summary,
+   977→            "recommendations": recommendations,
+   978→        }
+   979→
+   980→    def generate_exfil_report(self, channels: List[ExfilChannel]) -> str:
+   981→        """Generate a formatted text report of exfiltration channel analysis.
+   982→
+   983→        Args:
+   984→            channels: List of analyzed ExfilChannel objects.
+   985→
+   986→        Returns:
+   987→            Multi-line formatted report string.
+   988→        """
+   989→        overall = self.score_overall(channels)
+   990→
+   991→        lines: List[str] = []
+   992→        lines.append("=" * 72)
+   993→        lines.append("  RECONPRO v9.2.0 — DATA EXFILTRATION CHANNEL MAP")
+   994→        lines.append("=" * 72)
+   995→        lines.append("")
+   996→        lines.append(f"  Overall Exfil Risk Score : {overall['overall_score']:.1f} / 100")
+   997→        lines.append(f"  Risk Level              : {overall['risk_level']}")
+   998→        lines.append(f"  Highest Risk Channel    : {overall['highest_risk_channel']}")
+   999→        lines.append(f"  Channels Analyzed       : {len(channels)}")
+  1000→        lines.append("")
+  1001→        lines.append("-" * 72)
+  1002→        lines.append("  CHANNEL DETAILS")
+  1003→        lines.append("-" * 72)
+  1004→
+  1005→        sorted_channels = sorted(channels, key=lambda c: c.overall_risk, reverse=True)
+  1006→        for ch in sorted_channels:
+  1007→            lines.append("")
+  1008→            lines.append(f"  [{ch.channel_type.value.upper()}]")
+  1009→            lines.append(f"    Overall Risk     : {ch.overall_risk:.1f} / 100")
+  1010→            lines.append(f"    Viability        : {ch.viability_score:.1f} / 100")
+  1011→            lines.append(f"    Stealth          : {ch.stealth_score:.1f} / 100")
+  1012→            lines.append(f"    Detection Diff.  : {ch.detection_difficulty:.1f} / 100")
+  1013→            lines.append(f"    Est. Bandwidth   : {ch.bandwidth_estimate:.1f} bytes/sec")
+  1014→            if ch.indicators:
+  1015→                lines.append(f"    Evidence ({len(ch.indicators)}):")
+  1016→                for ind in ch.indicators[:6]:
+  1017→                    lines.append(f"      • {ind}")
+  1018→            if ch.remediation:
+  1019→                lines.append(f"    Remediation     : {ch.remediation}")
+  1020→
+  1021→        lines.append("")
+  1022→        lines.append("-" * 72)
+  1023→        lines.append("  RECOMMENDATIONS")
+  1024→        lines.append("-" * 72)
+  1025→        for i, rec in enumerate(overall["recommendations"][:10], 1):
+  1026→            lines.append(f"  {i}. {rec}")
+  1027→
+  1028→        lines.append("")
+  1029→        lines.append("=" * 72)
+  1030→        lines.append("  Report generated by ReconPro v9.2.0 — Exfil Channel Mapper")
+  1031→        lines.append("=" * 72)
+  1032→
+  1033→        return "\n".join(lines)
+  1034→
+  1035→
+  1036→# ──────────────────────────────────────────────────────────────────────────────
+  1037→# ExfilChannelMapper — Main Analysis Engine
+  1038→# ──────────────────────────────────────────────────────────────────────────────
+  1039→
+  1040→
+  1041→class ExfilChannelMapper:
+  1042→    """Maps all possible data exfiltration channels from a target.
+  1043→
+  1044→    Identifies and scores every vector through which data could leave
+  1045→    a target network, including DNS tunneling, HTTP/HTTPS, ICMP,
+  1046→    email, WebSocket, timing, and steganographic channels.
+  1047→
+  1048→    Usage:
+  1049→        mapper = ExfilChannelMapper()
+  1050→        report = mapper.map_all_channels("example.com", "https://example.com")
+  1051→    """
+  1052→
+  1053→    def __init__(self, timeout: float = 8.0) -> None:
+  1054→        self.timeout = timeout
+  1055→        self.bandwidth_estimator = BandwidthEstimator(timeout=timeout)
+  1056→        self.risk_scorer = ExfilRiskScorer()
+  1057→
+  1058→    def map_all_channels(
+  1059→        self,
+  1060→        target: str,
+  1061→        base_url: str,
+  1062→        timeout: Optional[float] = None,
+  1063→    ) -> Dict:
+  1064→        """Perform complete exfiltration channel mapping.
+  1065→
+  1066→        Analyzes all known exfiltration vectors against the target
+  1067→        and returns a comprehensive map with risk scores.
+  1068→
+  1069→        Args:
+  1070→            target: Target hostname or IP address.
+  1071→            base_url: Base URL for HTTP/HTTPS/WebSocket testing.
+  1072→            timeout: Override default timeout per-probe.
+  1073→
+  1074→        Returns:
+  1075→            Dict with 'channels', 'overall', 'report', 'metadata'.
+  1076→        """
+  1077→        effective_timeout = timeout or self.timeout
+  1078→        self.bandwidth_estimator.timeout = effective_timeout
+  1079→
+  1080→        channels: List[ExfilChannel] = []
+  1081→
+  1082→        # Resolve target IP
+  1083→        target_ip = self._resolve_target(target)
+  1084→
+  1085→        # Run all channel analyses
+  1086→        channels.append(self.analyze_dns_exfil(target))
+  1087→        channels.append(self.analyze_http_exfil(base_url))
+  1088→        channels.append(self.analyze_https_exfil(base_url))
+  1089→        channels.append(self.analyze_icmp_exfil(target))
+  1090→        channels.append(self.analyze_email_exfil(target))
+  1091→        channels.append(self.analyze_websocket_exfil(base_url))
+  1092→        channels.append(self.analyze_timing_exfil(base_url))
+  1093→        channels.append(self.analyze_steganography_exfil(base_url))
+  1094→
+  1095→        # Cloud storage and file sharing (heuristic-based, no direct probing)
+  1096→        channels.append(self._analyze_cloud_storage_exfil(target))
+  1097→        channels.append(self._analyze_file_sharing_exfil(target))
+  1098→
+  1099→        # Score all channels
+  1100→        for ch in channels:
+  1101→            self.risk_scorer.score_channel(ch)
+  1102→
+  1103→        # Compute overall risk
+  1104→        overall = self.risk_scorer.score_overall(channels)
+  1105→        report = self.risk_scorer.generate_exfil_report(channels)
+  1106→
+  1107→        return {
+  1108→            "channels": [ch.to_dict() for ch in channels],
+  1109→            "overall": overall,
+  1110→            "report": report,
+  1111→            "metadata": {
+  1112→                "target": target,
+  1113→                "base_url": base_url,
+  1114→                "target_ip": target_ip,
+  1115→                "channels_analyzed": len(channels),
+  1116→                "timeout": effective_timeout,
+  1117→                "scanner_version": "9.2.0",
+  1118→            },
+  1119→        }
+  1120→
+  1121→    def _resolve_target(self, target: str) -> str:
+  1122→        """Resolve target hostname to IP address.
+  1123→
+  1124→        Args:
+  1125→            target: Hostname or IP string.
+  1126→
+  1127→        Returns:
+  1128→            IP address string, or the original target if resolution fails.
+  1129→        """
+  1130→        # Already an IP?
+  1131→        ip_pattern = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
+  1132→        if ip_pattern.match(target):
+  1133→            return target
+  1134→        try:
+  1135→            addr_info = socket.getaddrinfo(target, None, socket.AF_INET)
+  1136→            if addr_info:
+  1137→                return addr_info[0][4][0]
+  1138→        except (socket.gaierror, OSError):
+  1139→            pass
+  1140→        return target
+  1141→
+  1142→    def analyze_dns_exfil(self, host: str) -> ExfilChannel:
+  1143→        """Analyze DNS-based exfiltration potential.
+  1144→
+  1145→        Checks for:
+  1146→        - Open DNS resolver on target
+  1147→        - High TTL zones (cache poisoning potential)
+  1148→        - DNS response size (amplification/exfil capacity)
+  1149→        - TXT record support (data encoding channel)
+  1150→        - Base64 subdomain encoding feasibility
+  1151→
+  1152→        Args:
+  1153→            host: Target hostname.
+  1154→
+  1155→        Returns:
+  1156→            ExfilChannel with DNS exfiltration analysis.
+  1157→        """
+  1158→        channel = ExfilChannel(
+  1159→            channel_type=ChannelType.DNS,
+  1160→            remedation="",  # type: ignore
+  1161→        )
+  1162→        indicators: List[str] = []
+  1163→        viability = 0.0
+  1164→        stealth = 50.0  # DNS is moderately stealthy by default
+  1165→        detection_diff = 60.0
+  1166→
+  1167→        # 1. Check for open resolver on target
+  1168→        target_ip = self._resolve_target(host)
+  1169→        is_open_resolver = _check_open_resolver(target_ip, self.timeout)
+  1170→        if is_open_resolver:
+  1171→            indicators.append(f"Open DNS resolver detected on {target_ip}")
+  1172→            viability += 25
+  1173→            stealth += 10
+  1174→        else:
+  1175→            indicators.append(f"No open DNS resolver on {target_ip}")
+  1176→
+  1177→        # 2. Query for A records — check TTL and response size
+  1178→        a_result = dns_query_udp(host, qtype=1, timeout=self.timeout)
+  1179→        if a_result:
+  1180→            ttl_min, ttl_max = a_result["ttl_range"]
+  1181→            if ttl_max > 86400:  # > 24 hours
+  1182→                indicators.append(f"High TTL zone detected: {ttl_max}s ({ttl_max // 3600}h)")
+  1183→                viability += 10
+  1184→                detection_diff += 5
+  1185→            elif ttl_max > 3600:
+  1186→                indicators.append(f"Moderate TTL: {ttl_max}s")
+  1187→
+  1188→            resp_size = a_result["raw_size"]
+  1189→            if resp_size > 512:
+  1190→                indicators.append(f"Large DNS response: {resp_size} bytes (EDNS0 likely)")
+  1191→                viability += 10
+  1192→
+  1193→            if a_result["elapsed_ms"] < 20:
+  1194→                indicators.append(f"Fast DNS response: {a_result['elapsed_ms']:.1f}ms")
+  1195→                viability += 5
+  1196→
+  1197→        # 3. Check TXT record support
+  1198→        txt_result = dns_query_udp(host, qtype=16, timeout=self.timeout)
+  1199→        if txt_result and txt_result["answers"]:
+  1200→            for ans in txt_result["answers"]:
+  1201→                if ans["type"] == "TXT":
+  1202→                    txt_data = ans["rdata"]
+  1203→                    indicators.append(f"TXT record present: {len(txt_data)} chars")
+  1204→                    viability += 15
+  1205→                    # Check if TXT data looks base64-encoded
+  1206→                    if re.match(r"^[A-Za-z0-9+/=]+$", txt_data):
+  1207→                        indicators.append("TXT record contains base64-like data")
+  1208→                        viability += 10
+  1209→                    # Check for long TXT records (potential data channel)
+  1210→                    if len(txt_data) > 100:
+  1211→                        indicators.append(f"Large TXT record ({len(txt_data)} chars) — potential data channel")
+  1212→                        viability += 10
+  1213→                        stealth += 10
+  1214→        else:
+  1215→            indicators.append("No TXT records found")
+  1216→
+  1217→        # 4. Check for wildcard DNS (subdomain exfil potential)
+  1218→        random_subdomain = f"{hashlib.md5(os.urandom(16)).hexdigest()[:16]}.{host}"
+  1219→        wildcard_result = dns_query_udp(random_subdomain, qtype=1, timeout=self.timeout)
+  1220→        if wildcard_result and wildcard_result["answers"]:
+  1221→            indicators.append("Wildcard DNS detected — any subdomain resolves")
+  1222→            viability += 20
+  1223→            stealth += 15
+  1224→            detection_diff += 10
+  1225→        else:
+  1226→            indicators.append("No wildcard DNS — controlled subdomain zone")
+  1227→
+  1228→        # 5. Estimate bandwidth
+  1229→        channel.bandwidth_estimate = self.bandwidth_estimator.estimate_dns_bandwidth(host)
+  1230→        if channel.bandwidth_estimate > 0:
+  1231→            indicators.append(f"Estimated DNS tunnel bandwidth: {channel.bandwidth_estimate} B/s")
+  1232→
+  1233→        # 6. Check MX records (related to email exfil, but relevant for DNS)
+  1234→        mx_result = dns_query_udp(host, qtype=15, timeout=self.timeout)
+  1235→        if mx_result and mx_result["answers"]:
+  1236→            mx_count = sum(1 for a in mx_result["answers"] if a["type"] == "MX")
+  1237→            if mx_count > 0:
+  1238→                indicators.append(f"MX records present: {mx_count} mail servers")
+  1239→
+  1240→        channel.viability_score = min(viability, 100.0)
+  1241→        channel.stealth_score = min(stealth, 100.0)
+  1242→        channel.detection_difficulty = min(detection_diff, 100.0)
+  1243→        channel.indicators = indicators
+  1244→        channel.remediation = (
+  1245→            "Restrict DNS egress to approved resolvers only. Implement DNS query "
+  1246→            "logging and monitoring for anomalous subdomain lengths or frequencies. "
+  1247→            "Disable open recursion on all internal DNS servers. Deploy DNS "
+  1248→            "firewall rules to block TXT record queries to untrusted zones."
+  1249→        )
+  1250→        return channel
+  1251→
+  1252→    def analyze_http_exfil(self, base_url: str) -> ExfilChannel:
+  1253→        """Analyze HTTP-based exfiltration potential.
+  1254→
+  1255→        Checks for:
+  1256→        - File upload endpoints
+  1257→        - POST endpoints accepting large payloads
+  1258→        - Unencoded response bodies (data in responses)
+  1259→        - CORS wildcard headers (cross-origin data exfil)
+  1260→        - Missing Content-Length validation
+  1261→
+  1262→        Args:
+  1263→            base_url: Base URL of the target.
+  1264→
+  1265→        Returns:
+  1266→            ExfilChannel with HTTP exfiltration analysis.
+  1267→        """
+  1268→        channel = ExfilChannel(channel_type=ChannelType.HTTP)
+  1269→        indicators: List[str] = []
+  1270→        viability = 0.0
+  1271→        stealth = 30.0  # HTTP is less stealthy than DNS
+  1272→        detection_diff = 30.0
+  1273→
+  1274→        parsed = urllib.parse.urlparse(base_url)
+  1275→        host = parsed.hostname or ""
+  1276→        http_url = f"{parsed.scheme}://{parsed.netloc}"
+  1277→
+  1278→        # 1. Check CORS headers via OPTIONS preflight
+  1279→        endpoints = ["/", "/api", "/api/upload", "/api/data"]
+  1280→        for ep in endpoints:
+  1281→            opts_result = _http_request(
+  1282→                http_url + ep,
+  1283→                method="OPTIONS",
+  1284→                headers={
+  1285→                    "Origin": "https://evil.example.com",
+  1286→                    "Access-Control-Request-Method": "POST",
+  1287→                },
+  1288→                timeout=self.timeout,
+  1289→            )
+  1290→            cors_header = opts_result["headers"].get(
+  1291→                "access-control-allow-origin", ""
+  1292→            )
+  1293→            if cors_header == "*":
+  1294→                indicators.append(f"CORS wildcard (*) on {ep}")
+  1295→                viability += 15
+  1296→                stealth += 10
+  1297→            elif cors_header and cors_header != host:
+  1298→                indicators.append(f"CORS allows external origin: {cors_header} on {ep}")
+  1299→                viability += 10
+  1300→
+  1301→            ac_methods = opts_result["headers"].get(
+  1302→                "access-control-allow-methods", ""
+  1303→            )
+  1304→            if "POST" in ac_methods.upper():
+  1305→                indicators.append(f"CORS allows POST to {ep}")
+  1306→                viability += 5
+  1307→
+  1308→        # 2. Test POST payload acceptance
+  1309→        upload_endpoints = ["/upload", "/api/upload", /api/file", "/file/upload", "/submit"]
+  1310→        max_accepted = 0
+  1311→        for ep in upload_endpoints:
+  1312→            url = http_url + ep
+  1313→            for payload_size in [1024, 10240, 102400, 1048576]:
+  1314→                payload = os.urandom(payload_size)
+  1315→                result = _http_request(url, method="POST", data=payload, timeout=self.timeout)
+  1316→                if result["status"] in (200, 201, 204, 301, 302, 307, 308):
+  1317→                    max_accepted = max(max_accepted, payload_size)
+  1318→                    indicators.append(
+  1319→                        f"POST {ep} accepted {payload_size}-byte payload (status {result['status']})"
+  1320→                    )
+  1321→                    viability += 5
+  1322→                elif result["status"] in (404, 405):
+  1323→                    break
+  1324→                elif result["status"] in (413, 431):
+  1325→                    indicators.append(f"POST {ep} rejected payload > {payload_size} bytes (413)")
+  1326→                    break
+  1327→                else:
+  1328→                    break  # Stop testing larger payloads
+  1329→
+  1330→        if max_accepted > 0:
+  1331→            indicators.append(f"Maximum accepted POST payload: {max_accepted} bytes")
+  1332→            viability += 10
+  1333→            detection_diff -= 5  # Large uploads are more detectable
+  1334→
+  1335→        # 3. Check for missing Content-Length validation
+  1336→        get_result = _http_request(http_url + "/", method="GET", timeout=self.timeout)
+  1337→        cl_header = get_result["headers"].get("content-length", "")
+  1338→        te_header = get_result["headers"].get("transfer-encoding", "")
+  1339→        if not cl_header and "chunked" not in te_header.lower():
+  1340→            indicators.append("Response missing Content-Length and not chunked")
+  1341→            viability += 5
+  1342→        elif not cl_header:
+  1343→            indicators.append("Chunked transfer encoding in use")
+  1344→
+  1345→        # 4. Check for unencoded response bodies (binary data leakage)
+  1346→        ct_header = get_result["headers"].get("content-type", "")
+  1347→        if "application/octet-stream" in ct_header:
+  1348→            indicators.append("Response serves application/octet-stream (binary)")
+  1349→            viability += 10
+  1350→            stealth += 5
+  1351→
+  1352→        # 5. Check for open redirect (data exfil via URL parameters)
+  1353→        redirect_endpoints = ["/redirect", "/goto", "/out", "/link", "/external"]
+  1354→        for ep in redirect_endpoints:
+  1355→            test_url = http_url + ep + "?url=https://evil.example.com/collect"
+  1356→            result = _http_request(test_url, method="GET", timeout=self.timeout)
+  1357→            if result["status"] in (301, 302, 303, 307, 308):
+  1358→                location = result["headers"].get("location", "")
+  1359→                if "evil.example.com" in location:
+  1360→                    indicators.append(f"Open redirect at {ep} — data exfil via URL params")
+  1361→                    viability += 15
+  1362→                    stealth += 10
+  1363→
+  1364→        # 6. Estimate bandwidth
+  1365→        channel.bandwidth_estimate = self.bandwidth_estimator.estimate_http_bandwidth(base_url)
+  1366→        if channel.bandwidth_estimate > 0:
+  1367→            indicators.append(f"Estimated HTTP exfil bandwidth: {channel.bandwidth_estimate} B/s")
+  1368→
+  1369→        channel.viability_score = min(viability, 100.0)
+  1370→        channel.stealth_score = min(max(stealth, 0.0), 100.0)
+  1371→        channel.detection_difficulty = min(max(detection_diff, 0.0), 100.0)
+  1372→        channel.indicators = indicators
+  1373→        channel.remediation = (
+  1374→            "Implement strict Content-Length validation. Deploy CORS policies "
+  1375→            "restricting allowed origins. Enforce payload size limits on all "
+  1376→            

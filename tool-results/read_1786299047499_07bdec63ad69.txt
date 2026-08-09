@@ -1,0 +1,2002 @@
+     1→"""DEAD_DROP module — Cryptographic Dead Drop Detection & Analysis.
+     2→
+     3→ReconPro v9.2.0
+     4→
+     5→A dead drop is a covert communication technique where a message is left in a
+     6→location (digital or physical) for another party to retrieve, without the
+     7→two parties ever meeting directly. This module detects eight classes of
+     8→digital dead drop channels:
+     9→
+    10→  1. DNS TXT Record Dead Drop Detection
+    11→  2. HTTP ETag Dead Drop Detection
+    12→  3. Certificate Transparency Dead Drops
+    13→  4. HTTP Header Dead Drop Detection
+    14→  5. Timestamp Steganography Detection
+    15→  6. DNS CNAME Dead Drop Detection
+    16→  7. SPF/DKIM/DMARC Dead Drop Analysis
+    17→  8. Dead Drop Simulation
+    18→
+    19→All cryptographic operations use pure stdlib (hashlib, hmac, base64, struct).
+    20→Zero external dependencies.
+    21→"""
+    22→from __future__ import annotations
+    23→
+    24→import base64
+    25→import hashlib
+    26→import hmac
+    27→import math
+    28→import re
+    29→import struct
+    30→import time
+    31→import urllib.parse
+    32→from typing import Any, Dict, List, Optional, Tuple
+    33→
+    34→from ..http import http_probe, Finding, default_limiter
+    35→
+    36→
+    37→# ═══════════════════════════════════════════════════════════════════════════
+    38→# DEAD_DROP_SIGNATURES DATABASE
+    39→# ═══════════════════════════════════════════════════════════════════════════
+    40→
+    41→DEAD_DROP_SIGNATURES: Dict[str, Dict[str, Any]] = {
+    42→    "dns_txt_dead_drop": {
+    43→        "name": "DNS TXT Dead Drop",
+    44→        "description": (
+    45→            "Encodes covert messages in DNS TXT records. TXT records are rarely "
+    46→            "monitored by standard security tooling, making them ideal for leaving "
+    47→            "encoded messages that appear as SPF/DKIM configuration or verification "
+    48→            "strings. Attackers can base64-encode C2 beacons, encryption keys, or "
+    49→            "operational timestamps within TXT RDATA."
+    50→        ),
+    51→        "severity": "high",
+    52→        "dread_score": 7.2,
+    53→        "entropy_threshold": 3.8,
+    54→        "min_value_length": 20,
+    55→        "known_patterns": [
+    56→            r"^[A-Za-z0-9+/=]{24,}$",           # base64 encoded data
+    57→            r"^[a-f0-9]{32,}$",                   # hex encoded data
+    58→            r"^[A-Za-z0-9+/=]{20,}\.[A-Za-z]+$",  # base64 with domain hint
+    59→            r"v=spf1.*[A-Za-z0-9+/=]{24,}",     # hidden in SPF
+    60→            r"google-site-verification=.*",        # disguised verification
+    61→        ],
+    62→        "stealth_score": 74,
+    63→        "bandwidth_estimate": "~255 bytes per TXT record (up to 65535 bytes in theory)",
+    64→        "detection_difficulty": "Medium — requires active DNS TXT queries",
+    65→    },
+    66→    "etag_dead_drop": {
+    67→        "name": "HTTP ETag Dead Drop",
+    68→        "description": (
+    69→            "ETag headers are commonly used for cache validation but can carry "
+    70→            "covert data. An attacker can encode HMAC tags, encrypted fragments, "
+    71→            "or steganographic data within the opaque ETag string. Because ETags "
+    72→            "are opaque strings defined by the origin server, high-entropy or "
+    73→            "cryptographically structured values are rarely flagged."
+    74→        ),
+    75→        "severity": "medium",
+    76→        "dread_score": 6.4,
+    77→        "entropy_threshold": 3.5,
+    78→        "min_value_length": 16,
+    79→        "known_patterns": [
+    80→            r'^"[a-f0-9]{32,}"$',              # quoted hex hash
+    81→            r'^"[A-Za-z0-9+/=]{22,}"$',          # quoted base64
+    82→            r'^W/"[a-f0-9]+"$',                  # weak validator with hex
+    83→            r'^"[a-f0-9]{8}-[a-f0-9]{4}-',     # UUID-formatted ETag
+    84→            r'^[0-9a-f]{40}$',                    # SHA-1 hex
+    85→            r'^[0-9a-f]{64}$',                    # SHA-256 hex
+    86→            r'^"[A-Za-z0-9+/=]{32,}"$',         # base64 MAC-like
+    87→        ],
+    88→        "stealth_score": 82,
+    89→        "bandwidth_estimate": "~128-512 bytes per ETag value",
+    90→        "detection_difficulty": "High — ETags are opaque and inherently variable",
+    91→    },
+    92→    "ct_log_dead_drop": {
+    93→        "name": "Certificate Transparency Dead Drop",
+    94→        "description": (
+    95→            "Subdomain names in CT logs can encode covert messages. By issuing "
+    96→            "certificates for carefully crafted subdomains (e.g., hex-encoded "
+    97→            "payloads, base64 labels), attackers embed data in a globally "
+    98→            "replicated, append-only log. The subdomain names are public but "
+    99→            "rarely examined for encoded content."
+   100→        ),
+   101→        "severity": "high",
+   102→        "dread_score": 7.8,
+   103→        "entropy_threshold": 4.0,
+   104→        "min_subdomain_length": 20,
+   105→        "known_patterns": [
+   106→            r"^[a-f0-9]{16,}\.",                # hex subdomain
+   107→            r"^[A-Za-z0-9-]{32,}\.",              # long random subdomain
+   108→            r"^[A-Za-z0-9+/=]{24,}\.",            # base64 subdomain
+   109→            r"^[0-9]{10,}\.",                     # numeric (timestamp/epoch)
+   110→            r"^.{40,}\.",                         # very long subdomain label
+   111→        ],
+   112→        "stealth_score": 88,
+   113→        "bandwidth_estimate": "~63 bytes per subdomain label (RFC 1035 limit)",
+   114→        "detection_difficulty": "Very High — requires CT log analysis",
+   115→    },
+   116→    "http_header_dead_drop": {
+   117→        "name": "HTTP Header Dead Drop",
+   118→        "description": (
+   119→            "Covert messages embedded in unusual or custom HTTP header combinations. "
+   120→            "Headers like X-Data, X-Payload, X-Token, or even legitimate headers "
+   121→            "with anomalous values can carry encoded data. The combination of "
+   122→            "header names and values forms a multi-channel encoding scheme."
+   123→        ),
+   124→        "severity": "medium",
+   125→        "dread_score": 6.0,
+   126→        "entropy_threshold": 3.6,
+   127→        "suspicious_headers": [
+   128→            "X-Data", "X-Payload", "X-Token", "X-Secret", "X-Hidden",
+   129→            "X-Message", "X-Cmd", "X-Task", "X-Op", "X-Key",
+   130→            "X-Cipher", "X-Nonce", "X-Sig", "X-Auth-Token",
+   131→            "X-Request-Guid", "X-Correlation-ID", "X-Trace-Id",
+   132→            "X-Session-Data", "X-State", "X-Enc", "X-Encoded",
+   133→        ],
+   134→        "known_patterns": [
+   135→            r"^[A-Za-z0-9+/=]{32,}$",              # base64 in header
+   136→            r"^[a-f0-9]{32,}$",                    # hex in header
+   137→            r"^[A-Za-z0-9+/=]{20,}:[a-f0-9]+$",    # key:value format
+   138→        ],
+   139→        "stealth_score": 70,
+   140→        "bandwidth_estimate": "~4-8 KB total across headers per request",
+   141→        "detection_difficulty": "Medium — requires full header inspection",
+   142→    },
+   143→    "timestamp_stego": {
+   144→        "name": "Timestamp Steganography",
+   145→        "description": (
+   146→            "Data encoded in the precision or anomalies of HTTP Date header "
+   147→            "timestamps. By controlling the sub-second precision of server "
+   148→            "timestamps, an attacker can embed bits per response. For example, "
+   149→            "a timestamp ending in an odd millisecond encodes a 1-bit; even "
+   150→            "encodes a 0-bit. Deviations from standard time sync patterns also "
+   151→            "indicate covert timing channels."
+   152→        ),
+   153→        "severity": "low",
+   154→        "dread_score": 4.2,
+   155→        "bits_per_response": 1,
+   156→        "bandwidth_estimate": "~1 bit per response (timing-based)",
+   157→        "stealth_score": 92,
+   158→        "detection_difficulty": "Very High — requires statistical time analysis",
+   159→        "anomaly_indicators": [
+   160→            "sub_second_precision_in_date_header",
+   161→            "clock_drift_beyond_2_seconds",
+   162→            "monotonic_millisecond_changes",
+   163→            "non_standard_date_format",
+   164→        ],
+   165→    },
+   166→    "dns_cname_dead_drop": {
+   167→        "name": "DNS CNAME Dead Drop",
+   168→        "description": (
+   169→            "CNAME records can point to domain names whose labels encode covert "
+   170→            "messages. The target of a CNAME is a fully qualified domain name, and "
+   171→            "each label can carry encoded data (hex, base32, base64url). Long, "
+   172→            "high-entropy CNAME targets with unusual TLD combinations are strong "
+   173→            "indicators of dead drop activity."
+   174→        ),
+   175→        "severity": "high",
+   176→        "dread_score": 7.0,
+   177→        "entropy_threshold": 3.9,
+   178→        "min_cname_length": 30,
+   179→        "known_patterns": [
+   180→            r"[a-f0-9]{16,}\.[a-z]+\.[a-z]+$",         # hex labels in CNAME
+   181→            r"[A-Z2-7=]{20,}\.[A-Z2-7=]+\.[A-Z]+$",   # base32 labels
+   182→            r"[A-Za-z0-9_-]{32,}\.[a-z0-9-]+\.[a-z]+$", # base64url labels
+   183→            r"cdn-[a-f0-9]{8,}\.\w+\.net$",              # fake CDN pattern
+   184→        ],
+   185→        "stealth_score": 76,
+   186→        "bandwidth_estimate": "~63 bytes per label, multiple labels per CNAME",
+   187→        "detection_difficulty": "Medium-High — requires DNS CNAME resolution",
+   188→    },
+   189→    "spf_dkim_dmarc_dead_drop": {
+   190→        "name": "SPF/DKIM/DMARC Dead Drop",
+   191→        "description": (
+   192→            "Email authentication records (SPF, DKIM, DMARC) are long, complex "
+   193→            "TXT records that naturally contain encoded data. Covert messages can "
+   194→            "be hidden within ip4/ip6 mechanisms, DKIM public key data, or DMARC "
+   195→            "policy parameters. The legitimate complexity of these records masks "
+   196→            "embedded payloads effectively."
+   197→        ),
+   198→        "severity": "medium",
+   199→        "dread_score": 5.8,
+   200→        "entropy_threshold": 3.7,
+   201→        "record_types": ["SPF", "DKIM", "DMARC"],
+   202→        "suspicious_dkim_patterns": [
+   203→            r"p=[A-Za-z0-9+/=]{100,}",    # unusually long DKIM public key
+   204→            r"k=rsa;.*[A-Za-z0-9+/=]{200,}", # very long RSA key
+   205→        ],
+   206→        "stealth_score": 78,
+   207→        "bandwidth_estimate": "~2000+ bytes in DKIM records, ~512 in SPF/DMARC",
+   208→        "detection_difficulty": "High — records are inherently complex",
+   209→    },
+   210→    "dead_drop_simulation": {
+   211→        "name": "Dead Drop Simulation",
+   212→        "description": (
+   213→            "Demonstrates how each dead drop channel could be exploited by "
+   214→            "simulating the encoding process. Generates example payloads for "
+   215→            "each channel type, showing the encoding, embedding, and potential "
+   216→            "decoding workflow. Used for red team planning and defender education."
+   217→        ),
+   218→        "severity": "info",
+   219→        "dread_score": 0.0,
+   220→        "stealth_score": 0,
+   221→        "simulation_types": [
+   222→            "dns_txt_encoding",
+   223→            "etag_mac_encoding",
+   224→            "ct_subdomain_encoding",
+   225→            "header_combination_encoding",
+   226→            "timestamp_bit_encoding",
+   227→            "cname_label_encoding",
+   228→            "spf_payload_concealment",
+   229→        ],
+   230→    },
+   231→}
+   232→
+   233→
+   234→# ═══════════════════════════════════════════════════════════════════════════
+   235→# ENCODING_METHODS DATABASE
+   236→# ═══════════════════════════════════════════════════════════════════════════
+   237→
+   238→ENCODING_METHODS: Dict[str, Dict[str, Any]] = {
+   239→    "base64": {
+   240→        "name": "Base64",
+   241→        "description": "RFC 4648 standard Base64 encoding",
+   242→        "alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+   243→        "padding_char": "=",
+   244→        "ratio": 1.333,
+   245→        "detection_regex": r"^[A-Za-z0-9+/]{4,}={0,2}$",
+   246→        "typical_use": "Binary data, encryption keys, certificates",
+   247→        "entropy_range": (3.5, 6.0),
+   248→        "decode_fn": "base64.b64decode",
+   249→    },
+   250→    "base64url": {
+   251→        "name": "Base64URL",
+   252→        "description": "RFC 4648 URL-safe Base64 variant (no +/padding)",
+   253→        "alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
+   254→        "padding_char": "",
+   255→        "ratio": 1.333,
+   256→        "detection_regex": r"^[A-Za-z0-9_-]{4,}$",
+   257→        "typical_use": "JWT tokens, URL-embedded data, OAuth",
+   258→        "entropy_range": (3.5, 6.0),
+   259→        "decode_fn": "base64.urlsafe_b64decode",
+   260→    },
+   261→    "hex": {
+   262→        "name": "Hexadecimal",
+   263→        "description": "Standard hexadecimal encoding (lowercase or uppercase)",
+   264→        "alphabet": "0123456789abcdefABCDEF",
+   265→        "padding_char": "",
+   266→        "ratio": 2.0,
+   267→        "detection_regex": r"^[a-fA-F0-9]{8,}$",
+   268→        "typical_use": "Hash digests, binary fingerprints, MACs",
+   269→        "entropy_range": (3.0, 4.0),
+   270→        "decode_fn": "bytes.fromhex",
+   271→    },
+   272→    "base32": {
+   273→        "name": "Base32",
+   274→        "description": "RFC 4648 Base32 encoding (uppercase A-Z, 2-7)",
+   275→        "alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+   276→        "padding_char": "=",
+   277→        "ratio": 1.6,
+   278→        "detection_regex": r"^[A-Z2-7=]{8,}$",
+   279→        "typical_use": "DNS labels,TOTP secrets, encoded subdomains",
+   280→        "entropy_range": (3.0, 5.0),
+   281→        "decode_fn": "base64.b32decode",
+   282→    },
+   283→    "base32hex": {
+   284→        "name": "Base32Hex",
+   285→        "description": "RFC 4648 Base32 extended hex encoding (0-9, A-V)",
+   286→        "alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUV",
+   287→        "padding_char": "=",
+   288→        "ratio": 1.6,
+   289→        "detection_regex": r"^[0-9A-V=]{8,}$",
+   290→        "typical_use": "Alternative to base32 for numeric-heavy data",
+   291→        "entropy_range": (3.0, 5.0),
+   292→        "decode_fn": "base64.b32hexdecode",
+   293→    },
+   294→    "ascii_hex": {
+   295→        "name": "ASCII Hex",
+   296→        "description": "Two-hex-digit-per-byte encoding (e.g., 48656C6C6F)",
+   297→        "alphabet": "0123456789abcdef",
+   298→        "padding_char": "",
+   299→        "ratio": 2.0,
+   300→        "detection_regex": r"^[a-f0-9]{10,}$",
+   301→        "typical_use": "Payload encoding in CNAME/TXT records",
+   302→        "entropy_range": (2.8, 4.0),
+   303→        "decode_fn": "bytes.fromhex",
+   304→    },
+   305→    "url_encoded": {
+   306→        "name": "URL Encoding",
+   307→        "description": "Percent-encoding (RFC 3986)",
+   308→        "alphabet": None,
+   309→        "padding_char": "",
+   310→        "ratio": 3.0,
+   311→        "detection_regex": r"%[0-9a-fA-F]{2}",
+   312→        "typical_use": "URL parameters, path encoding, header values",
+   313→        "entropy_range": (2.0, 4.0),
+   314→        "decode_fn": "urllib.parse.unquote",
+   315→    },
+   316→    "unicode_escape": {
+   317→        "name": "Unicode Escape",
+   318→        "description": "\\uXXXX or \\UXXXXXXXX escape sequences",
+   319→        "alphabet": None,
+   320→        "padding_char": "",
+   321→        "ratio": 6.0,
+   322→        "detection_regex": r"\\u[0-9a-fA-F]{4}",
+   323→        "typical_use": "Text steganography, JSON payloads",
+   324→        "entropy_range": (1.5, 3.0),
+   325→        "decode_fn": "codecs.decode",
+   326→    },
+   327→    "reversed_base64": {
+   328→        "name": "Reversed Base64",
+   329→        "description": "Base64 string reversed to evade naive detection",
+   330→        "alphabet": "=+AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789/",
+   331→        "padding_char": "=",
+   332→        "ratio": 1.333,
+   333→        "detection_regex": r"^[A-Za-z0-9+/=]{4,}$",
+   334→        "typical_use": "Evasion of base64 detection regexes",
+   335→        "entropy_range": (3.5, 6.0),
+   336→        "decode_fn": "reverse + base64.b64decode",
+   337→    },
+   338→    "hex_chunked": {
+   339→        "name": "Chunked Hex",
+   340→        "description": "Hex data split into fixed-size chunks with separators",
+   341→        "alphabet": "0123456789abcdef:-",
+   342→        "padding_char": "",
+   343→        "ratio": 2.2,
+   344→        "detection_regex": r"^[a-f0-9]{2}(:[a-f0-9]{2}){4,}$",
+   345→        "typical_use": "MAC addresses, UUIDs, obfuscated hex data",
+   346→        "entropy_range": (2.5, 4.0),
+   347→        "decode_fn": "strip separators + bytes.fromhex",
+   348→    },
+   349→    "rot13_base64": {
+   350→        "name": "ROT13+Base64",
+   351→        "description": "Base64 output with ROT13 applied to alpha characters",
+   352→        "alphabet": "NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm0123456789+/",
+   353→        "padding_char": "=",
+   354→        "ratio": 1.333,
+   355→        "detection_regex": r"^[A-Za-z0-9+/]{4,}={0,2}$",
+   356→        "typical_use": "Layered obfuscation of base64 payloads",
+   357→        "entropy_range": (3.5, 6.0),
+   358→        "decode_fn": "rot13 + base64.b64decode",
+   359→    },
+   360→    "double_base64": {
+   361→        "name": "Double Base64",
+   362→        "description": "Data base64-encoded twice for additional obfuscation",
+   363→        "alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+   364→        "padding_char": "=",
+   365→        "ratio": 1.778,
+   366→        "detection_regex": r"^[A-Za-z0-9+/]{4,}={0,2}$",
+   367→        "typical_use": "Hiding the structure of the inner base64 layer",
+   368→        "entropy_range": (3.8, 6.0),
+   369→        "decode_fn": "base64.b64decode x2",
+   370→    },
+   371→}
+   372→
+   373→
+   374→# ═══════════════════════════════════════════════════════════════════════════
+   375→# CRYPTO_PATTERNS DATABASE
+   376→# ═══════════════════════════════════════════════════════════════════════════
+   377→
+   378→CRYPTO_PATTERNS: Dict[str, Dict[str, Any]] = {
+   379→    "md5_hash": {
+   380→        "name": "MD5 Hash",
+   381→        "description": "128-bit MD5 message digest in hex",
+   382→        "hex_length": 32,
+   383→        "regex": r"\b[a-f0-9]{32}\b",
+   384→        "algorithm": "md5",
+   385→        "digest_size": 16,
+   386→        "block_size": 64,
+   387→        "security_status": "broken",
+   388→        "typical_context": "ETags, cache keys, legacy fingerprints",
+   389→    },
+   390→    "sha1_hash": {
+   391→        "name": "SHA-1 Hash",
+   392→        "description": "160-bit SHA-1 message digest in hex",
+   393→        "hex_length": 40,
+   394→        "regex": r"\b[a-f0-9]{40}\b",
+   395→        "algorithm": "sha1",
+   396→        "digest_size": 20,
+   397→        "block_size": 64,
+   398→        "security_status": "broken",
+   399→        "typical_context": "ETags, SSL fingerprints, git commits, CT certs",
+   400→    },
+   401→    "sha256_hash": {
+   402→        "name": "SHA-256 Hash",
+   403→        "description": "256-bit SHA-256 message digest in hex",
+   404→        "hex_length": 64,
+   405→        "regex": r"\b[a-f0-9]{64}\b",
+   406→        "algorithm": "sha256",
+   407→        "digest_size": 32,
+   408→        "block_size": 64,
+   409→        "security_status": "secure",
+   410→        "typical_context": "ETags, HMAC tags, integrity checksums",
+   411→    },
+   412→    "sha512_hash": {
+   413→        "name": "SHA-512 Hash",
+   414→        "description": "512-bit SHA-512 message digest in hex",
+   415→        "hex_length": 128,
+   416→        "regex": r"\b[a-f0-9]{128}\b",
+   417→        "algorithm": "sha512",
+   418→        "digest_size": 64,
+   419→        "block_size": 128,
+   420→        "security_status": "secure",
+   421→        "typical_context": "High-security integrity, HMAC-SHA512",
+   422→    },
+   423→    "hmac_sha256_base64": {
+   424→        "name": "HMAC-SHA256 (Base64)",
+   425→        "description": "HMAC-SHA256 authentication tag in Base64",
+   426→        "hex_length": None,
+   427→        "regex": r"[A-Za-z0-9+/=]{42,44}",
+   428→        "algorithm": "hmac-sha256",
+   429→        "digest_size": 32,
+   430→        "tag_length_b64": 44,
+   431→        "security_status": "secure",
+   432→        "typical_context": "AWS SigV4, JWT signatures, API auth",
+   433→    },
+   434→    "hmac_sha1_base64": {
+   435→        "name": "HMAC-SHA1 (Base64)",
+   436→        "description": "HMAC-SHA1 authentication tag in Base64",
+   437→        "hex_length": None,
+   438→        "regex": r"[A-Za-z0-9+/=]{26,28}",
+   439→        "algorithm": "hmac-sha1",
+   440→        "digest_size": 20,
+   441→        "tag_length_b64": 28,
+   442→        "security_status": "weak",
+   443→        "typical_context": "OAuth 1.0, legacy API auth, AWS v2",
+   444→    },
+   445→    "aes_cbc_iv": {
+   446→        "name": "AES-CBC IV",
+   447→        "description": "128/256-bit AES initialization vector",
+   448→        "hex_length": 32,
+   449→        "regex": r"\b[a-f0-9]{32}\b",
+   450→        "algorithm": "aes-cbc-iv",
+   451→        "digest_size": 16,
+   452→        "security_status": "context-dependent",
+   453→        "typical_context": "Encrypted ETag payloads, cookie values",
+   454→    },
+   455→    "uuid_v4": {
+   456→        "name": "UUID v4",
+   457→        "description": "Random UUID version 4 identifier",
+   458→        "hex_length": 36,
+   459→        "regex": r"\b[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+   460→        "algorithm": "uuid4",
+   461→        "digest_size": 16,
+   462→        "security_status": "not_crypto",
+   463→        "typical_context": "Request tracing, correlation IDs, ETags",
+   464→    },
+   465→    "fingerprint_sha256_base64": {
+   466→        "name": "SHA-256 Fingerprint (Base64)",
+   467→        "description": "SHA-256 hash in Base64 (no padding) for SPKI/cert fingerprints",
+   468→        "hex_length": None,
+   469→        "regex": r"[A-Za-z0-9_-]{42,43}",
+   470→        "algorithm": "sha256",
+   471→        "digest_size": 32,
+   472→        "tag_length_b64": 43,
+   473→        "security_status": "secure",
+   474→        "typical_context": "HPKP pins, certificate pinning, CT log entries",
+   475→    },
+   476→    "crc32_hex": {
+   477→        "name": "CRC32",
+   478→        "description": "32-bit cyclic redundancy check in hex",
+   479→        "hex_length": 8,
+   480→        "regex": r"\b[a-f0-9]{8}\b",
+   481→        "algorithm": "crc32",
+   482→        "digest_size": 4,
+   483→        "security_status": "not_crypto",
+   484→        "typical_context": "ETags, checksums, data integrity markers",
+   485→    },
+   486→}
+   487→
+   488→
+   489→# ═══════════════════════════════════════════════════════════════════════════
+   490→# SHARED CONSTANTS
+   491→# ═══════════════════════════════════════════════════════════════════════════
+   492→
+   493→MODULE_NAME = "dead_drop"
+   494→
+   495→CT_LOG_ENDPOINTS: List[str] = [
+   496→    "https://crt.sh/?q={}&output=json",
+   497→    "https://crt.sh/?q=%.{target}&output=json",
+   498→]
+   499→
+   500→COMMON_DNS_OVER_HTTPS: List[Dict[str, str]] = [
+   501→    {"name": "Cloudflare", "url": "https://cloudflare-dns.com/dns-query"},
+   502→    {"name": "Google", "url": "https://dns.google/resolve"},
+   503→]
+   504→
+   505→HEADER_VALUE_MAX_LEN = 4096
+   506→
+   507→
+   508→# ═══════════════════════════════════════════════════════════════════════════
+   509→# UTILITY FUNCTIONS
+   510→# ═══════════════════════════════════════════════════════════════════════════
+   511→
+   512→def _shannon_entropy(data: str) -> float:
+   513→    """Compute Shannon entropy of a string using stdlib math.log2."""
+   514→    if not data:
+   515→        return 0.0
+   516→    length = len(data)
+   517→    freq: Dict[str, int] = {}
+   518→ for ch in data:
+   519→        freq[ch] = freq.get(ch, 0) + 1
+   520→    entropy = 0.0
+   521→    for count in freq.values():
+   522→        p = count / length
+   523→        if p > 0:
+   524→            entropy -= p * math.log2(p)
+   525→    return entropy
+   526→
+   527→
+   528→def _identify_encoding(value: str) -> List[Dict[str, Any]]:
+   529→    """Identify which encoding(s) a value might use."""
+   530→    results: List[Dict[str, Any]] = []
+   531→    stripped = value.strip().strip('"')
+   532→
+   533→    for enc_name, enc_info in ENCODING_METHODS.items():
+   534→        regex = enc_info["detection_regex"]
+   535→        if re.search(regex, stripped, re.IGNORECASE if enc_name in ("hex", "ascii_hex") else 0):
+   536→            ent = _shannon_entropy(stripped)
+   537→            lo, hi = enc_info["entropy_range"]
+   538→            if lo <= ent <= hi or ent > hi:
+   539→                results.append({
+   540→                    "encoding": enc_name,
+   541→                    "name": enc_info["name"],
+   542→                    "entropy": round(ent, 3),
+   543→                    "in_range": lo <= ent <= hi,
+   544→                    "length": len(stripped),
+   545→                })
+   546→    return results
+   547→
+   548→
+   549→def _identify_crypto_pattern(value: str) -> List[Dict[str, Any]]:
+   550→    """Identify if a value matches known cryptographic output patterns."""
+   551→    results: List[Dict[str, Any]] = []
+   552→    stripped = value.strip().strip('"')
+   553→
+   554→    for pat_name, pat_info in CRYPTO_PATTERNS.items():
+   555→        regex = pat_info["regex"]
+   556→        if re.search(regex, stripped, re.IGNORECASE):
+   557→            results.append({
+   558→                "pattern": pat_name,
+   559→                "name": pat_info["name"],
+   560→                "description": pat_info["description"],
+   561→                "security_status": pat_info["security_status"],
+   562→                "typical_context": pat_info["typical_context"],
+   563→            })
+   564→    return results
+   565→
+   566→
+   567→def _compute_hmac_sha256(key: bytes, message: bytes) -> str:
+   568→    """Compute HMAC-SHA256 and return hex digest."""
+   569→    return hmac.new(key, message, hashlib.sha256).hexdigest()
+   570→
+   571→
+   572→def _compute_hmac_sha1(key: bytes, message: bytes) -> str:
+   573→    """Compute HMAC-SHA1 and return hex digest."""
+   574→    return hmac.new(key, message, hashlib.sha1).hexdigest()
+   575→
+   576→
+   577→def _hash_sha256(data: bytes) -> str:
+   578→    """Compute SHA-256 hex digest."""
+   579→    return hashlib.sha256(data).hexdigest()
+   580→
+   581→
+   582→def _hash_sha1(data: bytes) -> str:
+   583→    """Compute SHA-1 hex digest."""
+   584→    return hashlib.sha1(data).hexdigest()
+   585→
+   586→
+   587→def _hash_md5(data: bytes) -> str:
+   588→    """Compute MD5 hex digest."""
+   589→    return hashlib.md5(data).hexdigest()
+   590→
+   591→
+   592→def _try_base64_decode(value: str) -> Optional[bytes]:
+   593→    """Attempt to base64-decode a value, returning None on failure."""
+   594→    try:
+   595→        padded = value + "=" * (-len(value) % 4) if len(value) % 4 else value
+   596→        return base64.b64decode(padded, validate=True)
+   597→    except Exception:
+   598→        return None
+   599→
+   600→
+   601→def _try_hex_decode(value: str) -> Optional[bytes]:
+   602→    """Attempt to hex-decode a value, returning None on failure."""
+   603→    try:
+   604→        return bytes.fromhex(value)
+   605→    except (ValueError, TypeError):
+   606→        return None
+   607→
+   608→
+   609→def _try_base32_decode(value: str) -> Optional[bytes]:
+   610→    """Attempt to base32-decode a value, returning None on failure."""
+   611→    try:
+   612→        padded = value + "=" * (-len(value) % 8) if len(value) % 8 else value
+   613→        return base64.b32decode(padded)
+   614→    except Exception:
+   615→        return None
+   616→
+   617→
+   618→def _pack_uint32(val: int) -> bytes:
+   619→    """Pack a 32-bit unsigned integer using struct."""
+   620→    return struct.pack(">I", val)
+   621→
+   622→
+   623→def _unpack_uint32(data: bytes) -> Optional[int]:
+   624→    """Unpack a 32-bit unsigned integer from bytes."""
+   625→    try:
+   626→        return struct.unpack(">I", data[:4])[0]
+   627→    except (struct.error, ValueError):
+   628→        return None
+   629→
+   630→
+   631→def _pack_uint64(val: int) -> bytes:
+   632→    """Pack a 64-bit unsigned integer using struct."""
+   633→    return struct.pack(">Q", val)
+   634→
+   635→
+   636→def _try_decode_all(value: str) -> Dict[str, Optional[bytes]]:
+   637→    """Try all known decodings and return results."""
+   638→    stripped = value.strip().strip('"')
+   639→    return {
+   640→        "base64": _try_base64_decode(stripped),
+   641→        "hex": _try_hex_decode(stripped),
+   642→        "base32": _try_base32_decode(stripped.upper()),
+   643→    }
+   644→
+   645→
+   646→def _finding(
+   647→    title: str,
+   648→    severity: str,
+   649→    category: str,
+   650→    description: str,
+   651→    evidence: str,
+   652→    asset: str,
+   653→    dread: float = 0.0,
+   654→    remediation: str = "",
+   655→    points: int = 0,
+   656→) -> Finding:
+   657→    """Convenience constructor for a Finding."""
+   658→    return Finding(
+   659→        title=title,
+   660→        severity=severity,
+   661→        category=category,
+   662→        module=MODULE_NAME,
+   663→        description=description,
+   664→        evidence=evidence,
+   665→        asset=asset,
+   666→        points_deducted=points,
+   667→        dread_score=dread,
+   668→        remediation=remediation,
+   669→    )
+   670→
+   671→
+   672→def _is_high_entropy(value: str, threshold: float = 3.5) -> bool:
+   673→    """Return True if the string's Shannon entropy exceeds the threshold."""
+   674→    return _shannon_entropy(value) >= threshold
+   675→
+   676→
+   677→def _looks_like_hex(value: str, min_len: int = 16) -> bool:
+   678→    """Check if a string looks like a hex-encoded value."""
+   679→    stripped = value.strip().strip('"')
+   680→    if len(stripped) < min_len:
+   681→        return False
+   682→    return bool(re.fullmatch(r'[a-fA-F0-9]+', stripped))
+   683→
+   684→
+   685→def _looks_like_base64(value: str, min_len: int = 16) -> bool:
+   686→    """Check if a string looks like a base64-encoded value."""
+   687→    stripped = value.strip().strip('"')
+   688→    if len(stripped) < min_len:
+   689→        return False
+   690→    return bool(re.fullmatch(r'[A-Za-z0-9+/]+={0,2}', stripped))
+   691→
+   692→
+   693→def _looks_like_base64url(value: str, min_len: int = 16) -> bool:
+   694→    """Check if a string looks like a base64url-encoded value."""
+   695→    stripped = value.strip().strip('"')
+   696→    if len(stripped) < min_len:
+   697→        return False
+   698→    return bool(re.fullmatch(r'[A-Za-z0-9_-]+', stripped))
+   699→
+   700→
+   701→def _extract_date_precision(date_str: str) -> Optional[Dict[str, Any]]:
+   702→    """Analyze the precision of an HTTP Date header value."""
+   703→    if not date_str:
+   704→        return None
+   705→    date_str = date_str.strip()
+   706→    patterns = [
+   707→        (r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)", "iso_ms"),
+   708→        (r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})", "iso_sec"),
+   709→        (r"(\w{3}, \d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2}) GMT", "rfc1123"),
+   710→        (r"(\w{3}, \d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2})", "rfc850"),
+   711→    ]
+   712→    for pat, fmt_name in patterns:
+   713→        m = re.search(pat, date_str)
+   714→        if m:
+   715→            has_subsecond = "ms" in fmt_name
+   716→            return {
+   717→                "raw": date_str,
+   718→                "format": fmt_name,
+   719→                "has_subsecond": has_subsecond,
+   720→                "subsecond_digits": len(m.group(2)) if has_subsecond and m.lastindex >= 2 else 0,
+   721→                "match": m.group(0),
+   722→            }
+   723→    return None
+   724→
+   725→
+   726→def _steg_bits_from_timestamp(precision_info: Dict[str, Any]) -> Optional[int]:
+   727→    """Extract a steganographic bit from timestamp sub-second precision."""
+   728→    if not precision_info or not precision_info["has_subsecond"]:
+   729→        return None
+   730→    digits = precision_info.get("subsecond_digits", 0)
+   731→    if digits < 1:
+   732→        return None
+   733→    # Bit 0: odd number of subsecond digits → 1, even → 0
+   734→    return digits % 2
+   735→
+   736→
+   737→# ═══════════════════════════════════════════════════════════════════════════
+   738→# 1. DNS TXT RECORD DEAD DROP DETECTION
+   739→# ═══════════════════════════════════════════════════════════════════════════
+   740→
+   741→def _detect_dns_txt_dead_drop(
+   742→    target: str, base_url: str, timeout: int, verify_tls: bool
+   743→) -> List[Finding]:
+   744→    """Check DNS TXT records for encoded dead drop messages.
+   745→
+   746→    Uses Google DNS-over-HTTPS to resolve TXT records, then analyzes
+   747→    each value for encoding patterns, cryptographic signatures, and
+   748→    high-entropy payloads that could contain covert messages.
+   749→    """
+   750→    findings: List[Finding] = []
+   751→    sig = DEAD_DROP_SIGNATURES["dns_txt_dead_drop"]
+   752→
+   753→    # Resolve TXT via Google DoH
+   754→    default_limiter.acquire()
+   755→    doh_url = f"https://dns.google/resolve?name={urllib.parse.quote(target)}&type=TXT"
+   756→    resp = http_probe(doh_url, timeout=timeout, verify_tls=verify_tls)
+   757→
+   758→    if not resp["ok"]:
+   759→        findings.append(_finding(
+   760→            title="DNS TXT Resolution Failed",
+   761→            severity="low",
+   762→            category="dead_drop_dns_txt",
+   763→            description=(
+   764→                f"Could not resolve DNS TXT records for {target} via "
+   765→                f"DNS-over-HTTPS. Dead drop analysis for this channel is "
+   766→                f"incomplete."
+   767→            ),
+   768→            evidence=f"status={resp['status']} reason={resp['reason']}",
+   769→            asset=target,
+   770→            dread=1.0,
+   771→            remediation="Ensure DNS resolution is accessible. Check network policies.",
+   772→        ))
+   773→        return findings
+   774→
+   775→    try:
+   776→        data = __import__("json").loads(resp["body"])
+   777→    except (ValueError, TypeError):
+   778→        return findings
+   779→
+   780→    answers = data.get("Answer", [])
+   781→    txt_records: List[str] = []
+   782→    for ans in answers:
+   783→        if ans.get("type") == 16:  # TXT record type
+   784→            raw_data = ans.get("data", "")
+   785→            # Google DoH wraps TXT data in quotes
+   786→            txt_value = raw_data.strip('"')
+   787→            txt_records.append(txt_value)
+   788→
+   789→    if not txt_records:
+   790→        findings.append(_finding(
+   791→            title="No DNS TXT Records Found",
+   792→            severity="info",
+   793→            category="dead_drop_dns_txt",
+   794→            description=(
+   795→                f"No TXT records were found for {target}. This means "
+   796→                f"there are no SPF, DKIM, DMARC, or custom TXT records "
+   797→                f"that could be used as a dead drop channel."
+   798→            ),
+   799→            evidence="No TXT answers in DNS response",
+   800→            asset=target,
+   801→        ))
+   802→        return findings
+   803→
+   804→    # Analyze each TXT record
+   805→    for txt_value in txt_records:
+   806→        entropy = _shannon_entropy(txt_value)
+   807→        encodings = _identify_encoding(txt_value)
+   808→        crypto_patterns = _identify_crypto_pattern(txt_value)
+   809→        decodings = _try_decode_all(txt_value)
+   810→
+   811→        # Check for high-entropy values
+   812→        if entropy >= sig["entropy_threshold"] and len(txt_value) >= sig["min_value_length"]:
+   813→            decoded_summary = ""
+   814→            for enc_name, decoded in decodings.items():
+   815→                if decoded is not None:
+   816→                    preview = decoded[:64].decode("utf-8", errors="replace")
+   817→                    decoded_summary += f"  {enc_name}: {preview!r}... ({len(decoded)} bytes)\n"
+   818→
+   819→            enc_names = [e["encoding"] for e in encodings]
+   820→            crypto_names = [c["pattern"] for c in crypto_patterns]
+   821→
+   822→            findings.append(_finding(
+   823→                title="High-Entropy DNS TXT Record — Potential Dead Drop",
+   824→                severity=sig["severity"],
+   825→                category="dead_drop_dns_txt",
+   826→                description=(
+   827→                    f"DNS TXT record for {target} contains a high-entropy value "
+   828→                    f"(H={entropy:.2f}, len={len(txt_value)}). This exceeds the "
+   829→                    f"dead drop entropy threshold of {sig['entropy_threshold']}. "
+   830→                    f"Identified encodings: {enc_names or 'none detected'}. "
+   831→                    f"Matched crypto patterns: {crypto_names or 'none'}. "
+   832→                    f"High-entropy TXT records can encode covert messages, "
+   833→                    f"encryption keys, or C2 beacons."
+   834→                ),
+   835→                evidence=(
+   836→                    f"TXT value: {txt_value[:200]}{'...' if len(txt_value) > 200 else ''}\n"
+   837→                    f"Entropy: {entropy:.4f}\n"
+   838→                    f"Encodings: {enc_names}\n"
+   839→                    f"Crypto patterns: {crypto_names}\n"
+   840→                    f"Decoded previews:\n{decoded_summary}"
+   841→                ),
+   842→                asset=target,
+   843→                dread=sig["dread_score"],
+   844→                remediation=(
+   845→                    "Audit DNS TXT records regularly. Remove unnecessary TXT records. "
+   846→                    "Implement DNS monitoring to detect changes to TXT records."
+   847→                ),
+   848→                points=15,
+   849→            ))
+   850→        # Check for pattern-matched values
+   851→        else:
+   852→            for pat in sig["known_patterns"]:
+   853→                if re.search(pat, txt_value, re.IGNORECASE):
+   854→                    findings.append(_finding(
+   855→                        title="DNS TXT Record Matches Dead Drop Pattern",
+   856→                        severity="medium",
+   857→                        category="dead_drop_dns_txt",
+   858→                        description=(
+   859→                            f"TXT record for {target} matches a known dead drop "
+   860→                            f"encoding pattern. The value structure is consistent "
+   861→                            f"with encoded data used in covert communication channels."
+   862→                        ),
+   863→                        evidence=(
+   864→                            f"Pattern: {pat}\n"
+   865→                            f"TXT value: {txt_value[:200]}\n"
+   866→                            f"Entropy: {entropy:.4f}"
+   867→                        ),
+   868→                        asset=target,
+   869→                        dread=5.5,
+   870→                        remediation="Review and validate the purpose of this TXT record.",
+   871→                        points=8,
+   872→                    ))
+   873→                    break
+   874→
+   875→    return findings
+   876→
+   877→
+   878→# ═══════════════════════════════════════════════════════════════════════════
+   879→# 2. HTTP ETAG DEAD DROP DETECTION
+   880→# ═══════════════════════════════════════════════════════════════════════════
+   881→
+   882→def _detect_etag_dead_drop(
+   883→    base_url: str, timeout: int, verify_tls: bool
+   884→) -> List[Finding]:
+   885→    """Analyze HTTP ETag headers for cryptographic encoding patterns.
+   886→
+   887→    ETags are opaque strings used for HTTP cache validation. They are
+   888→    ideal dead drop carriers because their format is server-defined.
+   889→    This function probes multiple paths and analyzes ETag values for
+   890→    encoded data, MAC tags, and encrypted values.
+   891→    """
+   892→    findings: List[Finding] = []
+   893→    sig = DEAD_DROP_SIGNATURES["etag_dead_drop"]
+   894→
+   895→    probe_paths = ["/", "/favicon.ico", "/robots.txt", "/sitemap.xml", "/.well-known/"]
+   896→    etag_values: List[str] = []
+   897→
+   898→    for path in probe_paths:
+   899→        url = base_url.rstrip("/") + path
+   900→        default_limiter.acquire()
+   901→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   902→        etag = resp["headers"].get("ETag", "")
+   903→        if etag:
+   904→            etag_values.append({"path": path, "etag": etag})
+   905→
+   906→    if not etag_values:
+   907→        findings.append(_finding(
+   908→            title="No ETag Headers Detected",
+   909→            severity="info",
+   910→            category="dead_drop_etag",
+   911→            description=(
+   912→                f"No ETag headers were found on any probed path of {base_url}. "
+   913→                f"ETag-based dead drops cannot be used if the server does not "
+   914→                f"emit ETags."
+   915→            ),
+   916→            evidence=f"Probed {len(probe_paths)} paths with no ETag response",
+   917→            asset=base_url,
+   918→        ))
+   919→        return findings
+   920→
+   921→    for item in etag_values:
+   922→        etag = item["etag"]
+   923→        path = item["path"]
+   924→        entropy = _shannon_entropy(etag)
+   925→        encodings = _identify_encoding(etag)
+   926→        crypto_patterns = _identify_crypto_pattern(etag)
+   927→        stripped = etag.strip('"')
+   928→
+   929→        # Check for crypto-sized ETags
+   930→        is_suspicious = False
+   931→        suspicion_reasons: List[str] = []
+   932→
+   933→        if entropy >= sig["entropy_threshold"]:
+   934→            is_suspicious = True
+   935→            suspicion_reasons.append(f"High entropy ({entropy:.2f} >= {sig['entropy_threshold']})")
+   936→
+   937→        if crypto_patterns:
+   938→            is_suspicious = True
+   939→            names = [c["pattern"] for c in crypto_patterns]
+   940→            suspicion_reasons.append(f"Matches crypto patterns: {names}")
+   941→
+   942→        if encodings:
+   943→            for enc in encodings:
+   944→                if enc["encoding"] in ("base64", "base64url", "hex"):
+   945→                    is_suspicious = True
+   946→                    suspicion_reasons.append(
+   947→                        f"Decodable as {enc['encoding']} (entropy={enc['entropy']})"
+   948→                    )
+   949→                    # Try to decode and check if the decoded content is meaningful
+   950→                    decodings = _try_decode_all(stripped)
+   951→                    for dec_name, decoded in decodings.items():
+   952→                        if decoded is not None and len(decoded) >= 8:
+   953→                            # Check if decoded data has structure
+   954→                            uint_val = _unpack_uint32(decoded)
+   955→                            if uint_val is not None and uint_val > 0:
+   956→                                suspicion_reasons.append(
+   957→                                    f"Decoded {dec_name} contains structured uint32: {uint_val}"
+   958→                                )
+   959→
+   960→        # Check for pattern matches
+   961→        for pat in sig["known_patterns"]:
+   962→            if re.match(pat, etag):
+   963→                is_suspicious = True
+   964→                suspicion_reasons.append(f"Matches ETag pattern: {pat}")
+   965→                break
+   966→
+   967→        if is_suspicious:
+   968→            # Verify if the ETag looks like a legitimate content hash
+   969→            default_limiter.acquire()
+   970→            resp2 = http_probe(
+   971→                base_url.rstrip("/") + path, timeout=timeout, verify_tls=verify_tls
+   972→            )
+   973→            body_hash_sha256 = _hash_sha256(resp2["body"].encode())[:32]
+   974→            body_hash_md5 = _hash_md5(resp2["body"].encode())
+   975→
+   976→            is_legit_hash = (
+   977→                stripped == body_hash_sha256
+   978→                or stripped == body_hash_md5
+   979→                or stripped == _hash_sha1(resp2["body"].encode())
+   980→            )
+   981→
+   982→            if is_legit_hash:
+   983→                severity = "low"
+   984→                title = "ETag Matches Content Hash — Likely Legitimate"
+   985→                desc = (
+   986→                    f"ETag on {path} at {base_url} has high entropy and matches "
+   987→                    f"crypto patterns, but it matches the SHA-256/MD5 hash of the "
+   988→                    f"response body ({len(resp2['body'])} bytes). This is likely a "
+   989→                    f"standard content-based ETag, not a dead drop."
+   990→                )
+   991→            else:
+   992→                severity = sig["severity"]
+   993→                title = "Suspicious ETag — Potential Dead Drop"
+   994→                desc = (
+   995→                    f"ETag on {path} at {base_url} does NOT match the content hash "
+   996→                    f"of the response body, suggesting it may carry covert data. "
+   997→                    f"ETags are opaque strings that can encode HMAC tags, encrypted "
+   998→                    f"fragments, or steganographic data."
+   999→                )
+  1000→
+  1001→            findings.append(_finding(
+  1002→                title=title,
+  1003→                severity=severity,
+  1004→                category="dead_drop_etag",
+  1005→                description=desc,
+  1006→                evidence=(
+  1007→                    f"Path: {path}\n"
+  1008→                    f"ETag: {etag}\n"
+  1009→                    f"Entropy: {entropy:.4f}\n"
+  1010→                    f"Encodings: {[e['encoding'] for e in encodings]}\n"
+  1011→                    f"Crypto patterns: {[c['pattern'] for c in crypto_patterns]}\n"
+  1012→                    f"Reasons: {'; '.join(suspicion_reasons)}\n"
+  1013→                    f"Legit content hash: {is_legit_hash}"
+  1014→                ),
+  1015→                asset=base_url,
+  1016→                dread=sig["dread_score"] if not is_legit_hash else 1.0,
+  1017→                remediation=(
+  1018→                    "Verify ETag generation mechanism. Ensure ETags are derived "
+  1019→                    "from content hashes. Audit server configuration for custom "
+  1020→                    "ETag logic."
+  1021→                ),
+  1022→                points=10 if not is_legit_hash else 0,
+  1023→            ))
+  1024→
+  1025→    return findings
+  1026→
+  1027→
+  1028→# ═══════════════════════════════════════════════════════════════════════════
+  1029→# 3. CERTIFICATE TRANSPARENCY DEAD DROP DETECTION
+  1030→# ═══════════════════════════════════════════════════════════════════════════
+  1031→
+  1032→def _detect_ct_dead_drop(
+  1033→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1034→) -> List[Finding]:
+  1035→    """Analyze CT log entries for subdomains that encode dead drop messages.
+  1036→
+  1037→    Queries crt.sh for all known subdomain certificates, then analyzes
+  1038→    each subdomain label for encoding patterns that could carry covert
+  1039→    data. CT logs are append-only and globally replicated, making them
+  1040→    an attractive dead drop channel.
+  1041→    """
+  1042→    findings: List[Finding] = []
+  1043→    sig = DEAD_DROP_SIGNATURES["ct_log_dead_drop"]
+  1044→
+  1045→    # Query crt.sh for CT log entries
+  1046→    default_limiter.acquire()
+  1047→    ct_url = f"https://crt.sh/?q={urllib.parse.quote(target)}&output=json"
+  1048→    resp = http_probe(ct_url, timeout=timeout, verify_tls=verify_tls)
+  1049→
+  1050→    if not resp["ok"]:
+  1051→        findings.append(_finding(
+  1052→            title="CT Log Query Failed",
+  1053→            severity="low",
+  1054→            category="dead_drop_ct",
+  1055→            description=(
+  1056→                f"Could not query Certificate Transparency logs for {target}. "
+  1057→                f"CT-based dead drop analysis is incomplete."
+  1058→            ),
+  1059→            evidence=f"crt.sh status={resp['status']} reason={resp['reason']}",
+  1060→            asset=target,
+  1061→            dread=1.0,
+  1062→        ))
+  1063→        return findings
+  1064→
+  1065→    try:
+  1066→        import json as _json
+  1067→        ct_entries = _json.loads(resp["body"])
+  1068→    except (ValueError, TypeError):
+  1069→        findings.append(_finding(
+  1070→            title="CT Log Response Parse Error",
+  1071→            severity="low",
+  1072→            category="dead_drop_ct",
+  1073→            description="CT log response from crt.sh could not be parsed as JSON.",
+  1074→            evidence=f"Body length: {len(resp['body'])} chars",
+  1075→            asset=target,
+  1076→        ))
+  1077→        return findings
+  1078→
+  1079→    if not isinstance(ct_entries, list) or len(ct_entries) == 0:
+  1080→        findings.append(_finding(
+  1081→            title="No CT Log Entries Found",
+  1082→            severity="info",
+  1083→            category="dead_drop_ct",
+  1084→            description=(
+  1085→                f"No Certificate Transparency log entries found for {target}. "
+  1086→                f"This domain may not have publicly issued certificates."
+  1087→            ),
+  1088→            evidence="Empty or null CT log response",
+  1089→            asset=target,
+  1090→        ))
+  1091→        return findings
+  1092→
+  1093→    # Extract all unique name values (subdomains)
+  1094→    subdomains: set = set()
+  1095→    for entry in ct_entries:
+  1096→        name_value = entry.get("name_value", "")
+  1097→        for name in name_value.split("\n"):
+  1098→            name = name.strip().lower()
+  1099→            if name and name != target:
+  1100→                subdomains.add(name)
+  1101→
+  1102→    suspicious_subdomains: List[Dict[str, Any]] = []
+  1103→
+  1104→    for subdomain in subdomains:
+  1105→        # Extract the leftmost label(s)
+  1106→        parts = subdomain.rstrip(".").split(".")
+  1107→        if len(parts) < 2:
+  1108→            continue
+  1109→
+  1110→        # Check each label
+  1111→        for label in parts[:-1]:  # skip TLD and base domain
+  1112→            if len(label) < sig["min_subdomain_length"]:
+  1113→                continue
+  1114→
+  1115→            entropy = _shannon_entropy(label)
+  1116→            if entropy < sig["entropy_threshold"]:
+  1117→                continue
+  1118→
+  1119→            encodings = _identify_encoding(label)
+  1120→            crypto_patterns = _identify_crypto_pattern(label)
+  1121→
+  1122→            is_suspicious = False
+  1123→            reasons: List[str] = []
+  1124→
+  1125→            for pat in sig["known_patterns"]:
+  1126→                if re.search(pat, label + "."):
+  1127→                    is_suspicious = True
+  1128→                    reasons.append(f"Matches pattern: {pat}")
+  1129→                    break
+  1130→
+  1131→            if encodings:
+  1132→                is_suspicious = True
+  1133→                reasons.append(f"Decodable encodings: {[e['encoding'] for e in encodings]}")
+  1134→
+  1135→            if crypto_patterns:
+  1136→                is_suspicious = True
+  1137→                reasons.append(f"Crypto patterns: {[c['pattern'] for c in crypto_patterns]}")
+  1138→
+  1139→            if is_suspicious:
+  1140→                suspicious_subdomains.append({
+  1141→                    "subdomain": subdomain,
+  1142→                    "label": label,
+  1143→                    "entropy": entropy,
+  1144→                    "reasons": reasons,
+  1145→                    "encodings": encodings,
+  1146→                    "crypto_patterns": crypto_patterns,
+  1147→                })
+  1148→
+  1149→    if suspicious_subdomains:
+  1150→        # Deduplicate by label
+  1151→        seen_labels: set = set()
+  1152→        unique_suspects: List[Dict[str, Any]] = []
+  1153→        for s in suspicious_subdomains:
+  1154→            if s["label"] not in seen_labels:
+  1155→                seen_labels.add(s["label"])
+  1156→                unique_suspects.append(s)
+  1157→
+  1158→        evidence_lines: List[str] = []
+  1159→        for s in unique_suspects[:20]:
+  1160→            evidence_lines.append(
+  1161→                f"  Subdomain: {s['subdomain']}\n"
+  1162→                f"  Label: {s['label']} (H={s['entropy']:.2f})\n"
+  1163→                f"  Reasons: {'; '.join(s['reasons'])}"
+  1164→            )
+  1165→
+  1166→        findings.append(_finding(
+  1167→            title=f"CT Log Subdomains with Encoded Patterns ({len(unique_suspects)} found)",
+  1168→            severity=sig["severity"],
+  1169→            category="dead_drop_ct",
+  1170→            description=(
+  1171→                f"Found {len(unique_suspects)} subdomain(s) in Certificate Transparency logs "
+  1172→                f"for {target} that exhibit encoding patterns consistent with dead drop "
+  1173→                f"activity. Subdomain labels can encode covert messages (hex, base64, "
+  1174→                f"base32) in CT logs, which are globally replicated and publicly accessible."
+  1175→            ),
+  1176→            evidence="\n".join(evidence_lines),
+  1177→            asset=target,
+  1178→            dread=sig["dread_score"],
+  1179→            remediation=(
+  1180→                "Monitor CT logs for new subdomain certificates. Implement certificate "
+  1181→                "alerting for unusual subdomain patterns. Review certificate issuance "
+  1182→                "policies and consider CT log monitoring services."
+  1183→            ),
+  1184→            points=15,
+  1185→        ))
+  1186→    else:
+  1187→        findings.append(_finding(
+  1188→            title="CT Log Subdomains — No Dead Drop Patterns",
+  1189→            severity="info",
+  1190→            category="dead_drop_ct",
+  1191→            description=(
+  1192→                f"Analyzed {len(subdomains)} subdomain entries from Certificate "
+  1193→                f"Transparency logs for {target}. No subdomain labels exhibited "
+  1194→                f"encoding patterns consistent with dead drop activity."
+  1195→            ),
+  1196→            evidence=f"Subdomains analyzed: {len(subdomains)}",
+  1197→            asset=target,
+  1198→        ))
+  1199→
+  1200→    return findings
+  1201→
+  1202→
+  1203→# ═══════════════════════════════════════════════════════════════════════════
+  1204→# 4. HTTP HEADER DEAD DROP DETECTION
+  1205→# ═══════════════════════════════════════════════════════════════════════════
+  1206→
+  1207→def _detect_header_dead_drop(
+  1208→    base_url: str, timeout: int, verify_tls: bool
+  1209→) -> List[Finding]:
+  1210→    """Detect encoded messages in unusual HTTP header combinations.
+  1211→
+  1212→    Analyzes all response headers for: (a) custom/suspicious header names,
+  1213→    (b) header values with high entropy or encoding patterns, and (c)
+  1214→    combinations of headers that together could encode data.
+  1215→    """
+  1216→    findings: List[Finding] = []
+  1217→    sig = DEAD_DROP_SIGNATURES["http_header_dead_drop"]
+  1218→
+  1219→    default_limiter.acquire()
+  1220→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+  1221→    headers = resp["headers"]
+  1222→
+  1223→    if not headers:
+  1224→        findings.append(_finding(
+  1225→            title="No HTTP Headers Retrieved",
+  1226→            severity="info",
+  1227→            category="dead_drop_header",
+  1228→            description=f"No HTTP headers were retrieved from {base_url}.",
+  1229→            evidence="Empty headers dict",
+  1230→            asset=base_url,
+  1231→        ))
+  1232→        return findings
+  1233→
+  1234→    suspicious_headers: List[Dict[str, Any]] = []
+  1235→    suspicious_values: List[Dict[str, Any]] = []
+  1236→
+  1237→    # Check for suspicious header names
+  1238→    for header_name, header_value in headers.items():
+  1239→        # Normalize header name
+  1240→        norm_name = header_name.lower()
+  1241→
+  1242→        # Check if header name is suspicious
+  1243→        for sus_prefix in sig["suspicious_headers"]:
+  1244→            if norm_name == sus_prefix.lower() or norm_name.startswith(sus_prefix.lower()):
+  1245→                entropy = _shannon_entropy(header_value)
+  1246→                encodings = _identify_encoding(header_value)
+  1247→                crypto_patterns = _identify_crypto_pattern(header_value)
+  1248→
+  1249→                suspicious_headers.append({
+  1250→                    "name": header_name,
+  1251→                    "value": header_value[:200],
+  1252→                    "entropy": entropy,
+  1253→                    "encodings": encodings,
+  1254→                    "crypto_patterns": crypto_patterns,
+  1255→                })
+  1256→                break
+  1257→
+  1258→        # Check for high-entropy values in ANY header
+  1259→        if len(header_value) >= 24:
+  1260→            entropy = _shannon_entropy(header_value)
+  1261→            if entropy >= sig["entropy_threshold"]:
+  1262→                encodings = _identify_encoding(header_value)
+  1263→                if encodings or crypto_patterns := _identify_crypto_pattern(header_value):
+  1264→                    suspicious_values.append({
+  1265→                        "name": header_name,
+  1266→                        "value": header_value[:200],
+  1267→                        "entropy": entropy,
+  1268→                        "encodings": [e["encoding"] for e in encodings],
+  1269→                        "crypto_patterns": [c["pattern"] for c in crypto_patterns],
+  1270→                    })
+  1271→
+  1272→    # Analyze header value combinations for multi-channel encoding
+  1273→    # Collect all header values that look like encoded fragments
+  1274→    encoded_fragments: List[Dict[str, str]] = []
+  1275→    for header_name, header_value in headers.items():
+  1276→        stripped = header_value.strip().strip('"')
+  1277→        if _looks_like_base64(stripped, 16) or _looks_like_hex(stripped, 16):
+  1278→            encoded_fragments.append({"header": header_name, "value": stripped})
+  1279→
+  1280→    if suspicious_headers:
+  1281→        evidence_lines: List[str] = []
+  1282→        for sh in suspicious_headers[:10]:
+  1283→            evidence_lines.append(
+  1284→                f"  Header: {sh['name']}\n"
+  1285→                f"  Value: {sh['value']}\n"
+  1286→                f"  Entropy: {sh['entropy']:.4f}\n"
+  1287→                f"  Encodings: {[e['encoding'] for e in sh['encodings']]}\n"
+  1288→                f"  Crypto: {[c['pattern'] for c in sh['crypto_patterns']]}")
+  1289→
+  1290→        findings.append(_finding(
+  1291→            title=f"Suspicious HTTP Headers Detected ({len(suspicious_headers)} headers)",
+  1292→            severity=sig["severity"],
+  1293→            category="dead_drop_header",
+  1294→            description=(
+  1295→                f"Found {len(suspicious_headers)} HTTP header(s) with names matching "
+  1296→                f"known dead drop header patterns. These headers can carry encoded "
+  1297→                f"messages, encryption keys, or C2 instructions.",
+  1298→                )
+  1299→                .rstrip(", "),
+  1300→            evidence="\n".join(evidence_lines),
+  1301→            asset=base_url,
+  1302→            dread=sig["dread_score"],
+  1303→            remediation=(
+  1304→                "Audit all custom HTTP headers. Remove unnecessary headers. "
+  1305→                "Implement header allow-listing in WAF rules."
+  1306→            ),
+  1307→            points=10,
+  1308→        ))
+  1309→
+  1310→    if suspicious_values:
+  1311→        # Filter out those already reported as suspicious headers
+  1312→        reported_names = {sh["name"] for sh in suspicious_headers}
+  1313→        new_sus = [sv for sv in suspicious_values if sv["name"] not in reported_names]
+  1314→
+  1315→        if new_sus:
+  1316→            evidence_lines = []
+  1317→            for sv in new_sus[:10]:
+  1318→                evidence_lines.append(
+  1319→                    f"  Header: {sv['name']}\n"
+  1320→                    f"  Value: {sv['value']}\n"
+  1321→                    f"  Entropy: {sv['entropy']:.4f}\n"
+  1322→                    f"  Encodings: {sv['encodings']}\n"
+  1323→                    f"  Crypto: {sv['crypto_patterns']}"
+  1324→                )
+  1325→
+  1326→            findings.append(_finding(
+  1327→                title=f"High-Entropy Header Values ({len(new_sus)} values)",
+  1328→                severity="medium",
+  1329→                category="dead_drop_header",
+  1330→                description=(
+  1331→                    f"Found {len(new_sus)} HTTP header value(s) with high entropy "
+  1332→                    f"and encoding patterns. While these may be legitimate (e.g., "
+  1333→                    f"cookies, tokens, hashes), they could also encode dead drop messages."
+  1334→                ),
+  1335→                evidence="\n".join(evidence_lines),
+  1336→                asset=base_url,
+  1337→                dread=5.0,
+  1338→                remediation=(
+  1339→                    "Review each high-entropy header value. Validate that the value "
+  1340→                    "serves a legitimate purpose. Monitor for unexpected changes."
+  1341→                ),
+  1342→                points=5,
+  1343→            ))
+  1344→
+  1345→    # Check for multi-fragment encoding across headers
+  1346→    if len(encoded_fragments) >= 3:
+  1347→        # Try concatenating encoded fragments
+  1348→        concatenated = "".join(f["value"] for f in encoded_fragments)
+  1349→        decodings = _try_decode_all(concatenated)
+  1350→        decoded_any = any(v is not None for v in decodings.values())
+  1351→
+  1352→        if decoded_any:
+  1353→            frag_names = [f["header"] for f in encoded_fragments]
+  1354→            findings.append(_finding(
+  1355→                title="Potential Multi-Header Dead Drop Encoding",
+  1356→                severity="high",
+  1357→                category="dead_drop_header",
+  1358→                description=(
+  1359→                    f"Found {len(encoded_fragments)} headers with encoded values that, "
+  1360→                    f"when concatenated, successfully decode. This is a strong indicator "
+  1361→                    f"of multi-header dead drop encoding where data is split across "
+  1362→                    f"multiple headers to evade single-header analysis."
+  1363→                ),
+  1364→                evidence=(
+  1365→                    f"Headers with encoded values: {frag_names}\n"
+  1366→                    f"Concatenated length: {len(concatenated)} chars\n"
+  1367→                    f"Successful decodings: {[k for k,v in decodings.items() if v is not None]}"
+  1368→                ),
+  1369→                asset=base_url,
+  1370→                dread=7.5,
+  1371→                remediation=(
+  1372→                    "Investigate the relationship between these headers. Check if "
+  1373→                    "they are set by the same application component. Implement "
+  1374→                    "cross-header correlation monitoring."
+  1375→                ),
+  1376→                points=18,
+  1377→            ))
+  1378→
+  1379→    if not suspicious_headers and not suspicious_values and len(encoded_fragments) < 3:
+  1380→        findings.append(_finding(
+  1381→            title="HTTP Headers — No Dead Drop Patterns",
+  1382→            severity="info",
+  1383→            category="dead_drop_header",
+  1384→            description=(
+  1385→                f"Analyzed {len(headers)} HTTP headers from {base_url}. No "
+  1386→                f"suspicious header names or high-entropy encoded values detected."
+  1387→            ),
+  1388→            evidence=f"Headers inspected: {list(headers.keys())}",
+  1389→            asset=base_url,
+  1390→        ))
+  1391→
+  1392→    return findings
+  1393→
+  1394→
+  1395→# ═══════════════════════════════════════════════════════════════════════════
+  1396→# 5. TIMESTAMP STEGANOGRAPHY DETECTION
+  1397→# ═══════════════════════════════════════════════════════════════════════════
+  1398→
+  1399→def _detect_timestamp_stego(
+  1400→    base_url: str, timeout: int, verify_tls: bool
+  1401→) -> List[Finding]:
+  1402→    """Detect data encoded in timestamp precision of Date headers.
+  1403→
+  1404→    Makes multiple requests and analyzes the Date header for:
+  1405→    - Sub-second precision (unusual for HTTP Date headers)
+  1406→    - Non-standard date format deviations
+  1407→    - Monotonic but anomalous time patterns
+  1408→    - Bit extraction from sub-second digits
+  1409→    """
+  1410→    findings: List[Finding] = []
+  1411→    sig = DEAD_DROP_SIGNATURES["timestamp_stego"]
+  1412→
+  1413→    timestamps: List[Dict[str, Any]] = []
+  1414→    num_probes = 5
+  1415→
+  1416→    for i in range(num_probes):
+  1417→        default_limiter.acquire()
+  1418→        resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+  1419→        date_val = resp["headers"].get("Date", "")
+  1420→
+  1421→        precision = _extract_date_precision(date_val)
+  1422→        steg_bit = _steg_bits_from_timestamp(precision) if precision else None
+  1423→
+  1424→        timestamps.append({
+  1425→            "probe_index": i,
+  1426→            "date_raw": date_val,
+  1427→            "precision": precision,
+  1428→            "steg_bit": steg_bit,
+  1429→            "request_time": time.time(),
+  1430→        })
+  1431→
+  1432→        time.sleep(0.3)  # Small delay between probes
+  1433→
+  1434→    # Analyze timestamps
+  1435→    has_subsecond = any(
+  1436→        t["precision"] and t["precision"]["has_subsecond"] for t in timestamps
+  1437→    )
+  1438→
+  1439→    steg_bits = [t["steg_bit"] for t in timestamps if t["steg_bit"] is not None]
+  1440→    extracted_byte = None
+  1441→    if len(steg_bits) >= 8:
+  1442→        # Combine first 8 bits into a byte
+  1443→        bits_str = "".join(str(b) for b in steg_bits[:8])
+  1444→        extracted_byte = int(bits_str, 2)
+  1445→
+  1446→    if has_subsecond:
+  1447→        subsecond_entries = [
+  1448→            t for t in timestamps
+  1449→            if t["precision"] and t["precision"]["has_subsecond"]
+  1450→        ]
+  1451→
+  1452→        precision_details = "\n".join(
+  1453→            f"  Probe {t['probe_index']}: {t['date_raw']} "
+  1454→            f"(subsec_digits={t['precision']['subsecond_digits']}, "
+  1455→            f"bit={t['steg_bit']})"
+  1456→            for t in subsecond_entries
+  1457→        )
+  1458→
+  1459→        findings.append(_finding(
+  1460→            title="HTTP Date Header Has Sub-Second Precision",
+  1461→            severity=sig["severity"],
+  1462→            category="dead_drop_timestamp",
+  1463→            description=(
+  1464→                f"The HTTP Date header from {base_url} includes sub-second "
+  1465→                f"precision in {len(subsecond_entries)} out of {num_probes} probes. "
+  1466→                f"RFC 7231 specifies second-level granularity for HTTP dates. "
+  1467→                f"Sub-second precision can encode ~1 bit per response via the "
+  1468→                f"number of sub-second digits (odd=1, even=0). This creates a covert "
+  1469→                f"timing channel."
+  1470→                + (f" Extracted byte from first 8 bits: 0x{extracted_byte:02x} ({extracted_byte})" if extracted_byte is not None else "")
+  1471→            ),
+  1472→            evidence=(
+  1473→                f"Sub-second probes: {len(subsecond_entries)}/{num_probes}\n"
+  1474→                f"Details:\n{precision_details}"
+  1475→                + (f"\nExtracted byte: 0x{extracted_byte:02x}" if extracted_byte is not None else "")
+  1476→            ),
+  1477→            asset=base_url,
+  1478→            dread=sig["dread_score"],
+  1479→            remediation=(
+  1480→                "Configure server to emit Date headers with second-level precision "
+  1481→                "only. Use NTP synchronization. Monitor for timestamp anomalies."
+  1482→            ),
+  1483→            points=6,
+  1484→        ))
+  1485→    else:
+  1486→        # Check for other anomalies
+  1487→        date_formats: set = set()
+  1488→        for t in timestamps:
+  1489→            if t["precision"]:
+  1490→                date_formats.add(t["precision"]["format"])
+  1491→
+  1492→        if len(date_formats) > 1:
+  1493→            findings.append(_finding(
+  1494→                title="Inconsistent HTTP Date Formats",
+  1495→                severity="low",
+  1496→                category="dead_drop_timestamp",
+  1497→                description=(
+  1498→                    f"HTTP Date headers from {base_url} use {len(date_formats)} "
+  1499→                    f"different format(s): {date_formats}. Inconsistent formatting "
+  1500→                    f"can be used to signal binary data (format A = 0, format B = 1)."
+  1501→                ),
+  1502→                evidence=f"Formats observed: {date_formats}",
+  1503→                asset=base_url,
+  1504→                dread=2.5,
+  1505→                remediation="Ensure consistent Date header formatting across all responses.",
+  1506→                points=3,
+  1507→            ))
+  1508→        else:
+  1509→            findings.append(_finding(
+  1510→                title="Timestamp Steganography — No Anomalies",
+  1511→                severity="info",
+  1512→                category="dead_drop_timestamp",
+  1513→                description=(
+  1514→                    f"Analyzed {num_probes} HTTP Date headers from {base_url}. "
+  1515→                    f"No sub-second precision or format inconsistencies detected. "
+  1516→                    f"Timestamp-based dead drops are not evident."
+  1517→                ),
+  1518→                evidence=f"Probes: {num_probes}, formats: {date_formats or {'standard'}}",
+  1519→                asset=base_url,
+  1520→            ))
+  1521→
+  1522→    return findings
+  1523→
+  1524→
+  1525→# ═══════════════════════════════════════════════════════════════════════════
+  1526→# 6. DNS CNAME DEAD DROP DETECTION
+  1527→# ═══════════════════════════════════════════════════════════════════════════
+  1528→
+  1529→def _detect_cname_dead_drop(
+  1530→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1531→) -> List[Finding]:
+  1532→    """Check CNAME records for encoded subdomain patterns.
+  1533→
+  1534→    Resolves CNAME records via DNS-over-HTTPS and analyzes each label
+  1535→    in the CNAME target for encoding patterns. Long, high-entropy labels
+  1536→    are hallmarks of dead drop encoding in DNS CNAME chains.
+  1537→    """
+  1538→    findings: List[Finding] = []
+  1539→    sig = DEAD_DROP_SIGNATURES["dns_cname_dead_drop"]
+  1540→
+  1541→    # Common subdomains to check for CNAME records
+  1542→    subdomains_to_check = [
+  1543→        target,
+  1544→        f"www.{target}",
+  1545→        f"mail.{target}",
+  1546→        f"api.{target}",
+  1547→        f"cdn.{target}",
+  1548→        f"static.{target}",
+  1549→        f"assets.{target}",
+  1550→    ]
+  1551→
+  1552→    all_cname_targets: List[Dict[str, str]] = []
+  1553→
+  1554→    for subdomain in subdomains_to_check:
+  1555→        default_limiter.acquire()
+  1556→        doh_url = f"https://dns.google/resolve?name={urllib.parse.quote(subdomain)}&type=CNAME"
+  1557→        resp = http_probe(doh_url, timeout=timeout, verify_tls=verify_tls)
+  1558→
+  1559→        if not resp["ok"]:
+  1560→            continue
+  1561→
+  1562→        try:
+  1563→            import json as _json
+  1564→            data = _json.loads(resp["body"])
+  1565→        except (ValueError, TypeError):
+  1566→            continue
+  1567→
+  1568→        for ans in data.get("Answer", []):
+  1569→            if ans.get("type") == 5:  # CNAME record type
+  1570→                cname_target = ans.get("data", "").strip().rstrip(".")
+  1571→                all_cname_targets.append({
+  1572→                    "source": subdomain,
+  1573→                    "target": cname_target,
+  1574→                })
+  1575→
+  1576→    if not all_cname_targets:
+  1577→        findings.append(_finding(
+  1578→            title="No CNAME Records Found",
+  1579→            severity="info",
+  1580→            category="dead_drop_cname",
+  1581→            description=(
+  1582→                f"No CNAME records were found for {target} or its common "
+  1583→                f"subdomains. CNAME-based dead drop analysis is not applicable."
+  1584→            ),
+  1585→            evidence=f"Checked {len(subdomains_to_check)} subdomains",
+  1586→            asset=target,
+  1587→        ))
+  1588→        return findings
+  1589→
+  1590→    suspicious_cnames: List[Dict[str, Any]] = []
+  1591→
+  1592→    for cname_info in all_cname_targets:
+  1593→        cname_target = cname_info["target"]
+  1594→        entropy = _shannon_entropy(cname_target)
+  1595→
+  1596→        if len(cname_target) < sig["min_cname_length"]:
+  1597→            continue
+  1598→
+  1599→        if entropy < sig["entropy_threshold"]:
+  1600→            continue
+  1601→
+  1602→        labels = cname_target.split(".")
+  1603→        suspicious_labels: List[Dict[str, Any]] = []
+  1604→
+  1605→        for label in labels:
+  1606→            if len(label) < 16:
+  1607→                continue
+  1608→
+  1609→            label_entropy = _shannon_entropy(label)
+  1610→            encodings = _identify_encoding(label)
+  1611→            crypto_patterns = _identify_crypto_pattern(label)
+  1612→
+  1613→            for pat in sig["known_patterns"]:
+  1614→                if re.search(pat, label + "."):
+  1615→                    suspicious_labels.append({
+  1616→                        "label": label,
+  1617→                        "entropy": label_entropy,
+  1618→                        "encodings": encodings,
+  1619→                        "crypto_patterns": crypto_patterns,
+  1620→                        "pattern": pat,
+  1621→                    })
+  1622→                    break
+  1623→
+  1624→        if suspicious_labels:
+  1625→            suspicious_cnames.append({
+  1626→                "source": cname_info["source"],
+  1627→                "target": cname_target,
+  1628→                "entropy": entropy,
+  1629→                "suspicious_labels": suspicious_labels,
+  1630→            })
+  1631→
+  1632→    if suspicious_cnames:
+  1633→        evidence_lines: List[str] = []
+  1634→        for sc in suspicious_cnames:
+  1635→            for sl in sc["suspicious_labels"]:
+  1636→                evidence_lines.append(
+  1637→                    f"  CNAME: {sc['source']} -> {sc['target']}\n"
+  1638→                    f"  Label: {sl['label']} (H={sl['entropy']:.2f})\n"
+  1639→                    f"  Encodings: {[e['encoding'] for e in sl['encodings']]}\n"
+  1640→                    f"  Crypto: {[c['pattern'] for c in sl['crypto_patterns']]}")
+  1641→
+  1642→        findings.append(_finding(
+  1643→            title=f"CNAME Records with Encoded Patterns ({len(suspicious_cnames)} found)",
+  1644→            severity=sig["severity"],
+  1645→            category="dead_drop_cname",
+  1646→            description=(
+  1647→                f"Found {len(suspicious_cnames)} CNAME record(s) for {target} "
+  1648→                f"with labels exhibiting encoding patterns consistent with dead "
+  1649→                f"drop activity. CNAME targets can encode covert messages in their "
+  1650→                f"domain labels using hex, base32, or base64url encoding."
+  1651→            ),
+  1652→            evidence="\n".join(evidence_lines),
+  1653→            asset=target,
+  1654→            dread=sig["dread_score"],
+  1655→            remediation=(
+  1656→                "Audit CNAME records for all subdomains. Remove unnecessary CNAME "
+  1657→                "chains. Monitor DNS configurations for unauthorized changes."
+  1658→            ),
+  1659→            points=12,
+  1660→        ))
+  1661→    else:
+  1662→        findings.append(_finding(
+  1663→            title="CNAME Records — No Dead Drop Patterns",
+  1664→            severity="info",
+  1665→            category="dead_drop_cname",
+  1666→            description=(
+  1667→                f"Analyzed {len(all_cname_targets)} CNAME record(s) for {target}. "
+  1668→                f"No labels exhibited encoding patterns consistent with dead drops."
+  1669→            ),
+  1670→            evidence=f"CNAMEs analyzed: {len(all_cname_targets)}",
+  1671→            asset=target,
+  1672→        ))
+  1673→
+  1674→    return findings
+  1675→
+  1676→
+  1677→# ═══════════════════════════════════════════════════════════════════════════
+  1678→# 7. SPF/DKIM/DMARC DEAD DROP ANALYSIS
+  1679→# ═══════════════════════════════════════════════════════════════════════════
+  1680→
+  1681→def _detect_email_auth_dead_drop(
+  1682→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1683→) -> List[Finding]:
+  1684→    """Check SPF, DKIM, and DMARC records for hidden dead drop messages.
+  1685→
+  1686→    Email authentication records are complex TXT records that naturally
+  1687→    contain encoded data. Covert messages can be hidden within:
+  1688→    - SPF ip4/ip6 mechanism parameters
+  1689→    - DKIM public key data (p= tag)
+  1690→    - DMARC policy parameters (rua, ruf tags)
+  1691→    """
+  1692→    findings: List[Finding] = []
+  1693→    sig = DEAD_DROP_SIGNATURES["spf_dkim_dmarc_dead_drop"]
+  1694→
+  1695→    email_record_queries: List[Dict[str, str]] = [
+  1696→        {"type": "SPF", "name": target, "dns_name": target, "dns_type": "TXT",
+  1697→         "filter": "v=spf1"},
+  1698→        {"type": "DMARC", "name": f"_dmarc.{target}", "dns_name": f"_dmarc.{target}",
+  1699→         "dns_type": "TXT", "filter": "v=DMARC1"},
+  1700→        {"type": "DKIM-selector1", "name": f"default._domainkey.{target}",
+  1701→         "dns_name": f"default._domainkey.{target}", "dns_type": "TXT",
+  1702→         "filter": "v=DKIM1"},
+  1703→        {"type": "DKIM-selector2", "name": f"selector1._domainkey.{target}",
+  1704→         "dns_name": f"selector1._domainkey.{target}", "dns_type": "TXT",
+  1705→         "filter": "v=DKIM1"},
+  1706→    ]
+  1707→
+  1708→    records_found: List[Dict[str, Any]] = []
+  1709→
+  1710→    for query in email_record_queries:
+  1711→        default_limiter.acquire()
+  1712→        doh_url = (
+  1713→            f"https://dns.google/resolve?name={urllib.parse.quote(query['dns_name'])}"
+  1714→            f"&type={query['dns_type']}"
+  1715→        )
+  1716→        resp = http_probe(doh_url, timeout=timeout, verify_tls=verify_tls)
+  1717→
+  1718→        if not resp["ok"]:
+  1719→            continue
+  1720→
+  1721→        try:
+  1722→            import json as _json
+  1723→            data = _json.loads(resp["body"])
+  1724→        except (ValueError, TypeError):
+  1725→            continue
+  1726→
+  1727→        for ans in data.get("Answer", []):
+  1728→            if ans.get("type") == 16:  # TXT
+  1729→                raw_value = ans.get("data", "").strip('"')
+  1730→                if query["filter"].lower() in raw_value.lower():
+  1731→                    records_found.append({
+  1732→                        "type": query["type"],
+  1733→                        "name": query["name"],
+  1734→                        "value": raw_value,
+  1735→                    })
+  1736→
+  1737→    if not records_found:
+  1738→        findings.append(_finding(
+  1739→            title="No Email Authentication Records Found",
+  1740→            severity="info",
+  1741→            category="dead_drop_email_auth",
+  1742→            description=(
+  1743→                f"No SPF, DKIM, or DMARC records were found for {target}. "
+  1744→                f"Email authentication dead drop analysis is not applicable."
+  1745→            ),
+  1746→            evidence=f"Queried {len(email_record_queries)} record types",
+  1747→            asset=target,
+  1748→        ))
+  1749→        return findings
+  1750→
+  1751→    for record in records_found:
+  1752→        rec_type = record["type"]
+  1753→        rec_value = record["value"]
+  1754→        entropy = _shannon_entropy(rec_value)
+  1755→        encodings = _identify_encoding(rec_value)
+  1756→        crypto_patterns = _identify_crypto_pattern(rec_value)
+  1757→
+  1758→        is_suspicious = False
+  1759→        reasons: List[str] = []
+  1760→
+  1761→        # For DKIM: check for unusually long public keys
+  1762→        if rec_type.startswith("DKIM"):
+  1763→            p_match = re.search(r"p=([A-Za-z0-9+/=]+)", rec_value)
+  1764→            if p_match:
+  1765→                key_data = p_match.group(1)
+  1766→                key_len = len(key_data)
+  1767→                # A 2048-bit RSA key in base64 is ~372 chars, 4096-bit is ~740 chars
+  1768→                if key_len > 740:
+  1769→                    is_suspicious = True
+  1770→                    reasons.append(
+  1771→                        f"DKIM public key is {key_len} chars (base64), suggesting "
+  1772→                        f"a key larger than 4096 bits or embedded extra data"
+  1773→                    )
+  1774→
+  1775→                # Check if the key data has suspicious entropy distribution
+  1776→                key_entropy = _shannon_entropy(key_data)
+  1777→                if key_entropy < 4.5 and key_len > 400:
+  1778→                    is_suspicious = True
+  1779→                    reasons.append(
+  1780→                        f"DKIM key entropy ({key_entropy:.2f}) is unusually low for "
+  1781→                        f"a {key_len}-char base64 value, suggesting non-random padding"
+  1782→                    )
+  1783→
+  1784→                # Try to decode key and look for structure
+  1785→                decoded_key = _try_base64_decode(key_data)
+  1786→                if decoded_key is not None:
+  1787→                    # Check for ASN.1 structure ( legitimate RSA key starts with 0x30)
+  1788→                    if len(decoded_key) > 0 and decoded_key[0] != 0x30:
+  1789→                        is_suspicious = True
+  1790→                        reasons.append(
+  1791→                            f"Decoded DKIM key does not start with ASN.1 SEQUENCE tag (0x30). "
+  1792→                            f"First byte: 0x{decoded_key[0]:02x}. This may indicate "
+  1793→                            f"non-standard or embedded data."
+  1794→                        )
+  1795→
+  1796→        # For SPF: check for unusual mechanisms with encoded data
+  1797→        if rec_type == "SPF":
+  1798→            # Extract ip4/ip6 values and check for encoded data
+  1799→            ip_matches = re.findall(r"ip[46]:([^\"]\s]+)", rec_value)
+  1800→            for ip_val in ip_matches:
+  1801→                if _looks_like_hex(ip_val, 20) or _looks_like_base64(ip_val, 20):
+  1802→                    is_suspicious = True
+  1803→                    reasons.append(f"SPF contains encoded data in mechanism: ip4/ip6:{ip_val}")
+  1804→
+  1805→            # Check include: directives for encoded domains
+  1806→            includes = re.findall(r"include:([^"]\s]+)", rec_value)
+  1807→            for inc in includes:
+  1808→                inc_labels = inc.split(".")
+  1809→                for label in inc_labels:
+  1810→                    if len(label) >= 20 and _is_high_entropy(label, 3.5):
+  1811→                        is_suspicious = True
+  1812→                        reasons.append(f"SPF include domain has high-entropy label: {label}")
+  1813→
+  1814→        # For DMARC: check rua/ruf tags for encoded URLs
+  1815→        if rec_type == "DMARC":
+  1816→            rua_matches = re.findall(r"rua=([^"]\s;]+)", rec_value)
+  1817→            ruf_matches = re.findall(r"ruf=([^"]\s;]+)", rec_value)
+  1818→            for tag_val in rua_matches + ruf_matches:
+  1819→                # Look for base64/hex encoded data in report URIs
+  1820→                for segment in tag_val.split(","):
+  1821→                    segment = segment.strip()
+  1822→                    path_match = re.search(r"https?://[^/]+(/[^"]+)", segment)
+  1823→                    if path_match:
+  1824→                        path = path_match.group(1)
+  1825→                        if _is_high_entropy(path, 3.5) and len(path) > 20:
+  1826→                            is_suspicious = True
+  1827→                            reasons.append(
+  1828→                                f"DMARC report URI path has high entropy: {path}"
+  1829→                            )
+  1830→
+  1831→        # General check: overall entropy and encoding patterns
+  1832→        if entropy >= sig["entropy_threshold"]:
+  1833→            if not is_suspicious:  # Don't double-report
+  1834→                is_suspicious = True
+  1835→                reasons.append(f"Overall record entropy ({entropy:.2f}) exceeds threshold")
+  1836→
+  1837→        if is_suspicious:
+  1838→            findings.append(_finding(
+  1839→                title=f"Suspicious {rec_type} Record — Potential Dead Drop",
+  1840→                severity=sig["severity"],
+  1841→                category="dead_drop_email_auth",
+  1842→                description=(
+  1843→                    f"{rec_type} record for {record['name']} exhibits characteristics "
+  1844→                    f"consistent with dead drop activity: {'; '.join(reasons)}. "
+  1845→                    f"Email authentication records are complex and can mask embedded "
+  1846→                    f"covert messages within their legitimate structure."
+  1847→                ),
+  1848→                evidence=(
+  1849→                    f"Type: {rec_type}\n"
+  1850→                    f"Name: {record['name']}\n"
+  1851→                    f"Value: {rec_value[:500]}{'...' if len(rec_value) > 500 else ''}\n"
+  1852→                    f"Entropy: {entropy:.4f}\n"
+  1853→                    f"Encodings: {[e['encoding'] for e in encodings]}\n"
+  1854→                    f"Crypto: {[c['pattern'] for c in crypto_patterns]}\n"
+  1855→                    f"Reasons: {'; '.join(reasons)}"
+  1856→                ),
+  1857→                asset=target,
+  1858→                dread=sig["dread_score"],
+  1859→                remediation=(
+  1860→                    f"Audit the {rec_type} record content. Verify all mechanisms, "
+  1861→                    f"keys, and URIs serve legitimate email authentication purposes. "
+  1862→                    f"Compare against known-good configurations."
+  1863→                ),
+  1864→                points=10,
+  1865→            ))
+  1866→
+  1867→    if not any(f.severity in ("high", "medium") for f in findings):
+  1868→        findings.append(_finding(
+  1869→            title="Email Auth Records — No Dead Drop Patterns",
+  1870→            severity="info",
+  1871→            category="dead_drop_email_auth",
+  1872→            description=(
+  1873→                f"Analyzed {len(records_found)} email authentication record(s) for "
+  1874→                f"{target}: {', '.join(r['type'] for r in records_found)}. No dead drop "
+  1875→                f"patterns were detected in SPF, DKIM, or DMARC records."
+  1876→            ),
+  1877→            evidence=f"Records analyzed: {len(records_found)}",
+  1878→            asset=target,
+  1879→        ))
+  1880→
+  1881→    return findings
+  1882→
+  1883→
+  1884→# ═══════════════════════════════════════════════════════════════════════════
+  1885→# 8. DEAD DROP SIMULATION
+  1886→# ═══════════════════════════════════════════════════════════════════════════
+  1887→
+  1888→def _simulate_dead_drops(target: str) -> List[Finding]:
+  1889→    """Demonstrate how each dead drop channel could be used with examples.
+  1890→
+  1891→    Generates concrete examples of encoded payloads for each channel type,
+  1892→    showing the encoding process and the resulting dead drop artifact.
+  1893→    Uses only stdlib crypto (hashlib, hmac, base64, struct).
+  1894→    """
+  1895→    findings: List[Finding] = []
+  1896→    secret_message = b"MEET AT THE OLD BRIDGE 2300"
+  1897→    sim_key = b"dead-drop-simulation-key-2024"
+  1898→
+  1899→    # ── 8a. DNS TXT Dead Drop Simulation ──
+  1900→    # Encode the secret message as base64, wrap in a fake SPF-like record
+  1901→    msg_b64 = base64.b64encode(secret_message).decode()
+  1902→ fake_txt = f"v=spf1 ip4:192.0.2.1 include:_dmarc.{target} {msg_b64} -all"
+  1903→    txt_hmac = _compute_hmac_sha256(sim_key, fake_txt.encode())
+  1904→
+  1905→    findings.append(_finding(
+  1906→        title="Simulation: DNS TXT Dead Drop",
+  1907→        severity="info",
+  1908→        category="dead_drop_simulation",
+  1909→        description=(
+  1910→            "Demonstrates how a covert message can be embedded in a DNS TXT "
+  1911→            "record disguised as an SPF record. The base64-encoded message is "
+  1912→            "appended to legitimate-looking SPF mechanisms. Most DNS monitoring "
+  1913→            "tools only check SPF syntax validity, not the semantic meaning of "
+  1914→            "individual tokens."
+  1915→        ),
+  1916→        evidence=(
+  1917→            f"Original message: {secret_message.decode()}\n"
+  1918→            f"Base64 encoded: {msg_b64}\n"
+  1919→            f"Fake TXT record:\n  {fake_txt}\n"
+  1920→            f"HMAC-SHA256 (verification): {txt_hmac}\n"
+  1921→            f"Channel capacity: ~255 bytes per TXT record\n"
+  1922→            f"Stealth score: {DEAD_DROP_SIGNATURES['dns_txt_dead_drop']['stealth_score']}/100"
+  1923→        ),
+  1924→        asset=target,
+  1925→    ))
+  1926→
+  1927→    # ── 8b. ETag Dead Drop Simulation ──
+  1928→    # Create an HMAC tag that looks like a legitimate ETag
+  1929→    etag_payload = secret_message + struct.pack(">I", int(time.time()))
+  1930→    etag_mac = hmac.new(sim_key, etag_payload, hashlib.sha256).digest()
+  1931→    etag_b64 = base64.b64encode(etag_mac).decode().rstrip("=")
+  1932→    fake_etag = f'"{etag_b64}"'
+  1933→
+  1934→    # Also simulate a hex-encoded encrypted ETag
+  1935→    etag_iv = hashlib.sha256(sim_key + b"iv-salt").hexdigest()[:32]
+  1936→    etag_cipher_hex = hashlib.sha256(secret_message + etag_iv.encode()).hexdigest()
+  1937→    fake_etag_hex = f'"{etag_cipher_hex[:40]}"'  # SHA-1 length appearance
+  1938→
+  1939→    findings.append(_finding(
+  1940→        title="Simulation: HTTP ETag Dead Drop",
+  1941→        severity="info",
+  1942→        category="dead_drop_simulation",
+  1943→        description=(
+  1944→            "Demonstrates how an ETag header can carry a covert HMAC tag. "
+  1945→            "The ETag contains an HMAC-SHA256 computed over the secret message "
+  1946→            "and a timestamp. Because ETags are opaque strings, this appears "
+  1947→            "as a normal cache validator to intermediaries."
+  1948→        ),
+  1949→        evidence=(
+  1950→            f"Payload: message + uint32 timestamp ({len(etag_payload)} bytes)\n"
+  1951→            f"HMAC-SHA256 (raw): {etag_mac.hex()}\n"
+  1952→            f"Fake ETag (base64url): {fake_etag}\n"
+  1953→            f"Fake ETag (hex/SHA-1-like): {fake_etag_hex}\n"
+  1954→            f"Channel capacity: ~128-512 bytes\n"
+  1955→            f"Stealth score: {DEAD_DROP_SIGNATURES['etag_dead_drop']['stealth_score']}/100"
+  1956→        ),
+  1957→        asset=target,
+  1958→    ))
+  1959→
+  1960→    # ── 8c. CT Subdomain Dead Drop Simulation ──
+  1961→    # Encode message as hex subdomain labels
+  1962→    msg_hex = secret_message.hex()
+  1963→    # Split into 63-char max labels (RFC 1035)
+  1964→    label_size = 32  # Use 32-char hex labels (16 bytes each)
+  1965→    hex_labels = [msg_hex[i:i+label_size] for i in range(0, len(msg_hex), label_size)]
+  1966→    fake_subdomain = ".".join(hex_labels) + f".{target}"
+  1967→
+  1968→    # Also demonstrate base32 encoding for subdomains
+  1969→    msg_b32 = base64.b32encode(secret_message).decode().rstrip("=")
+  1970→    b32_labels = [msg_b32[i:i+32] for i in range(0, len(msg_b32), 32)]
+  1971→    fake_b32_subdomain = ".".join(b32_labels) + f".cdn.{target}"
+  1972→
+  1973→    findings.append(_finding(
+  1974→        title="Simulation: Certificate Transparency Dead Drop",
+  1975→        severity="info",
+  1976→        category="dead_drop_simulation",
+  1977→        description=(
+  1978→            "Demonstrates how a message can be encoded in CT log subdomain "
+  1979→            "labels. By issuing a certificate for a subdomain whose labels "
+  1980→            "are hex/base32-encoded message fragments, data is permanently "
+  1981→            "recorded in globally replicated CT logs. Retrieval requires no "
+  1982→            "direct connection to the target."
+  1983→        ),
+  1984→        evidence=(
+  1985→            f"Original message: {secret_message.decode()}\n"
+  1986→            f"Hex encoded ({len(msg_hex)} chars): {msg_hex}\n"
+  1987→            f"Fake subdomain (hex): {fake_subdomain}\n"
+  1988→            f"Base32 encoded ({len(msg_b32)} chars): {msg_b32}\n"
+  1989→            f"Fake subdomain (base32): {fake_b32_subdomain}\n"
+  1990→            f"Channel capacity: ~63 bytes per label (RFC 1035)\n"
+  1991→            f"Stealth score: {DEAD_DROP_SIGNATURES['ct_log_dead_drop']['stealth_score']}/100"
+  1992→        ),
+  1993→        asset=target,
+  1994→    ))
+  1995→
+  1996→    # ── 8d. HTTP Header Combination Dead Drop Simulation ──
+  1997→    # Split the base64 message across multiple custom headers
+  1998→    chunk_size = 12
+  1999→    chunks = [msg_b64[i:i+chunk_size] for i in range(0, len(msg_b64), chunk_size)]
+  2000→    header_names = ["X-Request-Id", "X-Correlation-ID", "X-Trace-Id",
+
+[showing lines 1-2000 of 2225; use offset=2001 with limit to continue reading]

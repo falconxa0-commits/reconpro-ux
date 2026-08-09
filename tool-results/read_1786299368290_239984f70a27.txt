@@ -1,0 +1,2002 @@
+     1→"""SIGNAL_INTELLIGENCE module — Intelligence-community traffic analysis frameworks.
+     2→
+     3→ReconPro v9.2.0
+     4→
+     5→Applies intelligence-community analysis frameworks to HTTP traffic observed from
+     6→a target.  Eight analytical capabilities are layered on top of a series of
+     7→repeated HTTP probes:
+     8→
+     9→  1. Traffic Pattern Analysis      — request/response timing periodicity & jitter.
+    10→  2. Beaconing Detection             — C2 beacon fingerprinting (interval, size, jitter).
+    11→  3. C2 Pattern Matching             — known C2 framework fingerprints.
+    12→  4. Communication Schedule Extraction — maintenance windows, active hours.
+    13→  5. Payload Size Analysis           — encrypted-tunnel size indicators.
+    14→  6. User-Agent Fingerprinting       — automation, headless, C2 UA signatures.
+    15→  7. DNS-over-HTTP Pattern Analysis  — C2-via-DNS observed through HTTP.
+    16→  8. Session Behavior Profiling      — cookie, referrer, navigation chains.
+    17→
+    18→Pure stdlib — zero external dependencies.
+    19→"""
+    20→from __future__ import annotations
+    21→
+    22→import math
+    23→import re
+    24→import statistics
+    25→import time
+    26→import urllib.parse
+    27→from collections import Counter, OrderedDict
+    28→from typing import Any, Dict, List, Optional, Tuple
+    29→
+    30→from ..http import http_probe, Finding, default_limiter
+    31→
+    32→
+    33→# ═══════════════════════════════════════════════════════════════════════════
+    34→# C2_SIGNATURES DATABASE
+    35→# ═══════════════════════════════════════════════════════════════════════════
+    36→
+    37→C2_SIGNATURES: Dict[str, Dict[str, Any]] = {
+    38→    "cobalt_strike": {
+    39→        "name": "Cobalt Strike",
+    40→        "developer": "HelpSystems / Fortra",
+    41→        "description": (
+    42→            "Advanced adversary simulation framework. HTTP C2 beacons support "
+    43→            "GET/POST check-in with configurable jitter, Malleable C2 profiles "
+    44→            "for traffic shaping, and sleep mask obfuscation."
+    45→        ),
+    46→        "default_beacon_interval": 60,
+    47→        "default_jitter_pct": 0.37,
+    48→        "known_profiles": [
+    49→            "amazon", "azure", "getchelp", "google",
+    50→            "maestro", "postman", "safari", "slack",
+    51→        ],
+    52→        "header_indicators": {
+    53→            "Cookie": r"session=[a-f0-9]{32}",
+    54→            "User-Agent": r"(Mozilla/5\.0 \(Windows NT.*Trident/7\.0|Mozilla/4\.0 \(compatible; MSIE.*\))",
+    55→        },
+    56→        "uri_patterns": [
+    57→            r"/[a-z]{4,8}\.(asp|aspx|php|js|css)",   # malleable profile URIs
+    58→            r"/pixel\.(gif|png|jpg)",
+    59→            r"/jquery-[\d.]+\.min\.js",
+    60→            r"/favicon\.(ico|png)",
+    61→        ],
+    62→        "response_size_range": (0, 4096),
+    63→        "request_size_range": (0, 8192),
+    64→        "dread_score": 9.0,
+    65→        "severity": "critical",
+    66→        "mitre_attack": ["T1071.001", "T1105", "T1573.001"],
+    67→    },
+    68→    "metasploit": {
+    69→        "name": "Metasploit Framework",
+    70→        "developer": "Rapid7 / Offensive Security",
+    71→        "description": (
+    72→            "Penetration testing framework with multiple HTTP-based payload "
+    73→            "stagers (reverse_http, reverse_https). Traffic often includes "
+    74→            "Base64-encoded stager URLs and predictable URI patterns."
+    75→        ),
+    76→        "default_beacon_interval": 5,
+    77→        "default_jitter_pct": 0.0,
+    78→        "known_payloads": [
+    79→            "reverse_http", "reverse_https", "bind_tcp",
+    80→            "meterpreter/reverse_tcp", "meterpreter/reverse_https",
+    81→        ],
+    82→        "header_indicators": {
+    83→            "Content-Type": r"application/octet-stream",
+    84→            "User-Agent": r"(Mozilla/4\.0|Lynx/|Wget/|curl/)",
+    85→        },
+    86→        "uri_patterns": [
+    87→            r"/[A-Za-z0-9+/]{16,}={0,2}",  # base64 stager URI
+    88→            r"/initializ[e]d",                         # meterpreter
+    89→            r"/\\x[0-9a-fA-F]{2}",                    # hex-encoded path
+    90→            r"/DLL_?\d+",                              # DLL staging
+    91→        ],
+    92→        "response_size_range": (0, 65536),
+    93→        "request_size_range": (0, 4096),
+    94→        "dread_score": 8.5,
+    95→        "severity": "critical",
+    96→        "mitre_attack": ["T1071.001", "T1059.003", "T1132.001"],
+    97→    },
+    98→    "empire": {
+    99→        "name": "Empire / Starkiller",
+   100→        "developer": "BC Security",
+   101→        "description": (
+   102→            "Post-exploitation framework with PowerShell/Python agents. "
+   103→            "HTTP C2 uses RESTful-style API calls with JSON payloads. "
+   104→            "Common check-in paths: /news.php, /login/process.php."
+   105→        ),
+   106→        "default_beacon_interval": 5,
+   107→        "default_jitter_pct": 0.2,
+   108→        "known_profiles": ["default", "redirector", "hop"],
+   109→        "header_indicators": {
+   110→            "Cookie": r"SESSIONID=[a-f0-9]{32,}",
+   111→            "Content-Type": r"application/json",
+   112→        },
+   113→        "uri_patterns": [
+   114→            r"/news\.php$",
+   115→            r"/login/process\.php$",
+   116→            r"/index\.php\?",
+   117→            r"/wp-admin/admin-ajax\.php",
+   118→        ],
+   119→        "response_size_range": (64, 16384),
+   120→        "request_size_range": (32, 8192),
+   121→        "dread_score": 8.0,
+   122→        "severity": "high",
+   123→        "mitre_attack": ["T1059.001", "T1071.001", "T1105"],
+   124→    },
+   125→    "covenant": {
+   126→        "name": "Covenant",
+   127→        "developer": "Cobalt Strike (community) / ropnop",
+   128→        "description": (
+   129→            ".NET C2 framework with HTTP/S listeners. Uses GUID-based "
+   130→            "reference IDs in URIs and headers. Grunt agents communicate via "
+   131→            "RESTful endpoints with JSON bodies."
+   132→        ),
+   133→        "default_beacon_interval": 5,
+   134→        "default_jitter_pct": 0.2,
+   135→        "known_profiles": ["default", "https-profile"],
+   136→        "header_indicators": {
+   137→            "Cookie": r"covenant=[a-f0-9-]{36}",
+   138→            "Content-Type": r"application/json",
+   139→        },
+   140→        "uri_patterns": [
+   141→            r"/api/covenant/[a-f0-9-]{36}",  # GUID-based paths
+   142→            r"/api/grunt/[a-f0-9-]{36}",
+   143→            r"/covenant/health",
+   144→        ],
+   145→        "response_size_range": (0, 8192),
+   146→        "request_size_range": (0, 8192),
+   147→        "dread_score": 7.5,
+   148→        "severity": "high",
+   149→        "mitre_attack": ["T1071.001", "T1021.007", "T1105"],
+   150→    },
+   151→    "sliver": {
+   152→        "name": "Sliver C2",
+   153→        "developer": "Bishop Fox",
+   154→        "description": (
+   155→            "Open-source C2 framework. HTTP(S) C2 uses mTLS and "
+   156→            "WireGuard tunnels. HTTP beacons may use .well-known paths "
+   157→            "and content-type sniffing avoidance."
+   158→        ),
+   159→        "default_beacon_interval": 10,
+   160→        "default_jitter_pct": 0.3,
+   161→        "known_profiles": ["default", "canary", "wireguard"],
+   162→        "header_indicators": {
+   163→            "Content-Type": r"application/octet-stream",
+   164→            "Sliver": r"[a-f0-9-]{36}",
+   165→        },
+   166→        "uri_patterns": [
+   167→            r"/\.well-known/[a-z]+",
+   168→            r"/wp-json/[a-z]+",
+   169→        ],
+   170→        "response_size_range": (0, 32768),
+   171→        "request_size_range": (0, 65536),
+   172→        "dread_score": 7.5,
+   173→        "severity": "high",
+   174→        "mitre_attack": ["T1071.001", "T1090.004", "T1573.001"],
+   175→    },
+   176→    "brute_ratel": {
+   177→        "name": "Brute Ratel",
+   178→        "developer": "Pentest Laboratories",
+   179→        "description": (
+   180→            "Advanced C2 with heavy focus on OPSEC. Uses HTTP/S with "
+   181→            "legitimate CDN-fronted domains. Hard to detect via signatures "
+   182→            "alone; identified primarily through behavioral analysis."
+   183→        ),
+   184→        "default_beacon_interval": 30,
+   185→        "default_jitter_pct": 0.25,
+   186→        "known_profiles": ["badger", "cdn-profile"],
+   187→        "header_indicators": {
+   188→            "Content-Type": r"application/octet-stream",
+   189→        },
+   190→        "uri_patterns": [
+   191→            r"/js/[a-f0-9]{8}\.js",
+   192→            r"/css/[a-f0-9]{8}\.css",
+   193→        ],
+   194→        "response_size_range": (0, 4096),
+   195→        "request_size_range": (0, 4096),
+   196→        "dread_score": 8.0,
+   197→        "severity": "critical",
+   198→        "mitre_attack": ["T1071.001", "T1071.004", "T1105"],
+   199→    },
+   200→    "havoc": {
+   201→        "name": "Havoc Framework",
+   202→        "developer": "C5pider",
+   203→        "description": (
+   204→            "Modern C2 framework with HTTP/S and SMB beacons. Uses "
+   205→            "custom binary protocol over HTTP with structured headers. "
+   206→            "Demon agents support user-defined profiles."
+   207→        ),
+   208→        "default_beacon_interval": 10,
+   209→        "default_jitter_pct": 0.2,
+   210→        "known_profiles": ["default", "stealth"],
+   211→        "header_indicators": {
+   212→            "Content-Type": r"application/octet-stream",
+   213→            "X-Havoc": r"[a-zA-Z0-9+/=]+",
+   214→        },
+   215→        "uri_patterns": [
+   216→            r"/demo/[a-z]+",
+   217→            r"/api/v[0-9]+/[a-z]+",
+   218→        ],
+   219→        "response_size_range": (0, 16384),
+   220→        "request_size_range": (0, 8192),
+   221→        "dread_score": 7.5,
+   222→        "severity": "high",
+   223→        "mitre_attack": ["T1071.001", "T1059.001", "T1105"],
+   224→    },
+   225→    "mythic": {
+   226→        "name": "Mythic C2",
+   227→        "developer": "ITSecTeam / Community",
+   228→        "description": (
+   229→            "Extensible C2 framework supporting multiple agent types. "
+   230→            "HTTP C2 uses customizable routing with JWT-style tokens "
+   231→            "and JSON-based tasking."
+   232→        ),
+   233→        "default_beacon_interval": 10,
+   234→        "default_jitter_pct": 0.3,
+   235→        "known_profiles": ["http", "dynamic-http"],
+   236→        "header_indicators": {
+   237→            "Authorization": r"Bearer [a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+",
+   238→            "Content-Type": r"application/json",
+   239→        },
+   240→        "uri_patterns": [
+   241→            r"/api/v[0-9]+/",
+   242→            r"/mythic/",
+   243→        ],
+   244→        "response_size_range": (0, 16384),
+   245→        "request_size_range": (0, 8192),
+   246→        "dread_score": 7.0,
+   247→        "severity": "high",
+   248→        "mitre_attack": ["T1071.001", "T1132.001", "T1105"],
+   249→    },
+   250→}
+   251→
+   252→
+   253→# ═══════════════════════════════════════════════════════════════════════════
+   254→# BEACON_PATTERNS DATABASE
+   255→# ═══════════════════════════════════════════════════════════════════════════
+   256→
+   257→BEACON_PATTERNS: Dict[str, Dict[str, Any]] = {
+   258→    "regular_interval": {
+   259→        "name": "Regular Interval Beacon",
+   260→        "description": (
+   261→            "Classic beaconing with fixed interval between check-ins. "
+   262→            "Common in basic C2 implementations without jitter."" "
+   263→            "Indicates unsophisticated or misconfigured C2 agent."
+   264→        ),
+   265→        "detection_criteria": {
+   266→            "cv_threshold": 0.15,        # coefficient of variation
+   267→            "min_samples": 4,
+   268→            "typical_intervals": [1, 5, 10, 30, 60, 120, 300, 600],
+   269→        },
+   270→        "dread_score": 7.0,
+   271→        "severity": "high",
+   272→    },
+   273→    "jittered_beacon": {
+   274→        "name": "Jittered Beacon",
+   275→        "description": (
+   276→            "Beacon with randomized timing to evade statistical detection. "
+   277→            "Observed intervals cluster around a base with controlled variance. "
+   278→            "Common in Cobalt Strike, Sliver, and similar frameworks."
+   279→        ),
+   280→        "detection_criteria": {
+   281→            "cv_min": 0.15,
+   282→            "cv_max": 0.60,
+   283→            "min_samples": 6,
+   284→            "jitter_pct_range": (0.10, 0.50),
+   285→        },
+   286→        "dread_score": 8.0,
+   287→        "severity": "critical",
+   288→    },
+   289→    "high_jitter_beacon": {
+   290→        "name": "High-Jitter Beacon",
+   291→        "description": (
+   292→            "Beacon with very high jitter (50%+), making it harder to "
+   293→            "distinguish from legitimate traffic. Often used by advanced C2 "
+   294→            "frameworks with strong OPSEC. Requires behavioral baselining."
+   295→        ),
+   296→        "detection_criteria": {
+   297→            "cv_min": 0.50,
+   298→            "cv_max": 1.0,
+   299→            "min_samples": 8,
+   300→            "jitter_pct_range": (0.50, 0.80),
+   301→        },
+   302→        "dread_score": 8.5,
+   303→        "severity": "critical",
+   304→    },
+   305→    "small_payload_beacon": {
+   306→        "name": "Small Payload Beacon",
+   307→        "description": (
+   308→            "Beacon characterized by consistently small request/response sizes. "
+   309→            "Indicates heartbeat check-ins with minimal data exchange, "
+   310→            "typical of idle C2 agents awaiting tasking."
+   311→        ),
+   312→        "detection_criteria": {
+   313→            "max_response_bytes": 512,
+   314→            "max_request_bytes": 256,
+   315→            "size_cv_threshold": 0.30,
+   316→            "min_samples": 4,
+   317→        },
+   318→        "dread_score": 6.5,
+   319→        "severity": "medium",
+   320→    },
+   321→    "consistent_response_size": {
+   322→        "name": "Consistent Response Size Beacon",
+   323→        "description": (
+   324→            "Beacon where response sizes are nearly identical across "
+   325→            "check-ins. Suggests a fixed-format 'no-task' acknowledgment "
+   326→            "from the C2 server. Strong indicator of automated communication."
+   327→        ),
+   328→        "detection_criteria": {
+   329→            "response_size_cv_threshold": 0.10,
+   330→            "min_samples": 5,
+   331→        },
+   332→        "dread_score": 7.0,
+   333→        "severity": "high",
+   334→    },
+   335→    "exponential_backoff": {
+   336→        "name": "Exponential Backoff Beacon",
+   337→        "description": (
+   338→            "Beacon that increases interval exponentially after failed "
+   339→            "check-ins, then resets. Used for resilience in contested "
+   340→            "networks. Pattern: short → medium → long → reset."
+   341→        ),
+   342→        "detection_criteria": {
+   343→            "growth_factor_min": 1.5,
+   344→            "growth_factor_max": 4.0,
+   345→            "min_sequence_length": 3,
+   346→            "tolerance_pct": 0.25,
+   347→        },
+   348→        "dread_score": 7.5,
+   349→        "severity": "high",
+   350→    },
+   351→    "time_diverse_beacon": {
+   352→        "name": "Time-Diverse Beacon",
+   353→        "description": (
+   354→            "Beacon that varies interval based on time of day or day of week. "
+   355→            "Mimics human activity patterns — shorter intervals during "
+   356→            "business hours, longer at night. Sophisticated OPSEC measure."
+   357→        ),
+   358→        "detection_criteria": {
+   359→            "min_hour_variance": 0.3,   # stddev of intervals per hour block
+   360→            "min_samples_per_hour": 2,
+   361→            "active_hours": (8, 20),     # expected human active window
+   362→        },
+   363→        "dread_score": 8.5,
+   364→        "severity": "critical",
+   365→    },
+   366→}
+   367→
+   368→
+   369→# ═══════════════════════════════════════════════════════════════════════════
+   370→# AUTOMATION_UA_SIGNATURES DATABASE
+   371→# ═══════════════════════════════════════════════════════════════════════════
+   372→
+   373→AUTOMATION_UA_SIGNATURES: Dict[str, Dict[str, Any]] = {
+   374→    "headless_browser": {
+   375→        "name": "Headless Browser",
+   376→        "category": "automation",
+   377→        "indicators": [
+   378→            r"HeadlessChrome",
+   379→            r"headless",
+   380→            r"PhantomJS",
+   381→            r"selenium",
+   382→            r"Selenium",
+   383→            r"webdriver",
+   384→            r"WebDriver",
+   385→            r"puppeteer",
+   386→            r"Puppeteer",
+   387→            r"playwright",
+   388→            r"Playwright",
+   389→        ],
+   390→        "stealth_score": 30,      # easily detected
+   391→        "dread_score": 5.0,
+   392→        "severity": "medium",
+   393→        "description": (
+   394→            "Headless browsers used for automated web interaction, "
+   395→            "scraping, or C2 browsing proxy. Presence indicates automated "
+   396→            "tooling rather than human users."
+   397→        ),
+   398→    },
+   399→    "http_library": {
+   400→        "name": "HTTP Client Library",
+   401→        "category": "automation",
+   402→        "indicators": [
+   403→            r"^python-requests",
+   404→            r"^requests/",
+   405→            r"^axios/",
+   406→            r"^node-fetch",
+   407→            r"^Java/",
+   408→            r"^Apache-HttpClient",
+   409→            r"^okhttp",
+   410→            r"^Go-http-client",
+   411→            r"^curl/",
+   412→            r"^Wget/",
+   413→            r"^libwww",
+   414→            r"^http\.client",
+   415→            r"^Java\/1\.",
+   416→        ],
+   417→        "stealth_score": 50,
+   418→        "dread_score": 5.5,
+   419→        "severity": "medium",
+   420→        "description": (
+   421→            "Standard HTTP client libraries typically indicate programmatic "
+   422→            "access. While common in legitimate APIs, they are unusual for "
+   423→            "interactive web browsing and may signal automated reconnaissance."
+   424→        ),
+   425→    },
+   426→    "c2_agent": {
+   427→        "name": "C2 Agent User-Agent",
+   428→        "category": "malicious",
+   429→        "indicators": [
+   430→            r"^Mozilla/4\.0 \(compatible; MSIE [67]\.0",
+   431→            r"^Mozilla/5\.0 \(Windows NT 6\.1; Trident/7\.0",
+   432→            r"^Mozilla/5\.0 \(compatible; MSIE 10\.0",
+   433→            r"^Microsoft-CryptoAPI",
+   434→            r"^Windows-PowerShell",
+   435→            r"^PowerShell",
+   436→            r"^WinHTTP",
+   437→            r"^Microsoft-WebApplication",
+   438→        ],
+   439→        "stealth_score": 70,
+   440→        "dread_score": 8.0,
+   441→        "severity": "high",
+   442→        "description": (
+   443→            "User-Agent strings commonly associated with C2 agents. These "
+   444→            "often mimic legacy Windows software to blend with corporate "
+   445→            "traffic, but the specific UA versions and formats are telltale."
+   446→        ),
+   447→    },
+   448→    "scraping_tool": {
+   449→        "name": "Web Scraping Tool",
+   450→        "category": "automation",
+   451→        "indicators": [
+   452→            r"^scrapy",
+   453→            r"^Scrapy",
+   454→            r"^beautifulsoup",
+   455→            r"^mechanize",
+   456→            r"^HTTrack",
+   457→            r"^wget",
+   458→            r"^curl",
+   459→            r"^lwp-trivial",
+   460→            r"^AhrefsBot",
+   461→            r"^MJ12bot",
+   462→            r"^SemrushBot",
+   463→            r"^DotBot",
+   464→        ],
+   465→        "stealth_score": 20,
+   466→        "dread_score": 4.0,
+   467→        "severity": "low",
+   468→        "description": (
+   469→            "Known web scraping and crawling tools. These may indicate "
+   470→            "OSINT gathering, competitive intelligence, or data harvesting. "
+   471→            "Low individual risk but may contribute to broader attack pattern."
+   472→        ),
+   473→    },
+   474→    "vulnerability_scanner": {
+   475→        "name": "Vulnerability Scanner",
+   476→        "category": "recon",
+   477→        "indicators": [
+   478→            r"^Nikto",
+   479→            r"^nmap",
+   480→            r"^Nessus",
+   481→            r"^OpenVAS",
+   482→            r"^WPScan",
+   483→            r"^sqlmap",
+   484→            r"^DirBuster",
+   485→            r"^Gobuster",
+   486→            r"^ZAP",
+   487→            r"^BurpSuite",
+   488→            r"^Acunetix",
+   489→            r"^Nuclei",
+   490→            r"^ReconPro",
+   491→        ],
+   492→        "stealth_score": 10,
+   493→        "dread_score": 6.0,
+   494→        "severity": "medium",
+   495→        "description": (
+   496→            "Known security scanning tools detected in User-Agent. "
+   497→            "Indicates active vulnerability assessment or attack "
+   498→            "reconnaissance targeting the asset."
+   499→        ),
+   500→    },
+   501→    "suspicious_generic": {
+   502→        "name": "Suspicious Generic UA",
+   503→        "category": "anomaly",
+   504→        "indicators": [
+   505→            r"^Mozilla/5\.0$",
+   506→            r"^Mozilla/4\.0$",
+   507→            r"^$",                                 # empty UA
+   508→            r"^-?$",
+   509→            r"^\s+$",
+   510→            r"^\{.*\}$",                        # JSON in UA
+   511→            r"^[a-f0-9]{32,}$",                  # hex hash as UA
+   512→            r"^[A-Za-z0-9+/=]{20,}$",            # base64 as UA
+   513→        ],
+   514→        "stealth_score": 80,
+   515→        "dread_score": 7.0,
+   516→        "severity": "high",
+   517→        "description": (
+   518→            "User-Agent strings that are empty, generic, or contain "
+   519→            "encoded data. These are strong indicators of custom tools, "
+   520→            "malware, or C2 agents that do not properly impersonate browsers."
+   521→        ),
+   522→    },
+   523→    "mobile_automation": {
+   524→        "name": "Mobile Automation Framework",
+   525→        "category": "automation",
+   526→        "indicators": [
+   527→            r"^Appium",
+   528→            r"^Calabash",
+   529→            r"^Dalvik",
+   530→            r"^Android.*Dalvik",
+   531→            r"^CFNetwork.*Dalvik",
+   532→        ],
+   533→        "stealth_score": 35,
+   534→        "dread_score": 4.5,
+   535→        "severity": "low",
+   536→        "description": (
+   537→            "Mobile automation frameworks that may indicate app security "
+   538→            "testing or automated mobile C2 channels."
+   539→        ),
+   540→    },
+   541→}
+   542→
+   543→
+   544→# ═══════════════════════════════════════════════════════════════════════════
+   545→# INTERNAL DATA STRUCTURES
+   546→# ═══════════════════════════════════════════════════════════════════════════
+   547→
+   548→# A single timed probe result.
+   549→ProbeSample = Dict[str, Any]
+   550→
+   551→# Paths to probe for traffic observation.
+   552→_OBSERVATION_PATHS: List[str] = [
+   553→    "/",
+   554→    "/index.html",
+   555→    "/robots.txt",
+   556→    "/favicon.ico",
+   557→    "/sitemap.xml",
+   558→    "/health",
+   559→    "/api/",
+   560→    "/.well-known/",
+   561→]
+   562→
+   563→# Number of probe rounds for timing analysis.
+   564→_PROBE_ROUNDS: int = 8
+   565→
+   566→
+   567→# ═══════════════════════════════════════════════════════════════════════════
+   568→# UTILITY FUNCTIONS
+   569→# ═══════════════════════════════════════════════════════════════════════════
+   570→
+   571→def _shannon_entropy(data: str) -> float:
+   572→    """Compute Shannon entropy of a string in bits."""
+   573→    if not data:
+   574→        return 0.0
+   575→    freq: Counter = Counter(data)
+   576→    length = len(data)
+   577→    return -sum(
+   578→        (count / length) * math.log2(count / length)
+   579→        for count in freq.values()
+   580→    )
+   581→
+   582→
+   583→def _coefficient_of_variation(values: List[float]) -> Optional[float]:
+   584→    """CV = stddev / mean.  Returns None if mean is zero or insufficient data."""
+   585→    if len(values) < 2:
+   586→        return None
+   587→    m = statistics.mean(values)
+   588→    if m == 0:
+   589→        return None
+   590→    return statistics.stdev(values) / m
+   591→
+   592→
+   593→def _detect_periodicity(values: List[float]) -> Optional[Dict[str, Any]]:
+   594→    """Simple autocorrelation-based periodicity detection.
+   595→
+   596→    Returns dict with 'period', 'confidence', 'mean_interval' or None.
+   597→    """
+   598→    n = len(values)
+   599→    if n < 4:
+   600→        return None
+   601→
+   602→    mean_val = statistics.mean(values)
+   603→    if mean_val == 0:
+   604→        return None
+   605→
+   606→    centered = [v - mean_val for v in values]
+   607→    variance = sum(c * c for c in centered) / n
+   608→    if variance == 0:
+   609→        return None
+   610→
+   611→    best_lag = 0
+   612→    best_corr = 0.0
+   613→
+   614→    for lag in range(1, n // 2):
+   615→        corr_sum = sum(centered[i] * centered[i + lag] for i in range(n - lag))
+   616→        corr = corr_sum / ((n - lag) * variance)
+   617→        if corr > best_corr:
+   618→            best_corr = corr
+   619→            best_lag = lag
+   620→
+   621→    if best_corr < 0.4 or best_lag == 0:
+   622→        return None
+   623→
+   624→    period_values = [values[i] for i in range(0, n, best_lag) if i < n]
+   625→    if len(period_values) < 2:
+   626→        return None
+   627→
+   628→    return {
+   629→        "period": best_lag,
+   630→        "confidence": round(best_corr, 3),
+   631→        "mean_interval": round(statistics.mean(values), 4),
+   632→        "period_mean": round(statistics.mean(period_values), 4),
+   633→    }
+   634→
+   635→
+   636→def _rounds_to_seconds_estimate(rounds: int) -> float:
+   637→    """Estimate the observation window in seconds (rough timing)."""
+   638→    # Each round has _PROBE_ROUNDS probes with rate limiter delays.
+   639→    return rounds * _PROBE_ROUNDS * 0.15
+   640→
+   641→
+   642→# ═══════════════════════════════════════════════════════════════════════════
+   643→# 1. TRAFFIC PATTERN ANALYSIS
+   644→# ═══════════════════════════════════════════════════════════════════════════
+   645→
+   646→def _analyze_traffic_patterns(
+   647→    samples: List[ProbeSample], target: str, base_url: str
+   648→) -> List[Finding]:
+   649→    """Analyze request/response timing patterns for periodicity, jitter, and
+   650→    communication schedules.
+   651→    """
+   652→    findings: List[Finding] = []
+   653→
+   654→    if len(samples) < 3:
+   655→        return findings
+   656→
+   657→    # Extract timing data
+   658→    response_times: List[float] = [s["response_time"] for s in samples if s.get("ok")]
+   659→    intervals: List[float] = []
+   660→    for i in range(1, len(samples)):
+   661→        dt = samples[i]["timestamp"] - samples[i - 1]["timestamp"]
+   662→        if dt > 0:
+   663→            intervals.append(dt)
+   664→
+   665→    if not intervals:
+   666→        return findings
+   667→
+   668→    mean_interval = statistics.mean(intervals)
+   669→    cv = _coefficient_of_variation(intervals)
+   670→    periodicity = _detect_periodicity(intervals)
+   671→
+   672→    # Build evidence
+   673→    evidence_parts = [
+   674→        f"Samples collected: {len(samples)}",
+   675→        f"Successful probes: {len(response_times)}",
+   676→        f"Mean interval: {mean_interval:.3f}s",
+   677→    ]
+   678→    if cv is not None:
+   679→        evidence_parts.append(f"Interval CV: {cv:.4f}")
+   680→    if response_times:
+   681→        evidence_parts.append(
+   682→            f"Mean response time: {statistics.mean(response_times):.3f}s"
+   683→        )
+   684→    if periodicity:
+   685→        evidence_parts.append(
+   686→            f"Period detected: every {periodicity['period']} samples "
+   687→            f"(confidence: {periodicity['confidence']})"
+   688→        )
+   689→
+   690→    evidence = "\n".join(evidence_parts)
+   691→
+   692→    # Detect low-jitter pattern (potential beacon)
+   693→    if cv is not None and cv < 0.15:
+   694→        findings.append(Finding(
+   695→            title="Low-Jitter Timing Pattern Detected",
+   696→            severity="high",
+   697→            category="signal_timing",
+   698→            module="signal_intelligence",
+   699→            description=(
+   700→                f"HTTP responses from {target} show unusually consistent timing "
+   701→                f"(CV={cv:.4f}). Low jitter in response intervals can indicate "
+   702→                f"automated service endpoints, scheduled tasks, or potential C2 "
+   703→                f"beaconing infrastructure. The mean interval of {mean_interval:.3f}s "
+   704→                f"suggests {mean_interval:.1f}s periodicity."
+   705→            ),
+   706→            evidence=evidence,
+   707→            asset=base_url,
+   708→            points_deducted=5,
+   709→            dread_score=6.5,
+   710→            remediation=(
+   711→                "Investigate the endpoint for scheduled task configuration. "
+   712→                "Compare timing patterns against known C2 beacon intervals. "
+   713→                "Implement timing-based anomaly detection in network monitoring."
+   714→            ),
+   715→        ))
+   716→    elif cv is not None and cv > 0.8:
+   717→        findings.append(Finding(
+   718→            title="High-Variance Timing Pattern",
+   719→            severity="low",
+   720→            category="signal_timing",
+   721→            module="signal_intelligence",
+   722→            description=(
+   723→                f"HTTP response timing from {target} shows high variability "
+   724→                f"(CV={cv:.4f}). This could indicate load balancing, caching "
+   725→                f"layers, or adaptive rate limiting. While not directly malicious, "
+   726→                f"high variance complicates beacon detection and may mask "
+   727→                f"underlying periodic communications."
+   728→            ),
+   729→            evidence=evidence,
+   730→            asset=base_url,
+   731→            points_deducted=1,
+   732→            dread_score=3.0,
+   733→            remediation=(
+   734→                "Baseline normal timing variance for this service. "
+   735→                "Use longer observation windows to detect periodicity "
+   736→                f"within high-variance traffic."
+   737→            ),
+   738→        ))
+   739→
+   740→    # Periodicity finding
+   741→    if periodicity and periodicity["confidence"] > 0.6:
+   742→        findings.append(Finding(
+   743→            title="Significant Communication Periodicity Detected",
+   744→            severity="medium",
+   745→            category="signal_periodicity",
+   746→            module="signal_intelligence",
+   747→            description=(
+   748→                f"Autocorrelation analysis detected a periodic pattern in HTTP "
+   749→                f"traffic to/from {target}. Period: every {periodicity['period']} "
+   750→                f"samples (confidence: {periodicity['confidence']}). "
+   751→                f"Mean interval: {periodicity['mean_interval']}s. Periodic "
+   752→                f"communication patterns are a hallmark of C2 beacons, "
+   753→                f"scheduled data exfiltration, and automated reconnaissance."
+   754→            ),
+   755→            evidence=evidence,
+   756→            asset=base_url,
+   757→            points_deducted=3,
+   758→            dread_score=6.0,
+   759→            remediation=(
+   760→                "Correlate detected period with known C2 default intervals. "
+   761→                "Investigate what service or process triggers periodic HTTP "
+   762→                "requests. Deploy behavioral analytics to flag repeated patterns."
+   763→            ),
+   764→        ))
+   765→
+   766→    return findings
+   767→
+   768→
+   769→# ═══════════════════════════════════════════════════════════════════════════
+   770→# 2. BEACONING DETECTION
+   771→# ═══════════════════════════════════════════════════════════════════════════
+   772→
+   773→def _detect_beaconing(
+   774→    samples: List[ProbeSample], target: str, base_url: str
+   775→) -> List[Finding]:
+   776→    """Detect C2 beaconing patterns: regular intervals, small payloads,
+   777→    consistent timing with jitter.
+   778→    """
+   779→    findings: List[Finding] = []
+   780→    ok_samples = [s for s in samples if s.get("ok")]
+   781→
+   782→    if len(ok_samples) < BEACON_PATTERNS["regular_interval"]["detection_criteria"]["min_samples"]:
+   783→        return findings
+   784→
+   785→    intervals: List[float] = []
+   786→    for i in range(1, len(ok_samples)):
+   787→        dt = ok_samples[i]["timestamp"] - ok_samples[i - 1]["timestamp"]
+   788→        if dt > 0:
+   789→            intervals.append(dt)
+   790→
+   791→    if not intervals:
+   792→        return findings
+   793→
+   794→    cv = _coefficient_of_variation(intervals)
+   795→    mean_interval = statistics.mean(intervals)
+   796→    resp_sizes: List[int] = [s["response_size"] for s in ok_samples]
+   797→    req_sizes: List[int] = [s["request_size"] for s in ok_samples]
+   798→
+   799→    matched_beacons: List[str] = []
+   800→    evidence_parts: List[str] = [
+   801→        f"Successful samples: {len(ok_samples)}",
+   802→        f"Mean interval: {mean_interval:.3f}s",
+   803→    ]
+   804→    if cv is not None:
+   805→        evidence_parts.append(f"Interval CV: {cv:.4f}")
+   806→    evidence_parts.append(
+   807→        f"Response sizes: min={min(resp_sizes) if resp_sizes else 0}, "
+   808→        f"max={max(resp_sizes) if resp_sizes else 0}, "
+   809→        f"mean={statistics.mean(resp_sizes) if resp_sizes else 0:.0f}"
+   810→    )
+   811→
+   812→    # Check against beacon patterns
+   813→    # Regular interval beacon
+   814→    criteria = BEACON_PATTERNS["regular_interval"]["detection_criteria"]
+   815→    if cv is not None and cv < criteria["cv_threshold"]:
+   816→        # Check if interval matches known beacon intervals
+   817→        nearest_known = min(
+   818→            criteria["typical_intervals"],
+   819→            key=lambda t: abs(t - mean_interval),
+   820→        )
+   821→        if abs(nearest_known - mean_interval) / max(nearest_known, 1) < 0.30:
+   822→            matched_beacons.append("regular_interval")
+   823→            evidence_parts.append(
+   824→                f"MATCH: Regular interval ~{nearest_known}s beacon "
+   825→                f"(actual: {mean_interval:.2f}s, deviation: "
+   826→                f"{abs(nearest_known - mean_interval):.2f}s)"
+   827→            )
+   828→
+   829→    # Jittered beacon
+   830→    criteria_j = BEACON_PATTERNS["jittered_beacon"]["detection_criteria"]
+   831→    if (cv is not None
+   832→            and criteria_j["cv_min"] <= cv <= criteria_j["cv_max"]):
+   833→        matched_beacons.append("jittered_beacon")
+   834→        evidence_parts.append(
+   835→            f"MATCH: Jittered beacon (CV={cv:.4f} within "
+   836→            f"[{criteria_j['cv_min']}, {criteria_j['cv_max']}])"
+   837→        )
+   838→
+   839→    # High-jitter beacon
+   840→    criteria_hj = BEACON_PATTERNS["high_jitter_beacon"]["detection_criteria"]
+   841→    if (cv is not None
+   842→            and criteria_hj["cv_min"] <= cv <= criteria_hj["cv_max"]):
+   843→        matched_beacons.append("high_jitter_beacon")
+   844→        evidence_parts.append(
+   845→            f"MATCH: High-jitter beacon (CV={cv:.4f} within "
+   846→            f"[{criteria_hj['cv_min']}, {criteria_hj['cv_max']}])"
+   847→        )
+   848→
+   849→    # Small payload beacon
+   850→    criteria_sp = BEACON_PATTERNS["small_payload_beacon"]["detection_criteria"]
+   851→    if (len(resp_sizes) >= criteria_sp["min_samples"]
+   852→            and max(resp_sizes) <= criteria_sp["max_response_bytes"]):
+   853→        matched_beacons.append("small_payload_beacon")
+   854→        evidence_parts.append(
+   855→            f"MATCH: Small payload beacon (max response: {max(resp_sizes)}B "
+   856→            f"<= {criteria_sp['max_response_bytes']}B)"
+   857→        )
+   858→
+   859→    # Consistent response size beacon
+   860→    criteria_cr = BEACON_PATTERNS["consistent_response_size"]["detection_criteria"]
+   861→    if len(resp_sizes) >= criteria_cr["min_samples"]:
+   862→        resp_cv = _coefficient_of_variation([float(s) for s in resp_sizes])
+   863→        if resp_cv is not None and resp_cv < criteria_cr["response_size_cv_threshold"]:
+   864→            matched_beacons.append("consistent_response_size")
+   865→            evidence_parts.append(
+   866→                f"MATCH: Consistent response size (CV={resp_cv:.4f})"
+   867→            )
+   868→
+   869→    # Generate findings for matched beacons
+   870→    for beacon_key in matched_beacons:
+   871→        pattern = BEACON_PATTERNS[beacon_key]
+   872→        findings.append(Finding(
+   873→            title=f"Beacon Pattern Detected: {pattern['name']}",
+   874→            severity=pattern["severity"],
+   875→            category="beacon_detection",
+   876→            module="signal_intelligence",
+   877→            description=(
+   878→                f"{pattern['description']} Observed on {target} with "
+   879→                f"mean interval {mean_interval:.3f}s, CV={cv:.4f if cv else 'N/A'}. "
+   880→                f"This pattern is consistent with automated C2 communication."
+   881→            ),
+   882→            evidence="\n".join(evidence_parts),
+   883→            asset=base_url,
+   884→            points_deducted=8 if pattern["severity"] in ("critical", "high") else 3,
+   885→            dread_score=pattern["dread_score"],
+   886→            remediation=(
+   887→                "Isolate and analyze the communication endpoint. Correlate with "
+   888→                "endpoint process information. Implement beacon detection rules in "
+   889→                "SIEM. Block or rate-limit the endpoint if confirmed malicious."
+   890→            ),
+   891→        ))
+   892→
+   893→    return findings
+   894→
+   895→
+   896→# ═══════════════════════════════════════════════════════════════════════════
+   897→# 3. C2 PATTERN MATCHING
+   898→# ═══════════════════════════════════════════════════════════════════════════
+   899→
+   900→def _match_c2_patterns(
+   901→    samples: List[ProbeSample], target: str, base_url: str
+   902→) -> List[Finding]:
+   903→    """Match observed communication patterns against known C2 frameworks.
+   904→    """
+   905→    findings: List[Finding] = []
+   906→    ok_samples = [s for s in samples if s.get("ok")]
+   907→
+   908→    if not ok_samples:
+   909→        return findings
+   910→
+   911→    # Collect all observed response headers and body content
+   912→    observed_headers: Dict[str, List[str]] = {}
+   913→    observed_bodies: List[str] = []
+   914→    observed_paths: List[str] = []
+   915→    observed_status_codes: List[int] = []
+   916→
+   917→    for s in ok_samples:
+   918→        for hdr, val in s.get("response_headers", {}).items():
+   919→            observed_headers.setdefault(hdr.lower(), []).append(val)
+   920→        if s.get("response_body"):
+   921→            observed_bodies.append(s["response_body"])
+   922→        if s.get("path"):
+   923→            observed_paths.append(s["path"])
+   924→        if s.get("status"):
+   925→            observed_status_codes.append(s["status"])
+   926→
+   927→    # Also collect request headers from any observed
+   928→    request_uas: List[str] = []
+   929→    for s in ok_samples:
+   930→        ua = s.get("request_headers", {}).get("user-agent", "")
+   931→        if ua:
+   932→            request_uas.append(ua)
+   933→
+   934→    for c2_key, c2_sig in C2_SIGNATURES.items():
+   935→        match_score = 0
+   936→        match_evidence: List[str] = []
+   937→        max_possible = 0
+   938→
+   939→        # Check header indicators
+   940→        for hdr_name, hdr_pattern in c2_sig["header_indicators"].items():
+   941→            max_possible += 2
+   942→            hdr_values = observed_headers.get(hdr_name.lower(), [])
+   943→            for val in hdr_values:
+   944→                if re.search(hdr_pattern, val, re.IGNORECASE):
+   945→                    match_score += 2
+   946→                    match_evidence.append(
+   947→                        f"  Header [{hdr_name}] matches: \"{val[:80]}\""
+   948→                    )
+   949→                    break
+   950→
+   951→        # Check URI patterns against response body / redirect locations
+   952→        for uri_pat in c2_sig["uri_patterns"]:
+   953→            max_possible += 1
+   954→            for path in observed_paths:
+   955→                if re.search(uri_pat, path, re.IGNORECASE):
+   956→                    match_score += 1
+   957→                    match_evidence.append(f"  URI pattern matches: {path}")
+   958→                    break
+   959→            # Also check body content for references to these patterns
+   960→            for body in observed_bodies[:3]:  # limit body scans
+   961→                if re.search(uri_pat, body, re.IGNORECASE):
+   962→                    match_score += 1
+   963→                    match_evidence.append(
+   964→                        f"  Body contains URI pattern: {uri_pat[:50]}"
+   965→                    )
+   966→                    break
+   967→
+   968→        # Check response size range
+   969→        resp_sizes = [s["response_size"] for s in ok_samples]
+   970→        if resp_sizes:
+   971→            max_possible += 1
+   972→            rmin, rmax = c2_sig["response_size_range"]
+   973→            in_range = sum(1 for sz in resp_sizes if rmin <= sz <= rmax)
+   974→            if in_range / len(resp_sizes) > 0.7:
+   975→                match_score += 1
+   976→                match_evidence.append(
+   977→                    f"  {in_range}/{len(resp_sizes)} responses in size range "
+   978→                    f"[{rmin}, {rmax}]"
+   979→                )
+   980→
+   981→        # Only report if we have meaningful matches
+   982→        if match_score > 0 and max_possible > 0:
+   983→            confidence = match_score / max_possible
+   984→            if confidence >= 0.2:  # 20% minimum match threshold
+   985→                mitre_str = ", ".join(c2_sig.get("mitre_attack", []))
+   986→                findings.append(Finding(
+   987→                    title=f"C2 Framework Pattern Match: {c2_sig['name']}",
+   988→                    severity=c2_sig["severity"],
+   989→                    category="c2_pattern_match",
+   990→                    module="signal_intelligence",
+   991→                    description=(
+   992→                        f"Observed HTTP traffic from {target} exhibits patterns "
+   993→                        f"consistent with {c2_sig['name']} ({c2_sig['developer']}). "
+   994→                        f"{c2_sig['description']} Match confidence: "
+   995→                        f"{confidence:.1%}. MITRE ATT&CK: {mitre_str}."
+   996→                    ),
+   997→                    evidence=(
+   998→                        f"C2 Framework: {c2_sig['name']}\n"
+   999→                        f"Developer: {c2_sig['developer']}\n"
+  1000→                        f"Match Score: {match_score}/{max_possible} "
+  1001→                        f"({confidence:.1%})\n"
+  1002→                        f"Matched Indicators:\n"
+  1003→                        + ("\n".join(match_evidence) if match_evidence else "  (size range only)")
+  1004→                        + f"\nMITRE ATT&CK: {mitre_str}"
+  1005→                    ),
+  1006→                    asset=base_url,
+  1007→                    points_deducted=10 if c2_sig["severity"] == "critical" else 6,
+  1008→                    dread_score=c2_sig["dread_score"] * confidence,
+  1009→                    remediation=(
+  1010→                        f"Investigate endpoint for {c2_sig['name']} artifacts: "
+  1011→                        f"dropped files, persistence mechanisms, lateral movement "
+  1012→                        f"indicators. Deploy YARA/Sigma rules for {c2_sig['name']}. "
+  1013→                        f"Review MITRE techniques: {mitre_str}."
+  1014→                    ),
+  1015→                ))
+  1016→
+  1017→    return findings
+  1018→
+  1019→
+  1020→# ═══════════════════════════════════════════════════════════════════════════
+  1021→# 4. COMMUNICATION SCHEDULE EXTRACTION
+  1022→# ═══════════════════════════════════════════════════════════════════════════
+  1023→
+  1024→def _extract_communication_schedule(
+  1025→    samples: List[ProbeSample], target: str, base_url: str
+  1026→) -> List[Finding]:
+  1027→    """Extract the 'when' of communications — maintenance windows,
+  1028→    active hours, backup schedules.
+  1029→    """
+  1030→    findings: List[Finding] = []
+  1031→    ok_samples = [s for s in samples if s.get("ok")]
+  1032→
+  1033→    if len(ok_samples) < 3:
+  1034→        return findings
+  1035→
+  1036→    # Analyze response time distribution for patterns
+  1037→    response_times = [s["response_time"] for s in ok_samples]
+  1038→    resp_sizes = [s["response_size"] for s in ok_samples]
+  1039→    status_codes = [s["status"] for s in ok_samples]
+  1040→
+  1041→    # Bucket by response time (fast / normal / slow)
+  1042→    fast = [s for s in ok_samples if s["response_time"] < 0.3]
+  1043→    normal = [s for s in ok_samples if 0.3 <= s["response_time"] < 1.5]
+  1044→    slow = [s for s in ok_samples if s["response_time"] >= 1.5]
+  1045→
+  1046→    # Look for error rate patterns
+  1047→    error_count = sum(1 for sc in status_codes if sc >= 400)
+  1048→    error_rate = error_count / len(status_codes) if status_codes else 0
+  1049→
+  1050→    evidence_parts = [
+  1051→        f"Total probes: {len(ok_samples)}",
+  1052→        f"Fast (<0.3s): {len(fast)}",
+  1053→        f"Normal (0.3-1.5s): {len(normal)}",
+  1054→        f"Slow (>=1.5s): {len(slow)}",
+  1055→        f"Error rate: {error_rate:.1%}",
+  1056→        f"Status codes: {dict(Counter(str(sc) for sc in status_codes))}",
+  1057→    ]
+  1058→
+  1059→    if resp_sizes:
+  1060→        evidence_parts.append(
+  1061→            f"Response size range: {min(resp_sizes)} - {max(resp_sizes)} bytes"
+  1062→        )
+  1063→
+  1064→    # Check for high error rate (possible maintenance window / rate limiting)
+  1065→    if error_rate > 0.4:
+  1066→        findings.append(Finding(
+  1067→            title="High Error Rate Pattern — Possible Rate Limiting or Maintenance",
+  1068→            severity="medium",
+  1069→            category="comm_schedule",
+  1070→            module="signal_intelligence",
+  1071→            description=(
+  1072→                f"{error_rate:.1%} of HTTP requests to {target} returned errors. "
+  1073→                f"This may indicate: (1) Active rate limiting being triggered by "
+  1074→                f"the observation probes, (2) A maintenance window or degraded "
+  1075→                f"service period, (3) Defensive WAF/IPS blocking, or "
+  1076→                f"(4) Intentional service degradation as a defense mechanism."
+  1077→            ),
+  1078→            evidence="\n".join(evidence_parts),
+  1079→            asset=base_url,
+  1080→            points_deducted=3,
+  1081→            dread_score=5.0,
+  1082→            remediation=(
+  1083→                "Distinguish between rate limiting and genuine errors. "
+  1084→                "If rate limited, adjust probe cadence. If maintenance window, "
+  1085→                "document the schedule for future reference. Check WAF logs."
+  1086→            ),
+  1087→        ))
+  1088→
+  1089→    # Check for bimodal timing (e.g., cached vs uncached responses)
+  1090→    if len(response_times) >= 6:
+  1091→        sorted_times = sorted(response_times)
+  1092→        lower_half = sorted_times[: len(sorted_times) // 2]
+  1093→        upper_half = sorted_times[len(sorted_times) // 2:]
+  1094→        lower_mean = statistics.mean(lower_half)
+  1095→        upper_mean = statistics.mean(upper_half)
+  1096→        ratio = upper_mean / lower_mean if lower_mean > 0 else float("inf")
+  1097→
+  1098→        if ratio > 3.0:
+  1099→            evidence_parts.append(
+  1100→                f"Bimodal timing: lower mean={lower_mean:.3f}s, "
+  1101→                f"upper mean={upper_mean:.3f}s, ratio={ratio:.1f}x"
+  1102→            )
+  1103→            findings.append(Finding(
+  1104→                title="Bimodal Response Timing — Cache/Origin Differentiation",
+  1105→                severity="low",
+  1106→                category="comm_schedule",
+  1107→                module="signal_intelligence",
+  1108→                description=(
+  1109→                    f"HTTP responses from {target} show bimodal timing distribution. "
+  1110→                    f"Lower cluster ({lower_mean:.3f}s) likely cache hits; upper cluster "
+  1111→                    f"({upper_mean:.3f}s) likely origin fetches. This differentiation "
+  1112→                    f"can be exploited for cache timing attacks or to distinguish "
+  1113→                    f"frontend infrastructure from backend systems."
+  1114→                ),
+  1115→                evidence="\n".join(evidence_parts),
+  1116→                asset=base_url,
+  1117→                points_deducted=1,
+  1118→                dread_score=3.5,
+  1119→                remediation=(
+  1120→                    "Implement consistent cache headers. Normalize response "
+  1121→                    "timing where possible. Monitor for cache timing side-channel "
+  1122→                    "attacks."
+  1123→                ),
+  1124→            ))
+  1125→
+  1126→    # Check for consistent slow responses (possible indicator of heavy processing / encryption)
+  1127→    if len(slow) > len(ok_samples) * 0.6 and len(ok_samples) >= 4:
+  1128→        findings.append(Finding(
+  1129→            title="Predominantly Slow Responses — Possible Encryption/Processing Overhead",
+  1130→            severity="low",
+  1131→            category="comm_schedule",
+  1132→            module="signal_intelligence",
+  1133→            description=(
+  1134→                f"{len(slow)}/{len(ok_samples)} responses from {target} exceeded 1.5s. "
+  1135→                f"This may indicate server-side encryption/decryption overhead, "
+  1136→                f"heavy computation, or a congested/restricted endpoint. In a C2 "
+  1137→                f"context, consistent delays can indicate tunnel decryption or "
+  1138→                f"data processing before response."
+  1139→            ),
+  1140→            evidence="\n".join(evidence_parts),
+  1141→            asset=base_url,
+  1142→            points_deducted=1,
+  1143→            dread_score=2.5,
+  1144→            remediation=(
+  1145→                "Profile normal response times for this service. Investigate "
+  1146→                "server-side processing that causes consistent delays."
+  1147→            ),
+  1148→        ))
+  1149→
+  1150→    # General schedule summary
+  1151→    if response_times:
+  1152→        schedule_summary = (
+  1153→            f"Communication Schedule Profile for {target}:\n"
+  1154→            f"  Mean response: {statistics.mean(response_times):.3f}s\n"
+  1155→            f"  Median response: {statistics.median(response_times):.3f}s\n"
+  1156→            f"  Min/Max: {min(response_times):.3f}s / {max(response_times):.3f}s\n"
+  1157→            f"  StdDev: {statistics.stdev(response_times) if len(response_times) > 1 else 0:.3f}s\n"
+  1158→            f"  Error rate: {error_rate:.1%}\n"
+  1159→            f"  Fast/Normal/Slow ratio: {len(fast)}/{len(normal)}/{len(slow)}"
+  1160→        )
+  1161→        findings.append(Finding(
+  1162→            title="Communication Schedule Profile",
+  1163→            severity="info",
+  1164→            category="comm_schedule",
+  1165→            module="signal_intelligence",
+  1166→            description=(
+  1167→                f"Extracted communication schedule profile for {target} based on "
+  1168→                f"{len(ok_samples)} successful probes. This profile captures the "
+  1169→                f'"when" of the target\'s HTTP communication — response latency '
+  1170→                f"distribution, error patterns, and timing characteristics that "
+  1171→                f"form the baseline for anomaly detection."
+  1172→            ),
+  1173→            evidence=schedule_summary,
+  1174→            asset=base_url,
+  1175→            points_deducted=0,
+  1176→            dread_score=0.0,
+  1177→            remediation=(
+  1178→                "Use this schedule profile as a baseline. Deviations from this "
+  1179→                "profile may indicate compromise, configuration changes, or "
+  1180→                "active exploitation. Integrate into SIEM correlation rules."
+  1181→            ),
+  1182→        ))
+  1183→
+  1184→    return findings
+  1185→
+  1186→
+  1187→# ═══════════════════════════════════════════════════════════════════════════
+  1188→# 5. PAYLOAD SIZE ANALYSIS
+  1189→# ═══════════════════════════════════════════════════════════════════════════
+  1190→
+  1191→def _analyze_payload_sizes(
+  1192→    samples: List[ProbeSample], target: str, base_url: str
+  1193→) -> List[Finding]:
+  1194→    """Analyze request/response sizes for encrypted tunnel indicators.
+  1195→    """
+  1196→    findings: List[Finding] = []
+  1197→    ok_samples = [s for s in samples if s.get("ok")]
+  1198→
+  1199→    if len(ok_samples) < 3:
+  1200→        return findings
+  1201→
+  1202→    resp_sizes = [s["response_size"] for s in ok_samples]
+  1203→    bodies = [s.get("response_body", "") for s in ok_samples]
+  1204→    body_entropies = [_shannon_entropy(b) for b in bodies if b]
+  1205→
+  1206→    mean_size = statistics.mean(resp_sizes)
+  1207→    size_cv = _coefficient_of_variation([float(s) for s in resp_sizes])
+  1208→    mean_entropy = statistics.mean(body_entropies) if body_entropies else 0.0
+  1209→
+  1210→    evidence_parts = [
+  1211→        f"Samples analyzed: {len(ok_samples)}",
+  1212→        f"Response sizes: min={min(resp_sizes)}, max={max(resp_sizes)}, "
+  1213→        f"mean={mean_size:.0f}",
+  1214→    ]
+  1215→    if size_cv is not None:
+  1216→        evidence_parts.append(f"Size CV: {size_cv:.4f}")
+  1217→    if body_entropies:
+  1218→        evidence_parts.append(
+  1219→            f"Body entropy: min={min(body_entropies):.2f}, "
+  1220→            f"max={max(body_entropies):.2f}, mean={mean_entropy:.2f} bits"
+  1221→        )
+  1222→
+  1223→    # Check for consistent small responses (tunnel indicator)
+  1224→    if (len(resp_sizes) >= 4
+  1225→            and max(resp_sizes) <= 256
+  1226→            and (size_cv is not None and size_cv < 0.20)):
+  1227→        findings.append(Finding(
+  1228→            title="Consistently Small Responses — Potential Encrypted Tunnel Indicator",
+  1229→            severity="medium",
+  1230→            category="payload_size",
+  1231→            module="signal_intelligence",
+  1232→            description=(
+  1233→                f"All responses from {target} are small (max {max(resp_sizes)}B) "
+  1234→                f"with low size variation (CV={size_cv:.4f}). This pattern is "
+  1235→                f"consistent with encrypted C2 tunnel endpoints where the server "
+  1236→                f"returns minimal acknowledgment payloads. Legitimate small "
+  1237→                f"responses include health checks, API heartbeats, and redirects."
+  1238→            ),
+  1239→            evidence="\n".join(evidence_parts),
+  1240→            asset=base_url,
+  1241→            points_deducted=4,
+  1242→            dread_score=5.5,
+  1243→            remediation=(
+  1244→                "Verify the endpoint's intended purpose. Check if small responses "
+  1245→                "contain meaningful data or are stub acknowledgments. Correlate "
+  1246→                "with endpoint process and network flow data."
+  1247→            ),
+  1248→        ))
+  1249→
+  1250→    # Check for high-entropy responses (encrypted/compressed data)
+  1251→    if mean_entropy > 5.5 and body_entropies:
+  1252→        high_entropy_count = sum(1 for e in body_entropies if e > 5.0)
+  1253→        findings.append(Finding(
+  1254→            title="High-Entropy Response Bodies — Encrypted or Compressed Content",
+  1255→            severity="low",
+  1256→            category="payload_size",
+  1257→            module="signal_intelligence",
+  1258→            description=(
+  1259→                f"Response bodies from {target} exhibit high Shannon entropy "
+  1260→                f"(mean={mean_entropy:.2f} bits, {high_entropy_count}/{len(body_entropies)} "
+  1261→                f"above 5.0 bits). This indicates the content is likely encrypted, "
+  1262→                f"compressed, or encoded — common in API responses, CDN content, "
+  1263→                f"and potentially C2 data channels."
+  1264→            ),
+  1265→            evidence="\n".join(evidence_parts),
+  1266→            asset=base_url,
+  1267→            points_deducted=1,
+  1268→            dread_score=3.0,
+  1269→            remediation=(
+  1270→                "Determine if high entropy is expected (TLS, compression). "
+  1271→                "Compare against known-good baselines. Investigate if "
+  1272→                "entropy is anomalous for this endpoint type."
+  1273→            ),
+  1274→        ))
+  1275→
+  1276→    # Check for suspiciously uniform response sizes (fixed-block encryption)
+  1277→    unique_sizes = len(set(resp_sizes))
+  1278→    if len(resp_sizes) >= 6 and unique_sizes <= 2:
+  1279→        findings.append(Finding(
+  1280→            title="Uniform Response Sizes — Possible Fixed-Block Encryption",
+  1281→            severity="medium",
+  1282→            category="payload_size",
+  1283→            module="signal_intelligence",
+  1284→            description=(
+  1285→                f"Only {unique_sizes} distinct response size(s) across "
+  1286→                f"{len(resp_sizes)} responses from {target}. Uniform sizes are "
+  1287→                f"characteristic of fixed-block encryption (AES-CBC, etc.) or "
+  1288→                f"templated responses. Distinct sizes: {sorted(set(resp_sizes))}."
+  1289→            ),
+  1290→            evidence="\n".join(evidence_parts),
+  1291→            asset=base_url,
+  1292→            points_deducted=3,
+  1293→            dread_score=5.0,
+  1294→            remediation=(
+  1295→                "Analyze response content structure. Determine if uniformity is "
+  1296→                f"from encryption padding, templating, or genuine content. "
+  1297→                f"Unique sizes observed: {sorted(set(resp_sizes))}"
+  1298→            ),
+  1299→        ))
+  1300→
+  1301→    # Size profile summary
+  1302→    size_histogram: Dict[str, int] = {}
+  1303→    for sz in resp_sizes:
+  1304→        bucket = (
+  1305→            "0-128B" if sz <= 128 else
+  1306→            "129-512B" if sz <= 512 else
+  1307→            "513-2KB" if sz <= 2048 else
+  1308→            "2KB-8KB" if sz <= 8192 else
+  1309→            "8KB-32KB" if sz <= 32768 else
+  1310→            ">32KB"
+  1311→        )
+  1312→        size_histogram[bucket] = size_histogram.get(bucket, 0) + 1
+  1313→
+  1314→    evidence_parts.append(
+  1315→        "Size distribution: "
+  1316→        + ", ".join(f"{k}:{v}" for k, v in sorted(size_histogram.items()))
+  1317→    )
+  1318→
+  1319→    findings.append(Finding(
+  1320→        title="Payload Size Analysis Profile",
+  1321→        severity="info",
+  1322→        category="payload_size",
+  1323→        module="signal_intelligence",
+  1324→        description=(
+  1325→            f"Payload size analysis for {target}. Mean response size: {mean_size:.0f}B. "
+  1326→            f"Entropy profile: {mean_entropy:.2f} bits. Size consistency: "
+  1327→            f"CV={size_cv:.4f if size_cv else 'N/A'}. This profile helps identify "
+  1328→            f"anomalous size patterns that may indicate encrypted tunnels, "
+  1329→            f"data exfiltration, or C2 communication."
+  1330→        ),
+  1331→        evidence="\n".join(evidence_parts),
+  1332→        asset=base_url,
+  1333→        points_deducted=0,
+  1334→        dread_score=0.0,
+  1335→        remediation=(
+  1336→            "Establish a baseline size profile. Monitor for deviations — "
+  1337→            "sudden increases may indicate data exfiltration; consistent "
+  1338→            "small responses may indicate C2 beaconing."
+  1339→        ),
+  1340→    ))
+  1341→
+  1342→    return findings
+  1343→
+  1344→
+  1345→# ═══════════════════════════════════════════════════════════════════════════
+  1346→# 6. USER-AGENT FINGERPRINTING
+  1347→# ═══════════════════════════════════════════════════════════════════════════
+  1348→
+  1349→def _fingerprint_user_agents(
+  1350→    samples: List[ProbeSample], target: str, base_url: str
+  1351→) -> List[Finding]:
+  1352→    """Analyze UA strings for automation patterns, headless browsers, C2 agents.
+  1353→    """
+  1354→    findings: List[Finding] = []
+  1355→
+  1356→    # Collect all observed User-Agent strings
+  1357→    observed_uas: List[str] = []
+  1358→    for s in samples:
+  1359→        ua = s.get("response_headers", {}).get("server", "")
+  1360→        if ua:
+  1361→            observed_uas.append(ua)
+  1362→    # Also check if any observed UAs from other requests
+  1363→    for s in samples:
+  1364→        for hdr_val in s.get("response_headers", {}).values():
+  1365→            if "user-agent" in hdr_val.lower()[:20]:
+  1366→                observed_uas.append(hdr_val)
+  1367→
+  1368→    # Analyze response headers for Server, X-Powered-By, etc.
+  1369→    server_headers: List[str] = []
+  1370→    powered_by: List[str] = []
+  1371→    for s in samples:
+  1372→        srv = s.get("response_headers", {}).get("server", "")
+  1373→        if srv:
+  1374→            server_headers.append(srv)
+  1375→        pb = s.get("response_headers", {}).get("x-powered-by", "")
+  1376→        if pb:
+  1377→            powered_by.append(pb)
+  1378→
+  1379→    # Check Server header for C2 indicators
+  1380→    server_counter = Counter(server_headers)
+  1381→    evidence_parts: List[str] = []
+  1382→
+  1383→    if server_counter:
+  1384→        evidence_parts.append(
+  1385→            "Server headers observed: "
+  1386→            + ", ".join(f"\"{k}\"(x{v})" for k, v in server_counter.most_common(5))
+  1387→        )
+  1388→
+  1389→    if powered_by:
+  1390→        evidence_parts.append(
+  1391→            "X-Powered-By: " + ", ".join(f"\"{p}\"" for p in set(powered_by))
+  1392→        )
+  1393→
+  1394→    # Check observed response headers for automation/C2 UA patterns
+  1395→    # (Server header sometimes leaks C2 agent info)
+  1396→    all_header_values: List[str] = []
+  1397→    for s in samples:
+  1398→        for val in s.get("response_headers", {}).values():
+  1399→            all_header_values.append(val)
+  1400→
+  1401→    matched_ua_sigs: List[str] = []
+  1402→    for sig_key, sig_data in AUTOMATION_UA_SIGNATURES.items():
+  1403→        for pattern in sig_data["indicators"]:
+  1404→            for val in all_header_values:
+  1405→                if re.search(pattern, val, re.IGNORECASE | re.MULTILINE):
+  1406→                    if sig_key not in matched_ua_sigs:
+  1407→                        matched_ua_sigs.append(sig_key)
+  1408→                        evidence_parts.append(
+  1409→                            f"MATCH [{sig_data['name']}]: pattern \"{pattern}\" "
+  1410→                            f"found in header value \"{val[:80]}\""
+  1411→                        )
+  1412→                    break
+  1413→
+  1414→    for sig_key in matched_ua_sigs:
+  1415→        sig = AUTOMATION_UA_SIGNATURES[sig_key]
+  1416→        findings.append(Finding(
+  1417→            title=f"UA/Signature Match: {sig['name']}",
+  1418→            severity=sig["severity"],
+  1419→            category="ua_fingerprint",
+  1420→            module="signal_intelligence",
+  1421→            description=(
+  1422→                f"{sig['description']} Detected in HTTP response headers from "
+  1423→                f"{target}. Category: {sig['category']}. "
+  1424→                f"Stealth score: {sig['stealth_score']}/100."
+  1425→            ),
+  1426→            evidence="\n".join(evidence_parts),
+  1427→            asset=base_url,
+  1428→            points_deducted=6 if sig["severity"] in ("high", "critical") else 2,
+  1429→            dread_score=sig["dread_score"],
+  1430→            remediation=(
+  1431→                f"Verify if {sig['name']} presence is expected for this service. "
+  1432→                f"If unexpected, investigate for compromised endpoints or "
+  1433→                f"unauthorized automation. Implement header sanitization and "
+  1434→                f"UA validation rules."
+  1435→            ),
+  1436→        ))
+  1437→
+  1438→    # Header diversity analysis
+  1439→    all_headers_flat: List[str] = []
+  1440→    for s in samples:
+  1441→        all_headers_flat.extend(s.get("response_headers", {}).keys())
+  1442→    header_counter = Counter(h.lower() for h in all_headers_flat)
+  1443→    unique_headers = len(header_counter)
+  1444→
+  1445→    # Check for suspiciously minimal headers (C2 often has minimal header sets)
+  1446→    if unique_headers <= 3 and len(samples) >= 4:
+  1447→        findings.append(Finding(
+  1448→            title="Minimal HTTP Header Set — Possible C2 or Minimal Server",
+  1449→            severity="medium",
+  1450→            category="ua_fingerprint",
+  1451→            module="signal_intelligence",
+  1452→            description=(
+  1453→                f"HTTP responses from {target} use only {unique_headers} unique "
+  1454→                f"header names: {', '.join(header_counter.keys())}. Minimal "
+  1455→                f"header sets are characteristic of custom C2 HTTP listeners, "
+  1456→                f"embedded HTTP servers, or minimal API backends. Legitimate "
+  1457→                f"web servers typically expose 8-15+ headers."
+  1458→            ),
+  1459→            evidence=(
+  1460→                f"Unique headers: {unique_headers}\n"
+  1461→                f"Headers: {dict(header_counter.most_common())}\n"
+  1462→                + "\n".join(evidence_parts)
+  1463→            ),
+  1464→            asset=base_url,
+  1465→            points_deducted=3,
+  1466→            dread_score=5.0,
+  1467→            remediation=(
+  1468→                "Verify if the minimal header set is expected. Custom/minimal "
+  1469→                "servers should be inventoried and monitored. Implement header "
+  1470→                "baseline checks."
+  1471→            ),
+  1472→        ))
+  1473→
+  1474→    # General UA profile
+  1475→    if evidence_parts:
+  1476→        findings.append(Finding(
+  1477→            title="User-Agent / Header Fingerprint Profile",
+  1478→            severity="info",
+  1479→            category="ua_fingerprint",
+  1480→            module="signal_intelligence",
+  1481→            description=(
+  1482→                f"HTTP header fingerprint analysis for {target}. Analyzed "
+  1483→                f"{len(all_header_values)} header values across {len(samples)} "
+  1484→                f"probes. Found {len(matched_ua_sigs)} signature matches. "
+  1485→                f"{unique_headers} unique header names observed."
+  1486→            ),
+  1487→            evidence="\n".join(evidence_parts),
+  1488→            asset=base_url,
+  1489→            points_deducted=0,
+  1490→            dread_score=0.0,
+  1491→            remediation=(
+  1492→                "Use this fingerprint profile for ongoing monitoring. Any changes "
+  1493→                "in header signatures may indicate server reconfiguration or "
+  1494→                "compromise."
+  1495→            ),
+  1496→        ))
+  1497→
+  1498→    return findings
+  1499→
+  1500→
+  1501→# ═══════════════════════════════════════════════════════════════════════════
+  1502→# 7. DNS COMMUNICATION PATTERN ANALYSIS (via HTTP observation)
+  1503→# ═══════════════════════════════════════════════════════════════════════════
+  1504→
+  1505→def _analyze_dns_comm_patterns(
+  1506→    samples: List[ProbeSample], target: str, base_url: str
+  1507→) -> List[Finding]:
+  1508→    """Detect C2-over-DNS patterns via HTTP observation.
+  1509→
+  1510→    Since we can only observe HTTP traffic, we look for indirect indicators:
+  1511→    - Redirect chains to suspicious domains
+  1512→    - References to DNS-like encoded data in responses
+  1513→    - Long subdomain-like strings in response bodies or headers
+  1514→    - High-entropy encoded strings suggesting DNS tunnel data
+  1515→    """
+  1516→    findings: List[Finding] = []
+  1517→    ok_samples = [s for s in samples if s.get("ok")]
+  1518→
+  1519→    dns_indicators: List[str] = []
+  1520→
+  1521→    # Patterns suggesting DNS tunneling activity observable via HTTP
+  1522→    dns_tunnel_patterns = [
+  1523→        (r"[a-z0-9-]{24,}\.[a-z]{2,}\.[a-z]{2,}", "Long subdomain label"),
+  1524→        (r"[a-f0-9]{32,}\.", "Hex-encoded subdomain"),
+  1525→        (r"[A-Za-z0-9+/=]{20,}\.", "Base64-like subdomain"),
+  1526→        (r"dnscat2|iodine|dns2tcp", "Known DNS tunnel tool reference"),
+  1527→        (r"TXT|CNAME|NULL record", "DNS record type in HTTP content"),
+  1528→    ]
+  1529→
+  1530→    # Check response bodies and headers for DNS tunnel indicators
+  1531→    for s in ok_samples:
+  1532→        body = s.get("response_body", "")
+  1533→        headers_str = " ".join(s.get("response_headers", {}).values())
+  1534→        combined = f"{body} {headers_str}"
+  1535→
+  1536→        for pattern, description in dns_tunnel_patterns:
+  1537→            matches = re.findall(pattern, combined, re.IGNORECASE)
+  1538→            if matches:
+  1539→                for m in matches[:3]:  # limit evidence
+  1540→                    truncated = m[:80] if len(m) > 80 else m
+  1541→                    dns_indicators.append(
+  1542→                        f"[{description}] Found: \"{truncated}\" "
+  1543→                        f"in {s.get('path', 'unknown')}"
+  1544→                    )
+  1545→
+  1546→    # Check for .well-known path exploitation (DNS rebinding, etc.)
+  1547→    wellknown_samples = [
+  1548→        s for s in ok_samples
+  1549→        if ".well-known" in s.get("path", "")
+  1550→    ]
+  1551→    if wellknown_samples:
+  1552→        for s in wellknown_samples:
+  1553→            body = s.get("response_body", "")
+  1554→            if body:
+  1555→                entropy = _shannon_entropy(body)
+  1556→                if entropy > 4.5:
+  1557→                    dns_indicators.append(
+  1558→                        f"[.well-known] High-entropy content at {s['path']} "
+  1559→                        f"(entropy={entropy:.2f})"
+  1560→                    )
+  1561→
+  1562→    if dns_indicators:
+  1563→        severity = "high" if len(dns_indicators) >= 3 else "medium"
+  1564→        findings.append(Finding(
+  1565→            title="DNS Communication Pattern Indicators Detected via HTTP",
+  1566→            severity=severity,
+  1567→            category="dns_comm_pattern",
+  1568→            module="signal_intelligence",
+  1569→            description=(
+  1570→                f"HTTP observation of {target} revealed {len(dns_indicators)} "
+  1571→                f"indicators consistent with C2-over-DNS communication patterns. "
+  1572→                f"These include long encoded subdomain-like strings, hex/base64 "
+  1573→                f"patterns in response content, and references to DNS tunneling "
+  1574→                f"tools. C2-over-DNS allows attackers to exfiltrate data and "
+  1575→                f"receive commands using DNS queries, bypassing many network controls."
+  1576→            ),
+  1577→            evidence="\n".join(dns_indicators),
+  1578→            asset=base_url,
+  1579→            points_deducted=6 if severity == "high" else 3,
+  1580→            dread_score=7.0 if severity == "high" else 5.0,
+  1581→            remediation=(
+  1582→                "Investigate the source of DNS tunnel indicators. Deploy DNS "
+  1583→                "monitoring and alerting for anomalous query patterns. Block "
+  1584→                "known DNS tunneling tools. Implement DNS query logging and "
+  1585→                "analysis. Consider DNS-over-HTTPS inspection."
+  1586→            ),
+  1587→        ))
+  1588→    else:
+  1589→        # Info-level finding for completeness
+  1590→        findings.append(Finding(
+  1591→            title="DNS Communication Pattern Analysis — No Indicators",
+  1592→            severity="info",
+  1593→            category="dns_comm_pattern",
+  1594→            module="signal_intelligence",
+  1595→            description=(
+  1596→                f"HTTP-based DNS communication pattern analysis for {target} "
+  1597→                f"found no indicators of C2-over-DNS activity. Analysis checked "
+  1598→                f"response bodies, headers, and .well-known paths for long "
+  1599→                f"encoded subdomains, hex/base64 patterns, and DNS tunnel tool "
+  1600→                f"references."
+  1601→            ),
+  1602→            evidence=(
+  1603→                f"Probes analyzed: {len(ok_samples)}\n"
+  1604→                f"Patterns checked: {len(dns_tunnel_patterns)}\n"
+  1605→                f".well-known paths probed: {len(wellknown_samples)}"
+  1606→            ),
+  1607→            asset=base_url,
+  1608→            points_deducted=0,
+  1609→            dread_score=0.0,
+  1610→            remediation=(
+  1611→                "Continue monitoring for DNS tunnel indicators. Implement "
+  1612→                "passive DNS monitoring for long-term trend analysis."
+  1613→            ),
+  1614→        ))
+  1615→
+  1616→    return findings
+  1617→
+  1618→
+  1619→# ═══════════════════════════════════════════════════════════════════════════
+  1620→# 8. SESSION BEHAVIOR PROFILING
+  1621→# ═══════════════════════════════════════════════════════════════════════════
+  1622→
+  1623→def _profile_session_behavior(
+  1624→    samples: List[ProbeSample], target: str, base_url: str
+  1625→) -> List[Finding]:
+  1626→    """Build profiles of session behavior — cookie patterns, referrer chains,
+  1627→    navigation sequences.
+  1628→    """
+  1629→    findings: List[Finding] = []
+  1630→    ok_samples = [s for s in samples if s.get("ok")]
+  1631→
+  1632→    if len(ok_samples) < 2:
+  1633→        return findings
+  1634→
+  1635→    # --- Cookie Analysis ---
+  1636→    cookie_patterns: List[str] = []
+  1637→    cookie_names: Counter = Counter()
+  1638→    set_cookie_values: List[str] = []
+  1639→    session_cookies_found: List[str] = []
+  1640→
+  1641→    for s in ok_samples:
+  1642→        headers = s.get("response_headers", {})
+  1643→        # Check Set-Cookie
+  1644→        for hdr_name, hdr_val in headers.items():
+  1645→            if hdr_name.lower() == "set-cookie":
+  1646→                set_cookie_values.append(hdr_val)
+  1647→                # Extract cookie name
+  1648→                cookie_name = hdr_val.split("=")[0].strip() if "=" in hdr_val else hdr_val
+  1649→                cookie_names[cookie_name] += 1
+  1650→
+  1651→                # Check for session-related cookies
+  1652→                session_indicators = [
+  1653→                    "session", "sid", "phpsessid", "jsessionid",
+  1654→                    "asp.net_sessionid", "token", "auth",
+  1655→                ]
+  1656→                for si in session_indicators:
+  1657→                    if si in cookie_name.lower():
+  1658→                        session_cookies_found.append(cookie_name)
+  1659→
+  1660→                # Check for suspicious cookie attributes
+  1661→                if "HttpOnly" not in hdr_val:
+  1662→                    cookie_patterns.append(
+  1663→                        f"Cookie \"{cookie_name}\" missing HttpOnly flag"
+  1664→                    )
+  1665→                if "Secure" not in hdr_val and "secure" not in hdr_val.lower():
+  1666→                    cookie_patterns.append(
+  1667→                        f"Cookie \"{cookie_name}\" missing Secure flag"
+  1668→                    )
+  1669→                if "SameSite" not in hdr_val:
+  1670→                    cookie_patterns.append(
+  1671→                        f"Cookie \"{cookie_name}\" missing SameSite attribute"
+  1672→                    )
+  1673→
+  1674→                # Check for high-entropy cookie values (possible session tokens)
+  1675→                if "=" in hdr_val:
+  1676→                    val_part = hdr_val.split("=", 1)[1].split(";")[0].strip()
+  1677→                    if len(val_part) > 16:
+  1678→                        ent = _shannon_entropy(val_part)
+  1679→                        if ent > 4.0:
+  1680→                            cookie_patterns.append(
+  1681→                                f"Cookie \"{cookie_name}\" has high-entropy value "
+  1682→                                f"(entropy={ent:.2f}, len={len(val_part)})"
+  1683→                            )
+  1684→
+  1685→    # --- Navigation Sequence Analysis ---
+  1686→    paths_visited: List[str] = [s.get("path", "") for s in ok_samples]
+  1687→    path_counter = Counter(paths_visited)
+  1688→    redirect_chains: List[str] = []
+  1689→
+  1690→    for s in ok_samples:
+  1691→        if s.get("status") in (301, 302, 303, 307, 308):
+  1692→            location = s.get("response_headers", {}).get("location", "")
+  1693→            if location:
+  1694→                redirect_chains.append(f"{s['path']} -> {location[:80]}")
+  1695→
+  1696→    # --- Referrer Analysis ---
+  1697→    referrer_headers: List[str] = []
+  1698→    for s in ok_samples:
+  1699→        ref = s.get("response_headers", {}).get("referrer", "")
+  1700→        if ref:
+  1701→            referrer_headers.append(ref)
+  1702→
+  1703→    # --- Strict-Transport-Security Analysis ---
+  1704→    hsts_found = any(
+  1705→        "strict-transport-security" in h.lower()
+  1706→        for s in ok_samples
+  1707→        for h in s.get("response_headers", {}).keys()
+  1708→    )
+  1709→
+  1710→    # --- Build evidence ---
+  1711→    evidence_parts: List[str] = [
+  1712→        f"Paths visited: {len(set(paths_visited))} unique, {len(paths_visited)} total",
+  1713→        f"Cookie names observed: {dict(cookie_names.most_common(10))}" if cookie_names else "No cookies set",
+  1714→        f"Set-Cookie headers: {len(set_cookie_values)}",
+  1715→        f"Redirect chains: {len(redirect_chains)}",
+  1716→        f"Session cookies: {len(set(session_cookies_found))} "
+  1717→        f"({', '.join(set(session_cookies_found)[:5])})" if session_cookies_found else "None",
+  1718→        f"HSTS enabled: {hsts_found}",
+  1719→    ]
+  1720→
+  1721→    # --- Cookie security findings ---
+  1722→    insecure_cookies = [p for p in cookie_patterns if "missing" in p and "HttpOnly" in p]
+  1723→    no_secure = [p for p in cookie_patterns if "missing Secure" in p]
+  1724→    no_samesite = [p for p in cookie_patterns if "missing SameSite" in p]
+  1725→
+  1726→    if insecure_cookies:
+  1727→        findings.append(Finding(
+  1728→            title=f"Cookies Missing HttpOnly Flag ({len(insecure_cookies)} found)",
+  1729→            severity="medium",
+  1730→            category="session_security",
+  1731→            module="signal_intelligence",
+  1732→            description=(
+  1733→                f"{len(insecure_cookies)} cookie(s) from {target} lack the HttpOnly "
+  1734→                f"flag, making them accessible to JavaScript and vulnerable to "
+  1735→                f"XSS-based session theft. Affected: {', '.join(c.split('"')[1] for c in insecure_cookies[:5])}."
+  1736→            ),
+  1737→            evidence="\n".join(insecure_cookies[:10]),
+  1738→            asset=base_url,
+  1739→            points_deducted=3,
+  1740→            dread_score=5.0,
+  1741→            remediation=(
+  1742→                "Set the HttpOnly flag on all session-related cookies. "
+  1743→                "This prevents client-side JavaScript from accessing cookie values."
+  1744→            ),
+  1745→        ))
+  1746→
+  1747→    if no_secure:
+  1748→        findings.append(Finding(
+  1749→            title=f"Cookies Missing Secure Flag ({len(no_secure)} found)",
+  1750→            severity="medium",
+  1751→            category="session_security",
+  1752→            module="signal_intelligence",
+  1753→            description=(
+  1754→                f"{len(no_secure)} cookie(s) from {target} lack the Secure flag, "
+  1755→                f"allowing them to be transmitted over unencrypted HTTP connections. "
+  1756→                f"This exposes session tokens to network interception."
+  1757→            ),
+  1758→            evidence="\n".join(no_secure[:10]),
+  1759→            asset=base_url,
+  1760→            points_deducted=3,
+  1761→            dread_score=5.5,
+  1762→            remediation=(
+  1763→                "Set the Secure flag on all cookies when using HTTPS. "
+  1764→                "Consider HSTS to enforce HTTPS-only connections."
+  1765→            ),
+  1766→        ))
+  1767→
+  1768→    if no_samesite:
+  1769→        findings.append(Finding(
+  1770→            title=f"Cookies Missing SameSite Attribute ({len(no_samesite)} found)",
+  1771→            severity="low",
+  1772→            category="session_security",
+  1773→            module="signal_intelligence",
+  1774→            description=(
+  1775→                f"{len(no_samesite)} cookie(s) from {target} lack the SameSite "
+  1776→                f"attribute, making them vulnerable to CSRF attacks. Without "
+  1777→                f"SameSite, browsers may include these cookies in cross-site requests."
+  1778→            ),
+  1779→            evidence="\n".join(no_samesite[:10]),
+  1780→            asset=base_url,
+  1781→            points_deducted=2,
+  1782→            dread_score=4.0,
+  1783→            remediation=(
+  1784→                "Set SameSite=Strict or SameSite=Lax on all cookies. "
+  1785→                "This mitigates cross-site request forgery attacks."
+  1786→            ),
+  1787→        ))
+  1788→
+  1789→    if not hsts_found:
+  1790→        findings.append(Finding(
+  1791→            title="HSTS Header Not Detected",
+  1792→            severity="low",
+  1793→            category="session_security",
+  1794→            module="signal_intelligence",
+  1795→            description=(
+  1796→                f"{target} does not set the Strict-Transport-Security header. "
+  1797→                f"Without HSTS, the site is vulnerable to protocol downgrade "
+  1798→                f"attacks and SSL stripping."
+  1799→            ),
+  1800→            evidence="Checked all response headers; HSTS not found.",
+  1801→            asset=base_url,
+  1802→            points_deducted=2,
+  1803→            dread_score=4.0,
+  1804→            remediation=(
+  1805→                "Implement HSTS with a minimum max-age of 31536000 (1 year) "
+  1806→                "and include subdomains. Consider adding to HSTS preload list."
+  1807→            ),
+  1808→        ))
+  1809→
+  1810→    # Redirect chain analysis
+  1811→    if redirect_chains:
+  1812→        external_redirects = [
+  1813→            r for r in redirect_chains
+  1814→            if target not in r.lower()
+  1815→        ]
+  1816→        if external_redirects:
+  1817→            findings.append(Finding(
+  1818→                title=f"External Redirect Chains Detected ({len(external_redirects)})",
+  1819→                severity="medium",
+  1820→                category="session_behavior",
+  1821→                module="signal_intelligence",
+  1822→                description=(
+  1823→                    f"{target} redirects to external domains in "
+  1824→                    f"{len(external_redirects)} case(s). Open redirect chains can be "
+  1825→                    f"exploited for phishing, C2 callback redirection, and session "
+  1826→                    f"hijacking. External redirects may also indicate third-party "
+  1827→                    f"service dependencies or CDN usage."
+  1828→                ),
+  1829→                evidence="\n".join(redirect_chains[:10]),
+  1830→                asset=base_url,
+  1831→                points_deducted=3,
+  1832→            dread_score=5.5,
+  1833→            remediation=(
+  1834→                "Audit all redirect destinations. Implement allowlists for "
+  1835→                "redirect targets. Use relative redirects where possible. "
+  1836→                "Sanitize redirect parameters to prevent open redirect."
+  1837→            ),
+  1838→        ))
+  1839→
+  1840→    # Session behavior profile summary
+  1841→    evidence_parts.append(
+  1842→        f"Cookie security issues: {len(cookie_patterns)}"
+  1843→    )
+  1844→    if cookie_patterns:
+  1845→        evidence_parts.append(
+  1846→            "Cookie details:\n" + "\n".join(cookie_patterns[:15])
+  1847→        )
+  1848→
+  1849→    findings.append(Finding(
+  1850→        title="Session Behavior Profile",
+  1851→        severity="info",
+  1852→        category="session_behavior",
+  1853→        module="signal_intelligence",
+  1854→        description=(
+  1855→            f"Session behavior profile for {target}. The server sets "
+  1856→            f"{len(cookie_names)} distinct cookie name(s) across "
+  1857→            f"{len(set_cookie_values)} Set-Cookie headers. "
+  1858→            f"{len(set(paths_visited))} unique paths were observed. "
+  1859→            f"{len(redirect_chains)} redirect(s) detected. "
+  1860→            f"This profile captures the session management characteristics "
+  1861→            f"for baseline comparison and anomaly detection."
+  1862→        ),
+  1863→        evidence="\n".join(evidence_parts),
+  1864→        asset=base_url,
+  1865→        points_deducted=0,
+  1866→        dread_score=0.0,
+  1867→        remediation=(
+  1868→            "Use this session profile as a baseline. Monitor for changes in "
+  1869→            "cookie behavior, new redirect chains, or navigation pattern "
+  1870→            "deviations that may indicate session hijacking or C2 activity."
+  1871→        ),
+  1872→    ))
+  1873→
+  1874→    return findings
+  1875→
+  1876→
+  1877→# ═══════════════════════════════════════════════════════════════════════════
+  1878→# PROBE COLLECTION
+  1879→# ═══════════════════════════════════════════════════════════════════════════
+  1880→
+  1881→def _collect_probe_samples(
+  1882→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1883→) -> List[ProbeSample]:
+  1884→    """Collect timed HTTP probe samples across multiple paths and rounds.
+  1885→
+  1886→    Returns a list of ProbeSample dicts with timing, size, and header data.
+  1887→    """
+  1888→    samples: List[ProbeSample] = []
+  1889→
+  1890→    parsed = urllib.parse.urlparse(base_url)
+  1891→    scheme = parsed.scheme or "https"
+  1892→    netloc = parsed.netloc or target
+  1893→
+  1894→    for round_idx in range(_PROBE_ROUNDS):
+  1895→        for path in _OBSERVATION_PATHS:
+  1896→            url = f"{scheme}://{netloc}{path}"
+  1897→            t_start = time.monotonic()
+  1898→            resp = http_probe(
+  1899→                url,
+  1900→                timeout=timeout,
+  1901→                verify_tls=verify_tls,
+  1902→                limiter=default_limiter,
+  1903→            )
+  1904→            t_end = time.monotonic()
+  1905→
+  1906→            samples.append({
+  1907→                "round": round_idx,
+  1908→                "path": path,
+  1909→                "url": url,
+  1910→                "ok": resp.get("ok", False),
+  1911→                "status": resp.get("status", 0),
+  1912→                "reason": resp.get("reason", ""),
+  1913→                "response_headers": resp.get("headers", {}),
+  1914→                "request_headers": {  # our request headers
+  1915→                    "User-Agent": "ReconPro/2.0 (Enterprise Security Scanner)",
+  1916→                },
+  1917→                "response_body": resp.get("body", ""),
+  1918→                "response_size": len(resp.get("body", "").encode("utf-8", errors="replace")),
+  1919→                "request_size": 0,  # GET requests, minimal body
+  1920→                "response_time": round(t_end - t_start, 4),
+  1921→                "timestamp": round(t_start, 4),
+  1922→            })
+  1923→
+  1924→    return samples
+  1925→
+  1926→
+  1927→# ═══════════════════════════════════════════════════════════════════════════
+  1928→# MAIN ENTRY POINT
+  1929→# ═══════════════════════════════════════════════════════════════════════════
+  1930→
+  1931→def run_signal_intelligence(
+  1932→    target: str,
+  1933→    base_url: str,
+  1934→    timeout: int = 8,
+  1935→    verify_tls: bool = True,
+  1936→) -> List[Finding]:
+  1937→    """Apply intelligence-community analysis frameworks to HTTP traffic.
+  1938→
+  1939→    Probes the target across multiple paths and rounds, then applies eight
+  1940→    analytical capabilities to the collected signal data:
+  1941→
+  1942→      1. Traffic Pattern Analysis
+  1943→      2. Beaconing Detection
+  1944→      3. C2 Pattern Matching
+  1945→      4. Communication Schedule Extraction
+  1946→      5. Payload Size Analysis
+  1947→      6. User-Agent Fingerprinting
+  1948→      7. DNS Communication Pattern Analysis
+  1949→      8. Session Behavior Profiling
+  1950→
+  1951→    Args:
+  1952→        target: Human-readable target identifier (e.g. 'example.com').
+  1953→        base_url: Base URL for HTTP probes (e.g. 'https://example.com').
+  1954→        timeout: Per-request timeout in seconds.
+  1955→        verify_tls: Whether to verify TLS certificates.
+  1956→
+  1957→    Returns:
+  1958→        List of Finding objects covering all eight analytical dimensions.
+  1959→    """
+  1960→    all_findings: List[Finding] = []
+  1961→
+  1962→    # ── Phase 1: Collect probe samples ──────────────────────────────────
+  1963→    samples = _collect_probe_samples(target, base_url, timeout, verify_tls)
+  1964→
+  1965→    ok_count = sum(1 for s in samples if s.get("ok"))
+  1966→
+  1967→    # ── Phase 2: Run all eight analyzers ───────────────────────────────
+  1968→    analyzers = [
+  1969→        (_analyze_traffic_patterns, "Traffic Pattern Analysis"),
+  1970→        (_detect_beaconing, "Beaconing Detection"),
+  1971→        (_match_c2_patterns, "C2 Pattern Matching"),
+  1972→        (_extract_communication_schedule, "Communication Schedule Extraction"),
+  1973→        (_analyze_payload_sizes, "Payload Size Analysis"),
+  1974→        (_fingerprint_user_agents, "User-Agent Fingerprinting"),
+  1975→        (_analyze_dns_comm_patterns, "DNS Communication Pattern Analysis"),
+  1976→        (_profile_session_behavior, "Session Behavior Profiling"),
+  1977→    ]
+  1978→
+  1979→    for analyzer_fn, analyzer_name in analyzers:
+  1980→        try:
+  1981→            results = analyzer_fn(samples, target, base_url)
+  1982→            all_findings.extend(results)
+  1983→        except Exception:
+  1984→            continue
+  1985→
+  1986→    # ── Phase 3: Overall assessment ────────────────────────────────────
+  1987→    high_sev = sum(1 for f in all_findings if f.severity in ("critical", "high"))
+  1988→    med_sev = sum(1 for f in all_findings if f.severity == "medium")
+  1989→    total_dread = sum(f.dread_score for f in all_findings)
+  1990→    max_dread = 80.0  # theoretical maximum for all analyzers
+  1991→    risk_pct = min(100, (total_dread / max_dread * 100)) if max_dread > 0 else 0
+  1992→
+  1993→    risk_level = (
+  1994→        "CRITICAL" if risk_pct > 60 else
+  1995→        "HIGH" if risk_pct > 40 else
+  1996→        "MEDIUM" if risk_pct > 20 else
+  1997→        "LOW"
+  1998→    )
+  1999→
+  2000→    all_findings.append(Finding(
+
+[showing lines 1-2000 of 2047; use offset=2001 with limit to continue reading]

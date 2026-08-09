@@ -1,0 +1,976 @@
+     1→"""Module: ZERO_DAY_HUNTER — Anomaly-Based Undocumented Vulnerability Detection for ReconPro v9.2.0.
+     2→
+     3→DEFENSIVE / EDUCATIONAL ONLY — This module identifies patterns in HTTP responses
+     4→that may indicate undocumented or zero-day vulnerabilities through statistical
+     5→anomaly detection, error message analysis, version correlation, behavioral
+     6→scoring, fuzzing analysis, header inspection, and access control mapping.
+     7→
+     8→Capabilities:
+     9→  1. Response Anomaly Detection — Statistical baseline comparison for abnormal
+    10→     status codes, error message patterns, and unexpected response sizes.
+    11→  2. Error Message Analysis — Stack traces, internal paths, debug info, database
+    12→     errors, framework debug pages revealing unpatched vulnerabilities.
+    13→  3. Version-Response Correlation — Cross-reference observed versions with known
+    14→     vulnerability databases to find version-specific gaps.
+    15→  4. Behavioral Anomaly Scoring — Inconsistent caching, timing anomalies, parameter
+    16→     sensitivity across endpoints.
+    17→  5. Fuzzing Result Analysis — Crafted inputs detecting anomalous responses
+    18→     suggesting injection points or memory corruption.
+    19→  6. Header Anomaly Detection — Headers revealing internal architecture, debug
+    20→     mode, or development artifacts.
+    21→  7. Endpoint Sensitivity Mapping — Paths with/without authentication to find
+    22→     broken access control patterns.
+    23→
+    24→References:
+    25→  - MITRE ATT&CK: T1595, T1589, T1190, T1195
+    26→  - OWASP Testing Guide v4.2
+    27→  - CWE-20: Improper Input Validation
+    28→  - CWE-209: Generation of Error Message Containing Sensitive Information
+    29→"""
+    30→from __future__ import annotations
+    31→
+    32→import math
+    33→import re
+    34→import statistics
+    35→import time
+    36→import urllib.parse
+    37→from typing import Any, Dict, List, Optional, Tuple
+    38→
+    39→from ..http import http_probe, Finding, default_limiter
+    40→
+    41→
+    42→# ════════════════════════════════════════════════════════════════════════
+    43→# ANOMALY_THRESHOLDS — Statistical baselines for response analysis
+    44→# ════════════════════════════════════════════════════════════════════════
+    45→
+    46→ANOMALY_THRESHOLDS: Dict[str, Dict[str, Any]] = {
+    47→    "response_size": {
+    48→        "description": "Response body size deviation from baseline (bytes).",
+    49→        "normal_range_min": 200,
+    50→        "normal_range_max": 524288,           # 512 KB
+    51→        "abnormally_large": 1048576,          # 1 MB+ on non-media endpoints
+    52→        "abnormally_small_ok": 5,             # 200 with < 5 bytes is suspicious
+    53→        "size_variance_sigma": 2.0,           # Flag if > N sigma from mean
+    54→    },
+    55→    "status_codes": {
+    56→        "description": "HTTP status code anomaly thresholds.",
+    57→        "expected_success": {200, 201, 204, 301, 302, 304},
+    58→        "anomaly_codes": {
+    59→            206: "Partial content on non-range request suggests chunked leak",
+    60→            218: "This is fine (Apache) — may indicate misconfiguration",
+    61→            422: "Unprocessable entity — reveals backend validation schema",
+    62→            423: "Locked — WebDAV exposed",
+    63→            424: "Failed dependency — reveals service coupling",
+    64→            425: "Too early — premature HTTP/3 or experimental headers",
+    65→            426: "Upgrade required — protocol negotiation leak",
+    66→            428: "Precondition required — reveals backend state requirements",
+    67→            429: "Rate limit hit — reveals rate-limiting architecture",
+    68→            431: "Request header fields too large — reveals header size limits",
+    69→            451: "Unavailable for legal reasons — reveals jurisdiction",
+    70→            501: "Not implemented — reveals disabled HTTP methods",
+    71→            502: "Bad gateway — reveals upstream proxy topology",
+    72→            506: "Variant also negotiates — reveals content negotiation config",
+    73→            508: "Loop detected — reveals internal redirect chains",
+    74→            510: "Not extended — reveals HTTP extension requirements",
+    75→            511: "Network authentication required — reveals captive portal",
+    76→        },
+    77→        "unexpected_5xx_on_static": (
+    78→            "Server error on static resource path suggests backend "
+    79→            "vulnerability or misconfigured routing"
+    80→        ),
+    81→    },
+    82→    "timing": {
+    83→        "description": "Response timing anomaly thresholds (seconds).",
+    84→        "baseline_fast_ms": 200,
+    85→        "baseline_normal_ms": 1000,
+    86→        "suspicious_slow_ms": 5000,
+    87→        "time_based_blind_threshold_ms": 3000,
+    88→        "timing_variance_sigma": 2.5,
+    89→    },
+    90→    "headers": {
+    91→        "description": "Response header count thresholds.",
+    92→        "min_expected": 3,
+    93→        "max_expected": 40,
+    94→        "missing_security_headers": [
+    95→            "X-Content-Type-Options",
+    96→            "X-Frame-Options",
+    97→            "Content-Security-Policy",
+    98→            "Strict-Transport-Security",
+    99→            "Referrer-Policy",
+   100→            "Permissions-Policy",
+   101→        ],
+   102→    },
+   103→    "body_entropy": {
+   104→        "description": "Shannon entropy thresholds for response body content.",
+   105→        "low_entropy_threshold": 0.5,    # Likely template/placeholder
+   106→        "high_entropy_threshold": 7.5,    # Likely encrypted/compressed/binary
+   107→        "typical_html_range": (2.0, 5.5),
+   108→        "typical_json_range": (2.5, 5.0),
+   109→    },
+   110→    "consistency": {
+   111→        "description": "Cross-request consistency thresholds.",
+   112→        "max_status_variance": 2,          # More than 2 distinct statuses = anomaly
+   113→        "max_size_ratio": 5.0,             # Max/min size ratio above this = anomaly
+   114→        "header_stability_tolerance": 0.3, # 30% header change rate is anomalous
+   115→    },
+   116→}
+   117→
+   118→
+   119→# ════════════════════════════════════════════════════════════════════════
+   120→# ERROR_SIGNATURES — Patterns revealing unpatched vulnerabilities
+   121→# ════════════════════════════════════════════════════════════════════════
+   122→
+   123→ERROR_SIGNATURES: Dict[str, List[Dict[str, Any]]] = {
+   124→    "stack_traces": [
+   125→        {
+   126→            "name": "python_traceback",
+   127→            "pattern": r"Traceback \(most recent call last\):",
+   128→            "severity": "high",
+   129→            "framework": "Python",
+   130→            "description": "Full Python traceback exposed — reveals code structure and file paths",
+   131→        },
+   132→        {
+   133→            "name": "java_stacktrace",
+   134→            "pattern": r"(?:Exception|Error)\s+at\s+[\w$]+\.[\w$]+\(.*?\.java:\d+\)",
+   135→            "severity": "high",
+   136→            "framework": "Java",
+   137→            "description": "Java stack trace with line numbers — reveals class structure",
+   138→        },
+   139→        {
+   140→            "name": "nodejs_stack",
+   141→            "pattern": r"at\s+(?:[A-Z][\w$]*\.)?[\w$]+\s+\([^)]*:[\d]+:[\d]+\)",
+   142→            "severity": "high",
+   143→            "framework": "Node.js",
+   144→            "description": "Node.js stack trace — reveals module structure and paths",
+   145→        },
+   146→        {
+   147→            "name": "php_stack_trace",
+   148→            "pattern": r"(?:Fatal error|Warning|Notice|Parse error):.*?in\s+.+\.php\s+on line\s+\d+",
+   149→            "severity": "high",
+   150→            "framework": "PHP",
+   151→            "description": "PHP error with file path and line number",
+   152→        },
+   153→        {
+   154→            "name": "csharp_exception",
+   155→            "pattern": r"at\s+[\w.]+\([\w.]+\s+\w+,.*?\)\s+in\s+.+:line\s+\d+",
+   156→            "severity": "high",
+   157→            "framework": ".NET",
+   158→            "description": ".NET exception with file and line number",
+   159→        },
+   160→        {
+   161→            "name": "ruby_exception",
+   162→            "pattern": r"(?:NoMethodError|NameError|RuntimeError|ArgumentError).*?`\w+'",
+   163→            "severity": "high",
+   164→            "framework": "Ruby",
+   165→            "description": "Ruby exception revealing method names and call chains",
+   166→        },
+   167→        {
+   168→            "name": "go_panic",
+   169→            "pattern": r"panic:.*?goroutine\s+\d+",
+   170→            "severity": "high",
+   171→            "framework": "Go",
+   172→            "description": "Go panic with goroutine ID — reveals concurrent architecture",
+   173→        },
+   174→        {
+   175→            "name": "rust_panic",
+   176→            "pattern": r"thread '[^']+' panicked at '[^']+',\s*.+\.rs:\d+",
+   177→            "severity": "high",
+   178→            "framework": "Rust",
+   179→            "description": "Rust panic with source file and line number",
+   180→        },
+   181→    ],
+   182→    "database_errors": [
+   183→        {
+   184→            "name": "mysql_error",
+   185→            "pattern": r"(?:MySQL|mysql|MariaDB|mariadb).*?(?:error|syntax|exception)",
+   186→            "severity": "critical",
+   187→            "description": "MySQL error message — confirms SQL backend and may reveal query structure",
+   188→        },
+   189→        {
+   190→            "name": "postgres_error",
+   191→            "pattern": r"(?:PostgreSQL|postgres|PSQL|psql).*?(?:ERROR|error|exception|warning)",
+   192→            "severity": "critical",
+   193→            "description": "PostgreSQL error — reveals database type and potential query leak",
+   194→        },
+   195→        {
+   196→            "name": "sqlite_error",
+   197→            "pattern": r"(?:SQLite|sqlite|sqlite3).*?(?:error|exception|no such table)",
+   198→            "severity": "critical",
+   199→            "description": "SQLite error — confirms local DB usage and may expose schema",
+   200→        },
+   201→        {
+   202→            "name": "mssql_error",
+   203→            "pattern": r"(?:Microsoft SQL Server|SQLServer|ODBC SQL Server Driver).*?(?:error|Exception)",
+   204→            "severity": "critical",
+   205→            "description": "Microsoft SQL Server error — reveals Windows backend stack",
+   206→        },
+   207→        {
+   208→            "name": "oracle_error",
+   209→            "pattern": r"(?:ORA-\d{5}|Oracle.*?error|oracle\.jdbc)",
+   210→            "severity": "critical",
+   211→            "description": "Oracle error code — reveals database version and operation",
+   212→        },
+   213→        {
+   214→            "name": "mongodb_error",
+   215→            "pattern": r"(?:MongoDB|mongo|E11000|BSON|errmsg)",
+   216→            "severity": "high",
+   217→            "description": "MongoDB error — confirms NoSQL backend and may reveal collection names",
+   218→        },
+   219→        {
+   220→            "name": "redis_error",
+   221→            "pattern": r"(?:Redis|redis|ERR\s+)[\w\s]+(?:error|command|wrong)",
+   222→            "severity": "high",
+   223→            "description": "Redis error — reveals caching architecture and potential command injection",
+   224→        },
+   225→        {
+   226→            "name": "generic_sql_syntax",
+   227→            "pattern": r"(?:sql syntax|syntax error|unclosed quotation mark|unterminated string).*(?:SQL|query|statement)",
+   228→            "severity": "critical",
+   229→            "description": "Generic SQL syntax error — confirms SQL injection surface",
+   230→        },
+   231→    ],
+   232→    "debug_pages": [
+   233→        {
+   234→            "name": "django_debug_page",
+   235→            "pattern": r"(?:Django|django).*?(?:debug|Debug|DEBUG)|<title>Page not found.*?Django",
+   236→            "severity": "critical",
+   237→            "framework": "Django",
+   238→            "description": "Django debug page — full environment, settings, and traceback exposed",
+   239→        },
+   240→        {
+   241→            "name": "rails_debug_page",
+   242→            "pattern": r"(?:Rails|rails).*?(?:debug|Routing Error|ActionController::Exception|We're sorry)",
+   243→            "severity": "critical",
+   244→            "framework": "Rails",
+   245→            "description": "Rails debug/error page — reveals framework version and routes",
+   246→        },
+   247→        {
+   248→            "name": "aspnet_debug",
+   249→            "pattern": r"(?:ASP\.NET|AspNet\.Core).*?(?:error|Exception|Server Error|Debug)",
+   250→            "severity": "critical",
+   251→            "framework": "ASP.NET",
+   252→            "description": "ASP.NET debug page — reveals .NET version, stack, and request details",
+   253→        },
+   254→        {
+   255→            "name": "spring_boot_error",
+   256→            "pattern": r"(?:Whitelabel Error Page|Spring Boot|spring-framework|org\.springframework)",
+   257→            "severity": "high",
+   258→            "framework": "Spring Boot",
+   259→            "description": "Spring Boot error page — reveals Java/Spring version and bean configuration",
+   260→        },
+   261→        {
+   262→            "name": "express_error",
+   263→            "pattern": r"(?:Express|express).*?(?:Error|error)|<title>Express</title>",
+   264→            "severity": "high",
+   265→            "framework": "Express.js",
+   266→            "description": "Express.js error page — confirms Node.js/Express stack",
+   267→        },
+   268→        {
+   269→            "name": "flask_debug",
+   270→            "pattern": r"(?:Flask|flask|jinja2|Jinja2).*?(?:debug|Debug|traceback|TemplateNotFound)",
+   271→            "severity": "critical",
+   272→            "framework": "Flask",
+   273→            "description": "Flask/Jinja2 debug page — reveals template paths and Python internals",
+   274→        },
+   275→        {
+   276→            "name": "laravel_debug",
+   277→            "pattern": r"(?:Laravel|laravel).*?(?:Whoops|debug|Error|Exception|Facade\\\\)",
+   278→            "severity": "critical",
+   279→            "framework": "Laravel",
+   280→            "description": "Laravel Whoops error page — full stack trace and environment variables",
+   281→        },
+   282→        {
+   283→            "name": "phpinfo_page",
+   284→            "pattern": r"(?:phpinfo\(\)|PHP Version.*?</h1>|System.*?</td>|php_uname)",
+   285→            "severity": "critical",
+   286→            "framework": "PHP",
+   287→            "description": "phpinfo() output — full PHP configuration, modules, and paths exposed",
+   288→        },
+   289→        {
+   290→            "name": "tomcat_error",
+   291→            "pattern": r"(?:Apache Tomcat|tomcat).*?(?:error|Error|HTTP Status|exception)",
+   292→            "severity": "high",
+   293→            "framework": "Tomcat",
+   294→            "description": "Tomcat error page — reveals Java version and servlet container details",
+   295→        },
+   296→        {
+   297→            "name": "webpack_hmr",
+   298→            "pattern": r"(?:webpack|webpack-dev-server|Hot Module Replacement|__webpack_hmr)",
+   299→            "severity": "medium",
+   300→            "framework": "Webpack",
+   301→            "description": "Webpack HMR exposed — development build in production reveals source maps",
+   302→        },
+   303→        {
+   304→            "name": "nextjs_debug",
+   305→            "pattern": r"(?:Next\.js|nextjs|__next).*?(?:error|Error|500|unhandledrejection)",
+   306→            "severity": "high",
+   307→            "framework": "Next.js",
+   308→            "description": "Next.js debug/error page — reveals React/Next version and component stack",
+   309→        },
+   310→    ],
+   311→    "internal_paths": [
+   312→        {
+   313→            "name": "unix_path_leak",
+   314→            "pattern": r"(?:/home/|/var/www/|/opt/|/srv/|/usr/local/|/etc/)[\w/.-]+",
+   315→            "severity": "high",
+   316→            "description": "Unix filesystem path exposed — reveals server directory structure",
+   317→        },
+   318→        {
+   319→            "name": "windows_path_leak",
+   320→            "pattern": r"(?:[A-Z]:\\(?:Users|Windows|Program Files|inetpub|wwwroot)\\[\w\\.-]+)",
+   321→            "severity": "high",
+   322→            "description": "Windows filesystem path exposed — reveals server directory structure",
+   323→        },
+   324→        {
+   325→            "name": "docker_path_leak",
+   326→            "pattern": r"/(?:app|src|code|workspace|opt/app|var/www)[\w/.-]*(?:\.py|\.js|\.rb|\.java|\.go)",
+   327→            "severity": "high",
+   328→            "description": "Container source path leaked — reveals Docker image layout",
+   329→        },
+   330→        {
+   331→            "name": "config_file_reference",
+   332→            "pattern": r"(?:\.env|config\.yml|config\.json|settings\.py|application\.properties|web\.xml)",
+   333→            "severity": "high",
+   334→            "description": "Configuration file path referenced — reveals application structure",
+   335→        },
+   336→        {
+   337→            "name": "temp_file_reference",
+   338→            "pattern": r"/(?:tmp|temp|var/tmp)[\w/.-]+",
+   339→            "severity": "medium",
+   340→            "description": "Temporary file path exposed — reveals OS and application temp directory",
+   341→        },
+   342→    ],
+   343→    "sensitive_info": [
+   344→        {
+   345→            "name": "aws_key_leak",
+   346→            "pattern": r"(?:AKIA[A-Z0-9]{16}|aws_secret_access_key)",
+   347→            "severity": "critical",
+   348→            "description": "AWS access key detected — full cloud account compromise risk",
+   349→        },
+   350→        {
+   351→            "name": "private_key_leak",
+   352→            "pattern": r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----",
+   353→            "severity": "critical",
+   354→            "description": "Private key exposed — cryptographic compromise",
+   355→        },
+   356→        {
+   357→            "name": "jwt_secret_leak",
+   358→            "pattern": r"(?:jwt[_-]?secret|JWT[_-]?SECRET)[\s]*[:=][\s]*['\"]?[\w/-]{16,}",
+   359→            "severity": "critical",
+   360→            "description": "JWT signing secret exposed — token forgery possible",
+   361→        },
+   362→        {
+   363→            "name": "db_connection_string",
+   364→            "pattern": r"(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp)://[^\s'"]+",
+   365→            "severity": "critical",
+   366→            "description": "Database connection string exposed — direct database access",
+   367→        },
+   368→        {
+   369→            "name": "api_key_leak",
+   370→            "pattern": r"(?:api[_-]?key|apikey)[\s]*[:=][\s]*['\"]?[\w-]{20,}",
+   371→            "severity": "critical",
+   372→            "description": "API key leaked — service impersonation risk",
+   373→        },
+   374→        {
+   375→            "name": "ip_address_leak",
+   376→            "pattern": r"(?:internal|private|backend|db-|db_|db\.)[\w-]*(?:\d{1,3}\.){3}\d{1,3}",
+   377→            "severity": "medium",
+   378→            "description": "Internal IP address exposed in error message",
+   379→        },
+   380→        {
+   381→            "name": "hostname_leak",
+   382→            "pattern": r"(?:hostname|server|host)[:\s]+(?:[a-z0-9-]+\.)+(?:internal|local|corp|prod|staging|dev)[\w.-]*",
+   383→            "severity": "medium",
+   384→            "description": "Internal hostname exposed — reveals infrastructure naming convention",
+   385→        },
+   386→    ],
+   387→}
+   388→
+   389→
+   390→# ════════════════════════════════════════════════════════════════════════
+   391→# VERSION_VULN_DB — Sample version-to-CVE correlation database
+   392→# ════════════════════════════════════════════════════════════════════════
+   393→
+   394→VERSION_VULN_DB: Dict[str, List[Dict[str, Any]]] = {
+   395→    "nginx": [
+   396→        {
+   397→            "version_pattern": r"nginx/(\d+\.\d+)\.\d+",
+   398→            "vulnerable_ranges": [
+   399→                {"max": "0.7", "cve": "CVE-2009-2629", "desc": "URI processing buffer overflow"},
+   400→                {"max": "1.0", "cve": "CVE-2013-2070", "desc": "WebSocket DoS"},
+   401→                {"max": "1.4", "cve": "CVE-2014-0133", "desc": "SPDY header parsing DoS"},
+   402→                {"max": "1.16", "cve": "CVE-2019-9511", "desc": "HTTP/2 multiplexing DoS"},
+   403→                {"min": "1.17", "max": "1.21", "cve": "CVE-2021-23017", "desc": "DNS resolver off-by-one heap write"},
+   404→                {"min": "1.21", "max": "1.25", "cve": "CVE-2024-7347", "desc": "HTTP/2 rapid reset DoS"},
+   405→            ],
+   406→        },
+   407→    ],
+   408→    "apache": [
+   409→        {
+   410→            "version_pattern": r"Apache/(\d+\.\d+)\.\d+",
+   411→            "vulnerable_ranges": [
+   412→                {"max": "2.2", "cve": "CVE-2012-0053", "desc": "HTTP header response splitting"},
+   413→                {"max": "2.4", "cve": "CVE-2017-7668", "desc": "mod_http2 stream handling DoS"},
+   414→                {"min": "2.4", "max": "2.4.49", "cve": "CVE-2021-41773", "desc": "Path traversal / CGI execution"},
+   415→                {"min": "2.4.49", "max": "2.4.51", "cve": "CVE-2021-42013", "desc": "Path traversal variant"},
+   416→            ],
+   417→        },
+   418→    ],
+   419→    "openSSH": [
+   420→        {
+   421→            "version_pattern": r"OpenSSH_(\d+\.\d+)",
+   422→            "vulnerable_ranges": [
+   423→                {"max": "7.6", "cve": "CVE-2018-15473", "desc": "User enumeration via authentication timing"},
+   424→                {"min": "8.5", "max": "9.7", "cve": "CVE-2024-6387", "desc": "regreSSHion — signal handler race condition RCE"},
+   425→            ],
+   426→        },
+   427→    ],
+   428→    "php": [
+   429→        {
+   430→            "version_pattern": r"PHP/(\d+\.\d+)\.\d+",
+   431→            "vulnerable_ranges": [
+   432→                {"max": "5.6", "cve": "CVE-2019-11043", "desc": "PHP-FPM RCE via env variable length"},
+   433→                {"min": "7.0", "max": "7.2", "cve": "CVE-2019-11043", "desc": "PHP-FPM RCE"},
+   434→                {"min": "7.3", "max": "7.4.32", "cve": "CVE-2022-31631", "desc": "PGSQL double free"},
+   435→                {"min": "8.0", "max": "8.0.29", "cve": "CVE-2022-31631", "desc": "PGSQL double free"},
+   436→                {"min": "8.1", "max": "8.1.19", "cve": "CVE-2023-3823", "desc": "XML parsing buffer overread"},
+   437→                {"min": "8.1", "max": "8.1.29", "cve": "CVE-2023-3824", "desc": "BCMath arbitrary precision integer overflow"},
+   438→            ],
+   439→        },
+   440→    ],
+   441→    "tomcat": [
+   442→        {
+   443→            "version_pattern": r"Apache Tomcat/(\d+\.\d+)\.\d+",
+   444→            "vulnerable_ranges": [
+   445→                {"max": "9.0", "cve": "CVE-2020-9484", "desc": "Session persistence deserialization RCE"},
+   446→                {"min": "10.0", "max": "10.1.13", "cve": "CVE-2024-21733", "desc": "HTTP request smuggling"},
+   447→                {"min": "8.5", "max": "8.5.98", "cve": "CVE-2024-23336", "desc": "HTTP request smuggling via transfer-encoding"},
+   448→            ],
+   449→        },
+   450→    ],
+   451→    "openssl": [
+   452→        {
+   453→            "version_pattern": r"OpenSSL\s+(\d+\.\d+)\.\d+",
+   454→            "vulnerable_ranges": [
+   455→                {"min": "3.0", "max": "3.0.12", "cve": "CVE-2024-5535", "desc": "PKCS7 decryption buffer overread"},
+   456→                {"min": "1.1.1", "max": "1.1.1w", "cve": "CVE-2024-4741", "desc": "DTLS bad length DoS"},
+   457→            ],
+   458→        },
+   459→    ],
+   460→    "spring": [
+   461→        {
+   462→            "version_pattern": r"(?:spring|Spring)\s*(?:Framework\s*)?([\d.]+)",
+   463→            "vulnerable_ranges": [
+   464→                {"min": "5.0", "max": "5.3.17", "cve": "CVE-2022-22965", "desc": "Spring4Shell RCE via data binding"},
+   465→                {"min": "5.3", "max": "5.3.17", "cve": "CVE-2022-22950", "desc": "DoS via SpEL expressions"},
+   466→            ],
+   467→        },
+   468→    ],
+   469→    "nodejs": [
+   470→        {
+   471→            "version_pattern": r"(?:Node\.js|node)\s+v?(\d+\.\d+)\.\d+",
+   472→            "vulnerable_ranges": [
+   473→                {"min": "14.0", "max": "14.21.3", "cve": "CVE-2023-23918", "desc": "Crypto getCurves out-of-bounds read"},
+   474→                {"min": "16.0", "max": "16.19.0", "cve": "CVE-2023-23919", "desc": "Ciphersheet WIFS improper key validation"},
+   475→                {"min": "18.0", "max": "18.14.0", "cve": "CVE-2023-23920", "desc": "Module permissions bypass via process.mainModule"},
+   476→            ],
+   477→        },
+   478→    ],
+   479→}
+   480→
+   481→
+   482→# ════════════════════════════════════════════════════════════════════════
+   483→# FUZZ_PAYLOADS — Crafted inputs for anomaly detection
+   484→# ════════════════════════════════════════════════════════════════════════
+   485→
+   486→FUZZ_PAYLOADS: List[Dict[str, Any]] = [
+   487→    {"category": "sqli", "value": "' OR '1'='1", "label": "SQLi: boolean-based auth bypass"},
+   488→    {"category": "sqli", "value": "' UNION SELECT NULL,NULL,NULL--", "label": "SQLi: UNION column enumeration"},
+   489→    {"category": "sqli", "value": "1; WAITFOR DELAY '0:0:5'--", "label": "SQLi: time-based blind (MSSQL)"},
+   490→    {"category": "sqli", "value": "1 AND (SELECT * FROM (SELECT(SLEEP(5)))a)--", "label": "SQLi: time-based blind (MySQL)"},
+   491→    {"category": "sqli", "value": "1' AND 1=CONVERT(int,(SELECT @@version))--", "label": "SQLi: error-based (MSSQL)"},
+   492→    {"category": "xss", "value": "<script>alert(document.domain)</script>", "label": "XSS: reflected script tag"},
+   493→    {"category": "xss", "value": "'><img src=x onerror=alert(1)>", "label": "XSS: attribute breakout"},
+   494→    {"category": "xss", "value": "{{constructor.constructor('return this')()}}", "label": "SSTI: JavaScript prototype chain"},
+   495→    {"category": "ssti", "value": "{{7*7}}", "label": "SSTI: arithmetic expression probe"},
+   496→    {"category": "ssti", "value": "${7*7}", "label": "SSTI: template literal probe (Freemarker/Thymeleaf)"},
+   497→    {"category": "ssti", "value": "#{7*7}", "label": "SSTI: OGNL expression probe (Struts)"},
+   498→    {"category": "path_traversal", "value": "../../../etc/passwd", "label": "Path traversal: classic"},
+   499→    {"category": "path_traversal", "value": "....//....//....//etc/passwd", "label": "Path traversal: double-encoding"},
+   500→    {"category": "path_traversal", "value": "/proc/self/environ", "label": "Path traversal: proc filesystem"},
+   501→    {"category": "format_string", "value": "%s%s%s%s%s%s%s%s%s%s", "label": "Format string: printf-style"},
+   502→    {"category": "format_string", "value": "{0}{1}{2}{3}{4}", "label": "Format string: Python format"},
+   503→    {"category": "buffer_overflow", "value": "A" * 4096, "label": "Buffer overflow: large string (4KB)"},
+   504→    {"category": "buffer_overflow", "value": "A" * 65536, "label": "Buffer overflow: very large string (64KB)"},
+   505→    {"category": "null_byte", "value": "%00", "label": "Null byte injection"},
+   506→    {"category": "crlf", "value": "%0d%0aX-Injected:true", "label": "CRLF: header injection"},
+   507→    {"category": "crlf", "value": "\r\nX-Injected: true", "label": "CRLF: raw header injection"},
+   508→    {"category": "xml", "value": '<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>', "label": "XXE: external entity injection"},
+   509→    {"category": "json", "value": '{"__proto__":{"admin":true}}', "label": "Prototype pollution: JSON"},
+   510→    {"category": "ldap", "value": "*)(uid=*))(|(uid=*", "label": "LDAP injection: wildcard bypass"},
+   511→    {"category": "log4j", "value": "${jndi:ldap://127.0.0.1/a}", "label": "Log4Shell: JNDI lookup probe"},
+   512→    {"category": "ssrf", "value": "http://169.254.169.254/latest/meta-data/", "label": "SSRF: AWS metadata endpoint"},
+   513→    {"category": "ssrf", "value": "http://[::1]:80/", "label": "SSRF: IPv6 loopback"},
+   514→]
+   515→
+   516→
+   517→# ════════════════════════════════════════════════════════════════════════
+   518→# SENSITIVITY_PATHS — Endpoints to test with/without auth context
+   519→# ════════════════════════════════════════════════════════════════════════
+   520→
+   521→SENSITIVITY_PATHS: List[Dict[str, Any]] = [
+   522→    {"path": "/admin", "expected_without_auth": 401, "sensitivity": "critical", "label": "Admin dashboard"},
+   523→    {"path": "/admin/dashboard", "expected_without_auth": 401, "sensitivity": "critical", "label": "Admin dashboard (sub)"},
+   524→    {"path": "/admin/users", "expected_without_auth": 401, "sensitivity": "critical", "label": "User management"},
+   525→    {"path": "/api/admin", "expected_without_auth": 401, "sensitivity": "critical", "label": "Admin API root"},
+   526→    {"path": "/api/users", "expected_without_auth": 401, "sensitivity": "high", "label": "User API listing"},
+   527→    {"path": "/api/users/admin", "expected_without_auth": 401, "sensitivity": "critical", "label": "Admin user endpoint"},
+   528→    {"path": "/api/config", "expected_without_auth": 401, "sensitivity": "critical", "label": "Configuration API"},
+   529→    {"path": "/api/settings", "expected_without_auth": 401, "sensitivity": "high", "label": "Settings API"},
+   530→    {"path": "/api/internal", "expected_without_auth": 401, "sensitivity": "critical", "label": "Internal API"},
+   531→    {"path": "/api/debug", "expected_without_auth": 401, "sensitivity": "critical", "label": "Debug API"},
+   532→    {"path": "/api/health", "expected_without_auth": 200, "sensitivity": "low", "label": "Health check"},
+   533→    {"path": "/api/status", "expected_without_auth": 200, "sensitivity": "low", "label": "Status endpoint"},
+   534→    {"path": "/user/profile", "expected_without_auth": 401, "sensitivity": "medium", "label": "User profile"},
+   535→    {"path": "/account", "expected_without_auth": 401, "sensitivity": "high", "label": "Account page"},
+   536→    {"path": "/account/settings", "expected_without_auth": 401, "sensitivity": "high", "label": "Account settings"},
+   537→    {"path": "/wp-admin", "expected_without_auth": 200, "sensitivity": "medium", "label": "WordPress admin"},
+   538→    {"path": "/phpmyadmin", "expected_without_auth": 200, "sensitivity": "high", "label": "phpMyAdmin"},
+   539→    {"path": "/console", "expected_without_auth": 401, "sensitivity": "high", "label": "Management console"},
+   540→    {"path": "/manage", "expected_without_auth": 401, "sensitivity": "high", "label": "Management interface"},
+   541→    {"path": "/dashboard", "expected_without_auth": 401, "sensitivity": "high", "label": "Dashboard"},
+   542→    {"path": "/backup", "expected_without_auth": 401, "sensitivity": "critical", "label": "Backup endpoint"},
+   543→    {"path": "/backups", "expected_without_auth": 401, "sensitivity": "critical", "label": "Backups listing"},
+   544→    {"path": "/.git/config", "expected_without_auth": 404, "sensitivity": "critical", "label": "Git config"},
+   545→    {"path": "/server-status", "expected_without_auth": 404, "sensitivity": "high", "label": "Apache server-status"},
+   546→    {"path": "/actuator/env", "expected_without_auth": 401, "sensitivity": "critical", "label": "Spring Actuator env"},
+   547→    {"path": "/actuator/heapdump", "expected_without_auth": 401, "sensitivity": "critical", "label": "Spring Actuator heapdump"},
+   548→]
+   549→
+   550→
+   551→# ════════════════════════════════════════════════════════════════════════
+   552→# HEADER_ANOMALY_PATTERNS — Headers revealing internal architecture
+   553→# ════════════════════════════════════════════════════════════════════════
+   554→
+   555→HEADER_ANOMALY_PATTERNS: List[Dict[str, Any]] = [
+   556→    {
+   557→        "header": "X-Powered-By",
+   558→        "severity": "medium",
+   559→        "description": "Reveals backend technology stack",
+   560→        "indicates": ["development_artifact", "tech_disclosure"],
+   561→    },
+   562→    {
+   563→        "header": "X-AspNet-Version",
+   564→        "severity": "medium",
+   565→        "description": "Reveals exact .NET Framework version",
+   566→        "indicates": ["version_disclosure", "tech_disclosure"],
+   567→    },
+   568→    {
+   569→        "header": "X-AspNetMvc-Version",
+   570→        "severity": "medium",
+   571→        "description": "Reveals ASP.NET MVC version",
+   572→        "indicates": ["version_disclosure", "tech_disclosure"],
+   573→    },
+   574→    {
+   575→        "header": "X-Drupal-Cache",
+   576→        "severity": "low",
+   577→        "description": "Confirms Drupal CMS",
+   578→        "indicates": ["tech_disclosure"],
+   579→    },
+   580→    {
+   581→        "header": "X-Generator",
+   582→        "severity": "medium",
+   583→        "description": "Often reveals CMS and version (e.g., WordPress, Drupal)",
+   584→        "indicates": ["version_disclosure", "tech_disclosure"],
+   585→    },
+   586→    {
+   587→        "header": "X-Debug-Info",
+   588→        "severity": "high",
+   589→        "description": "Debug mode enabled — reveals internal profiling data",
+   590→        "indicates": ["debug_mode", "development_artifact"],
+   591→    },
+   592→    {
+   593→        "header": "X-Rack-Cache",
+   594→        "severity": "low",
+   595→        "description": "Confirms Ruby/Rack stack",
+   596→        "indicates": ["tech_disclosure"]},
+   597→    },
+   598→    {
+   599→        "header": "X-Runtime",
+   600→        "severity": "low",
+   601→        "description": "Reveals request processing time — timing attack vector",
+   602→        "indicates": ["timing_leak", "tech_disclosure"],
+   603→    },
+   604→    {
+   605→        "header": "X-Request-Id",
+   606→        "severity": "low",
+   607→        "description": "Reveals request tracing architecture",
+   608→        "indicates": ["architecture_disclosure"],
+   609→    },
+   610→    {
+   611→        "header": "X-Cache",
+   612→        "severity": "low",
+   613→        "description": "Reveals caching infrastructure (Varnish, CDN, etc.)",
+   614→        "indicates": ["architecture_disclosure"],
+   615→    },
+   616→    {
+   617→        "header": "X-Served-By",
+   618→        "severity": "medium",
+   619→        "description": "Reveals internal server hostname or CDN node",
+   620→        "indicates": ["hostname_disclosure", "architecture_disclosure"],
+   621→    },
+   622→    {
+   623→        "header": "X-Varnish",
+   624→        "severity": "low",
+   625→        "description": "Confirms Varnish cache in use",
+   626→        "indicates": ["tech_disclosure"],
+   627→    },
+   628→    {
+   629→        "header": "X-Backend-Server",
+   630→        "severity": "high",
+   631→        "description": "Directly reveals backend server identity",
+   632→        "indicates": ["hostname_disclosure", "architecture_disclosure"],
+   633→    },
+   634→    {
+   635→        "header": "X-Azure-Ref",
+   636→        "severity": "low",
+   637→        "description": "Reveals Azure infrastructure hosting",
+   638→        "indicates": ["cloud_disclosure"],
+   639→    },
+   640→    {
+   641→        "header": "X-Amz-Cf-Id",
+   642→        "severity": "low",
+   643→        "description": "Confirms AWS CloudFront CDN",
+   644→        "indicates": ["cloud_disclosure"],
+   645→    },
+   646→    {
+   647→        "header": "Via",
+   648→        "severity": "medium",
+   649→        "description": "Reveals proxy chain and intermediate nodes",
+   650→        "indicates": ["architecture_disclosure", "proxy_disclosure"],
+   651→    },
+   652→    {
+   653→        "header": "X-Forwarded-For",
+   654→        "severity": "medium",
+   655→        "description": "Present in response — may reveal trust of client-provided headers",
+   656→        "indicates": ["proxy_misconfiguration"],
+   657→    },
+   658→    {
+   659→        "header": "Server",
+   660→        "severity": "low",
+   661→        "description": "Server header — check for version string in value",
+   662→        "indicates": ["version_disclosure", "tech_disclosure"],
+   663→    },
+   664→]
+   665→
+   666→
+   667→# ════════════════════════════════════════════════════════════════════════
+   668→# HELPER UTILITIES
+   669→# ════════════════════════════════════════════════════════════════════════
+   670→
+   671→DREAD_SCALE = {
+   672→    "critical": (10, 8, 9, 9, 8),
+   673→    "high":     (8, 7, 7, 7, 7),
+   674→    "medium":   (5, 5, 5, 5, 5),
+   675→    "low":      (3, 3, 3, 3, 4),
+   676→    "info":     (1, 1, 1, 1, 2),
+   677→}
+   678→
+   679→
+   680→def _dread_score(severity: str) -> float:
+   681→    d, r, e, a, disc = DREAD_SCALE.get(severity, (0, 0, 0, 0, 0))
+   682→    return round((d + r + e + a + disc) / 5, 1)
+   683→
+   684→
+   685→def _host_from_url(url: str) -> str:
+   686→    """Extract hostname from URL."""
+   687→    parsed = urllib.parse.urlparse(url)
+   688→    return parsed.netloc.split(":")[0]
+   689→
+   690→
+   691→def _shannon_entropy(data: str) -> float:
+   692→    """Calculate Shannon entropy of a string in bits."""
+   693→    if not data:
+   694→        return 0.0
+   695→    freq: Dict[str, int] = {}
+   696→    for ch in data:
+   697→        freq[ch] = freq.get(ch, 0) + 1
+   698→    length = len(data)
+   699→    entropy = 0.0
+   700→    for count in freq.values():
+   701→        p = count / length
+   702→        if p > 0:
+   703→            entropy -= p * math.log2(p)
+   704→    return round(entropy, 2)
+   705→
+   706→
+   707→def _version_cmp(v1: str, v2: str) -> int:
+   708→    """Compare two version strings. Returns -1, 0, or 1."""
+   709→    def _parts(v: str) -> List[int]:
+   710→        parts = []
+   711→        for p in re.split(r"\.|-", v):
+   712→            try:
+   713→                parts.append(int(p))
+   714→            except ValueError:
+   715→                parts.append(0)
+   716→        return parts
+   717→    p1, p2 = _parts(v1), _parts(v2)
+   718→    max_len = max(len(p1), len(p2))
+   719→    p1.extend([0] * (max_len - len(p1)))
+   720→    p2.extend([0] * (max_len - len(p2)))
+   721→    for a, b in zip(p1, p2):
+   722→        if a < b:
+   723→            return -1
+   724→        if a > b:
+   725→            return 1
+   726→    return 0
+   727→
+   728→
+   729→def _version_in_range(version: str, vuln_range: Dict[str, str]) -> bool:
+   730→    """Check if a version falls within a vulnerable range."""
+   731→    min_v = vuln_range.get("min", "0.0.0")
+   732→    max_v = vuln_range.get("max", "999.999.999")
+   733→    return _version_cmp(version, min_v) >= 0 and _version_cmp(version, max_v) <= 0
+   734→
+   735→
+   736→def _safe_probe(url: str, method: str = "GET", body: Optional[bytes] = None,
+   737→                headers: Optional[Dict[str, str]] = None, timeout: int = 8,
+   738→                verify_tls: bool = True) -> Dict[str, Any]:
+   739→    """Wrapper around http_probe with default_limiter and error handling."""
+   740→    try:
+   741→        return http_probe(
+   742→            url, method=method, body=body, headers=headers,
+   743→            timeout=timeout, verify_tls=verify_tls,
+   744→            limiter=default_limiter,
+   745→        )
+   746→    except Exception:
+   747→        return {"ok": False, "status": 0, "reason": "probe failed", "headers": {}, "body": ""}
+   748→
+   749→
+   750→def _severity_points(severity: str) -> int:
+   751→    """Map severity to points deducted."""
+   752→    return {"critical": 15, "high": 10, "medium": 5, "low": 3, "info": 1}.get(severity, 0)
+   753→
+   754→
+   755→# ════════════════════════════════════════════════════════════════════════
+   756→# CAPABILITY 1: RESPONSE ANOMALY DETECTION
+   757→# ════════════════════════════════════════════════════════════════════════
+   758→
+   759→def _detect_response_anomalies(
+   760→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   761→    baseline_responses: Optional[List[Dict[str, Any]]] = None,
+   762→) -> Tuple[List[Finding], List[Dict[str, Any]]]:
+   763→    """Compare response characteristics against statistical baselines."""
+   764→    findings: List[Finding] = []
+   765→    host = _host_from_url(base_url)
+   766→
+   767→    probe_paths = [
+   768→        "/", "/index.html", "/robots.txt", "/favicon.ico",
+   769→        "/sitemap.xml", "/manifest.json", "/.well-known/security.txt",
+   770→        "/api", "/api/v1", "/api/health", "/health",
+   771→        "/login", "/register", "/api/docs", "/swagger.json",
+   772→    ]
+   773→
+   774→    responses: List[Dict[str, Any]] = []
+   775→    for path in probe_paths:
+   776→        url = base_url.rstrip("/") + path
+   777→        t0 = time.monotonic()
+   778→        resp = _safe_probe(url, timeout=timeout, verify_tls=verify_tls)
+   779→        elapsed_ms = (time.monotonic() - t0) * 1000
+   780→        resp["url"] = url
+   781→        resp["path"] = path
+   782→        resp["elapsed_ms"] = round(elapsed_ms, 1)
+   783→        resp["body_length"] = len(resp.get("body", ""))
+   784→        responses.append(resp)
+   785→
+   786→    if not responses:
+   787→        return findings, responses
+   788→
+   789→    # Compute statistics
+   790→    statuses = [r["status"] for r in responses if r["status"] > 0]
+   791→    sizes = [r["body_length"] for r in responses]
+   792→    timings = [r["elapsed_ms"] for r in responses]
+   793→    header_counts = [len(r.get("headers", {})) for r in responses]
+   794→
+   795→    if statuses:
+   796→        status_set = set(statuses)
+   797→        status_mode = max(set(statuses), key=statuses.count) if statuses else 0
+   798→
+   799→        # Check for anomalous status codes
+   800→        anom_codes = ANOMALY_THRESHOLDS["status_codes"]["anomaly_codes"]
+   801→        for r in responses:
+   802→            code = r["status"]
+   803→            if code in anom_codes:
+   804→                desc = anom_codes[code]
+   805→                findings.append(Finding(
+   806→                    title=f"Anomalous status code {code} at {r['path']}",
+   807→                    severity="medium",
+   808→                    category="response_anomaly",
+   809→                    module="zero_day_hunter",
+   810→                    description=f"HTTP {code} ({r.get('reason', '')}) on {r['path']}: {desc}",
+   811→                    evidence=f"GET {r['path']} -> {code} ({r['body_length']} bytes, {r['elapsed_ms']}ms)",
+   812→                    asset=host,
+   813→                    points_deducted=5,
+   814→                    remediation="Review endpoint configuration; unusual status codes may indicate unhandled edge cases or incomplete input validation.",
+   815→                    dread_score=_dread_score("medium"),
+   816→                ))
+   817→
+   818→        # Check for unexpected 5xx on static-looking paths
+   819→        static_extensions = {".css", ".js", ".png", ".jpg", ".ico", ".svg", ".woff", ".ttf"}
+   820→        for r in responses:
+   821→            if r["status"] >= 500:
+   822→                path_lower = r["path"].lower()
+   823→                if any(path_lower.endswith(ext) for ext in static_extensions):
+   824→                    findings.append(Finding(
+   825→                        title=f"Server error on static resource: {r['path']}",
+   826→                        severity="high",
+   827→                        category="response_anomaly",
+   828→                        module="zero_day_hunter",
+   829→                        description=ANOMALY_THRESHOLDS["status_codes"]["unexpected_5xx_on_static"],
+   830→                        evidence=f"GET {r['path']} -> {r['status']} ({r.get('reason', '')})",
+   831→                        asset=host,
+   832→                        points_deducted=10,
+   833→                        remediation="Ensure static assets are served correctly; 5xx errors on static files may reveal misconfigured routing or backend dependency leaks.",
+   834→                        dread_score=_dread_score("high"),
+   835→                    ))
+   836→
+   837→        # Status code variance check
+   838→        if len(status_set) > ANOMALY_THRESHOLDS["consistency"]["max_status_variance"]:
+   839→            findings.append(Finding(
+   840→                title=f"High status code variance: {len(status_set)} distinct codes",
+   841→                severity="low",
+   842→                category="response_anomaly",
+   843→                module="zero_day_hunter",
+   844→                description=f"Endpoint probing returned {len(status_set)} distinct HTTP status codes: {sorted(status_set)}. High variance may indicate inconsistent routing, partial WAF, or broken access control.",
+   845→                evidence=f"Statuses observed: {sorted(status_set)} across {len(responses)} paths",
+   846→                asset=host,
+   847→                points_deducted=3,
+   848→                remediation="Audit routing rules and middleware for consistency; ensure all endpoints follow a uniform error handling strategy.",
+   849→                dread_score=_dread_score("low"),
+   850→            ))
+   851→
+   852→    # Size anomaly detection
+   853→    if len(sizes) >= 3:
+   854→        mean_size = statistics.mean(sizes)
+   855→        try:
+   856→            stdev_size = statistics.stdev(sizes)
+   857→        except statistics.StatisticsError:
+   858→            stdev_size = 0.0
+   859→
+   860→        sigma = ANOMALY_THRESHOLDS["response_size"]["size_variance_sigma"]
+   861→        for r in responses:
+   862→            bl = r["body_length"]
+   863→            if stdev_size > 0 and bl > 0:
+   864→                z_score = abs(bl - mean_size) / stdev_size
+   865→                if z_score > sigma:
+   866→                    findings.append(Finding(
+   867→                        title=f"Response size outlier at {r['path']} (z={z_score:.1f})",
+   868→                        severity="low",
+   869→                        category="response_anomaly",
+   870→                        module="zero_day_hunter",
+   871→                        description=f"Response body size ({bl} bytes) is {z_score:.1f}σ from mean ({mean_size:.0f} bytes). May indicate endpoint returning unexpected data types or error content.",
+   872→                        evidence=f"GET {r['path']} -> {r['status']} ({bl} bytes, mean={mean_size:.0f}, σ={stdev_size:.0f})",
+   873→                        asset=host,
+   874→                        points_deducted=3,
+   875→                        remediation="Investigate why this endpoint returns a significantly different response size than the baseline.",
+   876→                        dread_score=_dread_score("low"),
+   877→                    ))
+   878→
+   879→        # Check for abnormally small 200 responses
+   880→        for r in responses:
+   881→            if r["status"] == 200 and r["body_length"] < ANOMALY_THRESHOLDS["response_size"]["abnormally_small_ok"]:
+   882→                findings.append(Finding(
+   883→                    title=f"Suspiciously small 200 response at {r['path']}",
+   884→                    severity="medium",
+   885→                    category="response_anomaly",
+   886→                    module="zero_day_hunter",
+   887→                    description=f"HTTP 200 with only {r['body_length']} bytes of body content. May indicate empty default page, stub response, or placeholder that could be exploited.",
+   888→                    evidence=f"GET {r['path']} -> 200 ({r['body_length']} bytes)",
+   889→                    asset=host,
+   890→                    points_deducted=5,
+   891→                    remediation="Ensure endpoints return meaningful content or appropriate error codes instead of empty 200 responses.",
+   892→                    dread_score=_dread_score("medium"),
+   893→                ))
+   894→
+   895→    # Timing anomaly detection
+   896→    if len(timings) >= 3:
+   897→        mean_time = statistics.mean(timings)
+   898→        try:
+   899→            stdev_time = statistics.stdev(timings)
+   900→        except statistics.StatisticsError:
+   901→            stdev_time = 0.0
+   902→
+   903→        time_sigma = ANOMALY_THRESHOLDS["timing"]["timing_variance_sigma"]
+   904→        for r in responses:
+   905→            t = r["elapsed_ms"]
+   906→            if stdev_time > 0 and t > 0:
+   907→                z_time = abs(t - mean_time) / stdev_time
+   908→                if z_time > time_sigma:
+   909→                    sev = "high" if t > ANOMALY_THRESHOLDS["timing"]["suspicious_slow_ms"] else "medium"
+   910→                    findings.append(Finding(
+   911→                        title=f"Timing anomaly at {r['path']} ({t:.0f}ms)",
+   912→                        severity=sev,
+   913→                        category="response_anomaly",
+   914→                        module="zero_day_hunter",
+   915→                        description=f"Response time ({t:.0f}ms) is {z_time:.1f}σ from baseline ({mean_time:.0f}ms). May indicate time-based blind injection vector, backend resource exhaustion, or uncached computation.",
+   916→                        evidence=f"GET {r['path']} -> {r['status']} ({t:.0f}ms, mean={mean_time:.0f}ms, σ={stdev_time:.0f}ms)",
+   917→                        asset=host,
+   918→                        points_deducted=_severity_points(sev),
+   919→                        remediation="Investigate slow endpoints for missing caching, N+1 queries, or time-based side channels. Slow responses on simple paths may indicate injection vulnerabilities.",
+   920→                        dread_score=_dread_score(sev),
+   921→                    ))
+   922→
+   923→    # Body entropy analysis
+   924→    for r in responses:
+   925→        body = r.get("body", "")
+   926→        if len(body) > 50:
+   927→            entropy = _shannon_entropy(body)
+   928→            if entropy < ANOMALY_THRESHOLDS["body_entropy"]["low_entropy_threshold"]:
+   929→                findings.append(Finding(
+   930→                    title=f"Low-entropy response body at {r['path']} (H={entropy})",
+   931→                    severity="low",
+   932→                    category="response_anomaly",
+   933→                    module="zero_day_hunter",
+   934→                    description=f"Response body has very low Shannon entropy ({entropy} bits), suggesting template content, placeholder text, or repeatable patterns that may indicate a default/vulnerable installation.",
+   935→                    evidence=f"GET {r['path']} -> {r['status']} ({r['body_length']} bytes, entropy={entropy})",
+   936→                    asset=host,
+   937→                    points_deducted=3,
+   938→                    remediation="Low entropy may indicate default configurations; ensure custom content and security hardening are applied.",
+   939→                    dread_score=_dread_score("low"),
+   940→                ))
+   941→            elif entropy > ANOMALY_THRESHOLDS["body_entropy"]["high_entropy_threshold"]:
+   942→                if r["status"] == 200 and not any(r["path"].lower().endswith(ext) for ext in [".png", ".jpg", ".ico", ".woff", ".ttf", ".svg"]):
+   943→                    findings.append(Finding(
+   944→                        title=f"High-entropy response at {r['path']} (H={entropy})",
+   945→                        severity="medium",
+   946→                        category="response_anomaly",
+   947→                        module="zero_day_hunter",
+   948→                        description=f"Response body has high Shannon entropy ({entropy} bits), suggesting encrypted/compressed content, binary data leak, or minified source maps on a non-static endpoint.",
+   949→                        evidence=f"GET {r['path']} -> {r['status']} ({r['body_length']} bytes, entropy={entropy})",
+   950→                        asset=host,
+   951→                        points_deducted=5,
+   952→                        remediation="High-entropy text responses on API endpoints may indicate source map leakage or serialized binary data exposure.",
+   953→                        dread_score=_dread_score("medium"),
+   954→                    ))
+   955→
+   956→    return findings, responses
+   957→
+   958→
+   959→# ════════════════════════════════════════════════════════════════════════
+   960→# CAPABILITY 2: ERROR MESSAGE ANALYSIS
+   961→# ════════════════════════════════════════════════════════════════════════
+   962→
+   963→def _analyze_error_messages(
+   964→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   965→    probe_responses: Optional[List[Dict[str, Any]]] = None,
+   966→) -> List[Finding]:
+   967→    """Parse error responses for stack traces, internal paths, debug info."""
+   968→    findings: List[Finding] = []
+   969→    host = _host_from_url(base_url)
+   970→
+   971→    error_probing_paths = [
+   972→        ("/nonexistent_endpoint_404_test", "GET", None),
+   973→        ("/api/nonexistent", "GET", None),
+   974→        ("/api/v1/invalid_route_xyz", "GET", None),
+   975→        ("/", "POST", b'{"invalid_key": "trigger_error"}'),
+   976→        ("/api", "POST", b'{
