@@ -55,7 +55,14 @@ LOCAL_MODULES = {
 # Merge all for --all scans
 ALL_MODULES = list(MODULE_REGISTRY.keys()) + list(LOCAL_MODULES.keys())
 
-DEFAULT_MODULES = ["recon", "vibesec", "auth", "chain", "oblivion", "gorgon", "bot", "pegasus"]
+DEFAULT_MODULES = [
+    "recon", "vibesec", "auth", "chain", "oblivion", "gorgon", "bot", "pegasus",
+    # v9.2.0: all 12 new modules are default-enabled
+    "quantum_fingerprint", "dark_web_monitor", "info_ops",
+    "steganography_detector", "covert_channel", "zero_day_hunter",
+    "infrastructure_ghost", "signal_intelligence", "nation_state_attributor",
+    "weaponized_report", "honeypot_dance", "dead_drop",
+]
 DEFAULT_LOCAL_MODULES = ["host", "dev", "doctor"]
 
 

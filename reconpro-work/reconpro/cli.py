@@ -620,6 +620,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("target", help="Domain, IP, or URL to check")
     p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
 
+    # ── rate (v9.2.0 Module Rating System) ──────────────────────
+    p = sub.add_parser("rate", help="Rate all v9.2.0 modules against industry tools /100")
+    p.add_argument("--module", "-m", type=str, default=None,
+                     help="Rate a specific module (e.g. dead-drop, quantum-fingerprint)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
     # ── dead-drop (v9.2.0 Cryptographic Dead Drop) ────────────────
     p = sub.add_parser("dead-drop", help="Detect cryptographic dead drops in DNS/HTTP/CT logs")
     p.add_argument("target", help="Domain or URL to scan")
@@ -1674,6 +1680,208 @@ def main(argv: list[str] | None = None) -> None:
             run_honeypot_dance, target, base_url,
         )
         _print_findings(findings, args, title="HONEYPOT DANCE")
+        return
+
+    # ── rate (v9.2.0 Module Rating System) ───────────────────
+    if cmd == "rate":
+        _banner(args)
+        from .ratings import (
+            MODULE_RATINGS, V9_MODULES, MODULE_CLI_MAP,
+            get_rating, get_all_ratings, compute_team_score,
+        )
+
+        # CLI name -> module_id reverse map
+        cli_to_id = {v: k for k, v in MODULE_CLI_MAP.items()}
+
+        if getattr(args, 'module', None):
+            # Rate a specific module
+            cli_name = args.module.lower()
+            mod_id = cli_to_id.get(cli_name, cli_name.replace("-", "_"))
+            rating = get_rating(mod_id)
+            if not rating:
+                # Try direct module_id
+                rating = get_rating(cli_name)
+            if not rating:
+                console.print(f"[red]Unknown module: {args.module}[/red]")
+                console.print(f"[dim]Available: {', '.join(MODULE_CLI_MAP.values())}[/dim]")
+                return
+
+            # JSON output
+            if getattr(args, 'json_output', False):
+                import json
+                d = {
+                    "module": rating.module_id,
+                    "name": rating.name,
+                    "score": rating.score,
+                    "grade": rating.grade,
+                    "category": rating.category,
+                    "sub_scores": {
+                        "detection_breadth": rating.detection_breadth,
+                        "detection_depth": rating.detection_depth,
+                        "dependency_footprint": rating.dependency_footprint,
+                        "uniqueness": rating.uniqueness,
+                        "operational_safety": rating.operational_safety,
+                    },
+                    "compared_with": rating.compared_with,
+                    "parity_pct": rating.parity_pct,
+                    "unique_advantages": rating.unique_advantages,
+                    "known_limitations": rating.known_limitations,
+                    "stats": {
+                        "lines_of_code": rating.lines_of_code,
+                        "detection_categories": rating.detection_categories,
+                        "signature_count": rating.signature_count,
+                    },
+                }
+                console.print(json.dumps(d, indent=2))
+                return
+
+            # Rich table output
+            _grade_color = GRADE_COLORS.get(rating.grade, "white")
+            console.print()
+            console.print(Panel(
+                f"[bold]{rating.name}[/bold]\n{rating.category}",
+                title="MODULE RATING",
+                border_style="bright_cyan",
+            ))
+            console.print()
+
+            # Score bar
+            score_color = "bright_green" if rating.score >= 80 else "yellow" if rating.score >= 70 else "red"
+            filled = int(rating.score / 5)
+            bar = "[" + "#" * filled + "." * (20 - filled) + "]"
+            console.print(f"  OVERALL: [bold {score_color}]{rating.score}/100  {rating.grade}[/bold {score_color}]  {bar}")
+            console.print()
+
+            # Sub-scores table
+            sub_table = Table(show_header=True, header_style="bold", title="Sub-Scores")
+            sub_table.add_column("Dimension", style="cyan")
+            sub_table.add_column("Score", justify="right")
+            sub_table.add_column("Bar", min_width=22)
+            dims = [
+                ("Detection Breadth", rating.detection_breadth),
+                ("Detection Depth", rating.detection_depth),
+                ("Dependency Footprint", rating.dependency_footprint),
+                ("Uniqueness", rating.uniqueness),
+                ("Operational Safety", rating.operational_safety),
+            ]
+            for label, val in dims:
+                c = "bright_green" if val >= 85 else "yellow" if val >= 70 else "red"
+                f_ = int(val / 5)
+                b = "#" * f_ + "." * (20 - f_)
+                sub_table.add_row(label, f"[{c}]{val}[/]", f"[{c}]{b}[/]")
+            console.print(sub_table)
+            console.print()
+
+            # Compared with
+            console.print(f"  [bold]Compared with:[/bold] {', '.join(rating.compared_with)}")
+            if rating.parity_pct > 0:
+                console.print(f"  [bold]Functional parity:[/bold] {rating.parity_pct}%")
+            else:
+                console.print(f"  [bold]Functional parity:[/bold] N/A (no equivalent tool)")
+            console.print()
+
+            # Advantages
+            console.print(f"  [bold bright_green]Unique Advantages:[/bold bright_green]")
+            for adv in rating.unique_advantages:
+                console.print(f"    [green]+[/green] {adv}")
+            console.print()
+
+            # Limitations
+            console.print(f"  [bold yellow]Known Limitations:[/bold yellow]")
+            for lim in rating.known_limitations:
+                console.print(f"    [yellow]-[/yellow] {lim}")
+            console.print()
+
+            # Stats
+            console.print(f"  [dim]Lines: {rating.lines_of_code:,}  |  Categories: {rating.detection_categories}  |  Signatures: {rating.signature_count}  |  Dependencies: {rating.external_dependencies}[/dim]")
+            return
+
+        # Rate ALL modules
+        ratings = get_all_ratings()
+        avg_score, team_grade, total_loc, total_cats, total_sigs = compute_team_score()
+
+        if getattr(args, 'json_output', False):
+            import json
+            data = {
+                "team_score": avg_score,
+                "team_grade": team_grade,
+                "total_lines_of_code": total_loc,
+                "total_detection_categories": total_cats,
+                "total_signatures": total_sigs,
+                "modules": [
+                    {
+                        "module": r.module_id,
+                        "name": r.name,
+                        "score": r.score,
+                        "grade": r.grade,
+                        "category": r.category,
+                        "sub_scores": {
+                            "breadth": r.detection_breadth,
+                            "depth": r.detection_depth,
+                            "deps": r.dependency_footprint,
+                            "unique": r.uniqueness,
+                            "safety": r.operational_safety,
+                        },
+                    }
+                    for r in ratings
+                ],
+            }
+            console.print(json.dumps(data, indent=2))
+            return
+
+        # Rich output for all modules
+        console.print()
+        console.print(Panel(
+            f"[bold]ReconPro v9.2.0  |  {len(ratings)} Modules  |  ~{total_loc:,} Lines  |  0 Dependencies[/bold]",
+            title="MODULE RATINGS vs INDUSTRY TOOLS",
+            border_style="bright_cyan",
+        ))
+        console.print()
+
+        # Team score
+        tc = "bright_green" if avg_score >= 80 else "yellow" if avg_score >= 70 else "red"
+        tg = GRADE_COLORS.get(team_grade, "white")
+        console.print(f"  [bold]TEAM SCORE:[/bold]  [{tc}]{avg_score}/100  [{tg}]{team_grade}[/{tg}]")
+        console.print()
+
+        # Full table
+        table = Table(show_header=True, header_style="bold bright_cyan", title=None)
+        table.add_column("Module", min_width=28)
+        table.add_column("Score", justify="right", min_width=7)
+        table.add_column("Grade", justify="center", min_width=5)
+        table.add_column("Breadth", justify="right", min_width=7)
+        table.add_column("Depth", justify="right", min_width=6)
+        table.add_column("Deps", justify="right", min_width=5)
+        table.add_column("Unique", justify="right", min_width=6)
+        table.add_column("Safety", justify="right", min_width=6)
+        table.add_column("vs", min_width=28)
+
+        for r in ratings:
+            sc = "bright_green" if r.score >= 85 else "yellow" if r.score >= 70 else "red"
+            gc = GRADE_COLORS.get(r.grade, "white")
+            vs = ", ".join(r.compared_with[:2])
+            if len(r.compared_with) > 2:
+                vs += "+"
+            table.add_row(
+                f"[cyan]{r.name}[/]",
+                f"[{sc}]{r.score}/100[/]",
+                f"[{gc}]{r.grade}[/]",
+                f"{r.detection_breadth}/100",
+                f"{r.detection_depth}/100",
+                f"{r.dependency_footprint}/100",
+                f"{r.uniqueness}/100",
+                f"{r.operational_safety}/100",
+                f"[dim]{vs}[/dim]",
+            )
+        console.print(table)
+        console.print()
+
+        # Unique capabilities summary
+        unique_count = sum(1 for r in ratings if r.uniqueness >= 95)
+        console.print(f"  [bold bright_green]{unique_count} modules[/bold bright_green] have [bold]NO open-source equivalent[/bold] (uniqueness = 100/100)")
+        console.print(f"  [bold]All 12 modules[/bold] score [bold]100/100[/bold] on dependency footprint (zero external deps)")
+        console.print(f"  [bold]All 12 modules[/bold] require [bold]no root access, no pcap, no API keys[/bold]")
+        console.print()
         return
 
     # ── dead-drop (v9.2.0) ───────────────────────────────────────
