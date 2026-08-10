@@ -1,4 +1,4 @@
-"""VCS Webhook Listeners for ReconPro v8.5.
+"""VCS Webhook Listeners for ReconPro v11.0.0.
 
 Receives GitHub and GitLab webhooks, triggers scans on changed files,
 and posts results as PR/MR comments or commit statuses.
@@ -93,7 +93,7 @@ def _post_pr_comment(
                     "Authorization": f"Bearer {token}",
                     "Accept": "application/vnd.github.v3+json",
                     "Content-Type": "application/json",
-                    "User-Agent": "ReconPro-Webhook/8.5",
+                    "User-Agent": "ReconPro-Webhook/11.0.0",
                 },
             )
         elif provider == "gitlab":
@@ -149,7 +149,7 @@ def _set_commit_status(
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/vnd.github.v3+json",
                 "Content-Type": "application/json",
-                "User-Agent": "ReconPro-Webhook/8.5",
+                "User-Agent": "ReconPro-Webhook/11.0.0",
             },
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -688,7 +688,7 @@ class WebhookServer(HTTPServer):
         super().__init__((host, port), _WebhookRequestHandler)
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
-        print(f"  [bright_green]ReconPro Webhook Server v8.5[/] running on [cyan]http://{self.host}:{self.port}[/]")
+        print(f"  [bright_green]ReconPro Webhook Server v11.0.0[/] running on [cyan]http://{self.host}:{self.port}[/]")
         print(f"  [dim]POST /webhook/github  |  POST /webhook/gitlab  |  GET /webhook/config[/]")
         print(f"  [dim]Press Ctrl+C to stop[/]")
         try:
@@ -784,7 +784,7 @@ class DiscordWebhook(NotificationWebhook):
             "title": title,
             "description": message[:2000] if message else "",
             "color": self.SEVERITY_COLORS.get(severity, 3447003),
-            "footer": {"text": "ReconPro v9.0.0"},
+            "footer": {"text": "ReconPro v11.0.0"},
             "timestamp": datetime.utcnow().isoformat(),
             "fields": [],
         }
@@ -838,7 +838,7 @@ class TeamsWebhook(NotificationWebhook):
             "summary": title,
             "sections": [{
                 "activityTitle": title,
-                "activitySubtitle": f"ReconPro v9.0.0 — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
+                "activitySubtitle": f"ReconPro v11.0.0 — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
                 "facts": facts,
                 "text": message[:2000] if message else "",
             }],

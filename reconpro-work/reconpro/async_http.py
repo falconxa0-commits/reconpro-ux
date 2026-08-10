@@ -61,8 +61,8 @@ logger = logging.getLogger(__name__)
 
 # Reuse the same User-Agent string as the sync layer.
 UA = (
-    "ReconPro/2.0 (Enterprise Security Scanner; "
-    "+https://github.com/reconpro-security/reconpro)"
+    "ReconPro/11.0.0 (Enterprise Security Scanner; "
+    "+https://reconpro.dev)"
 )
 
 DEFAULT_HEADERS = {

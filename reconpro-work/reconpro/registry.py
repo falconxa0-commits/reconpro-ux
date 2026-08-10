@@ -33,6 +33,7 @@ def _get_runners() -> Dict[str, Callable]:
         run_steganography_detector, run_covert_channel, run_zero_day_hunter,
         run_infrastructure_ghost, run_signal_intelligence, run_nation_state_attributor,
         run_weaponized_report, run_honeypot_dance, run_dead_drop,
+        run_container_sec, run_iac_audit,
     )
 
     _MOD_RUNNERS.update({
@@ -62,6 +63,8 @@ def _get_runners() -> Dict[str, Callable]:
         "run_weaponized_report": run_weaponized_report,
         "run_honeypot_dance": run_honeypot_dance,
         "run_dead_drop": run_dead_drop,
+        "run_container_sec": run_container_sec,
+        "run_iac_audit": run_iac_audit,
     })
     return _MOD_RUNNERS
 
@@ -97,6 +100,10 @@ def build_module_registry() -> Dict[str, Dict[str, Any]]:
         "weaponized_report":      {"name": "WEAPONIZED REPORT",     "runner": r["run_weaponized_report"],      "color": "red"},
         "honeypot_dance":         {"name": "HONEYPOT DANCE",        "runner": r["run_honeypot_dance"],         "color": "yellow"},
         "dead_drop":              {"name": "DEAD DROP",             "runner": r["run_dead_drop"],              "color": "bright_cyan"},
+
+        # Orphaned modules now registered
+        "container_sec":           {"name": "CONTAINER SEC",          "runner": r["run_container_sec"],         "color": "bright_yellow"},
+        "iac_audit":               {"name": "IaC AUDIT",              "runner": r["run_iac_audit"],            "color": "bright_green"},
     }
 
 

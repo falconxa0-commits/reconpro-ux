@@ -834,10 +834,14 @@ class InfrastructureDriftMonitor:
             if len(pairs) >= 4:
                 alternating = 0
                 for i in range(1, len(pairs)):
-                    if (pairs[i] > pairs[i - 1] and i % 2 == 1) or \
-                       (pairs[i] < pairs[i - 1] and i % 2 == 0) or \
-                       (pairs[i] < pairs[i - 1] and i % 2 == 1) or \
-                       (pairs[i] > pairs[i - 1] and i % 2 == 0):
+                    if pairs[i] == pairs[i - 1]:
+                        continue
+                    if i == 1:
+                        alternating += 1
+                        continue
+                    curr_up = pairs[i] > pairs[i - 1]
+                    prev_up = pairs[i - 1] > pairs[i - 2]
+                    if prev_up != curr_up:
                         alternating += 1
                 if alternating > len(pairs) * 0.6:
                     return "cyclical"

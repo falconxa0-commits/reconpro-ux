@@ -41,8 +41,8 @@ from typing import Any, Dict, List, Optional, Tuple
 # ── Constants ────────────────────────────────────────────────────────────
 
 UA = (
-    "ReconPro/2.0 (Enterprise Security Scanner; "
-    "+https://github.com/reconpro-security/reconpro)"
+    "ReconPro/11.0.0 (Enterprise Security Scanner; "
+    "+https://reconpro.dev)"
 )
 
 # Pre-built header templates — created once at module import time.

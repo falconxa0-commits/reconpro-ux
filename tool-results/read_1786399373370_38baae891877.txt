@@ -1,0 +1,1674 @@
+     1→"""COVERT_CHANNEL module — Covert data exfiltration channel detection & simulation.
+     2→
+     3→ReconPro v9.2.0
+     4→
+     5→Detects and simulates eight classes of covert data exfiltration channels:
+     6→  1. DNS Tunneling Detection
+     7→  2. HTTP Header Covert Channel Detection
+     8→  3. Timing Channel Detection
+     9→  4. ICMP Tunnel Detection Markers
+    10→  5. HTTPS Certificate Steganography
+    11→  6. URL Path Encoding Channels
+    12→  7. Chunked Transfer Encoding Abuse
+    13→  8. WebSocket Frame Analysis
+    14→
+    15→Pure stdlib — zero external dependencies.
+    16→"""
+    17→from __future__ import annotations
+    18→
+    19→import base64
+    20→import hashlib
+    21→import json
+    22→import math
+    23→import re
+    24→import struct
+    25→import time
+    26→import urllib.parse
+    27→from typing import Any, Dict, List, Optional, Tuple
+    28→
+    29→from ..http_layer import http_probe, Finding, default_limiter
+    30→
+    31→
+    32→# ═══════════════════════════════════════════════════════════════════════════
+    33→# CHANNEL_SIGNATURES DATABASE
+    34→# ═══════════════════════════════════════════════════════════════════════════
+    35→
+    36→CHANNEL_SIGNATURES: Dict[str, Dict[str, Any]] = {
+    37→    "dns_tunneling": {
+    38→        "name": "DNS Tunneling",
+    39→        "description": (
+    40→            "Encodes data in DNS query labels (subdomains). Long, "
+    41→            "high-entropy subdomains are hallmarks of tools like dnscat2, "
+    42→            "iodine, Cobalt Strike DNS beacon."
+    43→        ),
+    44→        "max_label_length": 63,       # RFC 1035
+    45→        "suspicious_label_min": 24,   # labels this long are rare in legit traffic
+    46→        "max_query_length": 253,      # RFC 1035 FQDN limit
+    47→        "known_tools": ["dnscat2", "iodine", "DNS2TCP", "Cobalt Strike", "PoshC2"],
+    48→        "record_type_indicators": ["TXT", "NULL", "CNAME", "MX", "A"],
+    49→        "entropy_threshold": 3.8,
+    50→        "bandwidth_estimate": "Low (~1-4 KB/s downstream, ~0.5 KB/s upstream)",
+    51→        "stealth_score": 72,
+    52→        "dread_score": 7.5,
+    53→        "severity": "high",
+    54→        "patterns": [
+    55→            r"[a-z0-9]{24,}\.",  # long base36 subdomain
+    56→            r"[a-f0-9]{32,}\.",  # hex-encoded subdomain (MD5-like)
+    57→            r"[A-Za-z0-9+/=]{20,}\.",  # base64 subdomain
+    58→            r"[a-z0-9-]{40,}\.",  # very long label with hyphens
+    59→        ],
+    60→    },
+    61→    "http_header_covert": {
+    62→        "name": "HTTP Header Covert Channel",
+    63→        "description": (
+    64→            "Data encoded in HTTP headers via: custom/unusual headers, "
+    65→            "header ordering signals, whitespace/padding manipulation, "
+    66→            "cookie value encoding, or header value steganography."
+    67→        ),
+    68→        "suspicious_header_prefixes": [
+    69→            "X-", "X-Powered-By", "X-Forwarded", "X-Real-IP",
+    70→            "X-Original-URL", "X-Custom", "X-Steg", "X-Data",
+    71→            "X-Exfil", "X-C2", "X-Session-Id", "X-Request-Id",
+    72→        ],
+    73→        "entropy_threshold": 3.6,
+    74→        "bandwidth_estimate": "Medium (~50-200 KB/s)",
+    75→        "stealth_score": 65,
+    76→        "dread_score": 6.8,
+    77→        "severity": "medium",
+    78→        "patterns": [
+    79→            r"^X-[A-Za-z-]+$",
+    80→            r"^[A-Za-z-]+: [A-Za-z0-9+/=]{40,}$",
+    81→            r"^[A-Za-z-]+: \s*[a-f0-9]{64,}$",  # hex payload in header
+    82→        ],
+    83→    },
+    84→    "timing_channel": {
+    85→        "name": "Timing Channel",
+    86→        "description": (
+    87→            "Encodes data in response timing deltas. Binary (0/1) or "
+    88→            "multi-bit encoding where the interval between requests/responses "
+    89→            "carries hidden information. Extremely stealthy but low bandwidth."
+    90→        ),
+    91→        "binary_encoding_delta_ms": 100,
+    92→        "multi_bit_levels": 4,        # 0-3 per interval
+    93→        "min_observations": 8,
+    94→        "std_dev_threshold": 0.05,    # very consistent deltas = suspicious
+    95→        "entropy_threshold": 0.9,     # low entropy in timing = encoding
+    96→        "bandwidth_estimate": "Very Low (~0.1-2 bits/s)",
+    97→        "stealth_score": 88,
+    98→        "dread_score": 8.2,
+    99→        "severity": "high",
+   100→        "patterns": [],
+   101→    },
+   102→    "icmp_tunnel": {
+   103→        "name": "ICMP Tunnel Detection Markers",
+   104→        "description": (
+   105→            "Data encoded in ICMP echo request/reply payloads. Observed via "
+   106→            "HTTP timing side-effects or infrastructure patterns: unusual "
+   107→            "packet sizes, high-frequency ICMP, payload-bearing pings."
+   108→        ),
+   109→        "normal_icmp_size": 64,        # standard ping payload
+   110→        "max_icmp_size": 65507,        # max IP payload
+   111→        "suspicious_size_min": 512,    # abnormally large
+   112→        "entropy_threshold": 3.5,
+   113→        "bandwidth_estimate": "Low (~1-10 KB/s)",
+   114→        "stealth_score": 78,
+   115→        "dread_score": 7.8,
+   116→        "severity": "high",
+   117→        "patterns": [
+   118→            r"icmp.*(tunnel|ping|echo)",
+   119→            r"payload.*(size|length).*(\d{3,})",
+   120→        ],
+   121→    },
+   122→    "cert_steganography": {
+   123→        "name": "HTTPS Certificate Steganography",
+   124→        "description": (
+   125→            "Hidden data embedded in TLS certificate fields: unusual OU/O "
+   126→            "fields, certificate comment extensions (Netscape Comment), "
+   127→            "encoded SAN entries, serial number encoding, or custom X.509 "
+   128→            "extensions carrying covert payloads."
+   129→        ),
+   130→        "max_ou_length": 64,
+   131→        "suspicious_ou_min": 20,
+   132→        "entropy_threshold": 3.4,
+   133→        "bandwidth_estimate": "Negligible (one-time per handshake)",
+   134→        "stealth_score": 92,
+   135→        "dread_score": 7.0,
+   136→        "severity": "medium",
+   137→        "patterns": [
+   138→            r"OU=[A-Za-z0-9+/=]{20,}",
+   139→            r"comment.*[A-Za-z0-9+/=]{32,}",
+   140→            r"serialNumber.*[a-f0-9]{40,}",
+   141→        ],
+   142→    },
+   143→    "url_path_encoding": {
+   144→        "name": "URL Path Encoding Channel",
+   145→        "description": (
+   146→            "Data encoded in URL path segments: hex-encoded binary paths, "
+   147→            "unusually long paths, base64 segments, or path parameter "
+   148→            "steganography. Each path segment can carry encoded bytes."
+   149→        ),
+   150→        "normal_path_length": 128,
+   151→        "suspicious_path_min": 256,
+   152→        "max_path_length": 8192,
+   153→        "entropy_threshold": 3.7,
+   154→        "bandwidth_estimate": "Medium (~10-50 KB/s)",
+   155→        "stealth_score": 55,
+   156→        "dread_score": 5.5,
+   157→        "severity": "medium",
+   158→        "patterns": [
+   159→            r"/[a-f0-9]{16,}(?:/[a-f0-9]{16,})+",
+   160→            r"/[A-Za-z0-9+/=]{20,}(?:/[A-Za-z0-9+/=]{20,})+",
+   161→            r"/%[0-9a-fA-F]{2}{8,}",  # heavy URL-encoding
+   162→        ],
+   163→    },
+   164→    "chunked_encoding_abuse": {
+   165→        "name": "Chunked Transfer Encoding Abuse",
+   166→        "description": (
+   167→            "Data encoded in chunk sizes of HTTP chunked transfer encoding. "
+   168→            "Each chunk's size value encodes bits, while the chunk body "
+   169→            "contains cover traffic. Anomalous chunk size patterns signal abuse."
+   170→        ),
+   171→        "typical_chunk_sizes": [1024, 4096, 8192, 16384],
+   172→        "entropy_threshold": 3.2,
+   173→        "bandwidth_estimate": "Medium (~5-20 KB/s of covert data)",
+   174→        "stealth_score": 70,
+   175→        "dread_score": 6.5,
+   176→        "severity": "medium",
+   177→        "patterns": [
+   178→            r"[0-9a-fA-F]+\r\n",  # chunk size lines
+   179→        ],
+   180→    },
+   181→    "websocket_frame": {
+   182→        "name": "WebSocket Frame Analysis",
+   183→        "description": (
+   184→            "Covert data transfer via WebSocket frames: unusual frame sizes "
+   185→            "encoding binary data, timing between frames carrying information, "
+   186→            "opcode manipulation (text vs binary), or masked payload patterns."
+   187→        ),
+   188→        "typical_frame_sizes": [64, 128, 256, 512, 1024, 4096],
+   189→        "entropy_threshold": 3.5,
+   190→        "bandwidth_estimate": "High (~100 KB/s - 1 MB/s)",
+   191→        "stealth_score": 60,
+   192→        "dread_score": 7.2,
+   193→        "severity": "high",
+   194→        "patterns": [
+   195→            r"frame.*(size|length).*(\d{3,})",
+   196→            r"opcode.*(2|3|8)",  # binary, close, pong
+   197→        ],
+   198→    },
+   199→}
+   200→
+   201→
+   202→# ═══════════════════════════════════════════════════════════════════════════
+   203→# ENTROPY THRESHOLD CALCULATIONS
+   204→# ═══════════════════════════════════════════════════════════════════════════
+   205→
+   206→def _shannon_entropy(data: str) -> float:
+   207→    """Calculate Shannon entropy of a string in bits per character.
+   208→
+   209→    Higher entropy means more random/unpredictable data — a strong
+   210→    indicator of encoded or encrypted payloads.
+   211→
+   212→    Formula: H(X) = -Σ p(x) * log2(p(x))
+   213→    """
+   214→    if not data:
+   215→        return 0.0
+   216→    freq: Dict[str, int] = {}
+   217→    for ch in data:
+   218→        freq[ch] = freq.get(ch, 0) + 1
+   219→    length = len(data)
+   220→    entropy = 0.0
+   221→    for count in freq.values():
+   222→        p = count / length
+   223→        if p > 0:
+   224→            entropy -= p * math.log2(p)
+   225→    return entropy
+   226→
+   227→
+   228→def _entropy_for_channel(channel_type: str, data: str) -> Tuple[float, bool]:
+   229→    """Calculate entropy and compare against channel-specific threshold.
+   230→
+   231→    Returns (entropy_value, is_above_threshold).
+   232→    """
+   233→    sig = CHANNEL_SIGNATURES.get(channel_type, {})
+   234→    threshold = sig.get("entropy_threshold", 3.5)
+   235→    entropy = _shannon_entropy(data)
+   236→    return entropy, entropy >= threshold
+   237→
+   238→
+   239→def _byte_entropy(data: bytes) -> float:
+   240→    """Shannon entropy over raw bytes (0-255 alphabet)."""
+   241→    if not data:
+   242→        return 0.0
+   243→    freq = [0] * 256
+   244→    for b in data:
+   245→        freq[b] += 1
+   246→    length = len(data)
+   247→    entropy = 0.0
+   248→    for count in freq:
+   249→        if count > 0:
+   250→            p = count / length
+   251→            entropy -= p * math.log2(p)
+   252→    return entropy
+   253→
+   254→
+   255→def _index_of_coincidence(data: str) -> float:
+   256→    """Calculate the Index of Coincidence (IoC) for a string.
+   257→
+   258→    English text: ~0.0667. Random: ~0.0385.
+   259→    Low IoC with high entropy = strong indicator of encoding.
+   260→    """
+   261→    if len(data) < 2:
+   262→        return 0.0
+   263→    freq: Dict[str, int] = {}
+   264→    for ch in data.lower():
+   265→        if ch.isalnum():
+   266→            freq[ch] = freq.get(ch, 0) + 1
+   267→    n = sum(freq.values())
+   268→    if n < 2:
+   269→        return 0.0
+   270→    ic = sum(c * (c - 1) for c in freq.values()) / (n * (n - 1))
+   271→    return ic
+   272→
+   273→
+   274→# ═══════════════════════════════════════════════════════════════════════════
+   275→# SIMULATION ENGINE — Educational byte-level demonstrations
+   276→# ═══════════════════════════════════════════════════════════════════════════
+   277→
+   278→def _simulate_dns_tunneling() -> Dict[str, Any]:
+   279→    """Demonstrate DNS tunneling with byte-level encoding."""
+   280→    # Simulate encoding "SECRET" in DNS subdomain labels
+   281→    secret = b"SECRET DATA"
+   282→    # Base32 encode (common in DNS tunneling — case-insensitive, DNS-safe)
+   283→    b32 = base64.b32encode(secret).decode().rstrip("=")
+   284→    # Split into RFC 1035 compliant labels (max 63 chars each)
+   285→    labels = []
+   286→    chunk_size = 63
+   287→    for i in range(0, len(b32), chunk_size):
+   288→        labels.append(b32[i:i + chunk_size])
+   289→    # Prepend a counter label for reassembly
+   290→    encoded_domain = f"{'.'.join(labels)}.exfil.attacker.com"
+   291→
+   292→    # Byte-level breakdown
+   293→    breakdown = []
+   294→    for i, label in enumerate(labels):
+   295→        breakdown.append({
+   296→            "label_index": i,
+   297→            "label_value": label,
+   298→            "label_length": len(label),
+   299→            "decoded_bytes": base64.b32decode(label + "=" * (-len(label) % 8)).hex(),
+   300→            "entropy": round(_shannon_entropy(label), 3),
+   301→        })
+   302→
+   303→    return {
+   304→        "technique": "Base32-encoded subdomain labels",
+   305→        "tools": CHANNEL_SIGNATURES["dns_tunneling"]["known_tools"],
+   306→        "original_data": secret.decode(),
+   307→        "encoded_domain": encoded_domain,
+   308→        "domain_length": len(encoded_domain),
+   309→        "rfc_compliant": len(encoded_domain) <= 253,
+   310→        "label_breakdown": breakdown,
+   311→        "encoding_chain": "Plaintext → Base32 → Split into ≤63-char labels → DNS query",
+   312→        "bandwidth_note": (
+   313→            "Each DNS query carries ~188 bits (base32). At 10 qps upstream limit, "
+   314→            "that is ~235 B/s. TXT responses can carry ~512 bytes each."
+   315→        ),
+   316→    }
+   317→
+   318→
+   319→def _simulate_header_covert() -> Dict[str, Any]:
+   320→    """Demonstrate HTTP header covert channel encoding."""
+   321→    secret = b"HIDDEN MESSAGE"
+   322→    # Method 1: Base64 in a custom header
+   323→    b64_header_val = base64.b64encode(secret).decode()
+   324→    # Method 2: Hex encoding across multiple headers
+   325→    hex_chunks = [secret[i:i+4].hex() for i in range(0, len(secret), 4)]
+   326→    # Method 3: Header ordering (permutation encoding)
+   327→    # The order of a set of benign headers encodes bits
+   328→    header_set = ["X-Request-Id", "X-Trace-Id", "X-Correlation-Id", "X-Session-Id"]
+   329→    # Permutation index = secret bytes interpreted as index
+   330→    perm_index = int.from_bytes(secret[:2], "big") % math.factorial(len(header_set))
+   331→    ordered_headers = header_set.copy()
+   332→    # Simple Fisher-Yates partial shuffle for demo
+   333→    for i in range(min(perm_index % 4, len(ordered_headers) - 1)):
+   334→        j = (i + 1 + perm_index) % len(ordered_headers)
+   335→        ordered_headers[i], ordered_headers[j] = ordered_headers[j], ordered_headers[i]
+   336→
+   337→    # Method 4: Whitespace steganography in header values
+   338→    # Trailing spaces/tabs encode binary
+   339→    binary_secret = "".join(f"{b:08b}" for b in secret)
+   340→    whitespace_encoded = "".join(
+   341→        " " if bit == "0" else "\t" for bit in binary_secret
+   342→    )
+   343→
+   344→    return {
+   345→        "technique": "Multiple HTTP header encoding methods",
+   346→        "methods": [
+   347→            {
+   348→                "name": "Custom Header Base64",
+   349→                "example_header": f"X-Custom-Data: {b64_header_val}",
+   350→                "encoded_value": b64_header_val,
+   351→                "decoded": secret.decode(),
+   352→                "entropy": round(_shannon_entropy(b64_header_val), 3),
+   353→                "bytes_per_request": len(secret),
+   354→            },
+   355→            {
+   356→                "name": "Hex-Split Across Headers",
+   357→                "example_headers": {
+   358→                    f"X-Data-Part-{i}": chunk
+   359→                    for i, chunk in enumerate(hex_chunks)
+   360→                },
+   361→                "chunks": hex_chunks,
+   362→                "reassembled_hex": "".join(hex_chunks),
+   363→                "decoded": secret.decode(),
+   364→            },
+   365→            {
+   366→                "name": "Header Ordering (Permutation)",
+   367→                "header_set": header_set,
+   368→                "permutation_index": perm_index,
+   369→                "ordered_headers": ordered_headers,
+   370→                "bits_encodable": int(math.log2(math.factorial(len(header_set)))),
+   371→                "note": f"4 headers → log2(4!) = {int(math.log2(math.factorial(len(header_set))))} bits per request",
+   372→            },
+   373→            {
+   374→                "name": "Whitespace Steganography",
+   375→                "example": f"X-Nonce: abc123{'[' + ' '.join(['SP' if c == ' ' else 'TAB' for c in whitespace_encoded[:16]]) + '...]'}",
+   376→                "binary_length": len(binary_secret),
+   377→                "encoded_whitespace_length": len(whitespace_encoded),
+   378→                "note": "SP=0, TAB=1 — invisible to most logging",
+   379→            },
+   380→        ],
+   381→        "encoding_chain": "Plaintext → [Base64 | Hex-Split | Permutation | Whitespace] → HTTP header(s)",
+   382→    }
+   383→
+   384→
+   385→def _simulate_timing_channel() -> Dict[str, Any]:
+   386→    """Demonstrate timing-based covert channel."""
+   387→    secret = b"Hi"  # Simple demo: 2 bytes
+   388→    # Binary encoding: 0 = 100ms delay, 1 = 300ms delay
+   389→    binary_str = "".join(f"{b:08b}" for b in secret)
+   390→    delta_map = {"0": 0.10, "1": 0.30}  # seconds
+   391→
+   392→    deltas = [delta_map[bit] for bit in binary_str]
+   393→
+   394→    # Multi-bit encoding: 4 levels per interval (2 bits each)
+   395→    multi_bit_levels = [0.05, 0.15, 0.25, 0.35]
+   396→    multi_bit_pairs = []
+   397→    for i in range(0, len(binary_str), 2):
+   398→        pair = binary_str[i:i+2]
+   399→        idx = int(pair, 2) if len(pair) == 2 else int(pair, 2) * 2
+   400→        idx = min(idx, 3)
+   401→        multi_bit_pairs.append({
+   402→            "bits": pair.ljust(2, "0"),
+   403→            "decimal": idx,
+   404→            "delta_s": multi_bit_levels[idx],
+   405→        })
+   406→
+   407→    return {
+   408→        "technique": "Response timing encodes binary data",
+   409→        "methods": [
+   410→            {
+   411→                "name": "Binary Timing (1 bit/request)",
+   412→                "encoding": "bit 0 → 100ms, bit 1 → 300ms",
+   413→                "original_data": secret.decode(),
+   414→                "binary": binary_str,
+   415→                "delta_sequence_ms": [int(d * 1000) for d in deltas],
+   416→                "total_time_s": round(sum(deltas), 2),
+   417→                "bandwidth": "1 bit per request pair (req + response)",
+   418→            },
+   419→            {
+   420→                "name": "Multi-bit Timing (2 bits/request)",
+   421→                "encoding": "00→50ms, 01→150ms, 10→250ms, 11→350ms",
+   422→                "level_map": {"00": 50, "01": 150, "10": 250, "11": 350},
+   423→                "symbol_sequence": multi_bit_pairs,
+   424→                "total_time_s": round(sum(p["delta_s"] for p in multi_bit_pairs), 2),
+   425→                "bandwidth": "2 bits per request pair",
+   426→                "note": "More efficient but higher detection risk (4 discrete levels)",
+   427→            },
+   428→        ],
+   429→        "detection_bypass": (
+   430→            "Add jitter: δ' = δ + N(0, σ²) where σ = 10-50ms. "
+   431→            "Receiver uses thresholding (δ < 200ms → 0, else → 1) to decode."
+   432→        ),
+   433→        "countermeasure": "Anomaly detection on inter-request timing distributions",
+   434→    }
+   435→
+   436→
+   437→def _simulate_icmp_tunnel() -> Dict[str, Any]:
+   438→    """Demonstrate ICMP tunneling concepts."""
+   439→    secret = b"ICMP payload data"
+   440→    # Standard ICMP echo has 8-byte header + variable payload
+   441→    # icmp-python, ptunnel encode data in the payload section
+   442→    icmp_header = struct.pack(">BBHHH", 8, 0, 0, 1234, 1)  # type, code, cksum, id, seq
+   443→    payload = secret
+   444→    # Calculate checksum
+   445→    packet = icmp_header + payload
+   446→    chksum = _internet_checksum(packet)
+   447→    packet = icmp_header[:2] + struct.pack(">H", chksum) + icmp_header[4:] + payload
+   448→
+   449→    return {
+   450→        "technique": "Data in ICMP echo payload",
+   451→        "icmp_structure": {
+   452→            "type": "8 (Echo Request)",
+   453→            "code": "0",
+   454→            "checksum": f"0x{chksum:04x}",
+   455→            "identifier": "0x04D2 (1234)",
+   456→            "sequence": "0x0001",
+   457→            "payload_hex": payload.hex(),
+   458→            "payload_ascii": payload.decode("ascii", errors="replace"),
+   459→            "payload_length": len(payload),
+   460→            "total_packet_size": len(packet),
+   461→        },
+   462→        "packet_hex": packet.hex(),
+   463→        "encoding_chain": "Plaintext → Raw bytes → ICMP payload → IP packet → Wire",
+   464→        "bandwidth_note": (
+   465→            "Max payload per ICMP: 65,507 bytes. Practical: ~512-1024 bytes. "
+   466→            "Tools: ptunnel, icmpsh, icmptunnel encode in payload + padding."
+   467→        ),
+   468→        "detection_markers": [
+   469→            "ICMP packets > 64 bytes (standard ping size)",
+   470→            "High ICMP request rate from single source",
+   471→            "ICMP with unusual payload patterns (high entropy)",
+   472→            "ICMP responses to requests never sent (L3 beacon)",
+   473→        ],
+   474→        "known_tools": ["ptunnel", "icmpsh", "icmptunnel", "CNighT", "PowerShellICMP"],
+   475→    }
+   476→
+   477→
+   478→def _internet_checksum(data: bytes) -> int:
+   479→    """Calculate the Internet checksum (RFC 1071)."""
+   480→    if len(data) % 2:
+   481→        data += b"\x00"
+   482→    s = 0
+   483→    for i in range(0, len(data), 2):
+   484→        s += (data[i] << 8) + data[i + 1]
+   485→    while s >> 16:
+   486→        s = (s & 0xFFFF) + (s >> 16)
+   487→    return ~s & 0xFFFF
+   488→
+   489→
+   490→def _simulate_cert_stego() -> Dict[str, Any]:
+   491→    """Demonstrate certificate steganography."""
+   492→    secret = b"STEGO SECRET"
+   493→    b64 = base64.b64encode(secret).decode()
+   494→
+   495→    return {
+   496→        "technique": "Data hidden in X.509 certificate fields",
+   497→        "methods": [
+   498→            {
+   499→                "name": "OU Field Encoding",
+   500→                "example": f"OU={b64}",
+   501→                "field": "Subject.OrganizationalUnitName",
+   502→                "encoded_value": b64,
+   503→                "entropy": round(_shannon_entropy(b64), 3),
+   504→                "max_rfc_length": 64,
+   505→                "capacity": "~48 bytes of raw data per OU field (base64 overhead)",
+   506→            },
+   507→            {
+   508→                "name": "Netscape Comment Extension",
+   509→                "example": f"nsComment = {b64}",
+   510→                "oid": "2.16.840.1.113730.1.13",
+   511→                "field": "X.509v3 Extension: netscape-comment",
+   512→                "capacity": "Virtually unlimited (extension can be large)",
+   513→            },
+   514→            {
+   515→                "name": "Serial Number Encoding",
+   516→                "example": f"serialNumber = {int.from_bytes(hashlib.sha256(secret).digest()[:10], 'big')}",
+   517→                "field": "Certificate.SerialNumber",
+   518→                "capacity": "~20 bytes (160-bit serial number)",
+   519→                "note": "CA-generated serials should be random anyway — hard to distinguish",
+   520→            },
+   521→            {
+   522→                "name": "SAN Entry Encoding",
+   523→                "example": f"subjectAltName = DNS:{b64.lower()}.attacker.com",
+   524→                "field": "X.509v3 Extension: Subject Alternative Name",
+   525→                "capacity": "~60 bytes per SAN DNS entry (label length limit)",
+   526→            },
+   527→        ],
+   528→        "encoding_chain": (
+   529→            "Plaintext → Base64 → Embed in [OU | nsComment | Serial | SAN] "
+   530→            "→ Sign certificate → Deliver via TLS handshake"
+   531→        ),
+   532→        "extraction": (
+   533→            "Target parses cert on TLS handshake, extracts field, base64-decodes. "
+   534→            "One-time transfer per new cert, ideal for C2 addresses or keys."
+   535→        ),
+   536→    }
+   537→
+   538→
+   539→def _simulate_url_path_encoding() -> Dict[str, Any]:
+   540→    """Demonstrate URL path-based covert channel."""
+   541→    secret = b"URL_ENCODED_SECRET"
+   542→    # Method 1: Hex-encoded path segments
+   543→    hex_encoded = secret.hex()
+   544→    hex_segments = [hex_encoded[i:i+4] for i in range(0, len(hex_encoded), 4)]
+   545→    hex_path = "/" + "/".join(hex_segments)
+   546→    # Method 2: Base64 path segments
+   547→    b64 = base64.urlsafe_b64encode(secret).decode().rstrip("=")
+   548→    b64_segments = [b64[i:i+16] for i in range(0, len(b64), 16)]
+   549→    b64_path = "/" + "/".join(b64_segments)
+   550→    # Method 3: Double URL-encoding
+   551→    double_encoded = urllib.parse.quote(urllib.parse.quote(secret.decode(), safe=""), safe="")
+   552→
+   553→    return {
+   554→        "technique": "Data encoded in URL path structure",
+   555→        "methods": [
+   556→            {
+   557→                "name": "Hex Path Segments",
+   558→                "example_url": f"https://target.com{hex_path}",
+   559→                "path": hex_path,
+   560→                "path_length": len(hex_path),
+   561→                "segment_count": len(hex_segments),
+   562→                "decoded": secret.decode(),
+   563→            },
+   564→            {
+   565→                "name": "Base64 Path Segments",
+   566→                "example_url": f"https://target.com{b64_path}",
+   567→                "path": b64_path,
+   568→                "path_length": len(b64_path),
+   569→                "segment_count": len(b64_segments),
+   570→                "decoded": secret.decode(),
+   571→            },
+   572→            {
+   573→                "name": "Double URL Encoding",
+   574→                "example_url": f"https://target.com/api/{double_encoded}",
+   575→                "encoded_path": double_encoded,
+   576→                "decoded": secret.decode(),
+   577→                "note": "Bypasses WAF URL-decode-once rules",
+   578→            },
+   579→        ],
+   580→        "encoding_chain": "Plaintext → [Hex-Segments | Base64-Segments | Double-Encode] → URL path",
+   581→        "bandwidth_note": "URL max ~8KB. Each request can carry ~6KB of encoded data.",
+   582→    }
+   583→
+   584→
+   585→def _simulate_chunked_encoding() -> Dict[str, Any]:
+   586→    """Demonstrate chunked transfer encoding abuse."""
+   587→    secret = b"CHUNK"
+   588→    # Each byte maps to a chunk size: chunk_size = cover_size + (byte_value * N)
+   589→    # The covert data is in the SIZE field, not the body
+   590→    cover_data = b"A" * 64  # cover traffic
+   591→    chunk_multiplier = 16
+   592→
+   593→    chunks = []
+   594→    for byte_val in secret:
+   595→        covert_size = 64 + (byte_val * chunk_multiplier)
+   596→        chunk_line = f"{covert_size:x}\r\n"
+   597→        chunks.append({
+   598→            "secret_byte": chr(byte_val),
+   599→            "byte_hex": f"0x{byte_val:02x}",
+   600→            "chunk_size_decimal": covert_size,
+   601→            "chunk_size_hex": chunk_line.strip(),
+   602→            "covert_delta": byte_val * chunk_multiplier,
+   603→            "entropy_of_size": round(_shannon_entropy(chunk_line.strip()), 3),
+   604→        })
+   605→
+   606→    # Full chunked response example
+   607→    full_response = ""
+   608→    for c in chunks:
+   609→        size = c["chunk_size_decimal"]
+   610→        full_response += f"{size:x}\r\n{cover_data * (size // 64)}\r\n"
+   611→    full_response += "0\r\n\r\n"
+   612→
+   613→    return {
+   614→        "technique": "Covert data in chunk size fields",
+   615→        "methods": [
+   616→            {
+   617→                "name": "Chunk Size Encoding",
+   618→                "description": "Each chunk's size = base_size + (secret_byte * multiplier)",
+   619→                "base_size": 64,
+   620→                "multiplier": chunk_multiplier,
+   621→                "bytes_per_chunk": 1,
+   622→                "max_encodable_byte": 0xFF,
+   623→                "max_chunk_size": 64 + (255 * 16),  # 4144
+   624→            },
+   625→        ],
+   626→        "chunk_breakdown": chunks,
+   627→        "sample_response_prefix": full_response[:200] + "...",
+   628→        "encoding_chain": "Plaintext → Map each byte → Anomalous chunk size → HTTP chunked response",
+   629→        "detection_note": (
+   630→            "Normal servers use power-of-2 chunk sizes (1024, 4096, 8192). "
+   631→            "Arbitrary sizes like 4256, 4272, 4288 are anomalous."
+   632→        ),
+   633→    }
+   634→
+   635→
+   636→def _simulate_websocket_frame() -> Dict[str, Any]:
+   637→    """Demonstrate WebSocket frame covert channel."""
+   638→    secret = b"WS SECRET"
+   639→    # WebSocket frame format: FIN(1) RSV(3) Opcode(4) MASK(1) LEN(7) [MASK_KEY(32)] PAYLOAD(...)
+   640→    # Method 1: Frame length encodes data
+   641→    frame_details = []
+   642→    for byte_val in secret:
+   643→        # FIN=1, RSV=000, Opcode=0001 (text), MASK=0, LEN=7 bits
+   644→        # We encode the secret byte in the payload length (after a base offset)
+   645→        payload_len = 128 + byte_val
+   646→        # Frame header: 0x81 (FIN+text opcode) + payload_len
+   647→        header = bytes([0x81, payload_len])
+   648→        frame_details.append({
+   649→            "secret_byte": chr(byte_val) if 32 <= byte_val < 127 else f"0x{byte_val:02x}",
+   650→            "byte_hex": f"0x{byte_val:02x}",
+   651→            "frame_header_hex": header.hex(),
+   652→            "opcode": "0x1 (text)",
+   653→            "payload_length": payload_len,
+   654→            "covert_delta": byte_val,
+   655→        })
+   656→
+   657→    # Method 2: Opcode switching
+   658→    # Opcodes: 0x1=text, 0x2=binary, 0x8=close, 0x9=ping, 0xA=pong
+   659→    # Encode 2 bits per frame via opcode selection
+   660→    opcode_map = {
+   661→        0x1: "00", 0x2: "01", 0x8: "10", 0x9: "11",
+   662→    }
+   663→    opcode_frames = []
+   664→    binary_secret = "".join(f"{b:08b}" for b in secret)
+   665→    for i in range(0, len(binary_secret), 2):
+   666→        pair = binary_secret[i:i+2].ljust(2, "0")
+   667→        for opcode, bits in opcode_map.items():
+   668→            if bits == pair:
+   669→                opcode_frames.append({
+   670→                    "bits": pair,
+   671→                    "opcode": f"0x{opcode:x}",
+   672→                    "opcode_name": {0x1: "text", 0x2: "binary", 0x8: "close", 0x9: "ping"}[opcode],
+   673→                })
+   674→                break
+   675→
+   676→    return {
+   677→        "technique": "Covert data in WebSocket frame structure",
+   678→        "methods": [
+   679→            {
+   680→                "name": "Frame Length Encoding",
+   681→                "description": "Payload length = base_offset + secret_byte",
+   682→                "base_offset": 128,
+   683→                "bits_per_frame": 8,
+   684→                "frame_details": frame_details,
+   685→            },
+   686→            {
+   687→                "name": "Opcode Switching",
+   688→                "description": "Frame opcode encodes 2 bits (text=00, binary=01, close=10, ping=11)",
+   689→                "opcode_map": {f"0x{k:x}": v for k, v in opcode_map.items()},
+   690→                "encoded_sequence": opcode_frames,
+   691→                "bits_per_frame": 2,
+   692→                "note": "Frequent opcode switching is anomalous in normal WebSocket traffic",
+   693→            },
+   694→        ],
+   695→        "encoding_chain": "Plaintext → [Frame Length | Opcode Switching] → WebSocket frames",
+   696→        "bandwidth_note": "WebSocket has no same-origin restrictions. Full-duplex, persistent connection.",
+   697→    }
+   698→
+   699→
+   700→SIMULATORS = {
+   701→    "dns_tunneling": _simulate_dns_tunneling,
+   702→    "http_header_covert": _simulate_header_covert,
+   703→    "timing_channel": _simulate_timing_channel,
+   704→    "icmp_tunnel": _simulate_icmp_tunnel,
+   705→    "cert_steganography": _simulate_cert_stego,
+   706→    "url_path_encoding": _simulate_url_path_encoding,
+   707→    "chunked_encoding_abuse": _simulate_chunked_encoding,
+   708→    "websocket_frame": _simulate_websocket_frame,
+   709→}
+   710→
+   711→
+   712→# ═══════════════════════════════════════════════════════════════════════════
+   713→# DETECTION FUNCTIONS — Real HTTP-based analysis
+   714→# ═══════════════════════════════════════════════════════════════════════════
+   715→
+   716→def _detect_dns_tunneling(
+   717→    target: str, base_url: str, timeout: int, verify_tls: bool
+   718→) -> List[Finding]:
+   719→    """Analyze HTTP responses for DNS-tunneling indicators.
+   720→
+   721→    Looks for: references to DNS services, unusual subdomains in
+   722→    response body/headers, DNS-over-HTTPS endpoints that could be
+   723→    used for tunneling.
+   724→    """
+   725→    findings: List[Finding] = []
+   726→    sig = CHANNEL_SIGNATURES["dns_tunneling"]
+   727→
+   728→    # Probe common DNS-over-HTTPS endpoints
+   729→    doh_endpoints = [
+   730→        "/dns-query",
+   731→        "/dns-query?dns=",
+   732→        "/resolve?name=",
+   733→        "/api/dns",
+   734→    ]
+   735→
+   736→    for ep in doh_endpoints:
+   737→        resp = http_probe(
+   738→            f"{base_url}{ep}", timeout=timeout, verify_tls=verify_tls,
+   739→            limiter=default_limiter,
+   740→        )
+   741→        if resp["ok"] and resp["status"] == 200:
+   742→            body = resp.get("body", "")
+   743→            headers = resp.get("headers", {})
+   744→            content_type = headers.get("content-type", "")
+   745→
+   746→            # Check for DNS-over-HTTPS response (application/dns-message)
+   747→            if "dns" in content_type.lower():
+   748→                # Analyze response for tunneling indicators
+   749→                entropy, is_high = _entropy_for_channel("dns_tunneling", body)
+   750→                if is_high:
+   751→                    findings.append(Finding(
+   752→                        title="DNS-over-HTTPS Endpoint with High-Entropy Response",
+   753→                        severity=sig["severity"],
+   754→                        category="covert_channel",
+   755→                        module="covert_channel",
+   756→                        description=(
+   757→                            f"DNS-over-HTTPS endpoint {ep} returns high-entropy data "
+   758→                            f"(H={entropy:.2f} bits, threshold={sig['entropy_threshold']}). "
+   759→                            f"This could indicate active DNS tunneling or a DoH service "
+   760→                            f"that could be abused for data exfiltration."
+   761→                        ),
+   762→                        evidence=f"Endpoint: {ep}, Content-Type: {content_type}, Entropy: {entropy:.2f}",
+   763→                        asset=target,
+   764→                        points_deducted=15,
+   765→                        dread_score=sig["dread_score"],
+   766→                        remediation=(
+   767→                            "Restrict DNS-over-HTTPS to authorized resolvers. Monitor DNS "
+   768→                            "query patterns for unusually long/numerous subdomain queries. "
+   769→                            "Implement DNS query logging and anomaly detection."
+   770→                        ),
+   771→                    ))
+   772→
+   773→    # Check response body for references to DNS tunneling tools/infrastructure
+   774→    probe_resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls, limiter=default_limiter)
+   775→    if probe_resp["ok"]:
+   776→        body = probe_resp.get("body", "")
+   777→        for tool in sig["known_tools"]:
+   778→            tool_lower = tool.lower()
+   779→            if tool_lower in body.lower():
+   780→                findings.append(Finding(
+   781→                    title=f"DNS Tunneling Tool Reference: {tool}",
+   782→                    severity="high",
+   783→                    category="covert_channel",
+   784→                    module="covert_channel",
+   785→                    description=(
+   786→                        f"Response body contains reference to known DNS tunneling tool '{tool}'. "
+   787→                        f"This may indicate compromised infrastructure or a red team engagement."
+   788→                    ),
+   789→                    evidence=f"Tool name '{tool}' found in response body",
+   790→                    asset=target,
+   791→                    points_deducted=20,
+   792→                    dread_score=8.0,
+   793→                    remediation=f"Investigate the presence of {tool} on this system.",
+   794→                ))
+   795→
+   796→    return findings
+   797→
+   798→
+   799→def _detect_http_header_covert(
+   800→    target: str, base_url: str, timeout: int, verify_tls: bool
+   801→) -> List[Finding]:
+   802→    """Analyze HTTP response headers for covert channel indicators."""
+   803→    findings: List[Finding] = []
+   804→    sig = CHANNEL_SIGNATURES["http_header_covert"]
+   805→
+   806→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls, limiter=default_limiter)
+   807→    headers = resp.get("headers", {})
+   808→
+   809→    suspicious_headers_found = []
+   810→    high_entropy_headers = []
+   811→
+   812→    for header_name, header_value in headers.items():
+   813→        # Check for suspicious custom headers
+   814→        for prefix in sig["suspicious_header_prefixes"]:
+   815→            if header_name.lower().startswith(prefix.lower()):
+   816→                entropy, is_high = _entropy_for_channel("http_header_covert", header_value)
+   817→                suspicious_headers_found.append({
+   818→                    "name": header_name,
+   819→                    "value_preview": header_value[:80] + ("..." if len(header_value) > 80 else ""),
+   820→                    "value_length": len(header_value),
+   821→                    "entropy": round(entropy, 3),
+   822→                    "high_entropy": is_high,
+   823→                })
+   824→                if is_high:
+   825→                    high_entropy_headers.append(header_name)
+   826→                break
+   827→
+   828→        # Check for unusually long header values (potential base64/hex payloads)
+   829→        if len(header_value) > 100:
+   830→            entropy = _shannon_entropy(header_value)
+   831→            if entropy >= sig["entropy_threshold"]:
+   832→                if header_name not in [h["name"] for h in suspicious_headers_found]:
+   833→                    high_entropy_headers.append(header_name)
+   834→
+   835→    if high_entropy_headers:
+   836→        findings.append(Finding(
+   837→            title="High-Entropy Values in Custom HTTP Headers",
+   838→            severity=sig["severity"],
+   839→            category="covert_channel",
+   840→            module="covert_channel",
+   841→            description=(
+   842→                f"Found {len(high_entropy_headers)} HTTP header(s) with high-entropy values "
+   843→                f"that could encode covert data: {', '.join(high_entropy_headers)}. "
+   844→                f"Normal header values have entropy < {sig['entropy_threshold']}. "
+   845→                f"High entropy suggests encoded or encrypted payloads."
+   846→            ),
+   847→            evidence=json.dumps(suspicious_headers_found, indent=2),
+   848→            asset=target,
+   849→            points_deducted=10,
+   850→            dread_score=sig["dread_score"],
+   851→            remediation=(
+   852→                "Audit custom HTTP headers for legitimate purpose. Remove unnecessary headers. "
+   853→                "Implement header allowlisting at the WAF/reverse proxy level. "
+   854→                "Monitor for headers with entropy > 3.5 bits."
+   855→            ),
+   856→        ))
+   857→
+   858→    if suspicious_headers_found and not high_entropy_headers:
+   859→        findings.append(Finding(
+   860→            title="Custom HTTP Headers Present (Potential Covert Channel Vector)",
+   861→            severity="low",
+   862→            category="covert_channel",
+   863→            module="covert_channel",
+   864→            description=(
+   865→                f"Found {len(suspicious_headers_found)} custom HTTP header(s). While not "
+   866→                f"currently carrying high-entropy payloads, these headers could be "
+   867→                f"abused for covert data exfiltration if the server reflects or processes them."
+   868→            ),
+   869→            evidence=json.dumps(suspicious_headers_found, indent=2),
+   870→            asset=target,
+   871→            points_deducted=3,
+   872→            dread_score=3.5,
+   873→            remediation=(
+   874→                "Review custom headers for necessity. Implement strict header policies."
+   875→            ),
+   876→        ))
+   877→
+   878→    # Check for cookie manipulation vectors
+   879→    cookies = headers.get("set-cookie", "")
+   880→    if cookies:
+   881→        cookie_entropy = _shannon_entropy(cookies)
+   882→        if cookie_entropy >= sig["entropy_threshold"]:
+   883→            findings.append(Finding(
+   884→                title="High-Entropy Cookie Value (Potential Covert Channel)",
+   885→                severity="low",
+   886→                category="covert_channel",
+   887→                module="covert_channel",
+   888→                description=(
+   889→                    f"Set-Cookie header contains high-entropy value (H={cookie_entropy:.2f}). "
+   890→                    f"Cookies can be used as a covert channel if the server reflects "
+   891→                    f"or logs cookie values for later exfiltration."
+   892→                ),
+   893→                evidence=f"Cookie entropy: {cookie_entropy:.2f}, Cookie: {cookies[:80]}...",
+   894→                asset=target,
+   895→                points_deducted=5,
+   896→                dread_score=4.0,
+   897→                remediation=(
+   898→                    "Ensure cookies use standard, audited values. Implement HttpOnly and "
+   899→                    "Secure flags. Monitor cookie value patterns for anomalies."
+   900→                ),
+   901→            ))
+   902→
+   903→    return findings
+   904→
+   905→
+   906→def _detect_timing_channel(
+   907→    target: str, base_url: str, timeout: int, verify_tls: bool
+   908→) -> List[Finding]:
+   909→    """Analyze response timing for timing-channel indicators.
+   910→
+   911→    Sends multiple requests and measures inter-response time deltas.
+   912→    Consistent, non-natural timing patterns indicate encoding.
+   913→    """
+   914→    findings: List[Finding] = []
+   915→    sig = CHANNEL_SIGNATURES["timing_channel"]
+   916→
+   917→    # Collect timing samples
+   918→    num_samples = 10
+   919→    timings: List[float] = []
+   920→
+   921→    for i in range(num_samples):
+   922→        start = time.monotonic()
+   923→        resp = http_probe(
+   924→            f"{base_url}/?_t={int(time.time() * 1000)}_{i}",
+   925→            timeout=timeout, verify_tls=verify_tls, limiter=default_limiter,
+   926→        )
+   927→        elapsed = time.monotonic() - start
+   928→        timings.append(elapsed)
+   929→
+   930→    if len(timings) < sig["min_observations"]:
+   931→        return findings
+   932→
+   933→    # Calculate timing statistics
+   934→    deltas = [timings[i+1] - timings[i] for i in range(len(timings) - 1)]
+   935→    mean_delta = sum(deltas) / len(deltas)
+   936→    variance = sum((d - mean_delta) ** 2 for d in deltas) / len(deltas)
+   937→    std_dev = math.sqrt(variance)
+   938→
+   939→    if std_dev == 0:
+   940→        coeff_of_var = 0.0
+   941→    else:
+   942→        coeff_of_var = std_dev / mean_delta if mean_delta > 0 else float("inf")
+   943→
+   944→    # Very consistent timing is suspicious (indicates server-side encoding)
+   945→    # Check if deltas cluster around specific values (discrete levels)
+   946→    quantized_deltas = [round(d * 100) / 100 for d in deltas]  # quantize to 10ms
+   947→    unique_deltas = set(quantized_deltas)
+   948→
+   949→    # If we see very few unique delta values relative to samples, that's suspicious
+   950→    delta_diversity = len(unique_deltas) / len(quantized_deltas) if quantized_deltas else 0
+   951→
+   952→    is_suspicious = False
+   953→    indicators = []
+   954→
+   955→    if coeff_of_var < sig["std_dev_threshold"] and mean_delta > 0.01:
+   956→        is_suspicious = True
+   957→        indicators.append(
+   958→            f"Extremely consistent timing (CV={coeff_of_var:.4f}, "
+   959→            f"mean={mean_delta*1000:.1f}ms, σ={std_dev*1000:.2f}ms)"
+   960→        )
+   961→
+   962→    if delta_diversity < 0.4 and len(deltas) >= 5:
+   963→        is_suspicious = True
+   964→        indicators.append(
+   965→            f"Low timing diversity ({len(unique_deltas)} unique values in "
+   966→            f"{len(quantized_deltas)} deltas = {delta_diversity:.2f})"
+   967→        )
+   968→
+   969→    if is_suspicious:
+   970→        findings.append(Finding(
+   971→            title="Suspicious Response Timing Patterns (Timing Channel Indicator)",
+   972→            severity=sig["severity"],
+   973→            category="covert_channel",
+   974→            module="covert_channel",
+   975→            description=(
+   976→                f"Response timing analysis reveals patterns consistent with "
+   977→                f"timing-based covert channels. {'; '.join(indicators)}. "
+   978→                f"Timing channels encode data in inter-request/response delays."
+   979→            ),
+   980→            evidence=(
+   981→                f"Timings (ms): {[f'{t*1000:.1f}' for t in timings]}\n"
+   982→                f"Deltas (ms): {[f'{d*1000:.1f}' for d in deltas]}\n"
+   983→                f"Mean delta: {mean_delta*1000:.1f}ms, StdDev: {std_dev*1000:.2f}ms, "
+   984→                f"CV: {coeff_of_var:.4f}, Diversity: {delta_diversity:.2f}"
+   985→            ),
+   986→            asset=target,
+   987→            points_deducted=12,
+   988→            dread_score=sig["dread_score"],
+   989→            remediation=(
+   990→                "Implement request jitter/randomization. Monitor inter-request timing "
+   991→                "distributions for anomalies. Use network flow analysis to detect "
+   992→                "periodic or clustered timing patterns."
+   993→            ),
+   994→        ))
+   995→    else:
+   996→        findings.append(Finding(
+   997→            title="Timing Channel Analysis (No Anomalies Detected)",
+   998→            severity="info",
+   999→            category="covert_channel",
+  1000→            module="covert_channel",
+  1001→            description=(
+  1002→                f"Analyzed {num_samples} response timings. Mean delta: "
+  1003→                f"{mean_delta*1000:.1f}ms, CV: {coeff_of_var:.4f}. "
+  1004→                f"No suspicious patterns detected."
+  1005→            ),
+  1006→            evidence=f"CV: {coeff_of_var:.4f}, Diversity: {delta_diversity:.2f}",
+  1007→            asset=target,
+  1008→            points_deducted=0,
+  1009→            dread_score=0.0,
+  1010→        ))
+  1011→
+  1012→    return findings
+  1013→
+  1014→
+  1015→def _detect_icmp_tunnel_markers(
+  1016→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1017→) -> List[Finding]:
+  1018→    """Detect infrastructure patterns consistent with ICMP tunneling.
+  1019→
+  1020→    Since we are HTTP-based, we look for:
+  1021→    - References to ICMP/ping services in responses
+  1022→    - Network diagnostic endpoints that could facilitate tunneling
+  1023→    - Timing patterns that suggest ICMP-based side channels
+  1024→    """
+  1025→    findings: List[Finding] = []
+  1026→    sig = CHANNEL_SIGNATURES["icmp_tunnel"]
+  1027→
+  1028→    # Probe for network diagnostic endpoints
+  1029→    diag_paths = [
+  1030→        "/ping", "/api/ping", "/api/health/ping",
+  1031→        "/icmp", "/api/icmp", "/network/ping",
+  1032→        "/api/v1/ping", "/diagnostics/ping",
+  1033→        "/trace", "/api/traceroute", "/api/trace",
+  1034→    ]
+  1035→
+  1036→    icmp_endpoints_found = []
+  1037→
+  1038→    for path in diag_paths:
+  1039→        resp = http_probe(
+  1040→            f"{base_url}{path}", timeout=timeout, verify_tls=verify_tls,
+  1041→            limiter=default_limiter,
+  1042→        )
+  1043→        if resp["ok"] and resp["status"] == 200:
+  1044→            body = resp.get("body", "")
+  1045→            headers = resp.get("headers", {})
+  1046→
+  1047→            # Check if endpoint actually performs ICMP-like operations
+  1048→            icmp_indicators = []
+  1049→            body_lower = body.lower()
+  1050→            for keyword in ["icmp", "ping", "echo", "ttl", "rtt", "latency", "packet"]:
+  1051→                if keyword in body_lower:
+  1052→                    icmp_indicators.append(keyword)
+  1053→
+  1054→            if icmp_indicators:
+  1055→                icmp_endpoints_found.append({
+  1056→                    "path": path,
+  1057→                    "indicators": icmp_indicators,
+  1058→                    "response_size": len(body),
+  1059→                })
+  1060→
+  1061→    if icmp_endpoints_found:
+  1062→        paths_str = ", ".join(ep["path"] for ep in icmp_endpoints_found)
+  1063→        findings.append(Finding(
+  1064→            title="ICMP-Related Endpoints Discovered (Potential Tunneling Vector)",
+  1065→            severity=sig["severity"],
+  1066→            category="covert_channel",
+  1067→            module="covert_channel",
+  1068→            description=(
+  1069→                f"Found {len(icmp_endpoints_found)} endpoint(s) related to ICMP/ping "
+  1070→                f"functionality: {paths_str}. If these endpoints allow arbitrary "
+  1071→                f"ICMP operations or accept user-controlled payload data, they could "
+  1072→                f"facilitate ICMP tunneling for covert exfiltration."
+  1073→            ),
+  1074→            evidence=json.dumps(icmp_endpoints_found, indent=2),
+  1075→            asset=target,
+  1076→            points_deducted=15,
+  1077→            dread_score=sig["dread_score"],
+  1078→            remediation=(
+  1079→                "Restrict access to network diagnostic endpoints. Ensure they do not "
+  1080→                "accept user-controlled payload data. Implement network-level ICMP "
+  1081→                "monitoring for unusual packet sizes and frequencies."
+  1082→            ),
+  1083→        ))
+  1084→
+  1085→    # Check main response for ICMP tunnel tool references
+  1086→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls, limiter=default_limiter)
+  1087→    if resp["ok"]:
+  1088→        body = resp.get("body", "")
+  1089→        for tool in ["ptunnel", "icmpsh", "icmptunnel", "cnighT"]:
+  1090→            if tool.lower() in body.lower():
+  1091→                findings.append(Finding(
+  1092→                    title=f"ICMP Tunneling Tool Reference: {tool}",
+  1093→                    severity="high",
+  1094→                    category="covert_channel",
+  1095→                    module="covert_channel",
+  1096→                    description=(
+  1097→                        f"Response body references ICMP tunneling tool '{tool}'. "
+  1098→                        f"This indicates the system may be configured for or compromised "
+  1099→                        f"by ICMP tunneling capabilities."
+  1100→                    ),
+  1101→                    evidence=f"Tool '{tool}' found in response body",
+  1102→                    asset=target,
+  1103→                    points_deducted=20,
+  1104→                    dread_score=8.5,
+  1105→                    remediation=f"Investigate {tool} presence and remove if unauthorized.",
+  1106→                ))
+  1107→
+  1108→    return findings
+  1109→
+  1110→
+  1111→def _detect_cert_steganography(
+  1112→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1113→) -> List[Finding]:
+  1114→    """Analyze TLS certificate fields for steganographic indicators.
+  1115→
+  1116→    Uses the TLS connection from http_probe to observe certificate-derived
+  1117→    information available in HTTP responses.
+  1118→    """
+  1119→    findings: List[Finding] = []
+  1120→    sig = CHANNEL_SIGNATURES["cert_steganography"]
+  1121→
+  1122→    # Make a request and examine response for certificate-related info
+  1123→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls, limiter=default_limiter)
+  1124→    headers = resp.get("headers", {})
+  1125→    body = resp.get("body", "")
+  1126→
+  1127→    # Check for certificate-related information in headers
+  1128→    cert_headers = {}
+  1129→    for h_name, h_value in headers.items():
+  1130→        h_lower = h_name.lower()
+  1131→        if any(k in h_lower for k in ["ssl", "tls", "cert", "certificate"]):
+  1132→            cert_headers[h_name] = h_value
+  1133→
+  1134→    # Analyze any certificate-related headers for stego indicators
+  1135→    for h_name, h_value in cert_headers.items():
+  1136→        entropy, is_high = _entropy_for_channel("cert_steganography", h_value)
+  1137→        if is_high:
+  1138→            findings.append(Finding(
+  1139→                title=f"High-Entropy Certificate-Related Header: {h_name}",
+  1140→                severity=sig["severity"],
+  1141→                category="covert_channel",
+  1142→                module="covert_channel",
+  1143→                description=(
+  1144→                    f"Header '{h_name}' contains certificate-related data with high "
+  1145→                    f"entropy (H={entropy:.2f}, threshold={sig['entropy_threshold']}). "
+  1146→                    f"This could indicate steganographic data embedded in TLS certificate fields."
+  1147→                ),
+  1148→                evidence=f"Header: {h_name}, Entropy: {entropy:.2f}, Value: {h_value[:100]}",
+  1149→                asset=target,
+  1150→                points_deducted=12,
+  1151→                dread_score=sig["dread_score"],
+  1152→                remediation=(
+  1153→                    "Audit certificate generation for unusual field values. Ensure OU, O, "
+  1154→                    "and CN fields contain expected organizational data. Monitor certificate "
+  1155→                    "transparency logs for anomalous certificates."
+  1156→                ),
+  1157→            ))
+  1158→
+  1159→    # Check response body for certificate details (API endpoints that expose cert info)
+  1160→    cert_patterns = [
+  1161→        (r"OU[=:]\s*([^,\n]+)", "OU field"),
+  1162→        (r"organizationUnit[=:]\s*([^,\n]+)", "organizationalUnit field"),
+  1163→        (r"serialNumber[=:]\s*([^,\n]+)", "serialNumber field"),
+  1164→        (r"nsComment[=:]\s*([^,\n]+)", "nsComment extension"),
+  1165→        (r"subjectAltName[=:]\s*([^,\n]+)", "SAN extension"),
+  1166→    ]
+  1167→
+  1168→    for pattern, field_name in cert_patterns:
+  1169→        matches = re.findall(pattern, body, re.IGNORECASE)
+  1170→        for match in matches:
+  1171→            match_stripped = match.strip()
+  1172→            if len(match_stripped) > sig["suspicious_ou_min"]:
+  1173→                entropy = _shannon_entropy(match_stripped)
+  1174→                if entropy >= sig["entropy_threshold"]:
+  1175→                    findings.append(Finding(
+  1176→                        title=f"Suspicious Certificate Field: {field_name}",
+  1177→                        severity=sig["severity"],
+  1178→                        category="covert_channel",
+  1179→                        module="covert_channel",
+  1180→                        description=(
+  1181→                            f"Certificate {field_name} contains unusually long, "
+  1182→                            f"high-entropy value (length={len(match_stripped)}, "
+  1183→                            f"H={entropy:.2f}). This is consistent with certificate "
+  1184→                            f"steganography where covert data is embedded in X.509 fields."
+  1185→                        ),
+  1186→                        evidence=f"Field: {field_name}, Value: {match_stripped[:80]}, Entropy: {entropy:.2f}",
+  1187→                        asset=target,
+  1188→                        points_deducted=12,
+  1189→                        dread_score=sig["dread_score"],
+  1190→                        remediation=(
+  1191→                            f"Audit certificate {field_name} values. Legitimate values should be "
+  1192→                            f"short, human-readable organizational identifiers."
+  1193→                        ),
+  1194→                    ))
+  1195→
+  1196→    return findings
+  1197→
+  1198→
+  1199→def _detect_url_path_encoding(
+  1200→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1201→) -> List[Finding]:
+  1202→    """Detect URL path patterns consistent with data encoding."""
+  1203→    findings: List[Finding] = []
+  1204→    sig = CHANNEL_SIGNATURES["url_path_encoding"]
+  1205→
+  1206→    # Test various encoded path patterns against the target
+  1207→    test_paths = [
+  1208→        # Hex-encoded path segments
+  1209→        "/" + "/".join(["a1b2c3d4e5f6"] * 3),
+  1210→        # Base64 path segments
+  1211→        "/" + "/".join(["SGVsbG8gV29ybGQ="] * 2),
+  1212→        # Long path with encoded data
+  1213→        "/" + "a" * 300,
+  1214→        # URL-encoded heavy path
+  1215→        "/api/%41%42%43%44%45%46%47%48%49%4a%4b%4c%4d%4e%4f%50",
+  1216→        # Mixed encoding
+  1217→        "/" + "/".join([f"seg{i:04x}" for i in range(5)]),
+  1218→    ]
+  1219→
+  1220→    for path in test_paths:
+  1221→        resp = http_probe(
+  1222→            f"{base_url}{path}", timeout=timeout, verify_tls=verify_tls,
+  1223→            limiter=default_limiter,
+  1224→        )
+  1225→
+  1226→        # If the server accepts (200/404) unusually long/encoded paths, it's a vector
+  1227→        if resp["status"] in (200, 301, 302, 404, 405):
+  1228→            path_len = len(path)
+  1229→            if path_len > sig["suspicious_path_min"]:
+  1230→                # Check if server echoes back the path (reflection = amplification vector)
+  1231→                body = resp.get("body", "")
+  1232→                path_echoes = any(seg in body for seg in path.split("/")[1:4] if seg)
+  1233→
+  1234→                if path_echoes:
+  1235→                    findings.append(Finding(
+  1236→                        title="URL Path Reflection with Encoded Data (Covert Channel Vector)",
+  1237→                        severity=sig["severity"],
+  1238→                        category="covert_channel",
+  1239→                        module="covert_channel",
+  1240→                        description=(
+  1241→                            f"Server accepts and reflects long/encoded URL paths "
+  1242→                            f"(length={path_len}). Path data is echoed in the response, "
+  1243→                            f"confirming it as a viable covert channel for data exfiltration."
+  1244→                        ),
+  1245→                        evidence=f"Path length: {path_len}, Status: {resp['status']}",
+  1246→                        asset=target,
+  1247→                        points_deducted=10,
+  1248→                        dread_score=sig["dread_score"],
+  1249→                        remediation=(
+  1250→                            "Implement maximum URL length restrictions. Normalize and "
+  1251→                            "validate all URL paths. Do not reflect user-supplied path data."
+  1252→                        ),
+  1253→                    ))
+  1254→                else:
+  1255→                    findings.append(Finding(
+  1256→                        title=f"Server Accepts Unusually Long URL Paths ({path_len} chars)",
+  1257→                        severity="low",
+  1258→                        category="covert_channel",
+  1259→                        module="covert_channel",
+  1260→                        description=(
+  1261→                            f"Server processes URL paths of {path_len} characters without "
+  1262→                            f"rejection. Long URL paths can encode covert data in hex, "
+  1263→                            f"base64, or raw binary segments."
+  1264→                        ),
+  1265→                        evidence=f"Path: {path[:100]}..., Status: {resp['status']}",
+  1266→                        asset=target,
+  1267→                        points_deducted=3,
+  1268→                        dread_score=3.0,
+  1269→                        remediation=(
+  1270→                            "Set maximum URL length (recommend ≤2048 chars). Reject paths with "
+  1271→                            "high entropy or unusual encoding patterns."
+  1272→                        ),
+  1273→                    ))
+  1274→                break  # One finding per category is sufficient
+  1275→
+  1276→    # Check response body for long encoded URLs/paths in links
+  1277→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls, limiter=default_limiter)
+  1278→    if resp["ok"]:
+  1279→        body = resp.get("body", "")
+  1280→        url_pattern = r'href=["\']([^"\']{256,})["\']'
+  1281→        long_urls = re.findall(url_pattern, body)
+  1282→        for url in long_urls[:5]:
+  1283→            entropy = _shannon_entropy(url)
+  1284→            if entropy >= sig["entropy_threshold"]:
+  1285→                parsed = urllib.parse.urlparse(url)
+  1286→                if len(parsed.path) > sig["suspicious_path_min"]:
+  1287→                    findings.append(Finding(
+  1288→                        title="High-Entropy Long URL in Response Body",
+  1289→                        severity="medium",
+  1290→                        category="covert_channel",
+  1291→                        module="covert_channel",
+  1292→                        description=(
+  1293→                            f"Response contains a link with high-entropy, unusually long path "
+  1294→                            f"(path length={len(parsed.path)}, H={entropy:.2f}). This could be "
+  1295→                            f"a covert channel for data exfiltration via URL paths."
+  1296→                        ),
+  1297→                        evidence=f"URL: {url[:120]}..., Path entropy: {entropy:.2f}",
+  1298→                        asset=target,
+  1299→                        points_deducted=8,
+  1300→                        dread_score=5.0,
+  1301→                        remediation="Audit link generation for security. Validate URL patterns.",
+  1302→                    ))
+  1303→
+  1304→    return findings
+  1305→
+  1306→
+  1307→def _detect_chunked_encoding_abuse(
+  1308→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1309→) -> List[Finding]:
+  1310→    """Detect anomalous chunked transfer encoding patterns."""
+  1311→    findings: List[Finding] = []
+  1312→    sig = CHANNEL_SIGNATURES["chunked_encoding_abuse"]
+  1313→
+  1314→    # Request with Accept-Encoding to potentially trigger chunked responses
+  1315→    resp = http_probe(
+  1316→        base_url,
+  1317→        headers={"Accept-Encoding": "identity"},  # force unchunked if possible
+  1318→        timeout=timeout, verify_tls=verify_tls, limiter=default_limiter,
+  1319→    )
+  1320→    headers = resp.get("headers", {})
+  1321→    body = resp.get("body", "")
+  1322→
+  1323→    transfer_encoding = headers.get("transfer-encoding", "").lower()
+  1324→
+  1325→    if "chunked" in transfer_encoding:
+  1326→        # Analyze the body for chunk size patterns
+  1327→        # In our case http_probe already decodes chunked, so we analyze the raw
+  1328→        # response characteristics
+  1329→        findings.append(Finding(
+  1330→            title="Chunked Transfer Encoding Detected (Potential Covert Channel)",
+  1331→            severity=sig["severity"],
+  1332→            category="covert_channel",
+  1333→            module="covert_channel",
+  1334→            description=(
+  1335→                f"Server uses chunked transfer encoding. While legitimate, chunked "
+  1336→                f"encoding can be abused to encode covert data in chunk size fields. "
+  1337→                f"Normal servers use power-of-2 chunk sizes; anomalous sizes indicate abuse."
+  1338→            ),
+  1339→            evidence=f"Transfer-Encoding: {transfer_encoding}, Body size: {len(body)}",
+  1340→            asset=target,
+  1341→            points_deducted=5,
+  1342→            dread_score=sig["dread_score"],
+  1343→            remediation=(
+  1344→                "Prefer Content-Length over chunked encoding where possible. Monitor "
+  1345→                "chunk size distributions for anomalies. Implement middleware that "
+  1346→                "normalizes chunk sizes."
+  1347→            ),
+  1348→        ))
+  1349→    else:
+  1350→        # Check if server supports chunked encoding via HEAD/conditional request
+  1351→        resp2 = http_probe(
+  1352→            f"{base_url}/?chunked-test=1",
+  1353→            headers={
+  1354→                "Accept-Encoding": "identity",
+  1355→                "TE": "chunked",
+  1356→            },
+  1357→            timeout=timeout, verify_tls=verify_tls, limiter=default_limiter,
+  1358→        )
+  1359→        te_header = resp2.get("headers", {}).get("transfer-encoding", "").lower()
+  1360→        if "chunked" in te_header:
+  1361→            findings.append(Finding(
+  1362→                title="Server Supports Chunked TE (When Explicitly Requested)",
+  1363→                severity="info",
+  1364→                category="covert_channel",
+  1365→                module="covert_channel",
+  1366→                description=(
+  1367→                    "Server emits chunked transfer encoding when TE: chunked is requested. "
+  1368→                    "This confirms chunked encoding support, which is a prerequisite "
+  1369→                    "for chunked encoding abuse."
+  1370→                ),
+  1371→                evidence=f"TE header triggered chunked response",
+  1372→                asset=target,
+  1373→                points_deducted=2,
+  1374→                dread_score=2.0,
+  1375→            ))
+  1376→
+  1377→    # Check body for chunk-size-like patterns (hex strings on their own lines)
+  1378→    chunk_pattern = re.findall(r"\b([0-9a-fA-F]{1,4})\s*$", body, re.MULTILINE)
+  1379→    if len(chunk_pattern) > 10:
+  1380→        # Lots of hex numbers on their own lines = possibly chunked data in body
+  1381→        non_power_of_two = []
+  1382→        for s in chunk_pattern:
+  1383→            val = int(s, 16)
+  1384→            if val > 0 and (val & (val - 1)) != 0:  # not power of 2
+  1385→                non_power_of_two.append(val)
+  1386→
+  1387→        if non_power_of_two:
+  1388→            findings.append(Finding(
+  1389→                title="Anomalous Chunk-Size Patterns in Response Body",
+  1390→                severity="medium",
+  1391→                category="covert_channel",
+  1392→                module="covert_channel",
+  1393→                description=(
+  1394→                    f"Response body contains {len(chunk_pattern)} hex values on separate lines, "
+  1395→                    f"of which {len(non_power_of_two)} are non-power-of-2. This pattern is "
+  1396→                    f"consistent with chunked encoding abuse where chunk sizes encode data."
+  1397→                ),
+  1398→                evidence=(
+  1399→                    f"Total hex values: {len(chunk_pattern)}, "
+  1400→                    f"Non-power-of-2: {non_power_of_two[:10]}"
+  1401→                ),
+  1402→                asset=target,
+  1403→                points_deducted=8,
+  1404→                dread_score=5.5,
+  1405→                remediation=(
+  1406→                    "Investigate why response body contains chunk-like hex patterns. "
+  1407→                    "If this is application data, consider encoding it differently."
+  1408→                ),
+  1409→            ))
+  1410→
+  1411→    return findings
+  1412→
+  1413→
+  1414→def _detect_websocket_frame_anomalies(
+  1415→    target: str, base_url: str, timeout: int, verify_tls: bool
+  1416→) -> List[Finding]:
+  1417→    """Detect WebSocket endpoints and analyze for covert channel potential."""
+  1418→    findings: List[Finding] = []
+  1419→    sig = CHANNEL_SIGNATURES["websocket_frame"]
+  1420→
+  1421→    # Probe for WebSocket upgrade endpoints
+  1422→    ws_paths = [
+  1423→        "/ws", "/websocket", "/socket", "/live",
+  1424→        "/api/ws", "/api/websocket", "/api/socket",
+  1425→        "/chat/ws", "/realtime", "/stream",
+  1426→        "/api/v1/ws", "/notifications/ws",
+  1427→    ]
+  1428→
+  1429→    ws_endpoints_found = []
+  1430→
+  1431→    for path in ws_paths:
+  1432→        resp = http_probe(
+  1433→            f"{base_url}{path}",
+  1434→            headers={
+  1435→                "Upgrade": "websocket",
+  1436→                "Connection": "Upgrade",
+  1437→                "Sec-WebSocket-Key": base64.b64encode(b"reconpro-covert-scan").decode(),
+  1438→                "Sec-WebSocket-Version": "13",
+  1439→            },
+  1440→            timeout=timeout, verify_tls=verify_tls, limiter=default_limiter,
+  1441→        )
+  1442→
+  1443→        if resp["status"] == 101:
+  1444→            # Successful WebSocket upgrade
+  1445→            ws_endpoints_found.append({
+  1446→                "path": path,
+  1447→                "status": 101,
+  1448→                "headers": dict(resp.get("headers", {})),
+  1449→            })
+  1450→        elif resp["status"] in (400, 403, 426) or resp["ok"]:
+  1451→            # 426 = Upgrade Required, indicates WS support
+  1452→            if resp["status"] == 426:
+  1453→                ws_endpoints_found.append({
+  1454→                    "path": path,
+  1455→                    "status": 426,
+  1456→                    "note": "Server indicates upgrade required (WS supported)",
+  1457→                })
+  1458→
+  1459→    if ws_endpoints_found:
+  1460→        paths_str = ", ".join(ep["path"] for ep in ws_endpoints_found)
+  1461→        # Determine severity based on whether upgrade succeeded
+  1462→        has_upgrade = any(ep["status"] == 101 for ep in ws_endpoints_found)
+  1463→        severity = "high" if has_upgrade else "medium"
+  1464→        points = 15 if has_upgrade else 8
+  1465→
+  1466→        findings.append(Finding(
+  1467→            title=f"WebSocket Endpoint(s) Discovered: {paths_str}",
+  1468→            severity=severity,
+  1469→            category="covert_channel",
+  1470→            module="covert_channel",
+  1471→            description=(
+  1472→                f"Found {len(ws_endpoints_found)} WebSocket endpoint(s). WebSocket "
+  1473→                f"connections are persistent, full-duplex, and bypass same-origin "
+  1474→                f"policies — making them ideal for covert data exfiltration. Frame "
+  1475→                f"sizes, opcodes, and inter-frame timing can all encode covert data."
+  1476→            ),
+  1477→            evidence=json.dumps(ws_endpoints_found, indent=2),
+  1478→            asset=target,
+  1479→            points_deducted=points,
+  1480→            dread_score=sig["dread_score"] if has_upgrade else 5.0,
+  1481→            remediation=(
+  1482→                "Authenticate WebSocket connections (token in handshake). Implement "
+  1483→                "rate limiting per connection. Monitor frame sizes and inter-frame "
+  1484→                f"timing. Restrict WebSocket to specific paths. Log all WS traffic."
+  1485→            ),
+  1486→        ))
+  1487→
+  1488→    # Check for WebSocket-related JavaScript in response body
+  1489→    resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls, limiter=default_limiter)
+  1490→    if resp["ok"]:
+  1491→        body = resp.get("body", "")
+  1492→        ws_js_indicators = []
+  1493→        for pattern in [
+  1494→            r"new\s+WebSocket\s*",
+  1495→            r"\.onmessage\s*=",
+  1496→            r'wss?://[^"]+',
+  1497→            r"socket\.io",
+  1498→            r"SockJS",
+  1499→        ]:
+  1500→            matches = re.findall(pattern, body, re.IGNORECASE)
+  1501→            if matches:
+  1502→                ws_js_indicators.append({"pattern": pattern, "count": len(matches)})
+  1503→
+  1504→        if ws_js_indicators:
+  1505→            total_ws_refs = sum(ind["count"] for ind in ws_js_indicators)
+  1506→            findings.append(Finding(
+  1507→                title=f"WebSocket Client-Side Code Detected ({total_ws_refs} references)",
+  1508→                severity="info",
+  1509→                category="covert_channel",
+  1510→                module="covert_channel",
+  1511→                description=(
+  1512→                    f"Response body contains {total_ws_refs} WebSocket-related code references. "
+  1513→                    f"This confirms active WebSocket usage on the target, which is a potential "
+  1514→                    f"covert channel vector if not properly secured."
+  1515→                ),
+  1516→                evidence=json.dumps(ws_js_indicators, indent=2),
+  1517→                asset=target,
+  1518→                points_deducted=2,
+  1519→                dread_score=2.0,
+  1520→            ))
+  1521→
+  1522→    return findings
+  1523→
+  1524→
+  1525→# ═══════════════════════════════════════════════════════════════════════════
+  1526→# MAIN ENTRY POINT
+  1527→# ═══════════════════════════════════════════════════════════════════════════
+  1528→
+  1529→# Detector functions registry
+  1530→_DETECTORS: List[Tuple[str, callable]] = [
+  1531→    ("dns_tunneling", _detect_dns_tunneling),
+  1532→    ("http_header_covert", _detect_http_header_covert),
+  1533→    ("timing_channel", _detect_timing_channel),
+  1534→    ("icmp_tunnel", _detect_icmp_tunnel_markers),
+  1535→    ("cert_steganography", _detect_cert_steganography),
+  1536→    ("url_path_encoding", _detect_url_path_encoding),
+  1537→    ("chunked_encoding_abuse", _detect_chunked_encoding_abuse),
+  1538→    ("websocket_frame", _detect_websocket_frame_anomalies),
+  1539→]
+  1540→
+  1541→
+  1542→def run_covert_channel(
+  1543→    target: str, base_url: str, timeout: int = 8, verify_tls: bool = True
+  1544→) -> List[Finding]:
+  1545→    """Run all covert channel detection checks against a target.
+  1546→
+  1547→    Detects and simulates eight classes of covert data exfiltration channels:
+  1548→      1. DNS Tunneling Detection
+  1549→      2. HTTP Header Covert Channel Detection
+  1550→      3. Timing Channel Detection
+  1551→      4. ICMP Tunnel Detection Markers
+  1552→      5. HTTPS Certificate Steganography
+  1553→      6. URL Path Encoding Channels
+  1554→      7. Chunked Transfer Encoding Abuse
+  1555→      8. WebSocket Frame Analysis
+  1556→
+  1557→    Each detection produces a Finding with severity, evidence, and remediation.
+  1558→    Educational simulations demonstrate byte-level encoding for each channel.
+  1559→
+  1560→    Args:
+  1561→        target: Human-readable target identifier (e.g. 'example.com').
+  1562→        base_url: Base URL for HTTP probes (e.g. 'https://example.com').
+  1563→        timeout: Per-request timeout in seconds.
+  1564→        verify_tls: Whether to verify TLS certificates.
+  1565→
+  1566→    Returns:
+  1567→        List of Finding objects, one per detection result or simulation.
+  1568→    """
+  1569→    all_findings: List[Finding] = []
+  1570→
+  1571→    # ── Phase 1: Run all detectors ─────────────────────────────────────
+  1572→    for channel_name, detector_fn in _DETECTORS:
+  1573→        try:
+  1574→            results = detector_fn(target, base_url, timeout, verify_tls)
+  1575→            all_findings.extend(results)
+  1576→        except Exception:
+  1577→            # Individual detector failures must not crash the entire module
+  1578→            continue
+  1579→
+  1580→    # ── Phase 2: Generate educational simulations ──────────────────────
+  1581→    simulation_summary: Dict[str, Any] = {}
+  1582→    for channel_name, simulator_fn in SIMULATORS.items():
+  1583→        try:
+  1584→            sim = simulator_fn()
+  1585→            simulation_summary[channel_name] = sim
+  1586→        except Exception:
+  1587→            continue
+  1588→
+  1589→    # Add a simulation summary finding
+  1590→    if simulation_summary:
+  1591→        sim_channels = list(simulation_summary.keys())
+  1592→        sim_evidence_parts = []
+  1593→        for ch_name, sim_data in simulation_summary.items():
+  1594→            sig = CHANNEL_SIGNATURES[ch_name]
+  1595→            technique = sim_data.get("technique", "N/A")
+  1596→            sim_evidence_parts.append(
+  1597→                f"[{sig['name']}] {technique} | "
+  1598→                f"Bandwidth: {sig['bandwidth_estimate']} | "
+  1599→                f"Stealth: {sig['stealth_score']}/100 | "
+  1600→                f"DREAD: {sig['dread_score']}"
+  1601→            )
+  1602→
+  1603→        all_findings.append(Finding(
+  1604→            title="Covert Channel Simulation Summary (Educational)",
+  1605→            severity="info",
+  1606→            category="covert_channel_simulation",
+  1607→            module="covert_channel",
+  1608→            description=(
+  1609→                f"Generated byte-level encoding simulations for {len(sim_channels)} covert "
+  1610→                f"channel types. These simulations demonstrate how each channel can be "
+  1611→                f"exploited for data exfiltration. Channels analyzed: "
+  1612→                f"{', '.join(sig['name'] for sig in [CHANNEL_SIGNATURES[s] for s in sim_channels])}. "
+  1613→                f"Full simulation data available in evidence."
+  1614→            ),
+  1615→            evidence="\n".join(sim_evidence_parts),
+  1616→            asset=target,
+  1617→            points_deducted=0,
+  1618→            dread_score=0.0,
+  1619→            remediation=(
+  1620→                "Review simulations to understand each channel's encoding method, "
+  1621→                "bandwidth, and stealth characteristics. Implement corresponding "
+  1622→                "detection and mitigation strategies."
+  1623→            ),
+  1624→        ))
+  1625→
+  1626→    # ── Phase 3: Overall risk assessment ───────────────────────────────
+  1627→    high_sev_count = sum(1 for f in all_findings if f.severity in ("critical", "high"))
+  1628→    total_dread = sum(f.dread_score for f in all_findings if f.dread_score > 0)
+  1629→    max_dread = len(CHANNEL_SIGNATURES) * 10.0
+  1630→    risk_pct = min(100, (total_dread / max_dread * 100)) if max_dread > 0 else 0
+  1631→
+  1632→    risk_level = (
+  1633→        "CRITICAL" if risk_pct > 75 else
+  1634→        "HIGH" if risk_pct > 50 else
+  1635→        "MEDIUM" if risk_pct > 25 else
+  1636→        "LOW"
+  1637→    )
+  1638→
+  1639→    all_findings.append(Finding(
+  1640→        title=f"Covert Channel Risk Assessment: {risk_level} ({risk_pct:.1f}%)",
+  1641→        severity=(
+  1642→            "critical" if risk_pct > 75 else
+  1643→            "high" if risk_pct > 50 else
+  1644→            "medium" if risk_pct > 25 else
+  1645→            "low"
+  1646→        ),
+  1647→        category="covert_channel_assessment",
+  1648→        module="covert_channel",
+  1649→        description=(
+  1650→            f"Comprehensive covert channel analysis complete. Scanned {len(_DETECTORS)} "
+  1651→            f"channel types against {target}. Found {high_sev_count} high-severity findings. "
+  1652→            f"Aggregate DREAD score: {total_dread:.1f}/{max_dread:.1f} ({risk_pct:.1f}%). "
+  1653→            f"Risk level: {risk_level}."
+  1654→        ),
+  1655→        evidence=(
+  1656→            f"Channels scanned: {len(_DETECTORS)}\n"
+  1657→            f"High-severity findings: {high_sev_count}\n"
+  1658→            f"Total findings: {len(all_findings)}\n"
+  1659→            f"Aggregate DREAD: {total_dread:.1f}/{max_dread:.1f}\n"
+  1660→            f"Risk: {risk_level} ({risk_pct:.1f}%)\n"
+  1661→            f"Simulations generated: {len(simulation_summary)}"
+  1662→        ),
+  1663→        asset=target,
+  1664→        points_deducted=high_sev_count * 5,
+  1665→        dread_score=round(total_dread, 1),
+  1666→        remediation=(
+  1667→            "Implement defense-in-depth: network-level monitoring (DNS, ICMP flow analysis), "
+  1668→            "application-level header/path validation, TLS certificate auditing, and "
+  1669→            "timing anomaly detection. Deploy IDS/IPS rules for known tunneling signatures."
+  1670→        ),
+  1671→    ))
+  1672→
+  1673→    return all_findings
+  1674→

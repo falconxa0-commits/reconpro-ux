@@ -366,17 +366,17 @@ class TestModuleRegistryCounts(unittest.TestCase):
     """Regression guard: ensure module counts don't silently change."""
 
     def test_remote_module_count(self):
-        """MODULE_REGISTRY should have 23 remote modules."""
-        self.assertEqual(len(MODULE_REGISTRY), 23,
-                         f"Expected 23, got {len(MODULE_REGISTRY)}")
+        """MODULE_REGISTRY should have 25 remote modules."""
+        self.assertEqual(len(MODULE_REGISTRY), 25,
+                         f"Expected 25, got {len(MODULE_REGISTRY)}")
 
     def test_local_module_count(self):
         """LOCAL_MODULES should have 3 local modules."""
         self.assertEqual(len(LOCAL_MODULES), 3)
 
     def test_all_modules_count(self):
-        """ALL_MODULES = remote + local = 26."""
-        self.assertEqual(len(ALL_MODULES), 26)
+        """ALL_MODULES = remote + local = 28."""
+        self.assertEqual(len(ALL_MODULES), 28)
 
     def test_default_modules_count(self):
         """DEFAULT_MODULES should have 20 entries."""

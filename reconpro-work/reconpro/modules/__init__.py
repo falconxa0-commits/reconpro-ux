@@ -26,6 +26,8 @@ from .nation_state_attributor import run_nation_state_attributor
 from .weaponized_report import run_weaponized_report
 from .honeypot_dance import run_honeypot_dance
 from .dead_drop import run_dead_drop
+from .container_sec import run_container_sec
+from .iac_audit import run_iac_audit
 
 __all__ = [
     "run_recon", "run_vibesec", "run_auth", "run_chain",
@@ -37,4 +39,6 @@ __all__ = [
     "run_steganography_detector", "run_covert_channel", "run_zero_day_hunter",
     "run_infrastructure_ghost", "run_signal_intelligence", "run_nation_state_attributor",
     "run_weaponized_report", "run_honeypot_dance", "run_dead_drop",
+    # Orphaned modules now registered
+    "run_container_sec", "run_iac_audit",
 ]

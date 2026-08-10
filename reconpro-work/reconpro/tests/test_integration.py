@@ -1,6 +1,6 @@
 """Integration tests — run actual module functions against safe targets.
 
-These tests import and verify all 27 module runners are callable,
+These tests import and verify all 28 module runners are callable,
 and optionally run a couple against localhost (safe, expected to fail gracefully).
 """
 
@@ -20,6 +20,7 @@ from reconpro.modules import (
     run_infrastructure_ghost, run_signal_intelligence,
     run_nation_state_attributor, run_weaponized_report,
     run_honeypot_dance, run_dead_drop,
+    run_container_sec, run_iac_audit,
 )
 
 ALL_RUNNERS = [
@@ -32,15 +33,16 @@ ALL_RUNNERS = [
     run_infrastructure_ghost, run_signal_intelligence,
     run_nation_state_attributor, run_weaponized_report,
     run_honeypot_dance, run_dead_drop,
+    run_container_sec, run_iac_audit,
 ]
 
 
 class TestImportAllModules(unittest.TestCase):
-    """Verify all 26 module functions can be imported."""
+    """Verify all 28 module functions can be imported."""
 
-    def test_imported_26_runners(self):
-        self.assertEqual(len(ALL_RUNNERS), 26,
-                         f"Expected 26, got {len(ALL_RUNNERS)}")
+    def test_imported_28_runners(self):
+        self.assertEqual(len(ALL_RUNNERS), 28,
+                         f"Expected 28, got {len(ALL_RUNNERS)}")
 
     def test_all_imports_are_unique(self):
         self.assertEqual(len(ALL_RUNNERS), len(set(id(r) for r in ALL_RUNNERS)))

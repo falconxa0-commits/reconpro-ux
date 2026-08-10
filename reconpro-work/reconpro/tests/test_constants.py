@@ -107,8 +107,8 @@ class TestNetworkDefaults(unittest.TestCase):
 class TestUserAgent(unittest.TestCase):
     """Test the USER_AGENT constant."""
 
-    def test_contains_version_10_0(self):
-        self.assertIn("10.0", USER_AGENT)
+    def test_contains_version_11_0_0(self):
+        self.assertIn("11.0.0", USER_AGENT)
 
     def test_contains_reconpro(self):
         self.assertIn("ReconPro", USER_AGENT)

@@ -1,0 +1,728 @@
+     1→"""Granular Secret Entropy Scoring for ReconPro v8.0.
+     2→
+     3→Uses Shannon entropy analysis combined with contextual signals (variable names,
+     4→file paths, surrounding code comments, known prefix patterns, and format validation)
+     5→to distinguish real secrets from random-looking-but-innocent strings.
+     6→
+     7→Exports: shannon_entropy, SecretMatch, SecretClassifier, ContextAnalyzer,
+     8→         scan_string, scan_file, scan_directory
+     9→"""
+    10→from __future__ import annotations
+    11→
+    12→import math
+    13→import os
+    14→import re
+    15→from dataclasses import dataclass, field
+    16→from pathlib import Path
+    17→from typing import Dict, List, Optional
+    18→
+    19→
+    20→# ──────────────────────────────────────────────────────────────────────────────
+    21→# 1. Shannon Entropy
+    22→# ──────────────────────────────────────────────────────────────────────────────
+    23→
+    24→def shannon_entropy(s: str) -> float:
+    25→    """Calculate Shannon entropy of *s* in bits.
+    26→
+    27→    Returns 0.0 for empty or single-character strings.
+    28→    Formula: H = -sum(p_i * log2(p_i) for each unique character frequency p_i).
+    29→    """
+    30→    if not s or len(s) <= 1:
+    31→        return 0.0
+    32→
+    33→    freq: Dict[str, int] = {}
+    34→    for ch in s:
+    35→        freq[ch] = freq.get(ch, 0) + 1
+    36→
+    37→    length = len(s)
+    38→    entropy = 0.0
+    39→    for count in freq.values():
+    40→        p = count / length
+    41→        entropy -= p * math.log2(p)
+    42→
+    43→    return entropy
+    44→
+    45→
+    46→# ──────────────────────────────────────────────────────────────────────────────
+    47→# 2. Known Secret Prefixes
+    48→# ──────────────────────────────────────────────────────────────────────────────
+    49→
+    50→# Maps prefix pattern (plain str treated as literal start; tuples are (prefix, regex_flag))
+    51→# to (secret_type, base_confidence).  The classifier combines this with entropy & context.
+    52→KNOWN_PREFIXES: Dict[str, Dict[str, str | float]] = {
+    53→    # ── AWS ──
+    54→    "AKIA":  {"type": "AWS Access Key",      "confidence": 0.95},
+    55→    "ASIA":  {"type": "AWS Temporary Key",    "confidence": 0.92},
+    56→    "ABIA":  {"type": "AWS ABIA Key",         "confidence": 0.90},
+    57→    "ACAA":  {"type": "AWS ACAA Key",         "confidence": 0.90},
+    58→    "AGPA":  {"type": "AWS AGPA Key",         "confidence": 0.90},
+    59→    "AIDA":  {"type": "AWS AIDA Key",         "confidence": 0.90},
+    60→    "AIPA":  {"type": "AWS AIPA Key",         "confidence": 0.90},
+    61→    "ANPA":  {"type": "AWS ANPA Key",         "confidence": 0.90},
+    62→    "ANVA":  {"type": "AWS ANVA Key",         "confidence": 0.90},
+    63→    "APKA":  {"type": "AWS APKA Key",         "confidence": 0.90},
+    64→    "ARPA":  {"type": "AWS ARPA Key",         "confidence": 0.90},
+    65→    "AROA":  {"type": "AWS AROA Key",         "confidence": 0.90},
+    66→    # ── GitHub ──
+    67→    "ghp_":  {"type": "GitHub PAT",            "confidence": 0.97},
+    68→    "gho_":  {"type": "GitHub OAuth Token",    "confidence": 0.97},
+    69→    "ghu_":  {"type": "GitHub User Token",     "confidence": 0.97},
+    70→    "ghs_":  {"type": "GitHub App Token",      "confidence": 0.97},
+    71→    "ghr_":  {"type": "GitHub Refresh Token",  "confidence": 0.97},
+    72→    # ── GitLab ──
+    73→    "glpat-": {"type": "GitLab PAT",           "confidence": 0.96},
+    74→    "glptt-": {"type": "GitLab Trigger Token",  "confidence": 0.96},
+    75→    # ── Slack ──
+    76→    "xoxb-": {"type": "Slack Bot Token",       "confidence": 0.96},
+    77→    "xoxp-": {"type": "Slack User Token",      "confidence": 0.96},
+    78→    "xoxo-": {"type": "Slack Org Token",       "confidence": 0.96},
+    79→    # ── Stripe ──
+    80→    "sk_live_":  {"type": "Stripe Secret Key",      "confidence": 0.98},
+    81→    "pk_live_":  {"type": "Stripe Publishable Key",  "confidence": 0.95},
+    82→    "rk_live_":  {"type": "Stripe Restricted Key",   "confidence": 0.95},
+    83→    # ── Twilio ──
+    84→    "SK":  {"type": "Twilio API Key",       "confidence": 0.75},
+    85→    # ── Google ──
+    86→    "AIza":  {"type": "Google API Key",       "confidence": 0.93},
+    87→    "ya29.": {"type": "Google OAuth Token",    "confidence": 0.93},
+    88→    # ── Azure ──
+    89→    "DEFAULTAZURE":  {"type": "Azure Default Cred",  "confidence": 0.90},
+    90→    "AZURE_CLIENT":   {"type": "Azure Client Cred",   "confidence": 0.90},
+    91→    # ── JWT ──
+    92→    "eyJ":  {"type": "JWT Token",            "confidence": 0.85},
+    93→    # ── Generic (case-insensitive matching handled in classifier) ──
+    94→    "password":   {"type": "Password",             "confidence": 0.80},
+    95→    "secret":     {"type": "Secret",               "confidence": 0.80},
+    96→    "token":      {"type": "Token",                "confidence": 0.75},
+    97→    "api_key":    {"type": "API Key",              "confidence": 0.80},
+    98→    "private_key":{"type": "Private Key",           "confidence": 0.85},
+    99→    "access_key": {"type": "Access Key",            "confidence": 0.80},
+   100→}
+   101→
+   102→
+   103→# ──────────────────────────────────────────────────────────────────────────────
+   104→# 4. SecretMatch dataclass
+   105→# ──────────────────────────────────────────────────────────────────────────────
+   106→
+   107→@dataclass
+   108→class SecretMatch:
+   109→    """Result of classifying a potential secret."""
+   110→    value: str
+   111→    secret_type: str
+   112→    severity: str                 # CRITICAL | HIGH | MEDIUM | LOW | INFO
+   113→    confidence: float             # 0.0 – 1.0
+   114→    entropy: float
+   115→    matched_prefix: Optional[str] = None
+   116→    context_signals: List[str] = field(default_factory=list)
+   117→    recommendation: str = ""
+   118→
+   119→    def __str__(self) -> str:
+   120→        masked = self.value[:6] + "..." + self.value[-4:] if len(self.value) > 12 else "***"
+   121→        return (
+   122→            f"[{self.severity}] {self.secret_type} (entropy={self.entropy:.2f}, "
+   123→            f"conf={self.confidence:.0%}) prefix={self.matched_prefix or 'none'} "
+   124→            f"value={masked}"
+   125→        )
+   126→
+   127→
+   128→# ──────────────────────────────────────────────────────────────────────────────
+   129→# 5. ContextAnalyzer
+   130→# ──────────────────────────────────────────────────────────────────────────────
+   131→
+   132→class ContextAnalyzer:
+   133→    """Extract contextual signals from variable names, file paths, and code."""
+   134→
+   135→    SECRET_KEYWORDS: List[str] = [
+   136→        "password", "passwd", "pass",
+   137→        "secret", "token", "apikey", "api_key", "api-key",
+   138→        "access_key", "accesskey", "private_key", "privatekey",
+   139→        "credentials", "creds", "credential",
+   140→        "auth", "authorization", "authenticate",
+   141→        "private", "cert", "certificate",
+   142→    ]
+   143→
+   144→    SENSITIVE_FILENAMES: List[str] = [
+   145→        ".env", ".env.local", ".env.production", ".env.development",
+   146→        ".env.staging", ".env.test", ".env.backup",
+   147→        "credentials", "credential", "creds",
+   148→        "config", "configuration", "settings", "settings.local",
+   149→        "secrets", "secret",
+   150→        "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+   151→        ".netrc", ".pgpass", ".my.cnf",
+   152→    ]
+   153→
+   154→    TEMPORARY_COMMENTS: List[str] = [
+   155→        "todo: remove", "fixme", "temporary", "hack", "workaround",
+   156→        "remove before", "delete this", "not for production",
+   157→        "debug only", "testing only", "do not commit", "don't commit",
+   158→        "wip", "xxx",
+   159→    ]
+   160→
+   161→    def analyze_variable_name(self, name: str) -> List[str]:
+   162→        """Return signal strings found in *name* (e.g. 'contains:password')."""
+   163→        signals: List[str] = []
+   164→        lower = name.lower().replace("-", "_").replace(" ", "_")
+   165→        for kw in self.SECRET_KEYWORDS:
+   166→            if kw in lower:
+   167→                signals.append(f"var:{kw}")
+   168→        return signals
+   169→
+   170→    def analyze_file_path(self, path: str) -> List[str]:
+   171→        """Return signal strings for sensitive file/directory names in *path*."""
+   172→        signals: List[str] = []
+   173→        lower = path.lower().replace(os.sep, "/")
+   174→        parts = lower.split("/")
+   175→        for part in parts:
+   176→            for sf in self.SENSITIVE_FILENAMES:
+   177→                if part == sf or part.startswith(sf + "."):
+   178→                    signals.append(f"file:{sf}")
+   179→                    break
+   180→        return signals
+   181→
+   182→    def analyze_surrounding_code(self, code: str) -> List[str]:
+   183→        """Return signal strings for temporary / debug comments in *code*."""
+   184→        signals: List[str] = []
+   185→        upper = code.upper()
+   186→        for tc in self.TEMPORARY_COMMENTS:
+   187→            if tc.upper() in upper:
+   188→                signals.append(f"comment:{tc.lower()}")
+   189→        return signals
+   190→
+   191→
+   192→# ──────────────────────────────────────────────────────────────────────────────
+   193→# 3. SecretClassifier
+   194→# ──────────────────────────────────────────────────────────────────────────────
+   195→
+   196→class SecretClassifier:
+   197→    """Classify a string as a real secret, weak secret, or benign."""
+   198→
+   199→    def __init__(self) -> None:
+   200→        self._ctx = ContextAnalyzer()
+   201→        self._prefix_lookup = self._build_prefix_lookup()
+   202→
+   203→    # -- prefix lookup is ordered longest-prefix-first so substrings don't
+   204→    # -- steal matches from longer, more specific prefixes (e.g. sk_live_ before s)
+   205→    @staticmethod
+   206→    def _build_prefix_lookup() -> List[tuple[str, str, float]]:
+   207→        items = [(prefix, info["type"], float(info["confidence"]))
+   208→                 for prefix, info in KNOWN_PREFIXES.items()]
+   209→        items.sort(key=lambda x: len(x[0]), reverse=True)
+   210→        return items
+   211→
+   212→    # ── public API ──────────────────────────────────────────────────────────
+   213→
+   214→    def classify(
+   215→        self,
+   216→        value: str,
+   217→        variable_name: str = "",
+   218→        file_path: str = "",
+   219→        surrounding_code: str = "",
+   220→    ) -> SecretMatch:
+   221→        """Classify *value* and return a :class:`SecretMatch`.
+   222→
+   223→        Parameters
+   224→        ----------
+   225→        value : str
+   226→            The candidate secret string.
+   227→        variable_name : str
+   228→            Name of the variable/field holding the value (e.g. "AWS_SECRET_KEY").
+   229→        file_path : str
+   230→            Path of the file where the value was found.
+   231→        surrounding_code : str
+   232→            A few lines of code around the match for comment analysis.
+   233→        """
+   234→        entropy = shannon_entropy(value)
+   235→
+   236→        # --- a) Match known prefix (longest first) ---
+   237→        matched_prefix: Optional[str] = None
+   238→        prefix_type = ""
+   239→        prefix_confidence = 0.0
+   240→        value_upper = value.upper()
+   241→        for pfx, ptype, pconf in self._prefix_lookup:
+   242→            if value.startswith(pfx) or value_upper.startswith(pfx.upper()):
+   243→                matched_prefix = pfx
+   244→                prefix_type = ptype
+   245→                prefix_confidence = pconf
+   246→                break
+   247→
+   248→        # --- b) Context signals ---
+   249→        context_signals: List[str] = []
+   250→        context_signals.extend(self._ctx.analyze_variable_name(variable_name))
+   251→        context_signals.extend(self._ctx.analyze_file_path(file_path))
+   252→        context_signals.extend(self._ctx.analyze_surrounding_code(surrounding_code))
+   253→
+   254→        has_secret_var = any(s.startswith("var:") for s in context_signals)
+   255→        has_sensitive_file = any(s.startswith("file:") for s in context_signals)
+   256→        has_temp_comment = any(s.startswith("comment:") for s in context_signals)
+   257→
+   258→        # --- c) Format validation ---
+   259→        format_valid = self._validate_format(value, matched_prefix)
+   260→
+   261→        # --- d) Classification matrix ---
+   262→        severity, confidence, recommendation = self._classify_matrix(
+   263→            entropy=entropy,
+   264→            has_prefix=bool(matched_prefix),
+   265→            prefix_confidence=prefix_confidence,
+   266→            has_secret_var=has_secret_var,
+   267→            has_sensitive_file=has_sensitive_file,
+   268→            has_temp_comment=has_temp_comment,
+   269→            format_valid=format_valid,
+   270→        )
+   271→
+   272→        secret_type = prefix_type if prefix_type else self._infer_type(context_signals, value)
+   273→
+   274→        # Downgrade confidence slightly if marked as temporary
+   275→        if has_temp_comment and confidence > 0.3:
+   276→            confidence *= 0.6
+   277→
+   278→        return SecretMatch(
+   279→            value=value,
+   280→            secret_type=secret_type,
+   281→            severity=severity,
+   282→            confidence=round(confidence, 3),
+   283→            entropy=round(entropy, 3),
+   284→            matched_prefix=matched_prefix,
+   285→            context_signals=context_signals,
+   286→            recommendation=recommendation,
+   287→        )
+   288→
+   289→    # ── internal helpers ────────────────────────────────────────────────────
+   290→
+   291→    def _classify_matrix(
+   292→        self,
+   293→        entropy: float,
+   294→        has_prefix: bool,
+   295→        prefix_confidence: float,
+   296→        has_secret_var: bool,
+   297→        has_sensitive_file: bool,
+   298→        has_temp_comment: bool,
+   299→        format_valid: bool,
+   300→    ) -> tuple[str, float, str]:
+   301→        """Apply the classification rules and return (severity, confidence, rec)."""
+   302→
+   303→        # Known prefix + high entropy + secret variable name → CRITICAL
+   304→        if has_prefix and entropy > 3.5 and has_secret_var:
+   305→            return (
+   306→                "CRITICAL",
+   307→                min(prefix_confidence * 1.04, 0.99),  # cap at 99%
+   308→                "Real secret detected with high confidence. Rotate immediately.",
+   309→            )
+   310→
+   311→        # Known prefix + high entropy → HIGH
+   312→        if has_prefix and entropy > 3.5:
+   313→            conf = prefix_confidence if format_valid else prefix_confidence * 0.85
+   314→            return (
+   315→                "HIGH",
+   316→                conf,
+   317→                "Likely a real secret based on known prefix and high entropy."
+   318→                + (" Format is valid." if format_valid else " Format is unexpected."),
+   319→            )
+   320→
+   321→        # High entropy + secret variable name → HIGH
+   322→        if entropy >= 3.5 and has_secret_var:
+   323→            return (
+   324→                "HIGH",
+   325→                0.85,
+   326→                "High-entropy value assigned to a secret-related variable. Likely a real secret.",
+   327→            )
+   328→
+   329→        # High entropy + sensitive file → HIGH
+   330→        if entropy >= 3.5 and has_sensitive_file:
+   331→            return (
+   332→                "HIGH",
+   333→                0.80,
+   334→                "High-entropy value found in a sensitive file. Likely a real secret.",
+   335→            )
+   336→
+   337→        # High entropy + no context → MEDIUM (could be UUID, session ID, hash)
+   338→        if entropy >= 3.5:
+   339→            return (
+   340→                "MEDIUM",
+   341→                0.50,
+   342→                "High-entropy string but no secret-related context. Could be a UUID, hash, or session ID.",
+   343→            )
+   344→
+   345→        # Low entropy + known prefix (e.g. password123) → HIGH (weak but real)
+   346→        if has_prefix and entropy <= 3.5:
+   347→            return (
+   348→                "HIGH",
+   349→                prefix_confidence * 0.7,
+   350→                "Known secret prefix with low entropy — likely a weak or placeholder secret. Still a real leak.",
+   351→            )
+   352→
+   353→        # Low entropy + secret variable name → MEDIUM
+   354→        if entropy < 3.5 and has_secret_var:
+   355→            return (
+   356→                "MEDIUM",
+   357→                0.55,
+   358→                "Secret-related variable holds a low-entropy value. Could be a weak or default credential.",
+   359→            )
+   360→
+   361→        # Low entropy + no context → INFO
+   362→        return (
+   363→            "INFO",
+   364→            0.10,
+   365→            "Low entropy with no secret context. Probably not a secret.",
+   366→        )
+   367→
+   368→    def _validate_format(self, value: str, prefix: Optional[str]) -> bool:
+   369→        """Check value format against expectations for its prefix type."""
+   370→        if not prefix:
+   371→            return self._validate_generic_api_key(value)
+   372→
+   373→        pu = prefix.upper()
+   374→
+   375→        # AWS access key: exactly 20 chars uppercase+digits after AKIA/ASIA
+   376→        if pu in ("AKIA", "ASIA"):
+   377→            suffix = value[len(prefix):]
+   378→            return len(suffix) == 16 and suffix.isalnum() and suffix.isupper()
+   379→
+   380→        # GitHub tokens: exactly 36 hex chars after prefix
+   381→        if pu in ("GHP_", "GHO_", "GHU_", "GHS_", "GHR_"):
+   382→            suffix = value[len(prefix):]
+   383→            return len(suffix) == 36 and all(c in "0123456789abcdefABCDEF" for c in suffix)
+   384→
+   385→        # GitLab PAT
+   386→        if pu in ("GLPAT-", "GLPTT-"):
+   387→            suffix = value[len(prefix):]
+   388→            return len(suffix) >= 20 and bool(re.match(r"^[\w-]+$", suffix))
+   389→
+   390→        # Slack tokens
+   391→        if pu in ("XOXB-", "XOXP-", "XOXO-"):
+   392→            suffix = value[len(prefix):]
+   393→            return len(suffix) >= 10 and bool(re.match(r"^[\w-]+$", suffix))
+   394→
+   395→        # Stripe keys
+   396→        if pu in ("SK_LIVE_", "PK_LIVE_", "RK_LIVE_"):
+   397→            suffix = value[len(prefix):]
+   398→            return len(suffix) >= 20 and bool(re.match(r"^[\w]+$", suffix))
+   399→
+   400→        # Twilio: SK followed by hex
+   401→        if pu == "SK" and len(prefix) == 2 and len(value) > 2:
+   402→            suffix = value[2:]
+   403→            return suffix and all(c in "0123456789abcdef" for c in suffix)
+   404→
+   405→        # Google API key: AIza + 33 chars
+   406→        if prefix == "AIza":
+   407→            suffix = value[4:]
+   408→            return len(suffix) == 33 and bool(re.match(r"^[\w-]+$", suffix))
+   409→
+   410→        # Google OAuth: ya29. + token chars
+   411→        if value.startswith("ya29."):
+   412→            suffix = value[5:]
+   413→            return len(suffix) >= 10 and bool(re.match(r"^[\w._-]+$", suffix))
+   414→
+   415→        # JWT: three base64url segments
+   416→        if prefix == "eyJ":
+   417→            parts = value.split(".")
+   418→            if len(parts) != 3:
+   419→                return False
+   420→            b64_pattern = re.compile(r"^[A-Za-z0-9_-]+$")
+   421→            return all(b64_pattern.match(p) for p in parts)
+   422→
+   423→        # Azure prefixes
+   424→        if pu in ("DEFAULTAZURE", "AZURE_CLIENT"):
+   425→            return len(value) > len(prefix)
+   426→
+   427→        return self._validate_generic_api_key(value)
+   428→
+   429→    @staticmethod
+   430→    def _validate_generic_api_key(value: str) -> bool:
+   431→        """Generic API key heuristic: 20-100 chars, mix of upper + lower + digit."""
+   432→        if not (20 <= len(value) <= 100):
+   433→            return False
+   434→        has_upper = any(c.isupper() for c in value)
+   435→        has_lower = any(c.islower() for c in value)
+   436→        has_digit = any(c.isdigit() for c in value)
+   437→        return has_upper and has_lower and has_digit
+   438→
+   439→    @staticmethod
+   440→    def _infer_type(signals: List[str], value: str) -> str:
+   441→        """Guess the secret type from context signals when no prefix matched."""
+   442→        for sig in signals:
+   443→            kw = sig.split(":", 1)[1] if ":" in sig else sig
+   444→            kw = kw.replace("_", " ").title()
+   445→        # Use the first variable signal if present
+   446→        for sig in signals:
+   447→            if sig.startswith("var:"):
+   448→                kw = sig[4:].replace("_", " ").title()
+   449→                return f"Potential {kw}"
+   450→        return "Unknown Secret"
+   451→
+   452→
+   453→# ──────────────────────────────────────────────────────────────────────────────
+   454→# 7 & 8. Convenience scanning functions
+   455→# ──────────────────────────────────────────────────────────────────────────────
+   456→
+   457→# Regex to extract string literals from source files (covers Python, JS, TS, etc.)
+   458→_STRING_LITERAL_RE = re.compile(
+   459→    r'"""(?:[^"\\]|\\.)*?"""'
+   460→    r"|'''(?:[^'\\]|\\.)*?'''"
+   461→    r'|"(?:[^"\\]|\\.)*"'
+   462→    r"|'(?:[^'\\]|\\.)*'"
+   463→    r'|`(?:[^`\\]|\\.)*`',
+   464→)
+   465→
+   466→# Regex to extract variable = "value" or KEY = value patterns from config/env files
+   467→# Uses \x5c for backslash to avoid quoting issues inside character classes.
+   468→_ASSIGNMENT_RE = re.compile(
+   469→    r'(?:^|(?<=[\s,;{]))'
+   470→    r'([A-Za-z_][\w]*)'
+   471→    r'\s*(?:=|:)\s*'
+   472→    r'(["\x27](?:[^"\x27\x5c]|\x5c.)*["\x27])',
+   473→    re.MULTILINE,
+   474→)
+   475→
+   476→# Minimum entropy to even bother classifying (below this, classify returns INFO anyway)
+   477→_ENTROPY_FLOOR = 2.5
+   478→
+   479→
+   480→def scan_string(
+   481→    value: str,
+   482→    variable_name: str = "",
+   483→    file_path: str = "",
+   484→    surrounding_code: str = "",
+   485→) -> Optional[SecretMatch]:
+   486→    """Classify a single candidate string.
+   487→
+   488→    Returns ``None`` when the value is clearly not a secret (very low entropy,
+   489→    too short, empty, or classified as INFO).
+   490→    """
+   491→    if not value or len(value) < 6:
+   492→        return None
+   493→
+   494→    classifier = SecretClassifier()
+   495→    result = classifier.classify(
+   496→        value=value,
+   497→        variable_name=variable_name,
+   498→        file_path=file_path,
+   499→        surrounding_code=surrounding_code,
+   500→    )
+   501→
+   502→    if result.severity == "INFO":
+   503→        return None
+   504→
+   505→    return result
+   506→
+   507→
+   508→def scan_file(path: str) -> List[SecretMatch]:
+   509→    """Read a file, extract string literals, and classify each as a potential secret.
+   510→
+   511→    Skips binary files and files larger than 256 KB.
+   512→    """
+   513→    results: List[SecretMatch] = []
+   514→    classifier = SecretClassifier()
+   515→
+   516→    try:
+   517→        file_size = os.path.getsize(path)
+   518→        if file_size > 256 * 1024 or file_size == 0:
+   519→            return results
+   520→    except OSError:
+   521→        return results
+   522→
+   523→    try:
+   524→        with open(path, errors="replace") as fh:
+   525→            content = fh.read()
+   526→    except OSError:
+   527→        return results
+   528→
+   529→    # Quick binary detection: if >5% of first 4 KB are null bytes, skip
+   530→    sample = content[:4096]
+   531→    if sample.count("\x00") > len(sample) * 0.05:
+   532→        return results
+   533→
+   534→    seen_values: set[str] = set()
+   535→    lines = content.splitlines()
+   536→
+   537→    # Strategy 1: Extract assignment patterns (VAR = "value")
+   538→    for m in _ASSIGNMENT_RE.finditer(content):
+   539→        var_name = m.group(1)
+   540→        raw_val = m.group(2)
+   541→        # Strip surrounding quotes
+   542→        if (raw_val.startswith('"') and raw_val.endswith('"')) or \
+   543→           (raw_val.startswith("'") and raw_val.endswith("'")):
+   544→            val = raw_val[1:-1]
+   545→        else:
+   546→            val = raw_val
+   547→
+   548→        if len(val) < 6 or val in seen_values:
+   549→            continue
+   550→        seen_values.add(val)
+   551→
+   552→        # Get surrounding code (3 lines before and after the match)
+   553→        start_line = content[:m.start()].count("\n")
+   554→        ctx_start = max(0, start_line - 3)
+   555→        ctx_end = min(len(lines), start_line + 4)
+   556→        surrounding = "\n".join(lines[ctx_start:ctx_end])
+   557→
+   558→        match = classifier.classify(
+   559→            value=val,
+   560→            variable_name=var_name,
+   561→            file_path=path,
+   562→            surrounding_code=surrounding,
+   563→        )
+   564→        if match.severity != "INFO":
+   565→            results.append(match)
+   566→
+   567→    # Strategy 2: Extract bare string literals that look high-entropy
+   568→    for m in _STRING_LITERAL_RE.finditer(content):
+   569→        raw_val = m.group(0)
+   570→        # Strip quotes
+   571→        if (raw_val.startswith('"""') and raw_val.endswith('"""')) or \
+   572→           (raw_val.startswith("'''") and raw_val.endswith("'''")):
+   573→            val = raw_val[3:-3]
+   574→        elif raw_val and raw_val[0] in ("'", '"', '`') and raw_val[-1] == raw_val[0]:
+   575→            val = raw_val[1:-1]
+   576→        else:
+   577→            val = raw_val
+   578→
+   579→        if len(val) < 8 or val in seen_values:
+   580→            continue
+   581→
+   582→        # Quick entropy pre-filter to avoid classifying every string
+   583→        ent = shannon_entropy(val)
+   584→        if ent < _ENTROPY_FLOOR:
+   585→            continue
+   586→
+   587→        seen_values.add(val)
+   588→
+   589→        start_line = content[:m.start()].count("\n")
+   590→        ctx_start = max(0, start_line - 2)
+   591→        ctx_end = min(len(lines), start_line + 3)
+   592→        surrounding = "\n".join(lines[ctx_start:ctx_end])
+   593→
+   594→        match = classifier.classify(
+   595→            value=val,
+   596→            file_path=path,
+   597→            surrounding_code=surrounding,
+   598→        )
+   599→        if match.severity != "INFO":
+   600→            results.append(match)
+   601→
+   602→    return results
+   603→
+   604→
+   605→def scan_directory(
+   606→    path: str,
+   607→    extensions: Optional[List[str]] = None,
+   608→) -> List[SecretMatch]:
+   609→    """Recursively scan a directory for secrets in files.
+   610→
+   611→    Parameters
+   612→    ----------
+   613→    path : str
+   614→        Root directory to scan.
+   615→    extensions : list[str] | None
+   616→        File extensions to include (e.g. [".py", ".js"]).
+   617→        Defaults to common source/config extensions if *None*.
+   618→    """
+   619→    if extensions is None:
+   620→        extensions = [
+   621→            ".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs",
+   622→            ".rb", ".go", ".rs", ".java", ".php", ".c", ".cpp", ".h",
+   623→            ".yml", ".yaml", ".json", ".toml", ".cfg", ".ini",
+   624→            ".env", ".sh", ".bash", ".zsh", ".ps1",
+   625→            ".tf", ".hcl",                      # Terraform
+   626→            ".properties", ".xml", ".conf",     # Java / Nginx
+   627→            ".sql",                                # DB scripts
+   628→            ".gradle", ".cmake",                  # Build files
+   629→        ]
+   630→
+   631→    # Normalise extensions to lowercase with dot
+   632→    ext_set = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
+   633→
+   634→    root = Path(path)
+   635→    if not root.is_dir():
+   636→        return []
+   637→
+   638→    results: List[SecretMatch] = []
+   639→    # Directories to skip
+   640→    skip_dirs = {
+   641→        "node_modules", ".venv", "venv", "env", ".git", "__pycache__",
+   642→        ".tox", ".mypy_cache", ".pytest_cache", ".next", "dist", "build",
+   643→        ".cache", ".idea", ".vscode", "target", "vendor", ".bundle",
+   644→        "coverage", ".nyc_output", ".turbo",
+   645→    }
+   646→
+   647→    for filepath in root.rglob("*"):
+   648→        # Skip directories
+   649→        if filepath.is_dir():
+   650→            continue
+   651→        # Skip blacklisted directories
+   652→        if any(part in skip_dirs for part in filepath.parts):
+   653→            continue
+   654→        # Skip symlinks
+   655→        if filepath.is_symlink():
+   656→            continue
+   657→        # Check extension
+   658→        if ext_set and filepath.suffix.lower() not in ext_set:
+   659→            # Also allow extensionless sensitive filenames like .env, Dockerfile
+   660→            basename_lower = filepath.name.lower()
+   661→            if not any(basename_lower.startswith(sf) for sf in [".env", "dockerfile", "makefile", "credentials", "id_rsa"]):
+   662→                continue
+   663→
+   664→        results.extend(scan_file(str(filepath)))
+   665→
+   666→    return results
+   667→
+   668→
+   669→# ── File Entropy Analysis ─────────────────────────────────────────────────
+   670→
+   671→def file_entropy(filepath: str) -> Dict[str, Any]:
+   672→    """Calculate Shannon entropy of a file. Returns {entropy, bits_per_byte, size, path, assessment}."""
+   673→    try:
+   674→        with open(filepath, "rb") as f:
+   675→            data = f.read()
+   676→        if not data:
+   677→            return {"entropy": 0.0, "bits_per_byte": 0.0, "size": 0, "path": filepath, "assessment": "empty"}
+   678→        ent = shannon_entropy(data.decode("latin-1"))
+   679→        return {
+   680→            "entropy": round(ent, 4),
+   681→            "bits_per_byte": round(ent / 8.0 * 100, 2),
+   682→            "size": len(data),
+   683→            "path": filepath,
+   684→            "assessment": "high_entropy" if ent > 7.0 else "medium_entropy" if ent > 5.0 else "low_entropy",
+   685→        }
+   686→    except Exception as e:
+   687→        return {"entropy": 0.0, "bits_per_byte": 0.0, "size": 0, "path": filepath, "assessment": f"error: {e}"}
+   688→
+   689→
+   690→def directory_entropy_scan(directory: str, extensions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+   691→    """Scan all files in a directory for high entropy (potential encrypted/compiled secrets)."""
+   692→    results = []
+   693→    exts = set(extensions) if extensions else None
+   694→    for root, dirs, files in os.walk(directory):
+   695→        for fname in sorted(files):
+   696→            fpath = os.path.join(root, fname)
+   697→            if exts:
+   698→                _, ext = os.path.splitext(fname)
+   699→                if ext.lstrip(".").lower() not in exts:
+   700→                    continue
+   701→            info = file_entropy(fpath)
+   702→            if info["entropy"] > 5.0:
+   703→                results.append(info)
+   704→    return sorted(results, key=lambda x: -x["entropy"])
+   705→
+   706→
+   707→def crypto_material_detector(data: str, context: str = "") -> List[Dict[str, Any]]:
+   708→    """Detect cryptographic material (keys, certs, tokens) using entropy + patterns."""
+   709→    from .entropy import KNOWN_PREFIXES
+   710→    findings = []
+   711→    lines = data.split("\n")
+   712→    for i, line in enumerate(lines):
+   713→        stripped = line.strip()
+   714→        for prefix, info in KNOWN_PREFIXES.items():
+   715→            if stripped.startswith(prefix):
+   716→                ent = shannon_entropy(stripped)
+   717→                findings.append({
+   718→                    "line": i + 1,
+   719→                    "prefix": prefix,
+   720→                    "type": info["type"],
+   721→                    "entropy": round(ent, 4),
+   722→                    "value_preview": stripped[:20] + "..." if len(stripped) > 20 else stripped,
+   723→                    "confidence": info["confidence"],
+   724→                    "context": context,
+   725→                })
+   726→    return findings
+   727→
+   728→

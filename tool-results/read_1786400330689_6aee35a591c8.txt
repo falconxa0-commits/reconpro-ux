@@ -1,0 +1,903 @@
+     1→"""Async HTTP engine for ReconPro v10.0.
+     2→
+     3→Architecture
+     4→────────────
+     5→This module provides a fully async HTTP layer that replaces the synchronous
+     6→urllib-based approach in ``http_layer.py`` for high-throughput scanning.  It is
+     7→designed as a **drop-in enhancement** — callers that prefer the old sync
+     8→API can use :func:`probe_sync` which transparently runs the async path
+     9→inside a fresh event loop.
+    10→
+    11→Components
+    12→──────────
+    13→1. **AsyncSession** — wraps ``aiohttp.ClientSession`` with connection pooling,
+    14→   redirect-chain recording, per-target cookie jars, and an automatic sync
+    15→   fallback when ``aiohttp`` is not installed.
+    16→2. **AdaptiveLimiter** — token-bucket rate limiter with exponential-moving-
+    17→   average tracking of response times, error rates, and timeout rates.
+    18→   Automatically backs off on 429/503, recovers on fast responses, and
+    19→   maintains per-domain state.  Includes hostname cache to avoid
+    20→   redundant urlparse calls on repeated URLs.
+    21→3. **async_probe()** — async equivalent of ``http_probe()`` returning a
+    22→   rich result dict compatible with the existing ``Finding`` dataclass.
+    23→4. **probe_sync()** — synchronous wrapper for backward compatibility.
+    24→5. **batch_probe()** — concurrent URL probing with ``asyncio.gather`` and
+    25→   per-domain rate limiting.
+    26→
+    27→Performance notes (v10.1)
+    28→───────────────────────────
+    29→  - DEFAULT_HEADERS.copy() used instead of dict(DEFAULT_HEADERS) for
+    30→    faster C-level copy path.
+    31→  - Hostname cache in AdaptiveLimiter avoids repeated urlparse() on
+    32→    the same URLs during high-throughput scanning.
+    33→  - Header merge short-circuits when no extra headers are provided.
+    34→
+    35→No direct imports from ``.http`` are used to avoid circular dependencies.
+    36→The ``Finding`` dataclass can be imported separately where needed.
+    37→"""
+    38→
+    39→from __future__ import annotations
+    40→
+    41→import asyncio
+    42→import logging
+    43→import random
+    44→import ssl
+    45→import time
+    46→import urllib.error
+    47→import urllib.request
+    48→from threading import Lock
+    49→from typing import Any, Dict, List, Optional
+    50→from urllib.parse import urljoin, urlparse
+    51→
+    52→# Optional dependency — gracefully degrade when missing.
+    53→try:
+    54→    import aiohttp
+    55→    from aiohttp import CookieJar
+    56→    _HAS_AIOHTTP = True
+    57→except ImportError:  # pragma: no cover
+    58→    _HAS_AIOHTTP = False
+    59→
+    60→logger = logging.getLogger(__name__)
+    61→
+    62→# Reuse the same User-Agent string as the sync layer.
+    63→UA = (
+    64→    "ReconPro/2.0 (Enterprise Security Scanner; "
+    65→    "+https://github.com/reconpro-security/reconpro)"
+    66→)
+    67→
+    68→DEFAULT_HEADERS = {
+    69→    "User-Agent": UA,
+    70→    "Accept": "application/json,text/html,text/plain,*/*",
+    71→    "Accept-Language": "en-US,en;q=0.9",
+    72→}
+    73→
+    74→# Maximum body size we will capture (same as sync layer).
+    75→_BODY_LIMIT = 16384
+    76→
+    77→
+    78→# ── Adaptive Limiter ────────────────────────────────────────────────────
+    79→
+    80→
+    81→class _DomainLimiter:
+    82→    """Per-domain rate-limit state tracked by AdaptiveLimiter."""
+    83→
+    84→    __slots__ = (
+    85→        "tokens",
+    86→        "max_tokens",
+    87→        "current_rps",
+    88→        "last_refill",
+    89→        "response_time_ema",
+    90→        "error_rate_ema",
+    91→        "timeout_count",
+    92→        "total_requests",
+    93→        "concurrent_limit",
+    94→        "last_backoff",
+    95→    )
+    96→
+    97→    def __init__(self, rps: float, max_concurrent: int = 50) -> None:
+    98→        self.tokens: float = rps
+    99→        self.max_tokens: float = rps * 2.0
+   100→        self.current_rps: float = rps
+   101→        self.last_refill: float = time.monotonic()
+   102→        self.response_time_ema: float = 0.0
+   103→        self.error_rate_ema: float = 0.0
+   104→        self.timeout_count: int = 0
+   105→        self.total_requests: int = 0
+   106→        self.concurrent_limit: int = max_concurrent
+   107→        self.last_backoff: float = 0.0
+   108→
+   109→
+   110→class AdaptiveLimiter:
+   111→    """Token-bucket rate limiter with adaptive back-off and recovery.
+   112→
+   113→    Tracks per-domain response-time EMA, error-rate EMA, and timeout
+   114→    frequency to dynamically adjust throughput.  Thread-safe.
+   115→
+   116→    Parameters
+   117→    ----------
+   118→    min_rps : float
+   119→        Minimum allowed requests per second per domain.
+   120→    max_rps : float
+   121→        Maximum allowed requests per second per domain.
+   122→    backoff_factor : float
+   123→        Multiplier applied to rate on back-pressure signals (429/503).
+   124→    recovery_time : float
+   125→        Seconds of calm before the limiter begins ramping back up.
+   126→    """
+   127→
+   128→    def __init__(
+   129→        self,
+   130→        min_rps: float = 1.0,
+   131→        max_rps: float = 100.0,
+   132→        backoff_factor: float = 0.5,
+   133→        recovery_time: float = 5.0,
+   134→    ) -> None:
+   135→        self.min_rps = min_rps
+   136→        self.max_rps = max_rps
+   137→        self.backoff_factor = backoff_factor
+   138→        self.recovery_time = recovery_time
+   139→        self._alpha = 0.3  # EMA smoothing factor
+   140→        self._lock = Lock()
+   141→        self._domains: Dict[str, _DomainLimiter] = {}
+   142→        # Hostname cache: avoid repeated urlparse() on the same URLs.
+   143→        self._hostname_cache: Dict[str, str] = {}
+   144→
+   145→    # ── public helpers ───────────────────────────────────────────────
+   146→
+   147→    def _get_domain(self, url: str) -> str:
+   148→        cached = self._hostname_cache.get(url)
+   149→        if cached is not None:
+   150→            return cached
+   151→        parsed = urlparse(url)
+   152→        hostname = parsed.hostname or "unknown"
+   153→        self._hostname_cache[url] = hostname
+   154→        return hostname
+   155→
+   156→    def _get_or_create(self, domain: str) -> _DomainLimiter:
+   157→        if domain not in self._domains:
+   158→            self._domains[domain] = _DomainLimiter(rps=self.max_rps)
+   159→        return self._domains[domain]
+   160→
+   161→    async def acquire(self, url: str) -> None:
+   162→        """Wait until a token is available for *url*."""
+   163→        domain = self._get_domain(url)
+   164→        with self._lock:
+   165→            dl = self._get_or_create(domain)
+   166→        await self._wait_for_token(dl)
+   167→
+   168→    def acquire_sync(self, url: str) -> None:
+   169→        """Synchronous acquire — blocks until a token is available."""
+   170→        domain = self._get_domain(url)
+   171→        with self._lock:
+   172→            dl = self._get_or_create(domain)
+   173→        self._wait_for_token_sync(dl)
+   174→
+   175→    def record_response(
+   176→        self,
+   177→        url: str,
+   178→        status: int,
+   179→        response_time: float,
+   180→        timed_out: bool = False,
+   181→    ) -> None:
+   182→        """Update limiter state based on the response outcome."""
+   183→        domain = self._get_domain(url)
+   184→        with self._lock:
+   185→            dl = self._get_or_create(domain)
+   186→            dl.total_requests += 1
+   187→
+   188→            # Update response time EMA.
+   189→            if dl.response_time_ema == 0.0:
+   190→                dl.response_time_ema = response_time
+   191→            else:
+   192→                dl.response_time_ema = (
+   193→                    self._alpha * response_time
+   194→                    + (1 - self._alpha) * dl.response_time_ema
+   195→                )
+   196→
+   197→            # Update error rate EMA (error = 4xx/5xx excluding 429/503).
+   198→            is_error = 400 <= status < 600 and status not in (429, 503)
+   199→            if dl.total_requests <= 1:
+   200→                dl.error_rate_ema = 1.0 if is_error else 0.0
+   201→            else:
+   202→                dl.error_rate_ema = (
+   203→                    self._alpha * (1.0 if is_error else 0.0)
+   204→                    + (1 - self._alpha) * dl.error_rate_ema
+   205→                )
+   206→
+   207→            # Handle back-pressure signals: 429 or 503.
+   208→            if status in (429, 503):
+   209→                dl.current_rps = max(
+   210→                    self.min_rps, dl.current_rps * self.backoff_factor
+   211→                )
+   212→                dl.last_backoff = time.monotonic()
+   213→                logger.debug(
+   214→                    "AdaptiveLimiter back-off for %s: rate→%.1f rps (status %d)",
+   215→                    domain, dl.current_rps, status,
+   216→                )
+   217→
+   218→            # Handle timeout — reduce concurrency.
+   219→            if timed_out:
+   220→                dl.timeout_count += 1
+   221→                dl.concurrent_limit = max(
+   222→                    1, int(dl.concurrent_limit * 0.75)
+   223→                )
+   224→                dl.last_backoff = time.monotonic()
+   225→                logger.debug(
+   226→                    "AdaptiveLimiter timeout for %s: concurrency→%d",
+   227→                    domain, dl.concurrent_limit,
+   228→                )
+   229→
+   230→            # Recovery: on fast responses, slowly ramp up.
+   231→            if response_time < 0.2 and status < 400:
+   232→                now = time.monotonic()
+   233→                if (now - dl.last_backoff) > self.recovery_time:
+   234→                    new_rps = dl.current_rps * 1.1
+   235→                    dl.current_rps = min(self.max_rps, new_rps)
+   236→                    dl.timeout_count = max(0, dl.timeout_count - 1)
+   237→                    dl.concurrent_limit = min(
+   238→                        50, dl.concurrent_limit + 1
+   239→                    )
+   240→
+   241→            # Refill tokens to reflect new rate.
+   242→            dl.max_tokens = dl.current_rps * 2.0
+   243→            if dl.tokens > dl.max_tokens:
+   244→                dl.tokens = dl.max_tokens
+   245→
+   246→    def get_domain_stats(self, domain: str) -> Dict[str, Any]:
+   247→        """Return diagnostic stats for a domain."""
+   248→        with self._lock:
+   249→            dl = self._domains.get(domain)
+   250→            if dl is None:
+   251→                return {}
+   252→            return {
+   253→                "current_rps": round(dl.current_rps, 2),
+   254→                "response_time_ema": round(dl.response_time_ema, 4),
+   255→                "error_rate_ema": round(dl.error_rate_ema, 4),
+   256→                "timeout_count": dl.timeout_count,
+   257→                "total_requests": dl.total_requests,
+   258→                "concurrent_limit": dl.concurrent_limit,
+   259→            }
+   260→
+   261→    # ── internal ─────────────────────────────────────────────────────
+   262→
+   263→    def _refill(self, dl: _DomainLimiter) -> None:
+   264→        """Add tokens based on elapsed time and current rate."""
+   265→        now = time.monotonic()
+   266→        elapsed = now - dl.last_refill
+   267→        if elapsed > 0:
+   268→            dl.tokens = min(
+   269→                dl.max_tokens, dl.tokens + elapsed * dl.current_rps
+   270→            )
+   271→            dl.last_refill = now
+   272→
+   273→    async def _wait_for_token(self, dl: _DomainLimiter) -> None:
+   274→        """Async token wait with jitter on recent back-off."""
+   275→        while True:
+   276→            with self._lock:
+   277→                self._refill(dl)
+   278→                if dl.tokens >= 1.0:
+   279→                    dl.tokens -= 1.0
+   280→                    break
+   281→                wait = (1.0 - dl.tokens) / max(dl.current_rps, 0.1)
+   282→            # Add jitter if we recently backed off.
+   283→            if (time.monotonic() - dl.last_backoff) < self.recovery_time:
+   284→                wait += random.uniform(0.1, 0.5)
+   285→            await asyncio.sleep(min(wait, 2.0))
+   286→
+   287→    def _wait_for_token_sync(self, dl: _DomainLimiter) -> None:
+   288→        """Synchronous token wait with jitter on recent back-off."""
+   289→        while True:
+   290→            with self._lock:
+   291→                self._refill(dl)
+   292→                if dl.tokens >= 1.0:
+   293→                    dl.tokens -= 1.0
+   294→                    break
+   295→                wait = (1.0 - dl.tokens) / max(dl.current_rps, 0.1)
+   296→            if (time.monotonic() - dl.last_backoff) < self.recovery_time:
+   297→                wait += random.uniform(0.1, 0.5)
+   298→            time.sleep(min(wait, 2.0))
+   299→
+   300→    def close(self) -> None:
+   301→        """Release resources held by the limiter."""
+   302→
+   303→
+   304→# Module-level default limiter.
+   305→default_adaptive_limiter = AdaptiveLimiter()
+   306→
+   307→
+   308→# ── Async Session ──────────────────────────────────────────────────────
+   309→
+   310→
+   311→class AsyncSession:
+   312→    """Async HTTP session with connection pooling, redirect tracking, and
+   313→    an automatic sync fallback when ``aiohttp`` is not installed.
+   314→
+   315→    Parameters
+   316→    ----------
+   317→    verify_ssl : bool
+   318→        Whether to verify TLS certificates.
+   319→    timeout : int
+   320→        Default request timeout in seconds.
+   321→    max_redirects : int
+   322→        Maximum number of redirects to follow.
+   323→    max_connections : int
+   324→        Connection pool size for aiohttp.
+   325→    keepalive : int
+   326→        TCP keep-alive timeout in seconds.
+   327→    """
+   328→
+   329→    def __init__(
+   330→        self,
+   331→        verify_ssl: bool = True,
+   332→        timeout: int = 10,
+   333→        max_redirects: int = 10,
+   334→        max_connections: int = 1000,
+   335→        keepalive: int = 30,
+   336→    ) -> None:
+   337→        self.verify_ssl = verify_ssl
+   338→        self.timeout = timeout
+   339→        self.max_redirects = max_redirects
+   340→        self._aio_session: Optional[Any] = None
+   341→        self._sync_ssl_ctx: Optional[ssl.SSLContext] = None
+   342→
+   343→        if _HAS_AIOHTTP:
+   344→            cookie_jar = CookieJar(unsafe=True)
+   345→            connector = aiohttp.TCPConnector(
+   346→                limit=max_connections,
+   347→                keepalive_timeout=keepalive,
+   348→                ssl=False if not verify_ssl else None,
+   349→            )
+   350→            self._aio_session = aiohttp.ClientSession(
+   351→                connector=connector,
+   352→                cookie_jar=cookie_jar,
+   353→                timeout=aiohttp.ClientTimeout(total=timeout),
+   354→            )
+   355→        else:
+   356→            # Prepare a reusable ssl context for the sync fallback.
+   357→            if verify_ssl:
+   358→                self._sync_ssl_ctx = ssl.create_default_context()
+   359→            else:
+   360→                self._sync_ssl_ctx = ssl._create_unverified_context()
+   361→
+   362→    # ── public async methods ─────────────────────────────────────────
+   363→
+   364→    async def get(
+   365→        self,
+   366→        url: str,
+   367→        headers: Optional[Dict[str, str]] = None,
+   368→        **kwargs: Any,
+   369→    ) -> Dict[str, Any]:
+   370→        """Perform an async GET request."""
+   371→        return await self.request("GET", url, headers=headers, **kwargs)
+   372→
+   373→    async def post(
+   374→        self,
+   375→        url: str,
+   376→        headers: Optional[Dict[str, str]] = None,
+   377→        body: Optional[bytes] = None,
+   378→        **kwargs: Any,
+   379→    ) -> Dict[str, Any]:
+   380→        """Perform an async POST request."""
+   381→        return await self.request(
+   382→            "POST", url, headers=headers, data=body, **kwargs
+   383→        )
+   384→
+   385→    async def head(
+   386→        self,
+   387→        url: str,
+   388→        headers: Optional[Dict[str, str]] = None,
+   389→        **kwargs: Any,
+   390→    ) -> Dict[str, Any]:
+   391→        """Perform an async HEAD request."""
+   392→        return await self.request("HEAD", url, headers=headers, **kwargs)
+   393→
+   394→    async def request(
+   395→        self,
+   396→        method: str,
+   397→        url: str,
+   398→        headers: Optional[Dict[str, str]] = None,
+   399→        body: Optional[bytes] = None,
+   400→        **kwargs: Any,
+   401→    ) -> Dict[str, Any]:
+   402→        """Perform an async HTTP request with redirect-chain tracking.
+   403→
+   404→        Returns an ``AsyncProbeResult`` dict with keys: ok, status,
+   405→        reason, headers, body, url, redirect_chain, response_time,
+   406→        ssl_info.
+   407→        """
+   408→        # Short-circuit: use DEFAULT_HEADERS directly when no extras.
+   409→        if headers:
+   410→            merged = DEFAULT_HEADERS.copy()
+   411→            merged.update(headers)
+   412→        else:
+   413→            merged = DEFAULT_HEADERS
+   414→
+   415→        if _HAS_AIOHTTP and self._aio_session is not None:
+   416→            return await self._aio_request(
+   417→                method, url, merged, body, **kwargs
+   418→            )
+   419→        else:
+   420→            # Sync fallback — run urllib in a thread to keep the API async.
+   421→            return await self._sync_request(method, url, merged, body)
+   422→
+   423→    async def close(self) -> None:
+   424→        """Close the underlying aiohttp session (no-op for sync fallback)."""
+   425→        if self._aio_session is not None:
+   426→            await self._aio_session.close()
+   427→            self._aio_session = None
+   428→
+   429→    async def __aenter__(self) -> AsyncSession:
+   430→        return self
+   431→
+   432→    async def __aexit__(self, *args: Any) -> None:
+   433→        await self.close()
+   434→
+   435→    # ── aiohttp path ─────────────────────────────────────────────────
+   436→
+   437→    async def _aio_request(
+   438→        self,
+   439→        method: str,
+   440→        url: str,
+   441→        headers: Dict[str, str],
+   442→        body: Optional[bytes],
+   443→        **kwargs: Any,
+   444→    ) -> Dict[str, Any]:
+   445→        """Execute request via aiohttp, following redirects manually."""
+   446→        redirect_chain: List[Dict[str, Any]] = []
+   447→        current_url = url
+   448→        session = self._aio_session
+   449→        assert session is not None  # noqa: S101
+   450→
+   451→        for _ in range(self.max_redirects + 1):
+   452→            t0 = time.monotonic()
+   453→            try:
+   454→                # Determine if this is the final hop.
+   455→                allow_redirects = False
+   456→                async with session.request(
+   457→                    method,
+   458→                    current_url,
+   459→                    headers=headers,
+   460→                    data=body if method.upper() != "GET" else None,
+   461→                    allow_redirects=allow_redirects,
+   462→                    ssl=False if not self.verify_ssl else None,
+   463→                    **kwargs,
+   464→                ) as resp:
+   465→                    elapsed = time.monotonic() - t0
+   466→                    ssl_info = self._extract_ssl_info(session, current_url)
+   467→
+   468→                    # Collect response data.
+   469→                    resp_body = await resp.read()
+   470→                    status = resp.status
+   471→                    reason = resp.reason or ""
+   472→                    resp_headers = dict(resp.headers.items())
+   473→                    body_str = resp_body.decode("utf-8", errors="replace")[
+   474→                        :_BODY_LIMIT
+   475→                    ]
+   476→
+   477→                    # Handle redirects.
+   478→                    if status in (301, 302, 303, 307, 308):
+   479→                        location = resp_headers.get("Location", "")
+   480→                        if not location:
+   481→                            break
+   482→                        # Resolve relative URLs.
+   483→                        next_url = urljoin(current_url, location)
+   484→                        redirect_chain.append({
+   485→                            "url": current_url,
+   486→                            "status": status,
+   487→                            "location": next_url,
+   488→                            "response_time": elapsed,
+   489→                        })
+   490→                        current_url = next_url
+   491→                        # For 303, switch to GET.
+   492→                        if status == 303:
+   493→                            method = "GET"
+   494→                            body = None
+   495→                        continue
+   496→
+   497→                    return self._build_result(
+   498→                        ok=status < 400,
+   499→                        status=status,
+   500→                        reason=reason,
+   501→                        headers=resp_headers,
+   502→                        body=body_str,
+   503→                        url=current_url,
+   504→                        redirect_chain=redirect_chain,
+   505→                        response_time=elapsed,
+   506→                        ssl_info=ssl_info,
+   507→                    )
+   508→
+   509→            except asyncio.TimeoutError:
+   510→                elapsed = time.monotonic() - t0
+   511→                return self._build_result(
+   512→                    ok=False, status=0, reason="Timeout",
+   513→                    headers={}, body="", url=current_url,
+   514→                    redirect_chain=redirect_chain,
+   515→                    response_time=elapsed, ssl_info={},
+   516→                )
+   517→            except Exception as exc:
+   518→                elapsed = time.monotonic() - t0
+   519→                return self._build_result(
+   520→                    ok=False, status=0, reason=str(exc),
+   521→                    headers={}, body="", url=current_url,
+   522→                    redirect_chain=redirect_chain,
+   523→                    response_time=elapsed, ssl_info={},
+   524→                )
+   525→
+   526→        # Exceeded max redirects.
+   527→        return self._build_result(
+   528→            ok=False, status=0, reason="Too many redirects",
+   529→            headers={}, body="", url=current_url,
+   530→            redirect_chain=redirect_chain, response_time=0.0, ssl_info={},
+   531→        )
+   532→
+   533→    # ── sync fallback path ───────────────────────────────────────────
+   534→
+   535→    async def _sync_request(
+   536→        self,
+   537→        method: str,
+   538→        url: str,
+   539→        headers: Dict[str, str],
+   540→        body: Optional[bytes],
+   541→    ) -> Dict[str, Any]:
+   542→        """Run a synchronous urllib request in a thread."""
+   543→        loop = asyncio.get_running_loop()
+   544→        result = await loop.run_in_executor(
+   545→            None,
+   546→            self._sync_request_impl,
+   547→            method, url, headers, body,
+   548→        )
+   549→        return result
+   550→
+   551→    def _sync_request_impl(
+   552→        self,
+   553→        method: str,
+   554→        url: str,
+   555→        headers: Dict[str, str],
+   556→        body: Optional[bytes],
+   557→    ) -> Dict[str, Any]:
+   558→        """Blocking urllib implementation with manual redirect following."""
+   559→        redirect_chain: List[Dict[str, Any]] = []
+   560→        current_url = url
+   561→        ctx = self._sync_ssl_ctx
+   562→        assert ctx is not None  # noqa: S101
+   563→
+   564→        for _ in range(self.max_redirects + 1):
+   565→            t0 = time.monotonic()
+   566→            req = urllib.request.Request(
+   567→                current_url, data=body, method=method, headers=headers,
+   568→            )
+   569→            try:
+   570→                with urllib.request.urlopen(
+   571→                    req, timeout=self.timeout, context=ctx,
+   572→                ) as resp:
+   573→                    elapsed = time.monotonic() - t0
+   574→                    raw = resp.read(_BODY_LIMIT)
+   575→                    status = resp.status
+   576→                    reason = resp.reason
+   577→                    resp_headers = dict(resp.headers.items())
+   578→                    body_str = raw.decode("utf-8", errors="replace")
+   579→                    return self._build_result(
+   580→                        ok=status < 400,
+   581→                        status=status,
+   582→                        reason=reason or "",
+   583→                        headers=resp_headers,
+   584→                        body=body_str,
+   585→                        url=current_url,
+   586→                        redirect_chain=redirect_chain,
+   587→                        response_time=elapsed,
+   588→                        ssl_info=self._sync_ssl_info(current_url),
+   589→                    )
+   590→            except urllib.error.HTTPError as exc:
+   591→                elapsed = time.monotonic() - t0
+   592→                try:
+   593→                    raw = exc.read(_BODY_LIMIT)
+   594→                    body_str = raw.decode("utf-8", errors="replace")
+   595→                except Exception:
+   596→                    body_str = ""
+   597→
+   598→                # Handle redirects that urllib exposes as errors.
+   599→                if exc.code in (301, 302, 303, 307, 308):
+   600→                    location = exc.headers.get("Location", "") if exc.headers else ""
+   601→                    if location:
+   602→                        next_url = urljoin(current_url, location)
+   603→                        redirect_chain.append({
+   604→                            "url": current_url,
+   605→                            "status": exc.code,
+   606→                            "location": next_url,
+   607→                            "response_time": elapsed,
+   608→                        })
+   609→                        current_url = next_url
+   610→                        if exc.code == 303:
+   611→                            method = "GET"
+   612→                            body = None
+   613→                        continue
+   614→
+   615→                resp_headers = (
+   616→                    dict(exc.headers.items()) if exc.headers else {}
+   617→                )
+   618→                return self._build_result(
+   619→                    ok=False,
+   620→                    status=exc.code,
+   621→                    reason=str(exc.reason),
+   622→                    headers=resp_headers,
+   623→                    body=body_str,
+   624→                    url=current_url,
+   625→                    redirect_chain=redirect_chain,
+   626→                    response_time=elapsed,
+   627→                    ssl_info={},
+   628→                )
+   629→            except Exception as exc:
+   630→                elapsed = time.monotonic() - t0
+   631→                return self._build_result(
+   632→                    ok=False, status=0, reason=str(exc),
+   633→                    headers={}, body="", url=current_url,
+   634→                    redirect_chain=redirect_chain,
+   635→                    response_time=elapsed, ssl_info={},
+   636→                )
+   637→
+   638→        return self._build_result(
+   639→            ok=False, status=0, reason="Too many redirects",
+   640→            headers={}, body="", url=current_url,
+   641→            redirect_chain=redirect_chain, response_time=0.0, ssl_info={},
+   642→        )
+   643→
+   644→    # ── helpers ──────────────────────────────────────────────────────
+   645→
+   646→    @staticmethod
+   647→    def _build_result(
+   648→        ok: bool,
+   649→        status: int,
+   650→        reason: str,
+   651→        headers: Dict[str, str],
+   652→        body: str,
+   653→        url: str,
+   654→        redirect_chain: List[Dict[str, Any]],
+   655→        response_time: float,
+   656→        ssl_info: Dict[str, Any],
+   657→    ) -> Dict[str, Any]:
+   658→        """Construct a normalised result dict."""
+   659→        return {
+   660→            "ok": ok,
+   661→            "status": status,
+   662→            "reason": reason,
+   663→            "headers": headers,
+   664→            "body": body,
+   665→            "url": url,
+   666→            "redirect_chain": redirect_chain,
+   667→            "response_time": response_time,
+   668→            "ssl_info": ssl_info,
+   669→        }
+   670→
+   671→    @staticmethod
+   672→    def _extract_ssl_info(
+   673→        session: Any, url: str,
+   674→    ) -> Dict[str, Any]:
+   675→        """Pull TLS certificate details from the aiohttp connector."""
+   676→        try:
+   677→            conn = session.connector
+   678→            if conn is None:
+   679→                return {}
+   680→            # Access the internal connection for certificate info.
+   681→            # This is best-effort; many connectors don't expose it.
+   682→            return {"version": "TLS", "verified": True}
+   683→        except Exception:
+   684→            return {}
+   685→
+   686→    @staticmethod
+   687→    def _sync_ssl_info(url: str) -> Dict[str, Any]:
+   688→        """Return basic SSL info for the sync path (best-effort)."""
+   689→        return {"version": "TLS", "verified": True}
+   690→
+   691→
+   692→# ── async_probe ─────────────────────────────────────────────────────────
+   693→
+   694→
+   695→async def async_probe(
+   696→    url: str,
+   697→    method: str = "GET",
+   698→    body: Optional[bytes] = None,
+   699→    headers: Optional[Dict[str, str]] = None,
+   700→    timeout: int = 10,
+   701→    verify_ssl: bool = True,
+   702→    limiter: Optional[AdaptiveLimiter] = None,
+   703→    session: Optional[AsyncSession] = None,
+   704→) -> Dict[str, Any]:
+   705→    """Async equivalent of :func:`http.http_probe`.
+   706→
+   707→    Returns a dict compatible with the ``Finding`` creation pattern::
+   708→
+   709→        {
+   710→            "ok": bool,
+   711→            "status": int,
+   712→            "reason": str,
+   713→            "headers": dict,
+   714→            "body": str,
+   715→            "url": str,
+   716→            "redirect_chain": list,
+   717→            "response_time": float,
+   718→            "ssl_info": dict,
+   719→        }
+   720→
+   721→    Parameters
+   722→    ----------
+   723→    url : str
+   724→        Target URL.
+   725→    method : str
+   726→        HTTP method (GET, POST, HEAD, …).
+   727→    body : bytes | None
+   728→        Request body.
+   729→    headers : dict | None
+   730→        Extra headers merged onto the defaults.
+   731→    timeout : int
+   732→        Timeout in seconds.
+   733→    verify_ssl : bool
+   734→        Verify TLS certificates.
+   735→    limiter : AdaptiveLimiter | None
+   736→        Rate limiter instance.  Uses the module default if ``None``.
+   737→    session : AsyncSession | None
+   738→        Reusable session.  A fresh one is created and closed if ``None``.
+   739→    """
+   740→    _limiter = limiter or default_adaptive_limiter
+   741→    own_session = session is None
+   742→    _session = session or AsyncSession(
+   743→        verify_ssl=verify_ssl, timeout=timeout,
+   744→    )
+   745→
+   746→    try:
+   747→        await _limiter.acquire(url)
+   748→        result = await _session.request(
+   749→            method, url, headers=headers,
+   750→            body=body if method.upper() != "GET" else None,
+   751→        )
+   752→        # Feed response metrics back to the limiter.
+   753→        _limiter.record_response(
+   754→            url,
+   755→            status=result.get("status", 0),
+   756→            response_time=result.get("response_time", 0.0),
+   757→            timed_out=(result.get("reason") == "Timeout"),
+   758→        )
+   759→        return result
+   760→    except asyncio.TimeoutError:
+   761→        timed_out = True
+   762→        _limiter.record_response(url, status=0, response_time=float(timeout), timed_out=True)
+   763→        return {
+   764→            "ok": False, "status": 0, "reason": "Timeout",
+   765→            "headers": {}, "body": "", "url": url,
+   766→            "redirect_chain": [], "response_time": float(timeout),
+   767→            "ssl_info": {},
+   768→        }
+   769→    except Exception as exc:
+   770→        _limiter.record_response(url, status=0, response_time=0.0, timed_out=False)
+   771→        return {
+   772→            "ok": False, "status": 0, "reason": str(exc),
+   773→            "headers": {}, "body": "", "url": url,
+   774→            "redirect_chain": [], "response_time": 0.0, "ssl_info": {},
+   775→        }
+   776→    finally:
+   777→        if own_session:
+   778→            await _session.close()
+   779→
+   780→
+   781→# ── probe_sync ──────────────────────────────────────────────────────────
+   782→
+   783→
+   784→def probe_sync(
+   785→    url: str,
+   786→    method: str = "GET",
+   787→    body: Optional[bytes] = None,
+   788→    headers: Optional[Dict[str, str]] = None,
+   789→    timeout: int = 10,
+   790→    verify_ssl: bool = True,
+   791→    limiter: Optional[AdaptiveLimiter] = None,
+   792→) -> Dict[str, Any]:
+   793→    """Synchronous wrapper around :func:`async_probe`.
+   794→
+   795→    Creates (and closes) a fresh event loop for each call, making it
+   796→    safe to use from existing synchronous modules without any async
+   797→    boilerplate.
+   798→
+   799→    Optimisation: when not already inside an event loop, calls asyncio.run
+   800→    directly — the ThreadPoolExecutor fallback is only used when an
+   801→    existing loop is detected.
+   802→    """
+   803→    try:
+   804→        asyncio.get_running_loop()
+   805→        # Already inside a running loop — fall back to a thread.
+   806→        import concurrent.futures
+   807→        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+   808→            future = pool.submit(
+   809→                asyncio.run,
+   810→                async_probe(
+   811→                    url, method=method, body=body, headers=headers,
+   812→                    timeout=timeout, verify_ssl=verify_ssl,
+   813→                    limiter=limiter,
+   814→                ),
+   815→            )
+   816→            return future.result()
+   817→    except RuntimeError:
+   818→        # No running loop — safe to call asyncio.run directly.
+   819→        return asyncio.run(
+   820→            async_probe(
+   821→                url, method=method, body=body, headers=headers,
+   822→                timeout=timeout, verify_ssl=verify_ssl,
+   823→                limiter=limiter,
+   824→            ),
+   825→        )
+   826→
+   827→
+   828→# ── batch_probe ─────────────────────────────────────────────────────────
+   829→
+   830→
+   831→async def batch_probe(
+   832→    urls: List[str],
+   833→    method: str = "GET",
+   834→    headers: Optional[Dict[str, str]] = None,
+   835→    timeout: int = 10,
+   836→    verify_ssl: bool = True,
+   837→    concurrency: int = 50,
+   838→    limiter: Optional[AdaptiveLimiter] = None,
+   839→) -> List[Dict[str, Any]]:
+   840→    """Probe a list of URLs concurrently with per-domain rate limiting.
+   841→
+   842→    Parameters
+   843→    ----------
+   844→    urls : list[str]
+   845→        URLs to probe.
+   846→    method : str
+   847→        HTTP method for all requests.
+   848→    headers : dict | None
+   849→        Extra headers.
+   850→    timeout : int
+   851→        Per-request timeout in seconds.
+   852→    verify_ssl : bool
+   853→        Verify TLS certificates.
+   854→    concurrency : int
+   855→        Maximum number of in-flight requests (semaphore bound).
+   856→    limiter : AdaptiveLimiter | None
+   857→        Shared rate limiter.  Uses the module default if ``None``.
+   858→
+   859→    Returns
+   860→    -------
+   861→    list[dict]
+   862→        Results in the **same order** as *urls*.
+   863→    """
+   864→    _limiter = limiter or default_adaptive_limiter
+   865→    semaphore = asyncio.Semaphore(concurrency)
+   866→
+   867→    async def _bounded_probe(url: str) -> Dict[str, Any]:
+   868→        """Probe a single URL under the concurrency semaphore."""
+   869→        async with semaphore:
+   870→            return await async_probe(
+   871→                url,
+   872→                method=method,
+   873→                headers=headers,
+   874→                timeout=timeout,
+   875→                verify_ssl=verify_ssl,
+   876→                limiter=_limiter,
+   877→            )
+   878→
+   879→    tasks = [_bounded_probe(u) for u in urls]
+   880→    return list(await asyncio.gather(*tasks, return_exceptions=False))
+   881→
+   882→
+   883→def batch_probe_sync(
+   884→    urls: List[str],
+   885→    method: str = "GET",
+   886→    headers: Optional[Dict[str, str]] = None,
+   887→    timeout: int = 10,
+   888→    verify_ssl: bool = True,
+   889→    concurrency: int = 50,
+   890→    limiter: Optional[AdaptiveLimiter] = None,
+   891→) -> List[Dict[str, Any]]:
+   892→    """Synchronous wrapper around :func:`batch_probe`.
+   893→
+   894→    Runs the full async batch inside a fresh event loop.
+   895→    """
+   896→    return asyncio.run(
+   897→        batch_probe(
+   898→            urls, method=method, headers=headers,
+   899→            timeout=timeout, verify_ssl=verify_ssl,
+   900→            concurrency=concurrency, limiter=limiter,
+   901→        ),
+   902→    )
+   903→

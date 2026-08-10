@@ -31,7 +31,7 @@ WISH_COUNT = 22
 VERDICT_LEVELS = ["MUNDANE", "NOTABLE", "SUBSTANTIAL", "CRITICAL"]
 HALL_DIR = Path.home() / ".reconpro" / "hall"
 WITNESS_DIR = Path.home() / ".reconpro" / "witness"
-RECONPRO_VERSION = "9.1.0"
+RECONPRO_VERSION = "11.0.0"
 RECONPRO_BUILD = "wishes-engine"
 
 FEAR_LEVELS = {

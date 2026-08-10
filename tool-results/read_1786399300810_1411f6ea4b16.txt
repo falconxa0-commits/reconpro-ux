@@ -1,0 +1,724 @@
+     1→     1→"""
+     2→     2→ReconPro v8.5 — Zero-Trust Network Mapper
+     3→     3→
+     4→     4→Discovers local network hosts, maps trust relationships, checks
+     5→     5→network segmentation, and identifies lateral movement paths.
+     6→     6→
+     7→     7→All operations use stdlib only (subprocess, socket, struct).
+     8→     8→Requires elevated privileges for ARP and raw operations.
+     9→     9→
+    10→    10→Exports:
+    11→    11→    NetworkDiscovery     – host discovery (ping, ARP, mDNS, port scan)
+    12→    12→    TrustMapper          – SSH trust chains, Docker topology, BFS paths
+    13→    13→    SegmentationChecker  – verify cross-zone isolation
+    14→    14→    run_local            – orchestrate full local network audit
+    15→    15→"""
+    16→    16→
+    17→    17→
+    18→    18→from __future__ import annotations
+    19→    19→
+    20→    20→import json
+    21→    21→import os
+    22→    22→import platform
+    23→    23→import re
+    24→    24→import socket
+    25→    25→import struct
+    26→    26→import subprocess
+    27→    27→import sys
+    28→    28→import time
+    29→    29→from collections import deque
+    30→    30→from concurrent.futures import ThreadPoolExecutor, as_completed
+    31→    31→from typing import Any, Dict, List, Optional, Set, Tuple
+    32→    32→
+    33→    33→
+    34→    34→# ── Helpers ─────────────────────────────────────────────────────────
+    35→    35→
+    36→    36→def _parse_ports(ports_spec: str) -> list:
+    37→    37→    """Parse a port specification like '22,80,443,1000-1010' into a list of ints."""
+    38→    38→    result = []
+    39→    39→    for part in ports_spec.split(","):
+    40→    40→        part = part.strip()
+    41→    41→        if not part:
+    42→    42→            continue
+    43→    43→        if "-" in part:
+    44→    44→            lo, hi = part.split("-", 1)
+    45→    45→            try:
+    46→    46→                result.extend(range(int(lo), int(hi) + 1))
+    47→    47→            except ValueError:
+    48→    48→                continue
+    49→    49→        else:
+    50→    50→            try:
+    51→    51→                result.append(int(part))
+    52→    52→            except ValueError:
+    53→    53→                continue
+    54→    54→    return sorted(set(result))
+    55→    55→
+    56→    56→
+    57→    57→SERVICE_GUESSES = {
+    58→    58→    21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns",
+    59→    59→    80: "http", 110: "pop3", 111: "rpcbind", 135: "msrpc",
+    60→    60→    139: "netbios-ssn", 143: "imap", 443: "https", 445: "microsoft-ds",
+    61→    61→    993: "imaps", 995: "pop3s", 1433: "mssql", 1521: "oracle",
+    62→    62→    3306: "mysql", 3389: "rdp", 5432: "postgresql", 5672: "amqp",
+    63→    63→    5900: "vnc", 6379: "redis", 8080: "http-proxy", 8443: "https-alt",
+    64→    64→    9200: "elasticsearch", 27017: "mongodb", 11211: "memcached",
+    65→    65→}
+    66→    66→
+    67→    67→
+    68→    68→def _fetch_banner(host: str, port: int, timeout: float = 3.0) -> str:
+    69→    69→    """Attempt to grab a service banner from host:port."""
+    70→    70→    try:
+    71→    71→        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    72→    72→        sock.settimeout(timeout)
+    73→    73→        sock.connect((host, port))
+    74→    74→        # Try TLS handshake first for HTTPS ports
+    75→    75→        if port in (443, 8443, 993, 995):
+    76→    76→            try:
+    77→    77→                import ssl
+    78→    78→                ctx = ssl.create_default_context()
+    79→    79→                ctx.check_hostname = False
+    80→    80→                ctx.verify_mode = ssl.CERT_NONE
+    81→    81→                sock = ctx.wrap_socket(sock, server_hostname=host)
+    82→    82→            except (ImportError, ssl.SSLError, OSError):
+    83→    83→                pass
+    84→    84→        banner = b""
+    85→    85→        sock.settimeout(timeout)
+    86→    86→        try:
+    87→    87→            banner = sock.recv(1024)
+    88→    88→        except (socket.timeout, OSError):
+    89→    89→            pass
+    90→    90→        sock.close()
+    91→    91→        return banner.decode("utf-8", errors="replace").strip()[:512]
+    92→    92→    except (socket.error, OSError):
+    93→    93→        return ""
+    94→    94→
+    95→    95→
+    96→    96→# ══════════════════════════════════════════════════════════════════════
+    97→    97→# NetworkDiscovery
+    98→    98→# ══════════════════════════════════════════════════════════════════════
+    99→    99→
+   100→   100→class NetworkDiscovery:
+   101→   101→    """Discover live hosts on local and remote networks."""
+   102→   102→
+   103→   103→    def ping_sweep(self, subnet: str, workers: int = 50) -> List[str]:
+   104→   104→        """ICMP ping sweep across a subnet (e.g. '192.168.1.0/24').
+   105→   105→
+   106→   106→        Parses the CIDR and pings each address. Returns list of
+   107→   107→        responsive IP strings.
+   108→   108→        """
+   109→   109→        hosts = self._expand_subnet(subnet)
+   110→   110→        if not hosts:
+   111→   111→            return []
+   112→   112→
+   113→   113→        alive: List[str] = []
+   114→   114→
+   115→   115→        def _ping(ip: str) -> Optional[str]:
+   116→   116→            try:
+   117→   117→                param = "-n" if platform.system().lower() == "windows" else "-c"
+   118→   118→                count = "-w 1000" if platform.system().lower() == "windows" else "-W 1"
+   119→   119→                cmd = ["ping", param, "1", count, ip]
+   120→   120→                result = subprocess.run(
+   121→   121→                    cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+   122→   122→                )
+   123→   123→                if result.returncode == 0:
+   124→   124→                    return ip
+   125→   125→            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+   126→   126→                pass
+   127→   127→            return None
+   128→   128→
+   129→   129→        with ThreadPoolExecutor(max_workers=workers) as pool:
+   130→   130→            futures = {pool.submit(_ping, ip): ip for ip in hosts}
+   131→   131→            for future in as_completed(futures):
+   132→   132→                ip = future.result()
+   133→   133→                if ip:
+   134→   134→                    alive.append(ip)
+   135→   135→
+   136→   136→        return sorted(alive)
+   137→   137→
+   138→   138→    def arp_discovery(self) -> List[Dict[str, str]]:
+   139→   139→        """Read the system ARP table and return entries.
+   140→   140→
+   141→   141→        Each entry: {"ip": str, "mac": str, "interface": str}.
+   142→   142→        """
+   143→   143→        entries: List[Dict[str, str]] = []
+   144→   144→        try:
+   145→   145→            if platform.system().lower() == "windows":
+   146→   146→                result = subprocess.run(
+   147→   147→                    ["arp", "-a"], capture_output=True, text=True, timeout=10
+   148→   148→                )
+   149→   149→                for line in result.stdout.splitlines():
+   150→   150→                    match = re.search(
+   151→   151→                        r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\s+" 
+   152→   152→                        r"([0-9a-fA-F:]{17})\s+(\S+)",
+   153→   153→                        line,
+   154→   154→                    )
+   155→   155→                    if match:
+   156→   156→                        entries.append({
+   157→   157→                            "ip": match.group(1),
+   158→   158→                            "mac": match.group(2),
+   159→   159→                            "interface": match.group(3),
+   160→   160→                        })
+   161→   161→            else:
+   162→   162→                result = subprocess.run(
+   163→   163→                    ["arp", "-a"], capture_output=True, text=True, timeout=10
+   164→   164→                )
+   165→   165→                for line in result.stdout.splitlines():
+   166→   166→                    match = re.search(
+   167→   167→                        r"\((\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\)\s+at\s+"
+   168→   168→                        r"([0-9a-fA-F:]{17})",
+   169→   169→                        line,
+   170→   170→                    )
+   171→   171→                    if match:
+   172→   172→                        iface = "unknown"
+   173→   173→                        iface_match = re.search(r"on\s+(\S+)", line)
+   174→   174→                        if iface_match:
+   175→   175→                            iface = iface_match.group(1)
+   176→   176→                        entries.append({
+   177→   177→                            "ip": match.group(1),
+   178→   178→                            "mac": match.group(2),
+   179→   179→                            "interface": iface,
+   180→   180→                        })
+   181→   181→        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+   182→   182→            pass
+   183→   183→        return entries
+   184→   184→
+   185→   185→    def mdns_discovery(self) -> List[Dict[str, str]]:
+   186→   186→        """Discover mDNS/Bonjour services via _services._dns-sd._udp.local.
+   187→   187→
+   188→   188→        Uses a UDP socket to send an mDNS query on port 5353.
+   189→   189→        Returns list of {"name": str, "type": str, "address": str}.
+   190→   190→        """
+   191→   191→        results: List[Dict[str, str]] = []
+   192→   192→        try:
+   193→   193→            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+   194→   194→            sock.settimeout(3)
+   195→   195→            # Build a simple mDNS query for _services._dns-sd._udp.local
+   196→   196→            query = self._build_mdns_query("_services._dns-sd._udp.local")
+   197→   197→            sock.sendto(query, ("224.0.0.251", 5353))
+   198→   198→            while True:
+   199→   199→                try:
+   200→   200→                    data, addr = sock.recvfrom(4096)
+   201→   201→                    parsed = self._parse_mdns_response(data)
+   202→   202→                    results.extend(parsed)
+   203→   203→                except socket.timeout:
+   204→   204→                    break
+   205→   205→            sock.close()
+   206→   206→        except (socket.error, OSError):
+   207→   207→            pass
+   208→   208→        return results
+   209→   209→
+   210→   210→    def port_scan_hosts(
+   211→   211→        self,
+   212→   212→        hosts: List[str],
+   213→   213→        ports: str = "22,80,443,3306,5432,6379,8080,8443",
+   214→   214→        workers: int = 50,
+   215→   215→    ) -> Dict[str, Dict[int, Dict[str, str]]]:
+   216→   216→        """TCP connect-scan a list of hosts on specified ports.
+   217→   217→
+   218→   218→        Returns {host: {port: {"state", "service", "banner"}}}.
+   219→   219→        """
+   220→   220→        port_list = _parse_ports(ports)
+   221→   221→        output: Dict[str, Dict[int, Dict[str, str]]] = {}
+   222→   222→
+   223→   223→        def _scan_one(ip: str, port: int) -> Tuple[str, int, Dict[str, str]]:
+   224→   224→            try:
+   225→   225→                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   226→   226→                sock.settimeout(2)
+   227→   227→                result = sock.connect_ex((ip, port))
+   228→   228→                if result == 0:
+   229→   229→                    banner = _fetch_banner(ip, port)
+   230→   230→                    sock.close()
+   231→   231→                    return ip, port, {
+   232→   232→                        "state": "open",
+   233→   233→                        "service": SERVICE_GUESSES.get(port, "unknown"),
+   234→   234→                        "banner": banner,
+   235→   235→                    }
+   236→   236→                sock.close()
+   237→   237→            except (socket.error, OSError):
+   238→   238→                pass
+   239→   239→            return ip, port, {"state": "closed", "service": "", "banner": ""}
+   240→   240→
+   241→   241→        with ThreadPoolExecutor(max_workers=workers) as pool:
+   242→   242→            futures = []
+   243→   243→            for ip in hosts:
+   244→   244→                for port in port_list:
+   245→   245→                    futures.append(pool.submit(_scan_one, ip, port))
+   246→   246→            for future in as_completed(futures):
+   247→   247→                ip, port, info = future.result()
+   248→   248→                if info["state"] == "open":
+   249→   249→                    output.setdefault(ip, {})[port] = info
+   250→   250→
+   251→   251→        return output
+   252→   252→
+   253→   253→    # ── Private helpers ─────────────────────────────────────────────
+   254→   254→
+   255→   255→    @staticmethod
+   256→   256→    def _expand_subnet(subnet: str) -> List[str]:
+   257→   257→        """Expand a CIDR or range notation to a list of IP strings."""
+   258→   258→        hosts = []
+   259→   259→        subnet = subnet.strip()
+   260→   260→        if "/" in subnet:
+   261→   261→            ip_part, cidr_str = subnet.rsplit("/", 1)
+   262→   262→            try:
+   263→   263→                cidr = int(cidr_str)
+   264→   264→            except ValueError:
+   265→   265→                return []
+   266→   266→            try:
+   267→   267→                ip_int = struct.unpack("!I", socket.inet_aton(ip_part))[0]
+   268→   268→            except (socket.error, struct.error):
+   269→   269→                return []
+   270→   270→            mask = (0xFFFFFFFF << (32 - cidr)) & 0xFFFFFFFF if cidr < 32 else 0xFFFFFFFF
+   271→   271→            network = ip_int & mask
+   272→   272→            broadcast = network | (~mask & 0xFFFFFFFF)
+   273→   273→            for addr in range(network + 1, broadcast):
+   274→   274→                hosts.append(socket.inet_ntoa(struct.pack("!I", addr)))
+   275→   275→        elif "." in subnet and "-" not in subnet:
+   276→   276→            # Single host
+   277→   277→            hosts.append(subnet)
+   278→   278→        elif "-" in subnet:
+   279→   279→            parts = subnet.split("-")
+   280→   280→            if len(parts) == 2:
+   281→   281→                try:
+   282→   282→                    start_int = struct.unpack("!I", socket.inet_aton(parts[0].strip()))[0]
+   283→   283→                    end_int = struct.unpack("!I", socket.inet_aton(parts[1].strip()))[0]
+   284→   284→                    for addr in range(start_int, end_int + 1):
+   285→   285→                        hosts.append(socket.inet_ntoa(struct.pack("!I", addr)))
+   286→   286→                except (socket.error, struct.error):
+   287→   287→                    pass
+   288→   288→        return hosts
+   289→   289→
+   290→   290→    @staticmethod
+   291→   291→    def _build_mdns_query(name: str) -> bytes:
+   292→   292→        """Build a minimal mDNS query packet."""
+   293→   293→        header = struct.pack(">HHHHHH", 0x0000, 0x8400, 1, 0, 0, 0)
+   294→   294→        qname = b""
+   295→   295→        for label in name.split("."):
+   296→   296→            qname += struct.pack("B", len(label)) + label.encode()
+   297→   297→        qname += b"\x00"
+   298→   298→        qtype_qclass = struct.pack(">HH", 12, 1)  # PTR, IN
+   299→   299→        return header + qname + qtype_qclass
+   300→   300→
+   301→   301→    @staticmethod
+   302→   302→    def _parse_mdns_response(data: bytes) -> List[Dict[str, str]]:
+   303→   303→        """Parse mDNS response and extract service names."""
+   304→   304→        results = []
+   305→   305→        try:
+   306→   306→            if len(data) < 12:
+   307→   307→                return results
+   308→   308→            # Skip header (12 bytes) and questions
+   309→   309→            ancount = struct.unpack(">H", data[6:8])[0]
+   310→   310→            offset = 12
+   311→   311→            # Skip question section (skip name + 4 bytes type/class)
+   312→   312→            while offset < len(data) and data[offset] != 0:
+   313→   313→                label_len = data[offset]
+   314→   314→                if label_len >= 192:
+   315→   315→                    offset += 2
+   316→   316→                    break
+   317→   317→                offset += 1 + label_len
+   318→   318→            if offset < len(data):
+   319→   319→                offset += 5  # null byte + 2 type + 2 class
+   320→   320→            # Parse answers
+   321→   321→            for _ in range(min(ancount, 50)):
+   322→   322→                name_parts = []
+   323→   323→                while offset < len(data):
+   324→   324→                    label_len = data[offset]
+   325→   325→                    if label_len == 0:
+   326→   326→                        offset += 1
+   327→   327→                        break
+   328→   328→                    if label_len >= 192:
+   329→   329→                        offset += 2
+   330→   330→                        break
+   331→   331→                    offset += 1
+   332→   332→                    name_parts.append(data[offset:offset + label_len].decode("utf-8", errors="replace"))
+   333→   333→                    offset += label_len
+   334→   334→                if offset + 10 > len(data):
+   335→   335→                    break
+   336→   336→                rtype, rclass, ttl, rdlength = struct.unpack(">HHIH", data[offset:offset + 10])
+   337→   337→                offset += 10
+   338→   338→                full_name = ".".join(name_parts) if name_parts else "unknown"
+   339→   339→                addr = ""
+   340→   340→                if rtype == 1 and rdlength == 4:  # A record
+   341→   341→                    if offset + 4 <= len(data):
+   342→   342→                        addr = socket.inet_ntoa(data[offset:offset + 4])
+   343→   343→                elif rtype == 28 and rdlength == 16:  # AAAA
+   344→   344→                    if offset + 16 <= len(data):
+   345→   345→                        import socket as _s
+   346→   346→                        addr = _s.inet_ntop(_s.AF_INET6, data[offset:offset + 16])
+   347→   347→                offset += rdlength
+   348→   348→                results.append({"name": full_name, "type": str(rtype), "address": addr})
+   349→   349→        except (struct.error, IndexError, UnicodeDecodeError):
+   350→   350→            pass
+   351→   351→        return results
+   352→   352→
+   353→   353→
+   354→   354→# ══════════════════════════════════════════════════════════════════════
+   355→   355→# TrustMapper
+   356→   356→# ══════════════════════════════════════════════════════════════════════
+   357→   357→
+   358→   358→class TrustMapper:
+   359→   359→    """Map implicit and explicit trust relationships between hosts."""
+   360→   360→
+   361→   361→    def map_ssh_trust(self, hosts: List[str]) -> List[Dict[str, Any]]:
+   362→   362→        """Check for SSH key-based trust chains between hosts.
+   363→   363→
+   364→   364→        Attempts to connect to each host on port 22 and checks if
+   365→   365→        password authentication is disabled (indicating key-only trust).
+   366→   366→
+   367→   367→        Returns list of {"source", "target", "trust_type", "evidence"}.
+   368→   368→        """
+   369→   369→        trust_chains: List[Dict[str, Any]] = []
+   370→   370→
+   371→   371→        def _check_host(ip: str) -> Optional[Dict[str, Any]]:
+   372→   372→            try:
+   373→   373→                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   374→   374→                sock.settimeout(3)
+   375→   375→                result = sock.connect_ex((ip, 22))
+   376→   376→                if result != 0:
+   377→   377→                    sock.close()
+   378→   378→                    return None
+   379→   379→                banner = b""
+   380→   380→                sock.settimeout(3)
+   381→   381→                try:
+   382→   382→                    banner = sock.recv(256)
+   383→   383→                except socket.timeout:
+   384→   384→                    pass
+   385→   385→                sock.close()
+   386→   386→                banner_str = banner.decode("utf-8", errors="replace").strip()
+   387→   387→                key_auth_hint = "" if "SSH-2" in banner_str else ""
+   388→   388→                return {
+   389→   389→                    "source": ip,
+   390→   390→                    "target": ip,
+   391→   391→                    "trust_type": "ssh_service",
+   392→   392→                    "evidence": banner_str,
+   393→   393→                    "auth_methods": [] if "SSH-2" in banner_str else [],
+   394→   394→                }
+   395→   395→            except (socket.error, OSError):
+   396→   396→                return None
+   397→   397→
+   398→   398→        with ThreadPoolExecutor(max_workers=20) as pool:
+   399→   399→            futures = {pool.submit(_check_host, ip): ip for ip in hosts}
+   400→   400→            for future in as_completed(futures):
+   401→   401→                result = future.result()
+   402→   402→                if result:
+   403→   403→                    trust_chains.append(result)
+   404→   404→
+   405→   405→        # Try to detect known_hosts / authorized_keys patterns
+   406→   406→        known_hosts_path = os.path.expanduser("~/.ssh/known_hosts")
+   407→   407→        if os.path.exists(known_hosts_path):
+   408→   408→            try:
+   409→   409→                with open(known_hosts_path, "r") as fh:
+   410→   410→                    for line in fh:
+   411→   411→                        line = line.strip()
+   412→   412→                        if not line or line.startswith("#"):
+   413→   413→                            continue
+   414→   414→                        parts = line.split()
+   415→   415→                        if len(parts) >= 2:
+   416→   416→                            host_pattern = parts[0]
+   417→   417→                            for ip in hosts:
+   418→   418→                                if ip in host_pattern:
+   419→   419→                                    trust_chains.append({
+   420→   420→                                        "source": "localhost",
+   421→   421→                                        "target": ip,
+   422→   422→                                        "trust_type": "known_hosts_entry",
+   423→   423→                                        "evidence": f"Found in known_hosts: {host_pattern}",
+   424→   424→                                    })
+   425→   425→            except OSError:
+   426→   426→                pass
+   427→   427→
+   428→   428→        return trust_chains
+   429→   429→
+   430→   430→    def map_docker_networks(self) -> List[Dict[str, Any]]:
+   431→   431→        """Discover Docker network topology.
+   432→   432→
+   433→   433→        Returns list of {"network", "driver", "subnet", "containers": [...]}
+   434→   434→        or an empty list if Docker is unavailable.
+   435→   435→        """
+   436→   436→        networks: List[Dict[str, Any]] = []
+   437→   437→        try:
+   438→   438→            result = subprocess.run(
+   439→   439→                ["docker", "network", "ls", "--format", "{{.Name}}|{{.Driver}}"],
+   440→   440→                capture_output=True, text=True, timeout=10,
+   441→   441→            )
+   442→   442→            if result.returncode != 0:
+   443→   443→                return networks
+   444→   444→
+   445→   445→            for line in result.stdout.strip().splitlines():
+   446→   446→                if "|" not in line:
+   447→   447→                    continue
+   448→   448→                name, driver = line.split("|", 1)
+   449→   449→                # Inspect network for subnet and containers
+   450→   450→                inspect = subprocess.run(
+   451→   451→                    ["docker", "network", "inspect", name],
+   452→   452→                    capture_output=True, text=True, timeout=10,
+   453→   453→                )
+   454→   454→                subnet_info = ""
+   455→   455→                containers = []
+   456→   456→                if inspect.returncode == 0:
+   457→   457→                    try:
+   458→   458→                        data = json.loads(inspect.stdout)
+   459→   459→                        if data and isinstance(data, list):
+   460→   460→                            net_data = data[0]
+   461→   461→                            ipam = net_data.get("IPAM", {})
+   462→   462→                            configs = ipam.get("Config", [])
+   463→   463→                            if configs:
+   464→   464→                                subnet_info = configs[0].get("Subnet", "")
+   465→   465→                            for container_id, c_data in net_data.get("Containers", {}).items():
+   466→   466→                                containers.append({
+   467→   467→                                    "id": container_id[:12],
+   468→   468→                                    "name": c_data.get("Name", ""),
+   469→   469→                                    "ip": c_data.get("IPv4Address", ""),
+   470→   470→                                })
+   471→   471→                    except (json.JSONDecodeError, IndexError, KeyError):
+   472→   472→                        pass
+   473→   473→                networks.append({
+   474→   474→                    "network": name,
+   475→   475→                    "driver": driver,
+   476→   476→                    "subnet": subnet_info,
+   477→   477→                    "containers": containers,
+   478→   478→                })
+   479→   479→        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+   480→   480→            pass
+   481→   481→        return networks
+   482→   482→
+   483→   483→    def find_lateral_paths(
+   484→   484→        self,
+   485→   485→        network_graph: Dict[str, List[str]],
+   486→   486→        start_host: str,
+   487→   487→    ) -> List[List[str]]:
+   488→   488→        """BFS from *start_host* to all reachable hosts.
+   489→   489→
+   490→   490→        *network_graph* maps each host to a list of directly reachable
+   491→   491→        neighbours (e.g. via trust or open ports).
+   492→   492→
+   493→   493→        Returns a list of paths (each path is a list of host strings).
+   494→   494→        """
+   495→   495→        visited: Set[str] = {start_host}
+   496→   496→        queue: deque = deque()
+   497→   497→        queue.append([start_host])
+   498→   498→        paths: List[List[str]] = []
+   499→   499→
+   500→   500→        while queue:
+   501→   501→            path = queue.popleft()
+   502→   502→            current = path[-1]
+   503→   503→            neighbours = network_graph.get(current, [])
+   504→   504→            for neighbour in neighbours:
+   505→   505→                if neighbour not in visited:
+   506→   506→                    visited.add(neighbour)
+   507→   507→                    new_path = path + [neighbour]
+   508→   508→                    paths.append(new_path)
+   509→   509→                    queue.append(new_path)
+   510→   510→
+   511→   511→        return paths
+   512→   512→
+   513→   513→
+   514→   514→# ══════════════════════════════════════════════════════════════════════
+   515→   515→# SegmentationChecker
+   516→   516→# ══════════════════════════════════════════════════════════════════════
+   517→   517→
+   518→   518→class SegmentationChecker:
+   519→   519→    """Verify that network segmentation zones are properly isolated."""
+   520→   520→
+   521→   521→    def check_segmentation(
+   522→   522→        self, zones: Dict[str, List[str]]
+   523→   523→    ) -> List[Dict[str, Any]]:
+   524→   524→        """Check whether hosts in different zones can reach each other.
+   525→   525→
+   526→   526→        Parameters
+   527→   527→        ----------
+   528→   528→        zones : dict
+   529→   529→            Maps zone name to list of host IPs.
+   530→   530→            Example: {"dmz": ["10.0.1.10"], "internal": ["10.0.2.5"]}
+   531→   531→
+   532→   532→        Returns list of violation dicts:
+   533→   533→            {"type", "source_zone", "source_host", "dest_zone", "dest_host", "port", "evidence"}
+   534→   534→        """
+   535→   535→        violations: List[Dict[str, Any]] = []
+   536→   536→        zone_names = list(zones.keys())
+   537→   537→
+   538→   538→        # Build a cross-zone connection test matrix
+   539→   539→        cross_pairs: List[Tuple[str, str, str, str]] = []
+   540→   540→        for i, z1 in enumerate(zone_names):
+   541→   541→            for z2 in zone_names[i + 1:]:
+   542→   542→                for h1 in zones[z1]:
+   543→   543→                    for h2 in zones[z2]:
+   544→   544→                        cross_pairs.append((z1, h1, z2, h2))
+   545→   545→
+   546→   546→        def _test_cross(z1: str, h1: str, z2: str, h2: str) -> Optional[Dict[str, Any]]:
+   547→   547→            # Test common cross-zone ports
+   548→   548→            test_ports = [22, 80, 443, 3306, 5432, 6379, 8080, 3389, 445]
+   549→   549→            for port in test_ports:
+   550→   550→                try:
+   551→   551→                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   552→   552→                    sock.settimeout(2)
+   553→   553→                    result = sock.connect_ex((h2, port))
+   554→   554→                    sock.close()
+   555→   555→                    if result == 0:
+   556→   556→                        return {
+   557→   557→                            "type": "cross_zone_connection",
+   558→   558→                            "source_zone": z1,
+   559→   559→                            "source_host": h1,
+   560→   560→                            "dest_zone": z2,
+   561→   561→                            "dest_host": h2,
+   562→   562→                            "port": port,
+   563→   563→                            "evidence": f"TCP connection from {h1} to {h2}:{port} succeeded",
+   564→   564→                        }
+   565→   565→                except (socket.error, OSError):
+   566→   566→                    continue
+   567→   567→            return None
+   568→   568→
+   569→   569→        with ThreadPoolExecutor(max_workers=30) as pool:
+   570→   570→            futures = []
+   571→   571→            for z1, h1, z2, h2 in cross_pairs:
+   572→   572→                futures.append(pool.submit(_test_cross, z1, h1, z2, h2))
+   573→   573→            for future in as_completed(futures):
+   574→   574→                violation = future.result()
+   575→   575→                if violation:
+   576→   576→                    violations.append(violation)
+   577→   577→
+   578→   578→        return violations
+   579→   579→
+   580→   580→
+   581→   581→# ══════════════════════════════════════════════════════════════════════
+   582→   582→# run_local – orchestration function
+   583→   583→# ══════════════════════════════════════════════════════════════════════
+   584→   584→
+   585→   585→def run_local(
+   586→   586→    subnet: str = "",
+   587→   587→    ports: str = "22,80,443,3306,5432,6379,8080,8443",
+   588→   588→) -> Dict[str, Any]:
+   589→   589→    """Run a full local network discovery and trust-mapping audit.
+   590→   590→
+   591→   591→    If *subnet* is empty, ARP discovery is used to find neighbours.
+   592→   592→
+   593→   593→    Returns a dict with keys: "hosts", "arp_table", "mdns_services",
+   594→   594→    "port_results", "ssh_trust", "docker_networks", "lateral_paths",
+   595→   595→    "findings".
+   596→   596→    """
+   597→   597→    discovery = NetworkDiscovery()
+   598→   598→    trust_mapper = TrustMapper()
+   599→   599→    findings: List[Dict[str, Any]] = []
+   600→   600→
+   601→   601→    # Step 1: Host discovery
+   602→   602→    hosts: List[str] = []
+   603→   603→    if subnet:
+   604→   604→        hosts = discovery.ping_sweep(subnet)
+   605→   605→        if not hosts:
+   606→   606→            findings.append({
+   607→   607→                "title": "Ping sweep returned no hosts",
+   608→   608→                "severity": "info",
+   609→   609→                "category": "network_security",
+   610→   610→                "description": f"ICMP ping sweep of {subnet} found no responsive hosts.",
+   611→   611→            })
+   612→   612→
+   613→   613→    # Step 2: ARP table
+   614→   614→    arp_table = discovery.arp_discovery()
+   615→   615→    arp_ips = {e["ip"] for e in arp_table}
+   616→   616→    if not hosts:
+   617→   617→        hosts = list(arp_ips)
+   618→   618→    else:
+   619→   619→        # Merge ARP hosts not in ping results
+   620→   620→        for ip in arp_ips:
+   621→   621→            if ip not in hosts:
+   622→   622→                hosts.append(ip)
+   623→   623→
+   624→   624→    findings.append({
+   625→   625→        "title": f"Discovered {len(hosts)} hosts via ARP/ping",
+   626→   626→        "severity": "info",
+   627→   627→        "category": "asset_management",
+   628→   628→        "description": f"Host discovery found {len(hosts)} live hosts. ARP table had {len(arp_table)} entries.",
+   629→   629→    })
+   630→   630→
+   631→   631→    # Step 3: mDNS
+   632→   632→    mdns_services = discovery.mdns_discovery()
+   633→   633→    if mdns_services:
+   634→   634→        findings.append({
+   635→   635→            "title": f"mDNS services discovered: {len(mdns_services)}",
+   636→   636→            "severity": "low",
+   637→   637→            "category": "network_security",
+   638→   638→            "description": f"mDNS discovery revealed {len(mdns_services)} services. Consider disabling mDNS in production.",
+   639→   639→        })
+   640→   640→
+   641→   641→    # Step 4: Port scan
+   642→   642→    port_results = discovery.port_scan_hosts(hosts, ports) if hosts else {}
+   643→   643→    open_ports_count = sum(len(v) for v in port_results.values())
+   644→   644→    findings.append({
+   645→   645→        "title": f"Found {open_ports_count} open ports across {len(port_results)} hosts",
+   646→   646→        "severity": "info",
+   647→   647→        "category": "network_security",
+   648→   648→        "description": f"Port scan of {len(hosts)} hosts revealed {open_ports_count} open services.",
+   649→   649→    })
+   650→   650→
+   651→   651→    # Flag dangerous open ports
+   652→   652→    dangerous_ports = {23: "Telnet", 21: "FTP", 445: "SMB", 3389: "RDP", 5900: "VNC"}
+   653→   653→    for host, port_map in port_results.items():
+   654→   654→        for port, info in port_map.items():
+   655→   655→            if port in dangerous_ports:
+   656→   656→                findings.append({
+   657→   657→                    "title": f"Insecure service {dangerous_ports[port]} on {host}:{port}",
+   658→   658→                    "severity": "high",
+   659→   659→                    "category": "network_security",
+   660→   660→                    "description": f"{dangerous_ports[port]} is open on {host}:{port}. This protocol transmits credentials in cleartext.",
+   661→   661→                    "remediation": f"Disable {dangerous_ports[port]} or tunnel through SSH/VPN.",
+   662→   662→                })
+   663→   663→            if port == 6379 and "redis" in info.get("service", ""):
+   664→   664→                findings.append({
+   665→   665→                    "title": f"Redis exposed on {host}:{port}",
+   666→   666→                    "severity": "critical",
+   667→   667→                    "category": "access_control",
+   668→   668→                    "description": "Redis is accessible without apparent authentication. This can lead to remote code execution.",
+   669→   669→                    "remediation": "Bind Redis to localhost, enable authentication, and use firewall rules.",
+   670→   670→                })
+   671→   671→
+   672→   672→    # Step 5: SSH trust mapping
+   673→   673→    ssh_trust = trust_mapper.map_ssh_trust(hosts) if hosts else []
+   674→   674→
+   675→   675→    # Step 6: Docker networks
+   676→   676→    docker_networks = trust_mapper.map_docker_networks()
+   677→   677→    if docker_networks:
+   678→   678→        findings.append({
+   679→   679→            "title": f"Docker networks discovered: {len(docker_networks)}",
+   680→   680→            "severity": "info",
+   681→   681→            "category": "container_security",
+   682→   682→            "description": f"Found {len(docker_networks)} Docker networks. Review segmentation.",
+   683→   683→        })
+   684→   684→
+   685→   685→    # Step 7: Lateral path analysis
+   686→   686→    network_graph: Dict[str, List[str]] = {}
+   687→   687→    for host, port_map in port_results.items():
+   688→   688→        neighbours = []
+   689→   689→        for port, info in port_map.items():
+   690→   690→            svc = info.get("service", "")
+   691→   691→            if svc in ("ssh", "rdp", "vnc", "winrm"):
+   692→   692→                neighbours.append(f"{host}:{port}")
+   693→   693→        network_graph[host] = neighbours
+   694→   694→
+   695→   695→    lateral_paths: List[List[str]] = []
+   696→   696→    if hosts:
+   697→   697→        # Use first host as start for lateral path analysis
+   698→   698→        start = hosts[0]
+   699→   699→        lateral_paths = trust_mapper.find_lateral_paths(network_graph, start)
+   700→   700→        if len(lateral_paths) > 1:
+   701→   701→            findings.append({
+   702→   702→                "title": f"Lateral movement paths found from {start}",
+   703→   703→                "severity": "high",
+   704→   704→                "category": "network_security",
+   705→   705→                "description": f"BFS from {start} reached {len(lateral_paths) - 1} additional hosts via trust relationships. Consider implementing zero-trust segmentation.",
+   706→   706→                "remediation": "Implement micro-segmentation, disable unnecessary services, enforce MFA on all management interfaces.",
+   707→   707→            })
+   708→   708→
+   709→   709→    return {
+   710→   710→        "hosts": hosts,
+   711→   711→        "arp_table": arp_table,
+   712→   712→        "mdns_services": mdns_services,
+   713→   713→        "port_results": port_results,
+   714→   714→        "ssh_trust": ssh_trust,
+   715→   715→        "docker_networks": docker_networks,
+   716→   716→        "lateral_paths": lateral_paths,
+   717→   717→        "findings": findings,
+   718→   718→    }
+   719→   719→
+   720→   720→
+   721→   721→# Module-level convenience exports
+   722→   722→discovery = NetworkDiscovery()
+   723→   723→trust_mapper = TrustMapper()
+   724→   724→segmentation = SegmentationChecker()

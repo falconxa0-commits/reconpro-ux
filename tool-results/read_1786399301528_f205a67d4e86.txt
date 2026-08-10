@@ -1,0 +1,2002 @@
+     1→"""
+     2→ReconPro v7.5 — Multi-Vector Attack Path Chaining Engine
+     3→
+     4→Links individual, seemingly minor findings into dangerous compound attack
+     5→paths.  Operates in three modes:
+     6→
+     7→1. **Rule-based** — pattern matching against 50+ predefined ChainPattern
+     8→   rules that model real-world compound attack scenarios.
+     9→2. **Graph-based** — traverses the knowledge graph to discover paths
+    10→   between vulnerabilities that share assets, ports, or technologies.
+    11→3. **LLM-assisted** (optional) — sends findings to an LLM for
+    12→   creative/nuanced chain discovery beyond predefined rules.
+    13→
+    14→Zero hard dependencies.  LLM integration uses try/except imports so the
+    15→engine works fully offline.
+    16→"""
+    17→
+    18→from __future__ import annotations
+    19→
+    20→import json
+    21→import re
+    22→import textwrap
+    23→from collections import defaultdict
+    24→from dataclasses import dataclass, field
+    25→from typing import Any, Dict, List, Optional, Set, Tuple
+    26→
+    27→from .knowledge_graph import SEVERITY_ORDER
+    28→
+    29→# Try to import the memory store for type hints / optional graph use
+    30→try:
+    31→    from .memory import UnifiedMemoryStore
+    32→except ImportError:
+    33→    UnifiedMemoryStore = None  # type: ignore[assignment,misc]
+    34→
+    35→# Optional LLM clients — never required
+    36→try:
+    37→    import openai as _openai_mod
+    38→
+    39→    HAS_OPENAI = True
+    40→except ImportError:
+    41→    HAS_OPENAI = False
+    42→
+    43→try:
+    44→    import anthropic as _anthropic_mod
+    45→
+    46→    HAS_ANTHROPIC = True
+    47→except ImportError:
+    48→    HAS_ANTHROPIC = False
+    49→
+    50→# ---------------------------------------------------------------------------
+    51→# Constants
+    52→# ---------------------------------------------------------------------------
+    53→
+    54→_SEVERITY_SCORES: Dict[str, float] = {
+    55→    "info": 1.0,
+    56→    "low": 3.0,
+    57→    "medium": 6.0,
+    58→    "high": 8.0,
+    59→    "critical": 10.0,
+    60→}
+    61→
+    62→# MITRE ATT&CK Enterprise Tactics (v14.1)
+    63→MITRE_TACTICS: Dict[str, Dict[str, Any]] = {
+    64→    "TA0043": {"name": "Reconnaissance", "phase": 1},
+    65→    "TA0042": {"name": "Resource Development", "phase": 2},
+    66→    "TA0001": {"name": "Initial Access", "phase": 3},
+    67→    "TA0002": {"name": "Execution", "phase": 4},
+    68→    "TA0003": {"name": "Persistence", "phase": 5},
+    69→    "TA0004": {"name": "Privilege Escalation", "phase": 6},
+    70→    "TA0005": {"name": "Defense Evasion", "phase": 7},
+    71→    "TA0006": {"name": "Credential Access", "phase": 8},
+    72→    "TA0007": {"name": "Discovery", "phase": 9},
+    73→    "TA0008": {"name": "Lateral Movement", "phase": 10},
+    74→    "TA0009": {"name": "Collection", "phase": 11},
+    75→    "TA0011": {"name": "Command and Control", "phase": 12},
+    76→    "TA0010": {"name": "Exfiltration", "phase": 13},
+    77→    "TA0040": {"name": "Impact", "phase": 14},
+    78→}
+    79→
+    80→# Kill Chain phases
+    81→KILL_CHAIN_PHASES: List[str] = [
+    82→    "Reconnaissance", "Weaponization", "Delivery", "Exploitation",
+    83→    "Installation", "Command & Control", "Actions on Objectives"
+    84→]
+    85→
+    86→# Finding category → MITRE technique mapping
+    87→MITRE_TECHNIQUE_MAP: Dict[str, Dict[str, Any]] = {
+    88→    "open_ports": {"technique": "T1046", "name": "Network Service Discovery", "tactic": "TA0007"},
+    89→    "subdomain": {"technique": "T1595", "name": "Active Scanning", "tactic": "TA0043"},
+    90→    "dns_zone": {"technique": "T1590", "name": "Gather Victim Org Info", "tactic": "TA0043"},
+    91→    "wayback": {"technique": "T1593", "name": "Search Open Websites/Domains", "tactic": "TA0043"},
+    92→    "cert_transparency": {"technique": "T1590.002", "name": "DNS", "tactic": "TA0043"},
+    93→    "tech_fingerprint": {"technique": "T1592", "name": "Gather Victim Host Info", "tactic": "TA0043"},
+    94→    "waf_detected": {"technique": "T1595.002", "name": "Software Vulnerability Scanning", "tactic": "TA0043"},
+    95→    "sqli": {"technique": "T1190", "name": "Exploit Public-Facing Application", "tactic": "TA0001"},
+    96→    "xss": {"technique": "T1059.007", "name": "JavaScript Execution", "tactic": "TA0002"},
+    97→    "ssrf": {"technique": "T1190", "name": "Exploit Public-Facing Application", "tactic": "TA0001"},
+    98→    "xxe": {"technique": "T1059.009", "name": "Command and Scripting Interpreter", "tactic": "TA0002"},
+    99→    "rce": {"technique": "T1059", "name": "Command and Scripting Interpreter", "tactic": "TA0002"},
+   100→    "auth_bypass": {"technique": "T1078", "name": "Valid Accounts", "tactic": "TA0001"},
+   101→    "broken_auth": {"technique": "T1110", "name": "Brute Force", "tactic": "TA0006"},
+   102→    "session_management": {"technique": "T1539", "name": "Steal Web Session Cookie", "tactic": "TA0006"},
+   103→    "jwt_vulnerability": {"technique": "T1550.001", "name": "Use Alternate Authentication Material", "tactic": "TA0005"},
+   104→    "idor": {"technique": "T1190", "name": "Exploit Public-Facing Application", "tactic": "TA0001"},
+   105→    "path_traversal": {"technique": "T1083", "name": "File and Directory Discovery", "tactic": "TA0007"},
+   106→    "open_redirect": {"technique": "T1566.002", "name": "Phishing: Spearphishing Link", "tactic": "TA0001"},
+   107→    "info_disclosure": {"technique": "T1592.004", "name": "Client Config", "tactic": "TA0043"},
+   108→    "missing_headers": {"technique": "T1190", "name": "Exploit Public-Facing Application", "tactic": "TA0001"},
+   109→    "mixed_content": {"technique": "T1189", "name": "Drive-by Compromise", "tactic": "TA0001"},
+   110→    "csp_analysis": {"technique": "T1190", "name": "Exploit Public-Facing Application", "tactic": "TA0001"},
+   111→    "tls_weak": {"technique": "T1573", "name": "Encrypted Channel", "tactic": "TA0011"},
+   112→    "sensitive_cookie": {"technique": "T1539", "name": "Steal Web Session Cookie", "tactic": "TA0006"},
+   113→    "directory_listing": {"technique": "T1083", "name": "File and Directory Discovery", "tactic": "TA0007"},
+   114→    "backup_files": {"technique": "T1083", "name": "File and Directory Discovery", "tactic": "TA0007"},
+   115→    "cors_misconfig": {"technique": "T1189", "name": "Drive-by Compromise", "tactic": "TA0001"},
+   116→    "graphql_exposure": {"technique": "T1190", "name": "Exploit Public-Facing Application", "tactic": "TA0001"},
+   117→    "api_exposure": {"technique": "T1190", "name": "Exploit Public-Facing Application", "tactic": "TA0001"},
+   118→    "admin_panel": {"technique": "T1213", "name": "Data from Information Repositories", "tactic": "TA0009"},
+   119→    "lfi": {"technique": "T1083", "name": "File and Directory Discovery", "tactic": "TA0007"},
+   120→    "rfi": {"technique": "T1190", "name": "Exploit Public-Facing Application", "tactic": "TA0001"},
+   121→    "cmd_injection": {"technique": "T1059", "name": "Command and Scripting Interpreter", "tactic": "TA0002"},
+   122→    "email_harvest": {"technique": "T1589", "name": "Gather Victim Identity Info", "tactic": "TA0043"},
+   123→    "suid_binary": {"technique": "T1548.001", "name": "Setuid and Setgid", "tactic": "TA0004"},
+   124→    "kernel_exploit": {"technique": "T1068", "name": "Exploitation for Privilege Escalation", "tactic": "TA0004"},
+   125→    "default_creds": {"technique": "T1078.001", "name": "Default Accounts", "tactic": "TA0001"},
+   126→    "misconfiguration": {"technique": "T1548", "name": "Abuse Elevation Control Mechanism", "tactic": "TA0004"},
+   127→    "threat_intel": {"technique": "T1585", "name": "Gather Victim Info", "tactic": "TA0043"},
+   128→    "abuse_ch": {"technique": "T1589.002", "name": "Social Media Accounts", "tactic": "TA0043"},
+   129→}
+   130→
+   131→_LLIM_PROMPT = """\
+   132→You are a senior penetration tester reviewing security scan findings.
+   133→Given the following findings for target "{target}", identify realistic
+   134→compound attack chains — scenarios where two or more individual findings
+   135→combine to create a more dangerous vulnerability.
+   136→
+   137→For each chain, respond with a JSON object in this exact format:
+   138→{{
+   139→  "chains": [
+   140→    {{
+   141→      "name": "Short chain name",
+   142→      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+   143→      "findings_indices": [0, 2],
+   144→      "narrative": "A realistic attack description explaining how the findings chain together",
+   145→      "steps": ["Step 1: ...", "Step 2: ...", "Step 3: ..."],
+   146→      "remediation": "How to break the chain",
+   147→      "confidence": 0.85
+   148→    }}
+   149→  ]
+   150→}}
+   151→
+   152→Findings:
+   153→{findings_json}
+   154→
+   155→Return ONLY the JSON, no explanation."""
+   156→
+   157→
+   158→# ======================================================================
+   159→#  Data classes
+   160→# ======================================================================
+   161→
+   162→
+   163→@dataclass
+   164→class ChainPattern:
+   165→    """A rule that describes how specific finding categories combine
+   166→    into a compound attack path.
+   167→
+   168→    Parameters
+   169→    ----------
+   170→    name:
+   171→        Human-readable name for the compound attack.
+   172→    description:
+   173→        One-line description of the attack scenario.
+   174→    severity:
+   175→        Resulting severity of the compound attack (uppercase).
+   176→    required_categories:
+   177→        The finding categories that must all be present to trigger this chain.
+   178→        A finding matches if its ``category`` or ``type`` field contains
+   179→        the pattern as a substring (case-insensitive).
+   180→    required_tags:
+   181→        Optional additional tags that at least one finding must carry.
+   182→        Tags are checked against the ``tags`` list field of findings.
+   183→    severity_multiplier:
+   184→        Score multiplier applied on top of the base severity.
+   185→    narrative_template:
+   186→        A template string describing the compound attack.  May contain
+   187→        ``{findings}`` placeholder (replaced with finding titles).
+   188→    steps:
+   189→        Ordered attack steps describing the exploit sequence.
+   190→    remediation:
+   191→        How to break this specific chain.
+   192→    """
+   193→
+   194→    name: str
+   195→    description: str
+   196→    severity: str
+   197→    required_categories: List[str]
+   198→    required_tags: List[str] = field(default_factory=list)
+   199→    severity_multiplier: float = 1.5
+   200→    narrative_template: str = ""
+   201→    steps: List[str] = field(default_factory=list)
+   202→    remediation: str = ""
+   203→
+   204→
+   205→@dataclass
+   206→class ChainReport:
+   207→    """A realized compound attack path, produced when a ChainPattern
+   208→    matches against actual findings.
+   209→
+   210→    Parameters
+   211→    ----------
+   212→    name:
+   213→        Chain name (from pattern or LLM).
+   214→    severity:
+   215→        Computed severity (one of info/low/medium/high/critical).
+   216→    score:
+   217→        Numeric risk score for ranking.
+   218→    findings:
+   219→        The individual finding dicts that form this chain.
+   220→    narrative:
+   221→        Human-readable attack story.
+   222→    steps:
+   223→        Ordered attack steps.
+   224→    remediation:
+   225→        How to break the chain.
+   226→    confidence:
+   227→        0.0 – 1.0 confidence that this chain is real and exploitable.
+   228→    """
+   229→
+   230→    name: str
+   231→    severity: str
+   232→    score: float
+   233→    findings: List[Dict[str, Any]]
+   234→    narrative: str
+   235→    steps: List[str]
+   236→    remediation: str
+   237→    confidence: float = 0.8
+   238→
+   239→    def to_dict(self) -> Dict[str, Any]:
+   240→        """Serialise to a plain dict for JSON output / display."""
+   241→        return {
+   242→            "name": self.name,
+   243→            "severity": self.severity,
+   244→            "score": round(self.score, 2),
+   245→            "finding_count": len(self.findings),
+   246→            "finding_titles": [f.get("title", f.get("name", "")) for f in self.findings],
+   247→            "narrative": self.narrative,
+   248→            "steps": self.steps,
+   249→            "remediation": self.remediation,
+   250→            "confidence": round(self.confidence, 2),
+   251→            "is_chain": True,
+   252→        }
+   253→
+   254→
+   255→# ======================================================================
+   256→#  CHAIN_RULES — 55 predefined compound-attack patterns
+   257→# ======================================================================
+   258→
+   259→CHAIN_RULES: List[ChainPattern] = [
+   260→    # ── 1. Phishing & Social Engineering ─────────────────────────────
+   261→    ChainPattern(
+   262→        name="Credential Phishing via Open Redirect",
+   263→        description="Information leak combined with open redirect enables credential phishing",
+   264→        severity="HIGH",
+   265→        required_categories=["info_leak", "open_redirect"],
+   266→        narrative_template=(
+   267→            "An information leak on {findings[0]} reveals internal structure and user details, "
+   268→            "while {findings[1]} allows an attacker to craft a convincing phishing URL that "
+   269→            "redirects victims through the trusted domain. Combined, these enable highly "
+   270→            "effective credential harvesting campaigns that bypass email filters."
+   271→        ),
+   272→        steps=[
+   273→            "Recon: Extract internal structure and user info from information leak",
+   274→            "Craft phishing URL using the open redirect to bounce through the trusted domain",
+   275→            "Send targeted phishing emails that appear to originate from the legitimate service",
+   276→            "Capture credentials when victims follow the redirect to the attacker's clone",
+   277→        ],
+   278→        remediation="Fix the open redirect with strict URL allow-listing and patch the information leak endpoint.",
+   279→    ),
+   280→    ChainPattern(
+   281→        name="Spear Phishing via Email Header Injection",
+   282→        description="Email header injection combined with information disclosure enables targeted phishing",
+   283→        severity="HIGH",
+   284→        required_categories=["email_header_injection", "information_disclosure"],
+   285→        required_tags=["email", "smtp"],
+   286→        narrative_template=(
+   287→            "{findings[0]} allows crafting emails that spoof internal senders. "
+   288→            "{findings[1]} provides employee names and roles for highly targeted spear phishing."
+   289→        ),
+   290→        steps=[
+   291→            "Gather employee names and internal structure from information disclosure",
+   292→            "Exploit email header injection to spoof internal senders",
+   293→            "Send spear-phishing emails impersonating executives or IT staff",
+   294→        ],
+   295→        remediation="Sanitize all email headers and restrict information disclosure endpoints.",
+   296→    ),
+   297→
+   298→    # ── 2. XSS Chains ────────────────────────────────────────────────
+   299→    ChainPattern(
+   300→        name="Stored XSS via CSP Bypass",
+   301→        description="Missing CSP combined with reflected XSS enables persistent stored attacks",
+   302→        severity="CRITICAL",
+   303→        required_categories=["missing_csp", "xss_reflected"],
+   304→        narrative_template=(
+   305→            "The application lacks a Content Security Policy ({findings[0]}), meaning there are no "
+   306→            "restrictions on script execution. Combined with the reflected XSS in {findings[1]}, "
+   307→            "an attacker can inject persistent JavaScript payloads that execute in every visitor's "
+   308→            "browser session, enabling account takeover, data theft, and worm propagation."
+   309→        ),
+   310→        steps=[
+   311→            "Identify the reflected XSS injection point",
+   312→            "Craft a payload that stores itself (e.g., via localStorage or a writable endpoint)",
+   313→            "Without CSP, the browser executes the injected script without restriction",
+   314→            "Stolen session tokens or credentials are exfiltrated to the attacker",
+   315→        ],
+   316→        remediation="Implement a strict Content Security Policy and sanitize all reflected input.",
+   317→    ),
+   318→    ChainPattern(
+   319→        name="DOM XSS via Angular/React Template Injection",
+   320→        description="Template injection combined with DOM-based sinks leads to XSS",
+   321→        severity="CRITICAL",
+   322→        required_categories=["template_injection", "dom_xss"],
+   323→        narrative_template=(
+   324→            "{findings[0]} allows an attacker to inject template expressions, while {findings[1]} "
+   325→            "confirms the application renders user input in DOM sinks without sanitization. "
+   326→            "This combination enables arbitrary JavaScript execution within the Angular/React context."
+   327→        ),
+   328→        steps=[
+   329→            "Identify the template injection point",
+   330→            "Craft a template expression that triggers client-side code execution",
+   331→            "Leverage DOM sinks to achieve persistent XSS",
+   332→        ],
+   333→        remediation="Sanitize template inputs and avoid rendering user content in innerHTML or similar sinks.",
+   334→    ),
+   335→    ChainPattern(
+   336→        name="XSS to Account Takeover via Session Fixation",
+   337→        description="XSS combined with session fixation allows full account compromise",
+   338→        severity="CRITICAL",
+   339→        required_categories=["xss_reflected", "session_fixation"],
+   340→        narrative_template=(
+   341→            "{findings[0]} provides the execution context, while {findings[1]} means the "
+   342→            "application does not rotate session IDs after login. An attacker injects a script "
+   343→            "that fixes a known session ID, then waits for the victim to log in, gaining full access."
+   344→        ),
+   345→        steps=[
+   346→            "Set a known session cookie on the victim via the XSS payload",
+   347→            "Victim logs in; session ID is not rotated (session fixation)",
+   348→            "Attacker uses the now-authenticated session ID to take over the account",
+   349→        ],
+   350→        remediation="Rotate session IDs upon authentication and patch the XSS vulnerability.",
+   351→    ),
+   352→
+   353→    # ── 3. CORS & Data Theft ─────────────────────────────────────────
+   354→    ChainPattern(
+   355→        name="Cross-Origin Data Theft",
+   356→        description="CORS wildcard with authenticated API endpoints exposes user data",
+   357→        severity="HIGH",
+   358→        required_categories=["cors_wildcard", "authenticated_api"],
+   359→        narrative_template=(
+   360→            "The API returns Access-Control-Allow-Origin: * ({findings[0]}) and serves "
+   361→            "authenticated data ({findings[1]}). Any malicious website can make cross-origin "
+   362→            "requests with the victim's cookies and read the response, silently exfiltrating "
+   363→            "private data including profile information, documents, and API tokens."
+   364→        ),
+   365→        steps=[
+   366→            "Victim visits a malicious or compromised website",
+   367→            "The site makes a cross-origin XHR/fetch to the API with victim's credentials",
+   368→            "CORS wildcard allows the response to be read by the attacking origin",
+   369→            "Private data is exfiltrated to the attacker's server",
+   370→        ],
+   371→        remediation="Restrict CORS to specific trusted origins and require explicit credentials mode.",
+   372→    ),
+   373→    ChainPattern(
+   374→        name="CORS Misconfiguration + Sensitive API = Data Breach",
+   375→        description="CORS reflecting Origin with sensitive endpoints enables targeted data theft",
+   376→        severity="HIGH",
+   377→        required_categories=["cors_origin_reflect", "sensitive_api"],
+   378→        narrative_template=(
+   379→            "{findings[0]} echoes back any Origin header, and {findings[1]} exposes "
+   380→            "sensitive data. An attacker hosts a page on a subdomain or related domain and "
+   381→            "the reflected CORS policy grants access, enabling cross-origin data theft."
+   382→        ),
+   383→        steps=[
+   384→            "Attacker sets up a page on a domain that will pass Origin checks",
+   385→            "Victim visits the page, which makes requests to the sensitive API",
+   386→            "Reflected CORS grants access to the response",
+   387→            "Sensitive data is exfiltrated",
+   388→        ],
+   389→        remediation="Implement an Origin allow-list and do not reflect arbitrary Origin headers.",
+   390→    ),
+   391→
+   392→    # ── 4. Cloud & Infrastructure ─────────────────────────────────────
+   393→    ChainPattern(
+   394→        name="Cloud Instance Takeover via SSRF + IAM",
+   395→        description="SSRF to cloud metadata combined with IAM misconfiguration leads to full cloud takeover",
+   396→        severity="CRITICAL",
+   397→        required_categories=["cloud_metadata_ssrf", "iam_misconfig"],
+   398→        required_tags=["aws", "gcp", "azure", "cloud"],
+   399→        severity_multiplier=2.0,
+   400→        narrative_template=(
+   401→            "{findings[0]} allows querying the cloud metadata service (169.254.169.254) to "
+   402→            "retrieve temporary IAM credentials. {findings[1]} means these credentials are "
+   403→            "over-privileged, granting access to additional services. An attacker can escalate "
+   404→            "from a single SSRF to full cloud environment compromise."
+   405→        ),
+   406→        steps=[
+   407→            "Trigger the SSRF to request the cloud metadata endpoint",
+   408→            "Extract temporary IAM credentials from the metadata response",
+   409→            "Use over-privileged credentials to enumerate and access other cloud resources",
+   410→            "Escalate to other services, potentially pivoting to the entire cloud account",
+   411→        ],
+   412→        remediation="Block requests to internal/metadata IPs and apply least-privilege IAM policies.",
+   413→    ),
+   414→    ChainPattern(
+   415→        name="S3 Bucket Data Exfiltration",
+   416→        description="Public S3 bucket with wildcard IAM policy leads to mass data exfiltration",
+   417→        severity="CRITICAL",
+   418→        required_categories=["s3_public", "iam_wildcard"],
+   419→        required_tags=["aws", "s3", "cloud"],
+   420→        narrative_template=(
+   421→            "{findings[0]} exposes an S3 bucket to the internet, and {findings[1]} means "
+   422→            "the associated IAM role has broad permissions. An attacker can list, read, and "
+   423→            "potentially write to not just this bucket but other resources in the account."
+   424→        ),
+   425→        steps=[
+   426→            "Identify the publicly accessible S3 bucket",
+   427→            "Enumerate bucket contents using the wildcard IAM permissions",
+   428→            "Download sensitive data files (backups, credentials, PII)",
+   429→            "Use the wildcard IAM role to pivot to other AWS services",
+   430→        ],
+   431→        remediation="Restrict S3 bucket access policies and apply least-privilege IAM.",
+   432→    ),
+   433→    ChainPattern(
+   434→        name="Cloud Metadata SSRF to Internal Network Pivot",
+   435→        description="SSRF via cloud metadata enables scanning and pivoting through the internal network",
+   436→        severity="HIGH",
+   437→        required_categories=["cloud_metadata_ssrf", "internal_network_exposure"],
+   438→        narrative_template=(
+   439→            "{findings[0]} provides access to the cloud metadata service, while "
+   440→            "{findings[1]} shows internal services are reachable. The attacker uses "
+   441→            "the SSRF as a proxy to scan and attack internal network segments."
+   442→        ),
+   443→        steps=[
+   444→            "Use SSRF to query cloud metadata for network configuration",
+   445→            "Identify internal IP ranges and services from metadata",
+   446→            "Use the SSRF as a pivoting point to scan internal services",
+   447→            "Attack internal databases, admin panels, or other services",
+   448→        ],
+   449→        remediation="Block SSRF to internal IPs and segment internal networks.",
+   450→    ),
+   451→    ChainPattern(
+   452→        name="Serverless Function Injection to Cloud Compromise",
+   453→        description="Serverless injection combined with over-privileged execution role",
+   454→        severity="CRITICAL",
+   455→        required_categories=["serverless_injection", "iam_misconfig"],
+   456→        required_tags=["lambda", "serverless", "cloud"]
+   457→    ),
+   458→
+   459→    # ── 5. Authentication & Token Attacks ─────────────────────────────
+   460→    ChainPattern(
+   461→        name="JWT Token Forgery",
+   462→        description="JWT with no signature verification combined with weak signing key",
+   463→        severity="CRITICAL",
+   464→        required_categories=["jwt_no_verify", "weak_signing_key"],
+   465→        narrative_template=(
+   466→            "The application does not verify JWT signatures ({findings[0]}) and uses a "
+   467→            "weak or leaked signing key ({findings[1]}). An attacker can forge arbitrary "
+   468→            "JWTs, including admin tokens, granting full unauthorized access to any account."
+   469→        ),
+   470→        steps=[
+   471→            "Obtain or crack the weak JWT signing key",
+   472→            "Craft a JWT with elevated privileges (e.g., admin role)",
+   473→            "The server accepts the forged token without signature verification",
+   474→            "Full account takeover with arbitrary privilege escalation",
+   475→        ],
+   476→        remediation="Enforce JWT signature verification with strong keys and use RS256 instead of HS256.",
+   477→    ),
+   478→    ChainPattern(
+   479→        name="Session Hijacking via Insecure Transport",
+   480→        description="Missing HSTS with cleartext HTTP allows session cookie interception",
+   481→        severity="HIGH",
+   482→        required_categories=["missing_hsts", "cleartext_http"],
+   483→        narrative_template=(
+   484→            "{findings[0]} means the browser may send session cookies over HTTP. "
+   485→            "{findings[1]} confirms the site accepts unencrypted connections. An attacker on "
+   486→            "the same network can perform SSL stripping to intercept and hijack user sessions."
+   487→        ),
+   488→        steps=[
+   489→            "Attacker performs a man-in-the-middle attack (e.g., ARP spoofing)",
+   490→            "Downgrade HTTPS connections to HTTP via SSL stripping",
+   491→            "Without HSTS, the browser accepts the downgrade silently",
+   492→            "Intercept session cookies from HTTP traffic and hijack user sessions",
+   493→        ],
+   494→        remediation="Enable HSTS with a long max-age and redirect all HTTP to HTTPS.",
+   495→    ),
+   496→    ChainPattern(
+   497→        name="Password Reset Poisoning",
+   498→        description="Password reset token in URL combined with host header injection",
+   499→        severity="HIGH",
+   500→        required_categories=["password_reset_token_url", "host_header_injection"],
+   501→        narrative_template=(
+   502→            "{findings[0]} means password reset tokens are delivered via URL parameters, "
+   503→            "and {findings[1]} allows manipulating the Host header. An attacker can poison "
+   504→            "the password reset link to point to their server, capturing the reset token."
+   505→        ),
+   506→        steps=[
+   507→            "Initiate a password reset for the victim's account",
+   508→            "Manipulate the Host header so the reset email links to the attacker's server",
+   509→            "Victim clicks the poisoned link, sending the reset token to the attacker",
+   510→            "Attacker uses the token to set a new password and take over the account",
+   511→        ],
+   512→        remediation="Deliver reset tokens via the body (not URL) and validate the Host header.",
+   513→    ),
+   514→    ChainPattern(
+   515→        name="Brute Force via Weak Password Policy",
+   516→        description="Exposed SSH with weak password policy enables credential brute-forcing",
+   517→        severity="CRITICAL",
+   518→        required_categories=["open_port_ssh", "weak_password_policy"],
+   519→        narrative_template=(
+   520→            "SSH is exposed to the internet ({findings[0]}) and the password policy "
+   521→            "is weak ({findings[1]}), allowing short or common passwords. An attacker "
+   522→            "can brute-force credentials and gain shell access to the server."
+   523→        ),
+   524→        steps=[
+   525→            "Identify the open SSH port on the target",
+   526→            "Generate a password list based on the weak policy constraints",
+   527→            "Perform automated brute-force login attempts",
+   528→            "Gain shell access with valid credentials",
+   529→        ],
+   530→        remediation="Enforce strong password policies, use key-based authentication, and restrict SSH access with firewalls.",
+   531→    ),
+   532→    ChainPattern(
+   533→        name="Authentication Bypass via IDOR + Session Prediction",
+   534→        description="IDOR combined with predictable session tokens allows account switching",
+   535→        severity="HIGH",
+   536→        required_categories=["idor", "session_prediction"],
+   537→        narrative_template=(
+   538→            "{findings[0]} allows accessing other users' resources by changing IDs, while "
+   539→            "{findings[1]} means session tokens are predictable. Together, an attacker can "
+   540→            "enumerate and predict valid sessions to access any user's data."
+   541→        ),
+   542→        steps=[
+   543→            "Analyze session token generation for predictability",
+   544→            "Generate valid session tokens for target users",
+   545→            "Use IDOR to access those users' data with the predicted sessions",
+   546→        ],
+   547→        remediation="Use cryptographically random session tokens and enforce proper authorization checks.",
+   548→    ),
+   549→
+   550→    # ── 6. Container & Orchestration ──────────────────────────────────
+   551→    ChainPattern(
+   552→        name="Container Escape to Host",
+   553→        description="Privileged container with host PID namespace allows full host compromise",
+   554→        severity="CRITICAL",
+   555→        required_categories=["docker_privileged", "host_pid"],
+   556→        required_tags=["docker", "kubernetes", "container"],
+   557→        severity_multiplier=2.0,
+   558→        narrative_template=(
+   559→            "{findings[0]} means the container runs with full host privileges, and "
+   560→            "{findings[1]} shares the host's PID namespace. An attacker who gains access "
+   561→            "inside the container can escape to the host, access all processes, and "
+   562→            "potentially compromise the entire node and cluster."
+   563→        ),
+   564→        steps=[
+   565→            "Gain initial access inside the container (e.g., via vulnerable web app)",
+   566→            "Use host PID access to observe and manipulate host processes",
+   567→            "Leverage privileged mode to mount the host filesystem",
+   568→            "Write SSH keys or cron jobs to maintain persistent host access",
+   569→        ],
+   570→        remediation="Never run containers in privileged mode, avoid host PID sharing, and use pod security policies.",
+   571→    ),
+   572→    ChainPattern(
+   573→        name="Kubernetes API Server Exposure + RBAC Bypass",
+   574→        description="Exposed K8s API with permissive RBAC enables cluster takeover",
+   575→        severity="CRITICAL",
+   576→        required_categories=["k8s_api_exposed", "rbac_misconfig"],
+   577→        required_tags=["kubernetes", "k8s"],
+   578→        narrative_template=(
+   579→            "{findings[0]} exposes the Kubernetes API server, and {findings[1]} grants "
+   580→            "excessive permissions. An attacker can interact with the API directly to "
+   581→            "create pods, read secrets, and take over the entire cluster."
+   582→        ),
+   583→        steps=[
+   584→            "Connect to the exposed Kubernetes API server",
+   585→            "Use permissive RBAC bindings to list and access cluster resources",
+   586→            "Create a privileged pod or extract secrets from etcd",
+   587→            "Pivot to other workloads and nodes in the cluster",
+   588→        ],
+   589→        remediation="Restrict API server access, enforce least-privilege RBAC, and use network policies.",
+   590→    ),
+   591→    ChainPattern(
+   592→        name="Container Registry Pull + Image Tampering",
+   593→        description="Insecure container registry with writable access enables supply chain attack",
+   594→        severity="CRITICAL",
+   595→        required_categories=["container_registry_exposed", "insecure_deserialization"],
+   596→        narrative_template=(
+   597→            "{findings[0]} exposes the container registry, and {findings[1]} indicates "
+   598→            "the application deserializes untrusted data. An attacker can push a malicious "
+   599→            "image to the registry that will be deployed by the CI/CD pipeline."
+   600→        ),
+   601→        steps=[
+   602→            "Access the exposed container registry without authentication",
+   603→            "Push a tampered image with a backdoor embedded",
+   604→            "The CI/CD pipeline pulls and deploys the malicious image",
+   605→            "Backdoor executes within the cluster, granting persistent access",
+   606→        ],
+   607→        remediation="Secure the container registry with authentication and sign images.",
+   608→    ),
+   609→
+   610→    # ── 7. Injection Chains ───────────────────────────────────────────
+   611→    ChainPattern(
+   612→        name="Log Poisoning to Remote Code Execution",
+   613→        description="Sensitive logging combined with path traversal enables log poisoning RCE",
+   614→        severity="HIGH",
+   615→        required_categories=["sensitive_logging", "path_traversal"],
+   616→        narrative_template=(
+   617→            "{findings[0]} means user input is written to log files, and {findings[1]} "
+   618→            "allows reading arbitrary files. An attacker poisons logs with PHP/JSP "
+   619→            "payloads, then uses the path traversal to include the log file for code execution."
+   620→        ),
+   621→        steps=[
+   622→            "Inject a code payload into a logged field (e.g., User-Agent header)",
+   623→            "The application writes the payload to a log file (sensitive logging)",
+   624→            "Use path traversal to include/require the log file",
+   625→            "The web server executes the injected code from the log",
+   626→        ],
+   627→        remediation="Sanitize all data before logging and prevent path traversal with allow-lists.",
+   628→    ),
+   629→    ChainPattern(
+   630→        name="SQL Injection to Database Exfiltration",
+   631→        description="SQL injection combined with verbose debug mode exposes full database",
+   632→        severity="CRITICAL",
+   633→        required_categories=["sql_injection", "debug_mode"],
+   634→        narrative_template=(
+   635→            "{findings[0]} provides direct database access, while {findings[1]} leaks "
+   636→            "table names, column structures, and query results in error messages. "
+   637→            "An attacker maps the full database schema and exfiltrates all sensitive data."
+   638→        ),
+   639→        steps=[
+   640→            "Trigger SQL errors to reveal database schema (debug mode leaks structure)",
+   641→            "Map all tables and columns from verbose error messages",
+   642→            "Use UNION-based or blind SQL injection to extract data",
+   643→            "Exfiltrate the entire database contents",
+   644→        ],
+   645→        remediation="Disable debug mode in production, use parameterized queries, and restrict database permissions.",
+   646→    ),
+   647→    ChainPattern(
+   648→        name="Remote Code Execution via Eval Injection",
+   649→        description="Dangerous eval function with user-reachable input leads to RCE",
+   650→        severity="CRITICAL",
+   651→        required_categories=["dangerous_eval", "user_input_reachable"],
+   652→        severity_multiplier=2.0,
+   653→        narrative_template=(
+   654→            "{findings[0]} identifies an eval() or similar dynamic code execution sink, and "
+   655→            "{findings[1]} confirms user input can reach that sink without sanitization. "
+   656→            "An attacker can inject arbitrary code that executes on the server with the application's privileges."
+   657→        ),
+   658→        steps=[
+   659→            "Identify the eval/exec/code execution sink in the application",
+   660→            "Trace user input to confirm it reaches the sink without sanitization",
+   661→            "Inject arbitrary code (e.g., system commands, file operations)",
+   662→            "Execute code on the server, potentially gaining a reverse shell",
+   663→        ],
+   664→        remediation="Remove all eval/exec calls and use safe alternatives; sanitize all user inputs.",
+   665→    ),
+   666→    ChainPattern(
+   667→        name="SSTI to RCE",
+   668→        description="Server-Side Template Injection combined with file write leads to RCE",
+   669→        severity="CRITICAL",
+   670→        required_categories=["ssti", "file_upload"],
+   671→        narrative_template=(
+   672→            "{findings[0]} allows injecting template expressions that execute server-side, "
+   673→            "and {findings[1]} means the attacker can upload files. Combined, the attacker "
+   674→            "can write a malicious template and trigger its execution for full RCE."
+   675→        ),
+   676→        steps=[
+   677→            "Identify the template injection point and the template engine",
+   678→            "Upload a malicious template file via the file upload vulnerability",
+   679→            "Trigger rendering of the uploaded template to execute arbitrary code",
+   680→        ],
+   681→        remediation="Sanitize template inputs, use sandboxed template engines, and restrict file uploads.",
+   682→    ),
+   683→    ChainPattern(
+   684→        name="XXE to SSRF Chain",
+   685→        description="XML External Entity injection used to pivot to internal services",
+   686→        severity="HIGH",
+   687→        required_categories=["xxe", "ssrf"],
+   688→        narrative_template=(
+   689→            "{findings[0]} allows defining external entities in XML input, and {findings[1]} "
+   690→            "confirms internal services are reachable. An attacker uses XXE to make the server "
+   691→            "send requests to internal services, bypassing firewalls."
+   692→        ),
+   693→        steps=[
+   694→            "Craft a malicious XML payload with an external entity pointing to an internal service",
+   695→            "The server parses the XML and makes the internal request (XXE)",
+   696→            "Read the response from internal services through the XML parsing error or output",
+   697→            "Use the SSRF capability to scan and attack other internal systems",
+   698→        ],
+   699→        remediation="Disable external entity processing in XML parsers and restrict outbound connections.",
+   700→    ),
+   701→    ChainPattern(
+   702→        name="Command Injection via File Upload",
+   703→        description="Unrestricted file upload with command injection in filename leads to RCE",
+   704→        severity="CRITICAL",
+   705→        required_categories=["file_upload_unrestricted", "command_injection"],
+   706→        narrative_template=(
+   707→            "{findings[0]} allows uploading arbitrary files, and {findings[1]} indicates "
+   708→            "the server executes commands based on file names or metadata. An attacker uploads "
+   709→            "a file with a malicious name that triggers command execution."
+   710→        ),
+   711→        steps=[
+   712→            "Upload a file with a specially crafted filename containing shell metacharacters",
+   713→            "The server processes the filename in an unsafe context (e.g., system call, exec)",
+   714→            "Injected command executes on the server",
+   715→            "Attacker gains shell access or exfiltrates data",
+   716→        ],
+   717→        remediation="Validate and sanitize all filenames; avoid passing filenames to shell commands.",
+   718→    ),
+   719→    ChainPattern(
+   720→        name="LDAP Injection to Authentication Bypass",
+   721→        description="LDAP injection in login form combined with verbose errors enables auth bypass",
+   722→        severity="HIGH",
+   723→        required_categories=["ldap_injection", "verbose_errors"],
+   724→        narrative_template=(
+   725→            "{findings[0]} allows injecting LDAP query syntax, and {findings[1]} reveals "
+   726→            "internal LDAP structure in error messages. An attacker crafts a query that "
+   727→            "bypasses authentication entirely."
+   728→        ),
+   729→        steps=[
+   730→            "Use verbose errors to map the LDAP directory schema",
+   731→            "Craft an LDAP injection payload that always evaluates to true (e.g., admin*))",
+   732→            "Bypass authentication and log in as an administrator",
+   733→        ],
+   734→        remediation="Use parameterized LDAP queries and suppress verbose error messages.",
+   735→    ),
+   736→
+   737→    # ── 8. CSRF & State Manipulation ───────────────────────────────────
+   738→    ChainPattern(
+   739→        name="CSRF with CORS Wildcard",
+   740→        description="CSRF protection disabled with open CORS allows cross-origin state manipulation",
+   741→        severity="HIGH",
+   742→        required_categories=["csrf_disabled", "cors_wildcard"],
+   743→        narrative_template=(
+   744→            "{findings[0]} means state-changing requests have no anti-CSRF protection, and "
+   745→            "{findings[1]} allows any origin to read responses. An attacker's website can "
+   746→            "submit requests on behalf of authenticated users and read the results."
+   747→        ),
+   748→        steps=[
+   749→            "Victim visits the attacker's website while authenticated to the target",
+   750→            "Attacker's JavaScript submits state-changing requests (no CSRF token needed)",
+   751→            "CORS wildcard allows reading the response to confirm success",
+   752→            "Attacker can change password, email, or transfer data on behalf of the victim",
+   753→        ],
+   754→        remediation="Implement anti-CSRF tokens and restrict CORS to specific trusted origins.",
+   755→    ),
+   756→    ChainPattern(
+   757→        name="CSRF + IDOR = Forced Data Modification",
+   758→        description="CSRF combined with IDOR allows forcing victims to modify other users' data",
+   759→        severity="HIGH",
+   760→        required_categories=["csrf_disabled", "idor"],
+   761→        narrative_template=(
+   762→            "{findings[0]} allows cross-origin requests without tokens, and {findings[1]} "
+   763→            "means object IDs can be manipulated. An attacker tricks a victim into "
+   764→            "submitting a request that modifies another user's resources."
+   765→        ),
+   766→        steps=[
+   767→            "Craft a CSRF payload that changes an object ID to target another user's data",
+   768→            "Trick an admin or privileged user into visiting the attacker's page",
+   769→            "The browser submits the request with the victim's session",
+   770→            "Another user's data is modified without their knowledge",
+   771→        ],
+   772→        remediation="Implement CSRF protection and proper authorization checks on all state-changing endpoints.",
+   773→    ),
+   774→
+   775→    # ── 9. Information Disclosure & Reconnaissance ─────────────────────
+   776→    ChainPattern(
+   777→        name="Full System Fingerprint",
+   778→        description="Debug mode combined with information disclosure reveals complete system internals",
+   779→        severity="MEDIUM",
+   780→        required_categories=["debug_mode", "information_disclosure"],
+   781→        narrative_template=(
+   782→            "{findings[0]} exposes detailed error messages and stack traces, and "
+   783→            "{findings[1]} reveals configuration details, software versions, and internal paths. "
+   784→            "Together they provide a complete blueprint of the system for targeted attacks."
+   785→        ),
+   786→        steps=[
+   787→            "Collect version information and technology stack from disclosure",
+   788→            "Map internal file paths, database structure, and API endpoints from debug output",
+   789→            "Search for known exploits against the identified versions",
+   790→            "Use the complete system map to plan a targeted attack",
+   791→        ],
+   792→        remediation="Disable debug mode in production and restrict information disclosure.",
+   793→    ),
+   794→    ChainPattern(
+   795→        name="Source Code Exposure + Hardcoded Secrets",
+   796→        description="Source code leak combined with hardcoded credentials enables direct system access",
+   797→        severity="CRITICAL",
+   798→        required_categories=["source_code_exposure", "hardcoded_credentials"],
+   799→        narrative_template=(
+   800→            "{findings[0]} exposes application source code, and {findings[1]} reveals "
+   801→            "embedded credentials. An attacker reads the source to understand business logic, "
+   802→            "then uses the hardcoded secrets to access databases, APIs, or cloud services."
+   803→        ),
+   804→        steps=[
+   805→            "Download exposed source code from the disclosure point",
+   806→            "Search for hardcoded credentials, API keys, and connection strings",
+   807→            "Use extracted credentials to access backend systems directly",
+   808→            "Analyze source code for additional vulnerabilities",
+   809→        ],
+   810→        remediation="Remove all hardcoded secrets, use secrets management, and block source code access.",
+   811→    ),
+   812→    ChainPattern(
+   813→        name="Git Exposure + Database Credentials",
+   814→        description="Exposed .git directory combined with database connection strings",
+   815→        severity="CRITICAL",
+   816→        required_categories=["git_exposure", "database_credentials_exposed"],
+   817→        narrative_template=(
+   818→            "{findings[0]} allows downloading the full git repository, and {findings[1]} "
+   819→            "means database credentials are embedded in the codebase. An attacker reconstructs "
+   820→            "the codebase and extracts database credentials from commit history."
+   821→        ),
+   822→        steps=[
+   823→            "Download the exposed .git directory",
+   824→            "Reconstruct the full repository including commit history",
+   825→            "Search all commits and branches for database credentials",
+   826→            "Connect directly to the database using extracted credentials",
+   827→        ],
+   828→        remediation="Block access to .git directories and rotate all exposed credentials.",
+   829→    ),
+   830→    ChainPattern(
+   831→        name="Directory Traversal + Backup File Exposure",
+   832→        description="Path traversal combined with exposed backup files reveals full application data",
+   833→        severity="HIGH",
+   834→        required_categories=["path_traversal", "backup_file_exposed"],
+   835→        narrative_template=(
+   836→            "{findings[0]} allows reading files outside the web root, and {findings[1]} "
+   837→            "means backup files (SQL dumps, config archives) are accessible. An attacker "
+   838→            "uses the traversal to locate and download complete backups."
+   839→        ),
+   840→        steps=[
+   841→            "Use path traversal to enumerate directories above the web root",
+   842→            "Locate backup files (.sql, .tar.gz, .bak, .zip)",
+   843→            "Download the backup files containing full data dumps or configs",
+   844→        ],
+   845→        remediation="Restrict file system access and remove or protect backup files.",
+   846→    ),
+   847→    ChainPattern(
+   848→        name="Error-Based Reconnaissance to Targeted Exploitation",
+   849→        description="Verbose errors combined with technology fingerprinting enable precision attacks",
+   850→        severity="MEDIUM",
+   851→        required_categories=["verbose_errors", "tech_fingerprint"],
+   852→        narrative_template=(
+   853→            "{findings[0]} reveals internal implementation details in error messages, and "
+   854→            "{findings[1]} identifies exact software versions. Together they allow an attacker "
+   855→            "to select the perfect exploit for the identified stack."
+   856→        ),
+   857→        steps=[
+   858→            "Identify exact versions of all technologies from fingerprinting",
+   859→            "Trigger errors to confirm internal paths and query structures",
+   860→            "Match versions against known CVE databases",
+   861→            "Deploy targeted exploits with high confidence of success",
+   862→        ],
+   863→        remediation="Suppress verbose errors and minimize technology version disclosure.",
+   864→    ),
+   865→
+   866→    # ── 10. Dependency & Supply Chain ──────────────────────────────────
+   867→    ChainPattern(
+   868→        name="Exploitable Dependency with Known CVE",
+   869→        description="Outdated component with a known CVE enables direct exploitation",
+   870→        severity="HIGH",
+   871→        required_categories=["outdated_component", "known_cve"],
+   872→        narrative_template=(
+   873→            "{findings[0]} identifies an outdated software component, and {findings[1]} "
+   874→            "links it to a known CVE with public exploit code. An attacker can use "
+   875→            "the published exploit to compromise the application."
+   876→        ),
+   877→        steps=[
+   878→            "Identify the outdated component and its exact version",
+   879→            "Look up the associated CVE and available exploit code",
+   880→            "Adapt and execute the exploit against the target",
+   881→        ],
+   882→        remediation="Update the affected component to the patched version immediately.",
+   883→    ),
+   884→    ChainPattern(
+   885→        name="Dependency Confusion Attack",
+   886→        description="Internal package name with public registry access enables dependency confusion",
+   887→        severity="HIGH",
+   888→        required_categories=["internal_package_name", "package_registry_exposed"],
+   889→        narrative_template=(
+   890→            "{findings[0]} reveals internal/private package names, and {findings[1]} means "
+   891→            "the build process can pull from public registries. An attacker publishes a "
+   892→            "malicious package with a higher version number on the public registry."
+   893→        ),
+   894→        steps=[
+   895→            "Identify internal package names from source code or error messages",
+   896→            "Publish a malicious package with the same name on the public registry",
+   897→            "The build system pulls the public version due to higher version number",
+   898→            "Malicious code executes during the next build or deployment",
+   899→        ],
+   900→        remediation="Use scoped/private registries and configure package resolution order explicitly.",
+   901→    ),
+   902→
+   903→    # ── 11. Network & Infrastructure ───────────────────────────────────
+   904→    ChainPattern(
+   905→        name="DNS Rebinding + Internal Service Access",
+   906→        description="DNS rebinding combined with internal network access bypasses Same-Origin Policy",
+   907→        severity="HIGH",
+   908→        required_categories=["dns_rebinding", "internal_service"],
+   909→        narrative_template=(
+   910→            "{findings[0]} shows the DNS configuration is vulnerable to rebinding, and "
+   911→            "{findings[1]} confirms internal services are accessible. An attacker bypasses "
+   912→            "the browser's Same-Origin Policy to interact directly with internal services."
+   913→        ),
+   914→        steps=[
+   915→            "Set up a DNS server that initially resolves to the attacker's IP",
+   916→            "After the browser loads the page, rebind to an internal service IP",
+   917→            "JavaScript on the page makes requests to the (now internal) IP address",
+   918→            "Same-Origin Policy allows the request since the origin matches",
+   919→        ],
+   920→        remediation="Implement DNS pinning and restrict internal service access.",
+   921→    ),
+   922→    ChainPattern(
+   923→        name="WebSocket Hijacking + Insufficient Origin Check",
+   924→        description="WebSocket connection without origin validation enables cross-site hijacking",
+   925→        severity="HIGH",
+   926→        required_categories=["websocket_no_origin_check", "sensitive_websocket"],
+   927→        narrative_template=(
+   928→            "{findings[0]} means WebSocket connections accept any origin, and {findings[1]} "
+   929→            "carries sensitive data. A malicious site can establish a WebSocket connection "
+   930→            "and read or inject messages."
+   931→        ),
+   932→        steps=[
+   933→            "Victim visits attacker's website while having an active session",
+   934→            "Attacker's JavaScript opens a WebSocket to the target (no origin check)",
+   935→            "Read sensitive data from the WebSocket messages",
+   936→            "Inject commands or data into the WebSocket stream",
+   937→        ],
+   938→        remediation="Validate the Origin header on WebSocket handshake and use token-based auth.",
+   939→    ),
+   940→    ChainPattern(
+   941→        name="SMTP Open Relay + Email Spoofing",
+   942→        description="Open mail relay combined with SPF/DKIM misconfiguration enables spam",
+   943→        severity="MEDIUM",
+   944→        required_categories=["smtp_open_relay", "spf_dkim_misconfig"],
+   945→        narrative_template=(
+   946→            "{findings[0]} allows sending email through the server without authentication, and "
+   947→            "{findings[1]} means email authenticity checks are broken. An attacker sends "
+   948→            "phishing emails that appear to come from the target domain."
+   949→        ),
+   950→        steps=[
+   951→            "Connect to the open SMTP relay without credentials",
+   952→            "Send emails spoofing the target domain (SPF/DKIM checks fail to reject)",
+   953→            "Phishing emails reach victims with a trusted sender address",
+   954→        ],
+   955→        remediation="Close the open relay and properly configure SPF, DKIM, and DMARC.",
+   956→    ),
+   957→    ChainPattern(
+   958→        name="FTP Anonymous + Sensitive File Access",
+   959→        description="Anonymous FTP with sensitive file exposure enables data breach",
+   960→        severity="MEDIUM",
+   961→        required_categories=["ftp_anonymous", "sensitive_file_exposed"],
+   962→        narrative_template=(
+   963→            "{findings[0]} allows unauthenticated FTP access, and {findings[1]} means "
+   964→            "sensitive files are accessible. An attacker logs in anonymously and downloads "
+   965→            "confidential data directly."
+   966→        ),
+   967→        steps=[
+   968→            "Connect to the FTP server with anonymous credentials",
+   969→            "Navigate to directories containing sensitive files",
+   970→            "Download confidential documents, backups, or configuration files",
+   971→        ],
+   972→        remediation="Disable anonymous FTP access and restrict file permissions.",
+   973→    ),
+   974→
+   975→    # ── 12. File-Based Attacks ─────────────────────────────────────────
+   976→    ChainPattern(
+   977→        name="Arbitrary File Read via LFI + Log Contamination",
+   978→        description="Local file inclusion with user-controlled log file leads to data exfiltration",
+   979→        severity="HIGH",
+   980→        required_categories=["lfi", "sensitive_logging"],
+   981→        narrative_template=(
+   982→            "{findings[0]} allows including arbitrary local files, and {findings[1]} means "
+   983→            "sensitive data (session tokens, request parameters) is logged. An attacker "
+   984→            "includes the log file to read other users' session data."
+   985→        ),
+   986→        steps=[
+   987→            "Trigger requests with sensitive data that gets logged",
+   988→            "Use LFI to include the application's log file",
+   989→            "Extract session tokens and credentials from the log contents",
+   990→        ],
+   991→        remediation="Prevent LFI with allow-lists and avoid logging sensitive data.",
+   992→    ),
+   993→    ChainPattern(
+   994→        name="Zip Slip via File Upload + Path Traversal",
+   995→        description="Malicious zip upload with path traversal overwrites critical files",
+   996→        severity="HIGH",
+   997→        required_categories=["file_upload_unrestricted", "path_traversal"],
+   998→        required_tags=["zip", "archive", "extract"],
+   999→        narrative_template=(
+  1000→            "{findings[0]} allows uploading arbitrary files, and {findings[1]} indicates "
+  1001→            "path traversal is possible. An attacker uploads a zip with path-traversal "
+  1002→            "filenames to overwrite critical system files during extraction."
+  1003→        ),
+  1004→        steps=[
+  1005→            "Create a zip archive with entries containing path traversal (e.g., ../../etc/cron.d/backdoor)",
+  1006→            "Upload the zip through the unrestricted file upload",
+  1007→            "The server extracts the archive, writing files to unintended locations",
+  1008→            "Overwritten files execute code or grant persistent access",
+  1009→        ],
+  1010→        remediation="Validate archive entries before extraction and restrict upload file types.",
+  1011→    ),
+  1012→
+  1013→    # ── 13. Cryptography ───────────────────────────────────────────────
+  1014→    ChainPattern(
+  1015→        name="Weak Crypto + Sensitive Data Transmission",
+  1016→        description="Weak cipher suites combined with sensitive data in transit",
+  1017→        severity="HIGH",
+  1018→        required_categories=["weak_cipher", "sensitive_data_in_transit"],
+  1019→        narrative_template=(
+  1020→            "{findings[0]} allows the connection to be downgraded to weak encryption, and "
+  1021→            "{findings[1]} confirms sensitive data traverses the link. An attacker performs "
+  1022→            "a cipher-downgrade attack and decrypts the intercepted traffic."
+  1023→        ),
+  1024→        steps=[
+  1025→            "Force a cipher suite negotiation to a weak algorithm (e.g., RC4, DES)",
+  1026→            "Perform a man-in-the-middle attack to intercept the encrypted traffic",
+  1027→            "Decrypt the weakly encrypted traffic to extract sensitive data",
+  1028→        ],
+  1029→        remediation="Disable all weak cipher suites and use TLS 1.2+ with strong ciphers.",
+  1030→    ),
+  1031→    ChainPattern(
+  1032→        name="Hardcoded Crypto Key + Encrypted Data Exposure",
+  1033→        description="Hardcoded encryption key with accessible encrypted data enables decryption",
+  1034→        severity="CRITICAL",
+  1035→        required_categories=["hardcoded_crypto_key", "encrypted_data_exposed"],
+  1036→        narrative_template=(
+  1037→            "{findings[0]} reveals the encryption key used by the application, and "
+  1038→            "{findings[1]} means encrypted data files or database fields are accessible. "
+  1039→            "An attacker downloads the encrypted data and decrypts it with the recovered key."
+  1040→        ),
+  1041→        steps=[
+  1042→            "Extract the hardcoded encryption key from source code or configuration",
+  1043→            "Locate and download encrypted data files or database entries",
+  1044→            "Decrypt the data using the extracted key",
+  1045→        ],
+  1046→        remediation="Use a proper key management system and rotate all exposed keys.",
+  1047→    ),
+  1048→
+  1049→    # ── 14. API Security ───────────────────────────────────────────────
+  1050→    ChainPattern(
+  1051→        name="API Rate Limit Bypass + Credential Stuffing",
+  1052→        description="Missing rate limiting with leaked credentials enables mass account takeover",
+  1053→        severity="HIGH",
+  1054→        required_categories=["no_rate_limit", "credential_leak"],
+  1055→        narrative_template=(
+  1056→            "{findings[0]} means there is no throttling on authentication endpoints, and "
+  1057→            "{findings[1]} provides a list of leaked credentials. An attacker rapidly tests "
+  1058→            "all leaked credentials without being blocked."
+  1059→        ),
+  1060→        steps=[
+  1061→            "Obtain leaked credential list from the data exposure",
+  1062→            "Script automated login attempts against the API (no rate limiting)",
+  1063→            "Identify valid credentials that grant access to user accounts",
+  1064→            "Mass account takeover across the user base",
+  1065→        ],
+  1066→        remediation="Implement rate limiting on authentication endpoints and notify affected users of credential leaks.",
+  1067→    ),
+  1068→    ChainPattern(
+  1069→        name="GraphQL Introspection + Over-Permissioned Queries",
+  1070→        description="GraphQL introspection with excessive data exposure enables full data extraction",
+  1071→        severity="HIGH",
+  1072→        required_categories=["graphql_introspection", "excessive_data_exposure"],
+  1073→        narrative_template=(
+  1074→            "{findings[0]} reveals the complete GraphQL schema, and {findings[1]} means "
+  1075→            "queries return more data than intended. An attacker maps the entire schema "
+  1076→            "and extracts sensitive fields from every query."
+  1077→        ),
+  1078→        steps=[
+  1079→            "Query the GraphQL introspection endpoint to dump the full schema",
+  1080→            "Identify all types, queries, and mutations including hidden ones",
+  1081→            "Craft queries that extract sensitive fields from every accessible type",
+  1082→            "Mass-extract data from all resolvers without proper authorization",
+  1083→        ],
+  1084→        remediation="Disable introspection in production and implement field-level authorization.",
+  1085→    ),
+  1086→    ChainPattern(
+  1087→        name="Broken Object-Level Authorization + Mass Assignment",
+  1088→        description="BOLA combined with mass assignment allows privilege escalation",
+  1089→        severity="HIGH",
+  1090→        required_categories=["bola", "mass_assignment"],
+  1091→        narrative_template=(
+  1092→            "{findings[0]} allows accessing other users' objects by changing IDs, and "
+  1093→            "{findings[1]} means the API accepts unexpected fields. An attacker modifies "
+  1094→            "another user's object and elevates their privileges via mass assignment."
+  1095→        ),
+  1096→        steps=[
+  1097→            "Identify an API endpoint that returns user objects (BOLA)",
+  1098→            "Change the object ID to target another user's record",
+  1099→            "Include privileged fields (e.g., role=admin) in the update request",
+  1100→            "The server applies the mass-assigned fields, escalating privileges",
+  1101→        ],
+  1102→        remediation="Implement proper object-level authorization and use allow-lists for input fields.",
+  1103→    ),
+  1104→
+  1105→    # ── 15. Race Conditions & Logic Flaws ──────────────────────────────
+  1106→    ChainPattern(
+  1107→        name="Race Condition + Business Logic Bypass",
+  1108→        description="TOCTOU race condition with business logic flaw enables financial exploitation",
+  1109→        severity="HIGH",
+  1110→        required_categories=["race_condition", "business_logic_flaw"],
+  1111→        narrative_template=(
+  1112→            "{findings[0]} means requests can be processed concurrently without locks, and "
+  1113→            "{findings[1]} shows the business logic has validation gaps. An attacker sends "
+  1114→            "overlapping requests to exploit timing windows and bypass limits."
+  1115→        ),
+  1116→        steps=[
+  1117→            "Identify a state-changing operation with insufficient locking (e.g., balance transfer)",
+  1118→            "Send multiple concurrent requests that each pass validation individually",
+  1119→            "The race condition causes the server to process all requests before updating state",
+  1120→            "Bypass withdrawal limits, coupon reuse, or balance checks",
+  1121→        ],
+  1122→        remediation="Implement database-level locks and atomic operations for critical business logic.",
+  1123→    ),
+  1124→    ChainPattern(
+  1125→        name="Integer Overflow + Payment Bypass",
+  1126→        description="Integer overflow combined with payment logic allows free transactions",
+  1127→        severity="HIGH",
+  1128→        required_categories=["integer_overflow", "payment_logic"],
+  1129→        narrative_template=(
+  1130→            "{findings[0]} allows numeric values to overflow, and {findings[1]} processes "
+  1131→            "payments based on these values. An attacker triggers an overflow to make the "
+  1132→            "payment amount negative or zero."
+  1133→        ),
+  1134→        steps=[
+  1135→            "Identify a numeric field used in payment calculations",
+  1136→            "Submit a value that causes integer overflow (e.g., very large quantity)",
+  1137→            "The overflow results in a negative or zero total amount",
+  1138→            "Complete the transaction without payment",
+  1139→        ],
+  1140→        remediation="Use arbitrary-precision integers and validate numeric ranges server-side.",
+  1141→    ),
+  1142→
+  1143→    # ── 16. Mobile & Client-Side ───────────────────────────────────────
+  1144→    ChainPattern(
+  1145→        name="Insecure Deep Link + WebView RCE",
+  1146→        description="Insecure deep link handler combined with WebView JavaScript interface leads to RCE",
+  1147→        severity="CRITICAL",
+  1148→        required_categories=["insecure_deep_link", "webview_javascript_interface"],
+  1149→        narrative_template=(
+  1150→            "{findings[0]} accepts deep links without proper validation, and {findings[1]} "
+  1151→            "exposes a JavaScript interface in the WebView. An attacker crafts a malicious "
+  1152→            "deep link that loads attacker-controlled content in the WebView and calls "
+  1153→            "native methods through the JavaScript bridge."
+  1154→        ),
+  1155→        steps=[
+  1156→            "Craft a deep link with a URL pointing to attacker-controlled content",
+  1157→            "The app opens the URL in a WebView with an exposed JavaScript interface",
+  1158→            "Attacker's JavaScript calls native methods through the bridge",
+  1159→            "Execute native code or access sensitive data on the device",
+  1160→        ],
+  1161→        remediation="Validate deep link schemas/hosts and remove or restrict WebView JavaScript interfaces.",
+  1162→    ),
+  1163→    ChainPattern(
+  1164→        name="Insecure Data Storage + Rooted Device",
+  1165→        description="Insecure local storage combined with device root access exposes all app data",
+  1166→        severity="HIGH",
+  1167→        required_categories=["insecure_data_storage", "device_rooted_or_jailbroken"],
+  1168→        narrative_template=(
+  1169→            "{findings[0]} stores sensitive data unencrypted on the device, and {findings[1]} "
+  1170→            "means the device has root access. An attacker with physical or remote access "
+  1171→            "can read all stored credentials and tokens."
+  1172→        ),
+  1173→        steps=[
+  1174→            "Access the device's filesystem (using root privileges)",
+  1175→            "Locate the app's data directory and database files",
+  1176→            "Extract stored credentials, session tokens, and personal data",
+  1177→        ],
+  1178→        remediation="Encrypt sensitive data at rest using the device keystore and implement root detection.",
+  1179→    ),
+  1180→
+  1181→    # ── 17. Cache & CDN ────────────────────────────────────────────────
+  1182→    ChainPattern(
+  1183→        name="Cache Poisoning via Unkeyed Input",
+  1184→        description="Unkeyed parameter combined with cacheable response enables cache poisoning",
+  1185→        severity="HIGH",
+  1186→        required_categories=["unkeyed_parameter", "cacheable_response"],
+  1187→        narrative_template=(
+  1188→            "{findings[0]} means the application processes an input parameter without "
+  1189→            "including it in the cache key, and {findings[1]} confirms responses are cached. "
+  1190→            "An attacker poisons the cache with malicious content served to all users."
+  1191→        ),
+  1192→        steps=[
+  1193→            "Identify a parameter that is processed but not included in the cache key (e.g., X-Forwarded-Host)",
+  1194→            "Send a request with a malicious value for the unkeyed parameter",
+  1195→            "The response (containing the malicious value) is cached",
+  1196→            "All subsequent users receive the poisoned cached response",
+  1197→        ],
+  1198→        remediation="Ensure all user-controlled inputs are included in the cache key.",
+  1199→    ),
+  1200→    ChainPattern(
+  1201→        name="CDN Bypass + Origin IP Exposure",
+  1202→        description="CDN bypass reveals origin server IP, bypassing WAF protections",
+  1203→        severity="MEDIUM",
+  1204→        required_categories=["cdn_bypass", "origin_ip_exposed"],
+  1205→        narrative_template=(
+  1206→            "{findings[0]} allows requests to bypass the CDN, and {findings[1]} reveals the "
+  1207→            "origin server's IP address. An attacker sends attacks directly to the origin, "
+  1208→            "bypassing all CDN/WAF protections."
+  1209→        ),
+  1210→        steps=[
+  1211→            "Discover the origin IP through DNS history, SSL certificates, or other means",
+  1212→            "Send malicious requests directly to the origin IP, bypassing the CDN",
+  1213→            "Exploit vulnerabilities that the CDN/WAF would have blocked",
+  1214→        ],
+  1215→        remediation="Restrict origin server access to CDN IP ranges only.",
+  1216→    ),
+  1217→
+  1218→    # ── 18. File Inclusion & Deserialization ────────────────────────────
+  1219→    ChainPattern(
+  1220→        name="Phar Deserialization to RCE",
+  1221→        description="Phar file upload combined with file operation leads to deserialization RCE",
+  1222→        severity="CRITICAL",
+  1223→        required_categories=["file_upload_unrestricted", "insecure_deserialization"],
+  1224→        required_tags=["php", "phar"],
+  1225→        narrative_template=(
+  1226→            "{findings[0]} allows uploading files, and {findings[1]} indicates PHP's phar:// "
+  1227→            "wrapper is usable. An attacker uploads a malicious .phar file and triggers "
+  1228→            "deserialization through any file operation (file_exists, is_file, etc.)."
+  1229→        ),
+  1230→        steps=[
+  1231→            "Create a malicious PHP archive (.phar) with a serialized payload",
+  1232→            "Upload the .phar file through the unrestricted file upload",
+  1233→            "Trigger a file operation that processes the uploaded phar (e.g., file_exists)",
+  1234→            "The deserialized payload executes, achieving RCE",
+  1235→        ],
+  1236→        remediation="Restrict file uploads, disable phar deserialization, and update PHP.",
+  1237→    ),
+  1238→
+  1239→    # ── 19. Misconfiguration Chains ────────────────────────────────────
+  1240→    ChainPattern(
+  1241→        name="Default Credentials + Exposed Admin Panel",
+  1242→        description="Default credentials with an exposed admin interface enables full admin access",
+  1243→        severity="CRITICAL",
+  1244→        required_categories=["default_credentials", "admin_panel_exposed"],
+  1245→        narrative_template=(
+  1246→            "{findings[0]} means the system uses factory default credentials, and "
+  1247→            "{findings[1]} makes the admin interface accessible. An attacker logs in with "
+  1248→            "default credentials and gains full administrative control."
+  1249→        ),
+  1250→        steps=[
+  1251→            "Locate the exposed admin panel or management interface",
+  1252→            "Try default/known credentials (admin/admin, root/root, etc.)",
+  1253→            "Gain full administrative access to the system",
+  1254→            "Configure the system to maintain persistent access",
+  1255→        ],
+  1256→        remediation="Change all default credentials and restrict admin interface access.",
+  1257→    ),
+  1258→    ChainPattern(
+  1259→        name="Missing Authentication + Sensitive Endpoint",
+  1260→        description="Unauthenticated access to a sensitive API or endpoint",
+  1261→        severity="CRITICAL",
+  1262→        required_categories=["missing_authentication", "sensitive_endpoint"],
+  1263→        narrative_template=(
+  1264→            "{findings[0]} means the endpoint requires no authentication, and {findings[1]} "
+  1265→            "confirms it exposes sensitive operations or data. Anyone can access and "
+  1266→            "manipulate the sensitive functionality directly."
+  1267→        ),
+  1268→        steps=[
+  1269→            "Identify the sensitive endpoint that lacks authentication",
+  1270→            "Access the endpoint directly without credentials",
+  1271→            "Perform sensitive operations or exfiltrate data",
+  1272→        ],
+  1273→        remediation="Implement authentication and authorization on all sensitive endpoints.",
+  1274→    ),
+  1275→    ChainPattern(
+  1276→        name="CORS + TLS Misconfiguration = Mixed Content Attack",
+  1277→        description="CORS wildcard combined with weak TLS allows interception of cross-origin data",
+  1278→        severity="MEDIUM",
+  1279→        required_categories=["cors_wildcard", "weak_tls"],
+  1280→        narrative_template=(
+  1281→            "{findings[0]} allows cross-origin requests, and {findings[1]} means the TLS "
+  1282→            "configuration is weak. An attacker performs a MITM attack to intercept "
+  1283→            "cross-origin data flows."
+  1284→        ),
+  1285→        steps=[
+  1286→            "Perform a man-in-the-middle attack exploiting weak TLS",
+  1287→            "Intercept cross-origin requests and responses (CORS allows them)",
+  1288→            "Read sensitive data from the intercepted traffic",
+  1289→        ],
+  1290→        remediation="Strengthen TLS configuration and restrict CORS policies.",
+  1291→    ),
+  1292→    ChainPattern(
+  1293→        name="HTTP Method Override + Access Control Bypass",
+  1294→        description="HTTP method override support combined with access control gaps",
+  1295→        severity="MEDIUM",
+  1296→        required_categories=["http_method_override", "access_control_bypass"],
+  1297→        narrative_template=(
+  1298→            "{findings[0]} allows overriding the HTTP method via headers, and {findings[1]} "
+  1299→            "means certain methods bypass access controls. An attacker overrides the method "
+  1300→            "to bypass security checks."
+  1301→        ),
+  1302→        steps=[
+  1303→            "Identify that the application accepts X-HTTP-Method-Override or similar headers",
+  1304→            "Discover that the overridden method bypasses access control checks",
+  1305→            "Send a request with the override header to perform unauthorized actions",
+  1306→        ],
+  1307→        remediation="Validate the actual HTTP method used and apply consistent access controls.",
+  1308→    ),
+  1309→
+  1310→    # ── 20. Additional Compound Patterns ───────────────────────────────
+  1311→    ChainPattern(
+  1312→        name="Subdomain Takeover + DNS Hijack",
+  1313→        description="Dangling DNS record combined with registrar access enables domain takeover",
+  1314→        severity="CRITICAL",
+  1315→        required_categories=["subdomain_takeover", "dns_hijack"],
+  1316→        narrative_template=(
+  1317→            "{findings[0]} identifies a dangling CNAME pointing to a deprovisioned service, "
+  1318→            "and {findings[1]} shows DNS records can be modified. An attacker claims the "
+  1319→            "dangling subdomain and serves malicious content."
+  1320→        ),
+  1321→        steps=[
+  1322→            "Identify dangling CNAME records pointing to deprovisioned cloud services",
+  1323→            "Claim the subdomain on the cloud provider",
+  1324→            "Serve a malicious page or collect cookies on the subdomain",
+  1325→            "The trusted domain status makes phishing highly effective",
+  1326→        ],
+  1327→        remediation="Remove dangling DNS records and monitor DNS configurations continuously.",
+  1328→    ),
+  1329→    ChainPattern(
+  1330→        name="WebSocket + CSRF = Real-Time Data Manipulation",
+  1331→        description="Unauthenticated WebSocket with state-changing messages enables cross-site attacks",
+  1332→        severity="HIGH",
+  1333→        required_categories=["websocket_no_auth", "csrf_disabled"],
+  1334→        narrative_template=(
+  1335→            "{findings[0]} means WebSocket connections require no authentication, and "
+  1336→            "{findings[1]} shows state-changing requests lack CSRF protection. An attacker's "
+  1337→            "page establishes a WebSocket and sends malicious messages."
+  1338→        ),
+  1339→        steps=[
+  1340→            "Establish a WebSocket connection from a malicious page (no auth needed)",
+  1341→            "Send state-changing messages through the WebSocket (no CSRF token needed)",
+  1342→            "Manipulate application state in real-time on behalf of the victim",
+  1343→        ],
+  1344→        remediation="Authenticate WebSocket connections and validate message origins.",
+  1345→    ),
+  1346→    ChainPattern(
+  1347→        name="PDF Injection + XSS to Account Compromise",
+  1348→        description="PDF upload combined with XSS enables server-side PDF-based attacks",
+  1349→        severity="HIGH",
+  1350→        required_categories=["pdf_upload", "xss_stored"],
+  1351→        narrative_template=(
+  1352→            "{findings[0]} allows uploading PDF files, and {findings[1]} indicates stored "
+  1353→            "XSS is possible. An attacker uploads a malicious PDF containing JavaScript "
+  1354→            "that executes when other users view or download the file."
+  1355→        ),
+  1356→        steps=[
+  1357→            "Create a PDF with embedded JavaScript (PDF XSS)",
+  1358→            "Upload the malicious PDF through the file upload endpoint",
+  1359→            "When the PDF is rendered in-browser or processed, JavaScript executes",
+  1360→            "Stored XSS payload steals session data or performs actions as the victim",
+  1361→        ],
+  1362→        remediation="Sanitize uploaded PDFs and disable JavaScript in PDF viewers.",
+  1363→    ),
+  1364→    ChainPattern(
+  1365→        name="SSRF + File Protocol = Local File Read",
+  1366→        description="SSRF with file:// protocol support enables reading arbitrary local files",
+  1367→        severity="HIGH",
+  1368→        required_categories=["ssrf", "file_protocol_enabled"],
+  1369→        narrative_template=(
+  1370→            "{findings[0]} allows the server to make requests on behalf of the attacker, and "
+  1371→            "{findings[1]} means the file:// protocol is not blocked. An attacker reads "
+  1372→            "arbitrary files from the server filesystem."
+  1373→        ),
+  1374→        steps=[
+  1375→            "Identify the SSRF-capable parameter or endpoint",
+  1376→            "Supply a file:// URL pointing to a sensitive file (e.g., /etc/passwd)",
+  1377→            "The server reads the local file and returns its contents",
+  1378→            "Extract configuration files, credentials, or other sensitive data",
+  1379→        ],
+  1380→        remediation="Block all non-HTTP/HTTPS protocols in SSRF-sink URLs and use allow-lists.",
+  1381→    ),
+  1382→    ChainPattern(
+  1383→        name="Open Redirect + OAuth Token Theft",
+  1384→        description="Open redirect in OAuth flow enables token theft",
+  1385→        severity="HIGH",
+  1386→        required_categories=["open_redirect", "oauth_misconfig"],
+  1387→        required_tags=["oauth", "sso", "authentication"],
+  1388→        narrative_template=(
+  1389→            "{findings[0]} allows redirecting to arbitrary URLs, and {findings[1]} shows "
+  1390→            "the OAuth flow is vulnerable. An attacker redirects the OAuth callback to "
+  1391→            "their server, capturing the authorization code or token."
+  1392→        ),
+  1393→        steps=[
+  1394→            "Identify the OAuth callback URL and the open redirect parameter",
+  1395→            "Craft a link that redirects the OAuth callback to the attacker's server",
+  1396→            "Victim authenticates, and the token/code is sent to the attacker",
+  1397→            "Attacker exchanges the stolen token for access to the victim's account",
+  1398→        ],
+  1399→        remediation="Validate redirect URIs strictly in the OAuth flow and fix the open redirect.",
+  1400→    ),
+  1401→    ChainPattern(
+  1402→        name="Prototype Pollution + RCE",
+  1403→        description="JavaScript prototype pollution combined with code execution sink leads to RCE",
+  1404→        severity="CRITICAL",
+  1405→        required_categories=["prototype_pollution", "dangerous_eval"],
+  1406→        narrative_template=(
+  1407→            "{findings[0]} allows polluting JavaScript object prototypes, and {findings[1]} "
+  1408→            "provides a code execution sink that processes the polluted property. "
+  1409→            "An attacker achieves remote code execution through the pollution chain."
+  1410→        ),
+  1411→        steps=[
+  1412→            "Identify a deep merge or recursive merge operation vulnerable to prototype pollution",
+  1413→            "Pollute Object.prototype with a malicious property (e.g., __proto__.exec)",
+  1414→            "Trigger the code execution sink (eval, Function constructor, child_process.exec)",
+  1415→            "The polluted property is processed as code, achieving RCE",
+  1416→        ],
+  1417→        remediation="Avoid deep merge of untrusted input and sandbox code execution contexts.",
+  1418→    ),
+  1419→]
+  1420→
+  1421→
+  1422→# ======================================================================
+  1423→#  Helpers
+  1424→# ======================================================================
+  1425→
+  1426→
+  1427→def _normalise_severity(raw: Any) -> str:
+  1428→    """Return a normalised lowercase severity string."""
+  1429→    if raw is None:
+  1430→        return "info"
+  1431→    s = str(raw).strip().lower()
+  1432→    return s if s in SEVERITY_ORDER else "info"
+  1433→
+  1434→
+  1435→def _sev_score(severity: str) -> float:
+  1436→    """Map a severity string to a numeric score."""
+  1437→    return _SEVERITY_SCORES.get(_normalise_severity(severity), 1.0)
+  1438→
+  1439→
+  1440→def _finding_category(finding: Dict[str, Any]) -> str:
+  1441→    """Extract the category or type from a finding dict."""
+  1442→    cat = finding.get("category", "") or finding.get("type", "") or finding.get("finding_type", "")
+  1443→    return str(cat).strip().lower()
+  1444→
+  1445→
+  1446→def _finding_tags(finding: Dict[str, Any]) -> List[str]:
+  1447→    """Extract tags from a finding dict."""
+  1448→    tags = finding.get("tags", [])
+  1449→    if isinstance(tags, str):
+  1450→        return [t.strip().lower() for t in tags.split(",") if t.strip()]
+  1451→    return [str(t).strip().lower() for t in tags if t]
+  1452→
+  1453→
+  1454→def _finding_title(finding: Dict[str, Any]) -> str:
+  1455→    """Get a human-readable title for a finding."""
+  1456→    return (
+  1457→        finding.get("title", "")
+  1458→        or finding.get("name", "")
+  1459→        or finding.get("description", "")[:80]
+  1460→        or "Unknown finding"
+  1461→    )
+  1462→
+  1463→
+  1464→def _format_narrative(template: str, matched_findings: List[Dict[str, Any]]) -> str:
+  1465→    """Fill in a narrative template with finding titles.
+  1466→
+  1467→    Supports ``{findings[N]}`` placeholders where N is a 0-based index.
+  1468→    Falls back to a plain concatenation if the template is empty.
+  1469→    """
+  1470→    if not template:
+  1471→        titles = [_finding_title(f) for f in matched_findings]
+  1472→        return "Combined findings: " + ", ".join(titles)
+  1473→    try:
+  1474→        return template.format(findings=[_finding_title(f) for f in matched_findings])
+  1475→    except (KeyError, IndexError):
+  1476→        titles = [_finding_title(f) for f in matched_findings]
+  1477→        return "Combined findings: " + ", ".join(titles)
+  1478→
+  1479→
+  1480→# ======================================================================
+  1481→#  AttackPathFinder
+  1482→# ======================================================================
+  1483→
+  1484→
+  1485→class AttackPathFinder:
+  1486→    """Discovers compound attack paths by combining rule-based pattern
+  1487→    matching, graph-based traversal, and optional LLM-assisted analysis.
+  1488→
+  1489→    Parameters
+  1490→    ----------
+  1491→    memory_store :
+  1492→        Optional :class:`~reconpro.memory.UnifiedMemoryStore` instance for
+  1493→        graph-based chain discovery.  When ``None``, only rule-based
+  1494→        analysis is available.
+  1495→    """
+  1496→
+  1497→    def __init__(self, memory_store: UnifiedMemoryStore | None = None) -> None:
+  1498→        self._memory = memory_store
+  1499→
+  1500→    # ------------------------------------------------------------------
+  1501→    # Public API
+  1502→    # ------------------------------------------------------------------
+  1503→
+  1504→    def find_chains(
+  1505→        self,
+  1506→        target: str,
+  1507→        findings: List[Dict[str, Any]],
+  1508→    ) -> List[ChainReport]:
+  1509→        """Run rule-based chain discovery against *findings* for *target*.
+  1510→
+  1511→        Groups findings by category, matches against all ``CHAIN_RULES``,
+  1512→        and returns a ranked list of :class:`ChainReport` objects.
+  1513→        """
+  1514→        # Index findings by normalised category
+  1515→        by_cat: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+  1516→        for f in findings:
+  1517→            cat = _finding_category(f)
+  1518→            if cat:
+  1519→                by_cat[cat].append(f)
+  1520→
+  1521→        # Also index by tags
+  1522→        by_tag: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+  1523→        for f in findings:
+  1524→            for tag in _finding_tags(f):
+  1525→                by_tag[tag].append(f)
+  1526→
+  1527→        reports: List[ChainReport] = []
+  1528→        seen_rule_names: Set[str] = set()
+  1529→
+  1530→        for pattern in CHAIN_RULES:
+  1531→            if pattern.name in seen_rule_names:
+  1532→                continue
+  1533→
+  1534→            # Check all required categories are present
+  1535→            matched_findings: List[Dict[str, Any]] = []
+  1536→            all_cats_present = True
+  1537→            for req_cat in pattern.required_categories:
+  1538→                req_lower = req_cat.lower()
+  1539→                # Check if any finding category contains the required category as substring
+  1540→                found = False
+  1541→                for existing_cat, cat_findings in by_cat.items():
+  1542→                    if req_lower in existing_cat or existing_cat in req_lower:
+  1543→                        if cat_findings:
+  1544→                            matched_findings.append(cat_findings[0])
+  1545→                            found = True
+  1546→                            break
+  1547→                if not found:
+  1548→                    all_cats_present = False
+  1549→                    break
+  1550→
+  1551→            if not all_cats_present:
+  1552→                continue
+  1553→
+  1554→            # Check required tags (at least one finding must have at least one tag)
+  1555→            if pattern.required_tags:
+  1556→                req_tags_lower = [t.lower() for t in pattern.required_tags]
+  1557→                tag_match = False
+  1558→                for f in matched_findings:
+  1559→                    f_tags = _finding_tags(f)
+  1560→                    for rt in req_tags_lower:
+  1561→                        if rt in f_tags or any(rt in ft for ft in f_tags):
+  1562→                            tag_match = True
+  1563→                            break
+  1564→                    if tag_match:
+  1565→                        break
+  1566→                if not tag_match:
+  1567→                    # Also check all findings, not just matched ones
+  1568→                    for f in findings:
+  1569→                        f_tags = _finding_tags(f)
+  1570→                        for rt in req_tags_lower:
+  1571→                            if rt in f_tags or any(rt in ft for ft in f_tags):
+  1572→                                tag_match = True
+  1573→                                break
+  1574→                        if tag_match:
+  1575→                            break
+  1576→                if not tag_match:
+  1577→                    continue
+  1578→
+  1579→            # Compute score
+  1580→            max_child_sev = max(_sev_score(f.get("severity", "info")) for f in matched_findings)
+  1581→            path_length_bonus = (len(matched_findings) - 2) * 1.5  # bonus for longer chains
+  1582→            score = max_child_sev * pattern.severity_multiplier + max(path_length_bonus, 0.0)
+  1583→
+  1584→            # Build confidence based on how specific the match is
+  1585→            confidence = 0.7 + (0.05 * len(pattern.required_categories))
+  1586→            if pattern.required_tags:
+  1587→                confidence += 0.1
+  1588→            confidence = min(confidence, 0.95)
+  1589→
+  1590→            # Build the narrative
+  1591→            narrative = _format_narrative(pattern.narrative_template, matched_findings)
+  1592→
+  1593→            # Build steps (use pattern steps if available)
+  1594→            steps = pattern.steps if hasattr(pattern, "steps") and pattern.steps else []
+  1595→            if not steps:
+  1596→                steps = [f"Step {i+1}: Exploit {_finding_title(f)}" for i, f in enumerate(matched_findings)]
+  1597→
+  1598→            # Build remediation
+  1599→            remediation = pattern.remediation if hasattr(pattern, "remediation") and pattern.remediation else (
+  1600→                "Address each individual finding in the chain to break the compound attack path."
+  1601→            )
+  1602→
+  1603→            report = ChainReport(
+  1604→                name=pattern.name,
+  1605→                severity=_normalise_severity(pattern.severity),
+  1606→                score=round(score, 2),
+  1607→                findings=list(matched_findings),
+  1608→                narrative=narrative,
+  1609→                steps=steps,
+  1610→                remediation=remediation,
+  1611→                confidence=round(confidence, 2),
+  1612→            )
+  1613→            reports.append(report)
+  1614→            seen_rule_names.add(pattern.name)
+  1615→
+  1616→        # Sort by score descending
+  1617→        reports.sort(key=lambda r: r.score, reverse=True)
+  1618→        return reports
+  1619→
+  1620→    def find_compound_paths(self, target: str) -> List[ChainReport]:
+  1621→        """Graph-based chain discovery using the memory store's knowledge graph.
+  1622→
+  1623→        Combines structural graph chains with rule-based matching to
+  1624→        produce compound path reports.
+  1625→
+  1626→        Returns an empty list if no memory store is available.
+  1627→        """
+  1628→        if self._memory is None:
+  1629→            return []
+  1630→
+  1631→        reports: List[ChainReport] = []
+  1632→
+  1633→        # 1. Get graph-based chains from the knowledge graph
+  1634→        try:
+  1635→            graph_chains = self._memory.find_chains(target)
+  1636→        except Exception:
+  1637→            graph_chains = []
+  1638→
+  1639→        # 2. Get all findings for the target
+  1640→        try:
+  1641→            all_findings = self._memory.get_findings(target)
+  1642→        except Exception:
+  1643→            all_findings = []
+  1644→
+  1645→        # Filter to actual vulnerability findings (not scan summaries)
+  1646→        vuln_findings = [
+  1647→            f for f in all_findings
+  1648→            if f.get("severity", "info") not in ("info",)
+  1649→            and f.get("title", "").find("Scan completed") == -1
+  1650→        ]
+  1651→
+  1652→        if not vuln_findings:
+  1653→            # Try rule-based analysis on whatever we have
+  1654→            return self.find_chains(target, all_findings)
+  1655→
+  1656→        # 3. Rule-based chains
+  1657→        rule_reports = self.find_chains(target, vuln_findings)
+  1658→        reports.extend(rule_reports)
+  1659→
+  1660→        # 4. Graph-based chain enrichment
+  1661→        seen_rule_names = {r.name for r in rule_reports}
+  1662→        for chain in graph_chains:
+  1663→            if not chain or len(chain) < 2:
+  1664→                continue
+  1665→
+  1666→            # Extract finding nodes from the chain
+  1667→            chain_findings = [
+  1668→                step for step in chain
+  1669→                if step.get("node_type") in ("finding", "vulnerability", "cve")
+  1670→            ]
+  1671→
+  1672→            if len(chain_findings) < 2:
+  1673→                continue
+  1674→
+  1675→            # Check if this chain is already covered by a rule
+  1676→            chain_title_parts = [f.get("title", "") for f in chain_findings]
+  1677→            covered = False
+  1678→            for existing_name in seen_rule_names:
+  1679→                # Simple check: if any two titles contain words from an existing rule's categories
+  1680→                for part in chain_title_parts[:2]:
+  1681→                    part_lower = part.lower()
+  1682→                    if any(cat.lower() in part_lower for rule in CHAIN_RULES if rule.name == existing_name for cat in rule.required_categories):
+  1683→                        covered = True
+  1684→                        break
+  1685→                if covered:
+  1686→                    break
+  1687→
+  1688→            if covered:
+  1689→                continue
+  1690→
+  1691→            # Build a generic graph-based chain report
+  1692→            max_sev = max(_sev_score(f.get("severity", "info")) for f in chain_findings)
+  1693→            path_len = len(chain_findings)
+  1694→            score = max_sev * 1.3 + (path_len - 2) * 1.0
+  1695→
+  1696→            # Determine chain type from the path
+  1697→            types_in_chain = [
+  1698→                f.get("finding_type", f.get("type", "unknown"))
+  1699→                for f in chain_findings
+  1700→            ]
+  1701→
+  1702→            report = ChainReport(
+  1703→                name=f"Graph Path: {' → '.join(types_in_chain[:3])}",
+  1704→                severity=_normalise_severity(chain_findings[0].get("severity", "medium")),
+  1705→                score=round(score, 2),
+  1706→                findings=chain_findings,
+  1707→                narrative=(
+  1708→                    "Graph analysis discovered a multi-hop attack path: "
+  1709→                    + " → ".join(f.get("title", "unknown") for f in chain_findings)
+  1710→                    + ". These vulnerabilities are connected through shared assets "
+  1711→                    "and can be chained for greater impact."
+  1712→                ),
+  1713→                steps=[
+  1714→                    f"Step {i+1}: Exploit {_finding_title(f)} ({f.get('severity', '?')} severity)"
+  1715→                    for i, f in enumerate(chain_findings)
+  1716→                ],
+  1717→                remediation=(
+  1718→                    "Break this attack path by remediating the highest-severity finding "
+  1719→                    f"in the chain: {chain_findings[0].get('title', 'unknown')}."
+  1720→                ),
+  1721→                confidence=0.5,  # Graph-based chains have lower confidence
+  1722→            )
+  1723→            reports.append(report)
+  1724→
+  1725→        # Deduplicate and sort
+  1726→        reports.sort(key=lambda r: r.score, reverse=True)
+  1727→        return reports
+  1728→
+  1729→    def llm_assisted_chains(
+  1730→        self,
+  1731→        target: str,
+  1732→        findings: List[Dict[str, Any]],
+  1733→        llm_client: Any = None,
+  1734→    ) -> List[ChainReport]:
+  1735→        """Use an LLM (OpenAI or Anthropic) to discover additional chains.
+  1736→
+  1737→        Parameters
+  1738→        ----------
+  1739→        target :
+  1740→            The target being analysed.
+  1741→        findings :
+  1742→            List of finding dicts to analyse.
+  1743→        llm_client :
+  1744→            Optional pre-configured LLM client.  If ``None``, the method
+  1745→            attempts to create one from environment variables
+  1746→            (``OPENAI_API_KEY`` or ``ANTHROPIC_API_KEY``).  Falls back to
+  1747→            rule-based analysis if no LLM is available.
+  1748→
+  1749→        Returns
+  1750→        -------
+  1751→        List of :class:`ChainReport` — LLM chains first, then rule-based.
+  1752→        """
+  1753→        rule_reports = self.find_chains(target, findings)
+  1754→
+  1755→        if not findings:
+  1756→            return rule_reports
+  1757→
+  1758→        llm_reports = self._call_llm(target, findings, llm_client)
+  1759→        if llm_reports:
+  1760→            # Merge: LLM chains first, then rule-based chains that aren't duplicates
+  1761→            llm_names = {r.name.lower() for r in llm_reports}
+  1762→            for rr in rule_reports:
+  1763→                if rr.name.lower() not in llm_names:
+  1764→                    llm_reports.append(rr)
+  1765→            return llm_reports
+  1766→
+  1767→        return rule_reports
+  1768→
+  1769→    # ------------------------------------------------------------------
+  1770→    # Internal: LLM interaction
+  1771→    # ------------------------------------------------------------------
+  1772→
+  1773→    def _call_llm(
+  1774→        self,
+  1775→        target: str,
+  1776→        findings: List[Dict[str, Any]],
+  1777→        llm_client: Any = None,
+  1778→    ) -> List[ChainReport]:
+  1779→        """Attempt to call an LLM and parse the response into ChainReport objects.
+  1780→
+  1781→        Returns an empty list on any failure (silently falls back to rules).
+  1782→        """
+  1783→        # Prepare findings for the prompt (truncate to avoid token limits)
+  1784→        trimmed = []
+  1785→        for f in findings[:30]:  # cap at 30 findings
+  1786→            trimmed.append({
+  1787→                "title": _finding_title(f),
+  1788→                "severity": _normalise_severity(f.get("severity", "info")),
+  1789→                "category": _finding_category(f),
+  1790→                "description": str(f.get("description", ""))[:200],
+  1791→            })
+  1792→
+  1793→        prompt = _LLIM_PROMPT.format(
+  1794→            target=target,
+  1795→            findings_json=json.dumps(trimmed, indent=2),
+  1796→        )
+  1797→
+  1798→        response_text = ""
+  1799→
+  1800→        # Try OpenAI
+  1801→        if llm_client is not None and hasattr(llm_client, "chat"):  # type: ignore[union-attr]
+  1802→            try:
+  1803→                resp = llm_client.chat.completions.create(  # type: ignore[union-attr]
+  1804→                    model="gpt-4o-mini",
+  1805→                    messages=[{"role": "user", "content": prompt}],
+  1806→                    temperature=0.3,
+  1807→                    max_tokens=2000,
+  1808→                )
+  1809→                response_text = resp.choices[0].message.content or ""
+  1810→            except Exception:
+  1811→                response_text = ""
+  1812→        elif HAS_OPENAI:
+  1813→            try:
+  1814→                import os
+  1815→                api_key = os.environ.get("OPENAI_API_KEY")
+  1816→                if not api_key:
+  1817→                    return []
+  1818→                client = _openai_mod.OpenAI(api_key=api_key)
+  1819→                resp = client.chat.completions.create(
+  1820→                    model="gpt-4o-mini",
+  1821→                    messages=[{"role": "user", "content": prompt}],
+  1822→                    temperature=0.3,
+  1823→                    max_tokens=2000,
+  1824→                )
+  1825→                response_text = resp.choices[0].message.content or ""
+  1826→            except Exception:
+  1827→                response_text = ""
+  1828→
+  1829→        # Try Anthropic if OpenAI didn't work
+  1830→        if not response_text and HAS_ANTHROPIC:
+  1831→            try:
+  1832→                import os
+  1833→                api_key = os.environ.get("ANTHROPIC_API_KEY")
+  1834→                if not api_key:
+  1835→                    return []
+  1836→                client = _anthropic_mod.Anthropic(api_key=api_key)
+  1837→                resp = client.messages.create(
+  1838→                    model="claude-haiku-4-5-20241022",
+  1839→                    max_tokens=2000,
+  1840→                    messages=[{"role": "user", "content": prompt}],
+  1841→                )
+  1842→                response_text = resp.content[0].text if resp.content else ""
+  1843→            except Exception:
+  1844→                response_text = ""
+  1845→
+  1846→        if not response_text:
+  1847→            return []
+  1848→
+  1849→        return self._parse_llm_response(response_text, findings)
+  1850→
+  1851→    @staticmethod
+  1852→    def _parse_llm_response(
+  1853→        response_text: str,
+  1854→        findings: List[Dict[str, Any]],
+  1855→    ) -> List[ChainReport]:
+  1856→        """Parse an LLM JSON response into ChainReport objects.
+  1857→
+  1858→        Gracefully handles malformed JSON, missing fields, and out-of-range indices.
+  1859→        """
+  1860→        reports: List[ChainReport] = []
+  1861→
+  1862→        # Try to extract JSON from the response (handle markdown code blocks)
+  1863→        json_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", response_text, re.DOTALL)
+  1864→        if json_match:
+  1865→            json_str = json_match.group(1).strip()
+  1866→        else:
+  1867→            # Try to find a top-level JSON object
+  1868→            brace_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+  1869→            json_str = brace_match.group(0) if brace_match else response_text.strip()
+  1870→
+  1871→        try:
+  1872→            data = json.loads(json_str)
+  1873→        except (json.JSONDecodeError, AttributeError):
+  1874→            return reports
+  1875→
+  1876→        chains = data.get("chains", [])
+  1877→        if not isinstance(chains, list):
+  1878→            return reports
+  1879→
+  1880→        for chain in chains:
+  1881→            if not isinstance(chain, dict):
+  1882→                continue
+  1883→
+  1884→            try:
+  1885→                name = str(chain.get("name", "LLM-Discovered Chain"))
+  1886→                severity = _normalise_severity(chain.get("severity", "medium"))
+  1887→                confidence = float(chain.get("confidence", 0.6))
+  1888→                confidence = max(0.0, min(1.0, confidence))
+  1889→                narrative = str(chain.get("narrative", "LLM-identified compound attack path."))
+  1890→                steps = chain.get("steps", [])
+  1891→                if not isinstance(steps, list):
+  1892→                    steps = []
+  1893→                steps = [str(s) for s in steps]
+  1894→                remediation = str(chain.get("remediation", "Address the identified vulnerability chain."))
+  1895→
+  1896→                # Resolve findings by index
+  1897→                indices = chain.get("findings_indices", [])
+  1898→                if not isinstance(indices, list):
+  1899→                    indices = []
+  1900→                matched_findings = []
+  1901→                for idx in indices:
+  1902→                    if isinstance(idx, (int, float)) and 0 <= int(idx) < len(findings):
+  1903→                        matched_findings.append(findings[int(idx)])
+  1904→
+  1905→                if not matched_findings:
+  1906→                    continue
+  1907→
+  1908→                score = max(_sev_score(f.get("severity", "info")) for f in matched_findings) * 1.4
+  1909→
+  1910→                reports.append(ChainReport(
+  1911→                    name=name,
+  1912→                    severity=severity,
+  1913→                    score=round(score, 2),
+  1914→                    findings=matched_findings,
+  1915→                    narrative=narrative,
+  1916→                    steps=steps if steps else [
+  1917→                        f"Step {i+1}: Exploit {_finding_title(f)}"
+  1918→                        for i, f in enumerate(matched_findings)
+  1919→                    ],
+  1920→                    remediation=remediation,
+  1921→                    confidence=round(confidence, 2),
+  1922→                ))
+  1923→            except Exception:
+  1924→                continue
+  1925→
+  1926→        return reports
+  1927→
+  1928→
+  1929→
+  1930→
+  1931→# ======================================================================
+  1932→#  MITRE ATT&CK Mapping & Attack Surface Scoring
+  1933→# ======================================================================
+  1934→
+  1935→
+  1936→class MitreMapper:
+  1937→    """Maps scan findings to MITRE ATT&CK techniques and Kill Chain phases."""
+  1938→
+  1939→    def __init__(self, findings: List[Dict[str, Any]]) -> None:
+  1940→        self.findings = findings
+  1941→        self._technique_hits: Dict[str, List[str]] = defaultdict(list)
+  1942→        self._tactic_hits: Dict[str, List[str]] = defaultdict(list)
+  1943→        self._kill_chain_hits: Dict[str, List[str]] = defaultdict(list)
+  1944→        self._map_findings()
+  1945→
+  1946→    def _map_findings(self) -> None:
+  1947→        """Map each finding to MITRE techniques."""
+  1948→        for f in self.findings:
+  1949→            cat = f.get("category", "").lower()
+  1950→            if cat in MITRE_TECHNIQUE_MAP:
+  1951→                tech = MITRE_TECHNIQUE_MAP[cat]
+  1952→                self._technique_hits[tech["technique"]].append(f.get("title", ""))
+  1953→                self._tactic_hits[tech["tactic"]].append(f.get("title", ""))
+  1954→                phase_idx = MITRE_TACTICS.get(tech["tactic"], {}).get("phase", 0)
+  1955→                if 0 < phase_idx <= len(KILL_CHAIN_PHASES):
+  1956→                    self._kill_chain_hits[KILL_CHAIN_PHASES[phase_idx - 1]].append(f.get("title", ""))
+  1957→
+  1958→    @property
+  1959→    def techniques(self) -> Dict[str, List[str]]:
+  1960→        """Technique IDs mapped to finding titles."""
+  1961→        return dict(self._technique_hits)
+  1962→
+  1963→    @property
+  1964→    def tactics(self) -> Dict[str, List[str]]:
+  1965→        """Tactic IDs mapped to finding titles."""
+  1966→        return dict(self._tactic_hits)
+  1967→
+  1968→    @property
+  1969→    def kill_chain(self) -> Dict[str, List[str]]:
+  1970→        """Kill Chain phase names mapped to finding titles."""
+  1971→        return dict(self._kill_chain_hits)
+  1972→
+  1973→    def technique_summary(self) -> List[Dict[str, Any]]:
+  1974→        """Return list of {technique_id, name, tactic, tactic_name, finding_titles, severity}."""
+  1975→        summary: List[Dict[str, Any]] = []
+  1976→        seen: Set[str] = set()
+  1977→        for f in self.findings:
+  1978→            cat = f.get("category", "").lower()
+  1979→            if cat not in MITRE_TECHNIQUE_MAP:
+  1980→                continue
+  1981→            tech = MITRE_TECHNIQUE_MAP[cat]
+  1982→            tid = tech["technique"]
+  1983→            if tid in seen:
+  1984→                continue
+  1985→            seen.add(tid)
+  1986→            tactic_id = tech["tactic"]
+  1987→            tactic_name = MITRE_TACTICS.get(tactic_id, {}).get("name", tactic_id)
+  1988→            # Determine worst severity among findings that map to this technique
+  1989→            titles = self._technique_hits.get(tid, [])
+  1990→            sev = "info"
+  1991→            for f2 in self.findings:
+  1992→                if f2.get("title", "") in titles:
+  1993→                    s = _normalise_severity(f2.get("severity", "info"))
+  1994→                    if _sev_score(s) > _sev_score(sev):
+  1995→                        sev = s
+  1996→            summary.append({
+  1997→                "technique_id": tid,
+  1998→                "name": tech["name"],
+  1999→                "tactic": tactic_id,
+  2000→                "tactic_name": tactic_name,
+
+[showing lines 1-2000 of 2228; use offset=2001 with limit to continue reading]

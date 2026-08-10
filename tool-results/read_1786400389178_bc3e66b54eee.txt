@@ -1,0 +1,2002 @@
+     1→"""Infrastructure-as-Code Security Auditor for ReconPro v8.0.
+     2→
+     3→Scans Terraform (.tf), CloudFormation (.yaml/.json), Dockerfiles,
+     4→and Kubernetes manifests for security misconfigurations.
+     5→
+     6→Zero external dependencies — stdlib only (re, json, pathlib, os).
+     7→For YAML parsing, attempts ``import yaml`` and falls back to a
+     8→lightweight line-based parser when PyYAML is not installed.
+     9→"""
+    10→from __future__ import annotations
+    11→
+    12→import json
+    13→import os
+    14→import re
+    15→from pathlib import Path
+    16→from typing import Any, Dict, List, Optional, Tuple
+    17→
+    18→from ..http_layer import Finding
+    19→
+    20→
+    21→# ── Severity / score helpers ─────────────────────────────────────────
+    22→
+    23→_SEV_WEIGHT: Dict[str, float] = {
+    24→    "critical": 10.0,
+    25→    "high": 7.5,
+    26→    "medium": 5.0,
+    27→    "low": 2.5,
+    28→    "info": 1.0,
+    29→}
+    30→
+    31→_PTS_MAP: Dict[str, int] = {
+    32→    "critical": 15,
+    33→    "high": 10,
+    34→    "medium": 6,
+    35→    "low": 3,
+    36→    "info": 1,
+    37→}
+    38→
+    39→
+    40→def _dread(severity: str) -> float:
+    41→    return _SEV_WEIGHT.get(severity.lower(), 2.5)
+    42→
+    43→
+    44→def _pts(severity: str) -> int:
+    45→    return _PTS_MAP.get(severity.lower(), 3)
+    46→
+    47→
+    48→def _ev(file: str, line: int) -> str:
+    49→    return f"{file}:{line}"
+    50→
+    51→
+    52→# ── Simple YAML fallback parser ──────────────────────────────────────
+    53→
+    54→def _simple_yaml_load(text: str) -> Any:
+    55→    """Attempt to import yaml; if unavailable, parse top-level JSON-like structures.
+    56→
+    57→    This fallback handles most CloudFormation and Kubernetes manifests that use
+    58→    simple key-value or list-of-dicts structures.
+    59→    """
+    60→    try:
+    61→        import yaml  # type: ignore[import-untyped]
+    62→        return yaml.safe_load(text)
+    63→    except Exception:
+    64→        pass
+    65→
+    66→    # Fallback: try JSON first (many YAML files are valid JSON subsets)
+    67→    try:
+    68→        return json.loads(text)
+    69→    except Exception:
+    70→        pass
+    71→
+    72→    # Ultra-simple line-based extractor for key: value and - key: value
+    73→    result: Dict[str, Any] = {}
+    74→    current_list_key: Optional[str] = None
+    75→    list_items: List[Dict[str, Any]] = []
+    76→
+    77→    for line in text.splitlines():
+    78→        stripped = line.strip()
+    79→        if not stripped or stripped.startswith("#"):
+    80→            continue
+    81→
+    82→        # List item
+    83→        if stripped.startswith("- "):
+    84→            item = stripped[2:]
+    85→            if ":" in item:
+    86→                k, v = item.split(":", 1)
+    87→                entry = {k.strip(): v.strip().strip('"\'')}
+    88→                if current_list_key:
+    89→                    list_items.append(entry)
+    90→                else:
+    91→                    result.setdefault(k.strip(), []).append(v.strip().strip('"\''))
+    92→            continue
+    93→
+    94→        # Key: Value
+    95→        if ":" in stripped and not stripped.endswith(":"):
+    96→            k, v = stripped.split(":", 1)
+    97→            k = k.strip()
+    98→            v = v.strip()
+    99→            if v:
+   100→                if v.lower() in ("true", "false"):
+   101→                    result[k] = v.lower() == "true"
+   102→                elif v.isdigit():
+   103→                    result[k] = int(v)
+   104→                else:
+   105→                    result[k] = v.strip('"\'')
+   106→            else:
+   107→                result[k] = None
+   108→                current_list_key = k
+   109→                list_items = []
+   110→                result[f"_{k}_items"] = list_items
+   111→
+   112→    if list_items and current_list_key:
+   113→        result[current_list_key] = list_items
+   114→
+   115→    return result
+   116→
+   117→
+   118→def _yaml_load_all(text: str) -> List[Any]:
+   119→    """Load all YAML documents from a multi-doc stream."""
+   120→    try:
+   121→        import yaml  # type: ignore[import-untyped]
+   122→        docs = list(yaml.safe_load_all(text))
+   123→        return [d for d in docs if d is not None]
+   124→    except Exception:
+   125→        pass
+   126→
+   127→    # Fallback: split on "---" and parse individually
+   128→    parts = re.split(r"^---\s*$", text, flags=re.MULTILINE)
+   129→    results: List[Any] = []
+   130→    for part in parts:
+   131→        part = part.strip()
+   132→        if not part:
+   133→            continue
+   134→        try:
+   135→            results.append(json.loads(part))
+   136→        except Exception:
+   137→            parsed = _simple_yaml_load(part)
+   138→            if parsed:
+   139→                results.append(parsed)
+   140→    return results
+   141→
+   142→
+   143→# ══════════════════════════════════════════════════════════════════════
+   144→# 1. TERRAFORM / HCL PARSER
+   145→# ══════════════════════════════════════════════════════════════════════
+   146→
+   147→
+   148→def _tf_block_ranges(text: str) -> List[Tuple[str, int, int, List[str]]]:
+   149→    """Extract top-level HCL blocks as (block_type, start, end, lines)."""
+   150→    lines = text.splitlines()
+   151→    blocks: List[Tuple[str, int, int, List[str]]] = []
+   152→    i = 0
+   153→    while i < len(lines):
+   154→        m = re.match(r'^(\w+)\s+(?:"([^"]+)")?\s*\{', lines[i])
+   155→        if m:
+   156→            block_type = m.group(1)
+   157→            label = m.group(2) or ""
+   158→            depth = 1
+   159→            start = i + 1
+   160→            block_lines = [lines[i]]
+   161→            i += 1
+   162→            while i < len(lines) and depth > 0:
+   163→                block_lines.append(lines[i])
+   164→                for ch in lines[i]:
+   165→                    if ch == "{":
+   166→                        depth += 1
+   167→                    elif ch == "}":
+   168→                        depth -= 1
+   169→                i += 1
+   170→            blocks.append((block_type, start, start + len(block_lines) - 1, block_lines))
+   171→        else:
+   172→            i += 1
+   173→    return blocks
+   174→
+   175→
+   176→def _tf_in_block(block_lines: List[str], pattern: str) -> Optional[int]:
+   177→    """Return 1-based line number within *block_lines* matching *pattern*, or None."""
+   178→    for idx, line in enumerate(block_lines):
+   179→        if re.search(pattern, line, re.I):
+   180→            return idx + 1
+   181→    return None
+   182→
+   183→
+   184→def _tf_not_in_block(block_lines: List[str], pattern: str) -> bool:
+   185→    """Return True if *pattern* is NOT found anywhere in *block_lines*."""
+   186→    return not any(re.search(pattern, line, re.I) for line in block_lines)
+   187→
+   188→
+   189→def parse_tf_file(path: str) -> List[Dict[str, Any]]:
+   190→    """Parse a .tf / .tfstate file and return a list of issue dicts."""
+   191→    issues: List[Dict[str, Any]] = []
+   192→    try:
+   193→        text = Path(path).read_text(encoding="utf-8", errors="replace")
+   194→    except OSError:
+   195→        return issues
+   196→
+   197→    blocks = _tf_block_ranges(text)
+   198→
+   199→    for block_type, start, end, blines in blocks:
+   200→        label_match = re.search(r'"([^"]+)"', blines[0])
+   201→        label = label_match.group(1) if label_match else ""
+   202→        joined = "\n".join(blines)
+   203→        fname = os.path.basename(path)
+   204→
+   205→        # ── S3 Bucket Checks ─────────────────────────────────────────
+   206→
+   207→        if "aws_s3_bucket" in block_type and "policy" not in block_type:
+   208→            # Check 1: No versioning block
+   209→            if _tf_not_in_block(blines, r'versioning'):
+   210→                ln = _tf_in_block(blines, r'aws_s3_bucket') or start
+   211→                issues.append({
+   212→                    "title": "S3 Bucket Missing Versioning",
+   213→                    "severity": "medium", "category": "s3_misconfiguration",
+   214→                    "description": f"S3 bucket '{label}' does not enable versioning, making it vulnerable to accidental or malicious data deletion.",
+   215→                    "evidence": _ev(fname, start + ln - 1),
+   216→                    "remediation": 'Add a versioning block: versioning { enabled = true }',
+   217→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   218→                })
+   219→
+   220→            # Check 2: public-read ACL
+   221→            acl_ln = _tf_in_block(blines, r'acl\s*=\s*"public-read"')
+   222→            if acl_ln:
+   223→                issues.append({
+   224→                    "title": "S3 Bucket with Public-Read ACL",
+   225→                    "severity": "high", "category": "s3_misconfiguration",
+   226→                    "description": f"S3 bucket '{label}' has ACL set to 'public-read', exposing objects to the internet.",
+   227→                    "evidence": _ev(fname, start + acl_ln - 1),
+   228→                    "remediation": 'Set acl = "private" and use bucket policies for controlled access.',
+   229→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   230→                })
+   231→
+   232→            # Check 3: public-read-write ACL
+   233→            acl_ln2 = _tf_in_block(blines, r'acl\s*=\s*"public-read-write"')
+   234→            if acl_ln2:
+   235→                issues.append({
+   236→                    "title": "S3 Bucket with Public-Read-Write ACL",
+   237→                    "severity": "critical", "category": "s3_misconfiguration",
+   238→                    "description": f"S3 bucket '{label}' has ACL set to 'public-read-write', allowing anyone to read AND write.",
+   239→                    "evidence": _ev(fname, start + acl_ln2 - 1),
+   240→                    "remediation": 'Set acl = "private" immediately. Use IAM policies for access control.',
+   241→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   242→                })
+   243→
+   244→            # Check 4: No server-side encryption
+   245→            if _tf_not_in_block(blines, r'(server_side_encryption_configuration|aws_kms_key)'):
+   246→                ln = _tf_in_block(blines, r'aws_s3_bucket') or start
+   247→                issues.append({
+   248→                    "title": "S3 Bucket Missing Encryption",
+   249→                    "severity": "medium", "category": "s3_misconfiguration",
+   250→                    "description": f"S3 bucket '{label}' has no server-side encryption configured.",
+   251→                    "evidence": _ev(fname, start + ln - 1),
+   252→                    "remediation": 'Add aws_s3_bucket_server_side_encryption_configuration with SSE-S3 or SSE-KMS.',
+   253→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   254→                })
+   255→
+   256→            # Check 5: No logging
+   257→            if _tf_not_in_block(blines, r'aws_s3_bucket_logging'):
+   258→                ln = _tf_in_block(blines, r'aws_s3_bucket') or start
+   259→                issues.append({
+   260→                    "title": "S3 Bucket Missing Access Logging",
+   261→                    "severity": "low", "category": "s3_misconfiguration",
+   262→                    "description": f"S3 bucket '{label}' has no access logging enabled, reducing audit capability.",
+   263→                    "evidence": _ev(fname, start + ln - 1),
+   264→                    "remediation": 'Add an aws_s3_bucket_logging resource targeting this bucket.',
+   265→                    "dread_score": _dread("low"), "points_deducted": _pts("low"),
+   266→                })
+   267→
+   268→        # Check 6: S3 Bucket Policy with Principal: "*"
+   269→        if "aws_s3_bucket_policy" in block_type:
+   270→            if re.search(r'Principal\s*=\s*"\*"', joined):
+   271→                ln = _tf_in_block(blines, r'Principal') or start
+   272→                issues.append({
+   273→                    "title": "S3 Bucket Policy with Wildcard Principal",
+   274→                    "severity": "critical", "category": "s3_misconfiguration",
+   275→                    "description": "Bucket policy allows access from any principal ('*'), potentially exposing all objects.",
+   276→                    "evidence": _ev(fname, start + ln - 1),
+   277→                    "remediation": "Restrict Principal to specific AWS accounts, users, or roles.",
+   278→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   279→                })
+   280→
+   281→        # ── Security Group Checks ─────────────────────────────────────
+   282→
+   283→        if "aws_security_group" in block_type or "aws_security_group_rule" in block_type:
+   284→            # Check 7: 0.0.0.0/0 ingress
+   285→            if re.search(r'cidr_blocks\s*=\s*\[\s*"0\.0\.0\.0/0"', joined):
+   286→                ln = _tf_in_block(blines, r'0\.0\.0\.0/0') or start
+   287→                port_ln = _tf_in_block(blines, r'from_port|to_port')
+   288→                port_info = ""
+   289→                if port_ln and port_ln - 1 < len(blines):
+   290→                    port_info = " " + blines[port_ln - 1].strip()
+   291→                issues.append({
+   292→                    "title": f"Security Group Open to 0.0.0.0/0{port_info}",
+   293→                    "severity": "high", "category": "network_exposure",
+   294→                    "description": f"Security group '{label}' allows ingress from 0.0.0.0/0 (entire internet).{port_info}",
+   295→                    "evidence": _ev(fname, start + ln - 1),
+   296→                    "remediation": "Restrict cidr_blocks to specific IP ranges. Use VPN/security groups for admin access.",
+   297→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   298→                })
+   299→
+   300→            # Check 8: SSH (port 22) open to the world
+   301→            if re.search(r'from_port\s*=\s*22', joined) and re.search(r'cidr_blocks\s*=\s*\[\s*"0\.0\.0\.0/0"', joined):
+   302→                ln = _tf_in_block(blines, r'from_port\s*=\s*22') or start
+   303→                issues.append({
+   304→                    "title": "SSH (Port 22) Open to Internet",
+   305→                    "severity": "critical", "category": "network_exposure",
+   306→                    "description": "SSH access (port 22) is exposed to 0.0.0.0/0, allowing brute-force attacks.",
+   307→                    "evidence": _ev(fname, start + ln - 1),
+   308→                    "remediation": "Restrict SSH ingress to known IP ranges or a bastion host.",
+   309→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   310→                })
+   311→
+   312→            # Check 9: RDP (port 3389) open to the world
+   313→            if re.search(r'from_port\s*=\s*3389', joined) and re.search(r'cidr_blocks\s*=\s*\[\s*"0\.0\.0\.0/0"', joined):
+   314→                ln = _tf_in_block(blines, r'from_port\s*=\s*3389') or start
+   315→                issues.append({
+   316→                    "title": "RDP (Port 3389) Open to Internet",
+   317→                    "severity": "critical", "category": "network_exposure",
+   318→                    "description": "RDP access (port 3389) is exposed to 0.0.0.0/0, a prime target for attackers.",
+   319→                    "evidence": _ev(fname, start + ln - 1),
+   320→                    "remediation": "Restrict RDP to known IP ranges. Use AWS Systems Manager Session Manager instead.",
+   321→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   322→                })
+   323→
+   324→            # Check 10: No egress rules (default allow all)
+   325→            if _tf_not_in_block(blines, r'egress') and "aws_security_group" in block_type:
+   326→                ln = _tf_in_block(blines, r'aws_security_group') or start
+   327→                issues.append({
+   328→                    "title": "Security Group Missing Egress Rules",
+   329→                    "severity": "medium", "category": "network_exposure",
+   330→                    "description": f"Security group '{label}' has no explicit egress rules, defaulting to allow all outbound.",
+   331→                    "evidence": _ev(fname, start + ln - 1),
+   332→                    "remediation": "Add an explicit egress rule restricting outbound traffic to required endpoints.",
+   333→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   334→                })
+   335→
+   336→        # ── IAM Policy Checks ─────────────────────────────────────────
+   337→
+   338→        if "aws_iam_policy" in block_type or "aws_iam_policy_document" in block_type or "aws_iam_role_policy" in block_type:
+   339→            # Check 11: Full admin Action: "*"
+   340→            has_star_action = bool(re.search(r'"Action"\s*=\s*"\*"', joined))
+   341→            has_star_action2 = bool(re.search(r'actions\s*=\s*\[\s*"\*"', joined))
+   342→            has_star_resource = bool(re.search(r'"Resource"\s*=\s*"\*"', joined))
+   343→            has_star_resource2 = bool(re.search(r'resources\s*=\s*\[\s*"\*"', joined))
+   344→
+   345→            if (has_star_action or has_star_action2) and (has_star_resource or has_star_resource2):
+   346→                ln = _tf_in_block(blines, r'"\*"') or start
+   347→                issues.append({
+   348→                    "title": "IAM Policy with Full Admin Access",
+   349→                    "severity": "critical", "category": "iam_misconfiguration",
+   350→                    "description": "IAM policy grants Action: '*' on Resource: '*' — full administrative access.",
+   351→                    "evidence": _ev(fname, start + ln - 1),
+   352→                    "remediation": "Apply least-privilege: specify explicit actions and restrict resources to ARN patterns.",
+   353→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   354→                })
+   355→
+   356→            # Check 12: Wildcard action without wildcard resource (still risky)
+   357→            if (has_star_action or has_star_action2) and not (has_star_resource or has_star_resource2):
+   358→                ln = _tf_in_block(blines, r'"Action"\s*=\s*"\*"') or _tf_in_block(blines, r'actions\s*=\s*\[\s*"\*"') or start
+   359→                issues.append({
+   360→                    "title": "IAM Policy with Wildcard Action",
+   361→                    "severity": "high", "category": "iam_misconfiguration",
+   362→                    "description": "IAM policy uses Action: '*' which grants all actions on specified resources.",
+   363→                    "evidence": _ev(fname, start + ln - 1),
+   364→                    "remediation": "Replace '*' with explicit action names (e.g., 's3:GetObject', 's3:PutObject').",
+   365→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   366→                })
+   367→
+   368→        # ── RDS / Database Checks ─────────────────────────────────────
+   369→
+   370→        if "aws_db_instance" in block_type or "aws_rds_cluster" in block_type:
+   371→            # Check 13: No encryption
+   372→            if _tf_not_in_block(blines, r'storage_encrypted\s*=\s*true'):
+   373→                ln = _tf_in_block(blines, r'aws_db_instance|aws_rds_cluster') or start
+   374→                issues.append({
+   375→                    "title": "RDS Instance Missing Encryption",
+   376→                    "severity": "high", "category": "encryption",
+   377→                    "description": f"Database instance '{label}' does not have storage encryption enabled.",
+   378→                    "evidence": _ev(fname, start + ln - 1),
+   379→                    "remediation": "Set storage_encrypted = true and optionally specify kms_key_id.",
+   380→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   381→                })
+   382→
+   383→            # Check 14: Publicly accessible
+   384→            pub_ln = _tf_in_block(blines, r'publicly_accessible\s*=\s*true')
+   385→            if pub_ln:
+   386→                issues.append({
+   387→                    "title": "RDS Instance Publicly Accessible",
+   388→                    "severity": "critical", "category": "network_exposure",
+   389→                    "description": f"Database '{label}' is publicly accessible, exposing data to the internet.",
+   390→                    "evidence": _ev(fname, start + pub_ln - 1),
+   391→                    "remediation": "Set publicly_accessible = false and use VPC security groups for access.",
+   392→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   393→                })
+   394→
+   395→            # Check 15: No IAM DB authentication
+   396→            if _tf_not_in_block(blines, r'iam_database_authentication_enabled\s*=\s*true'):
+   397→                ln = _tf_in_block(blines, r'aws_db_instance') or start
+   398→                issues.append({
+   399→                    "title": "RDS Instance Missing IAM Authentication",
+   400→                    "severity": "low", "category": "iam_misconfiguration",
+   401→                    "description": f"Database '{label}' does not use IAM database authentication.",
+   402→                    "evidence": _ev(fname, start + ln - 1),
+   403→                    "remediation": "Enable iam_database_authentication_enabled = true to use IAM for DB credentials.",
+   404→                    "dread_score": _dread("low"), "points_deducted": _pts("low"),
+   405→                })
+   406→
+   407→        # ── EC2 Instance Checks ───────────────────────────────────────
+   408→
+   409→        if "aws_instance" in block_type:
+   410→            # Check 16: No IAM instance profile
+   411→            if _tf_not_in_block(blines, r'iam_instance_profile'):
+   412→                ln = _tf_in_block(blines, r'aws_instance') or start
+   413→                issues.append({
+   414→                    "title": "EC2 Instance Without IAM Profile",
+   415→                    "severity": "medium", "category": "iam_misconfiguration",
+   416→                    "description": f"EC2 instance '{label}' has no IAM instance profile, preventing fine-grained AWS access control.",
+   417→                    "evidence": _ev(fname, start + ln - 1),
+   418→                    "remediation": "Attach an IAM instance profile with least-privilege permissions.",
+   419→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   420→                })
+   421→
+   422→            # Check 17: No monitoring / detailed monitoring
+   423→            if _tf_not_in_block(blines, r'monitoring\s*=\s*true'):
+   424→                ln = _tf_in_block(blines, r'aws_instance') or start
+   425→                issues.append({
+   426→                    "title": "EC2 Instance Missing Detailed Monitoring",
+   427→                    "severity": "low", "category": "monitoring",
+   428→                    "description": f"EC2 instance '{label}' does not have detailed monitoring enabled.",
+   429→                    "evidence": _ev(fname, start + ln - 1),
+   430→                    "remediation": "Set monitoring = true for enhanced metrics (additional cost applies).",
+   431→                    "dread_score": _dread("low"), "points_deducted": _pts("low"),
+   432→                })
+   433→
+   434→            # Check 18: No user data (potentially no hardening)
+   435→            if _tf_not_in_block(blines, r'user_data'):
+   436→                ln = _tf_in_block(blines, r'aws_instance') or start
+   437→                issues.append({
+   438→                    "title": "EC2 Instance Without Hardening User Data",
+   439→                    "severity": "info", "category": "hardening",
+   440→                    "description": f"EC2 instance '{label}' has no user_data script for OS-level hardening.",
+   441→                    "evidence": _ev(fname, start + ln - 1),
+   442→                    "remediation": "Add a user_data script to install security updates and configure the OS.",
+   443→                    "dread_score": _dread("info"), "points_deducted": _pts("info"),
+   444→                })
+   445→
+   446→        # ── EBS Volume Checks ─────────────────────────────────────────
+   447→
+   448→        if "aws_ebs_volume" in block_type:
+   449→            # Check 19: No encryption
+   450→            if _tf_not_in_block(blines, r'encrypted\s*=\s*true'):
+   451→                ln = _tf_in_block(blines, r'aws_ebs_volume') or start
+   452→                issues.append({
+   453→                    "title": "EBS Volume Unencrypted",
+   454→                    "severity": "high", "category": "encryption",
+   455→                    "description": f"EBS volume '{label}' is not encrypted at rest.",
+   456→                    "evidence": _ev(fname, start + ln - 1),
+   457→                    "remediation": "Set encrypted = true. For existing volumes, create a snapshot, copy with encryption, and replace.",
+   458→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   459→                })
+   460→
+   461→        # ── Lambda Checks ─────────────────────────────────────────────
+   462→
+   463→        if "aws_lambda_function" in block_type:
+   464→            # Check 20: No reserved concurrent executions
+   465→            if _tf_not_in_block(blines, r'reserved_concurrent_executions'):
+   466→                ln = _tf_in_block(blines, r'aws_lambda_function') or start
+   467→                issues.append({
+   468→                    "title": "Lambda Function Without Concurrency Limit",
+   469→                    "severity": "medium", "category": "resource_limit",
+   470→                    "description": f"Lambda '{label}' has no reserved_concurrent_executions, risking runaway costs from DoS.",
+   471→                    "evidence": _ev(fname, start + ln - 1),
+   472→                    "remediation": "Set reserved_concurrent_executions to a reasonable limit.",
+   473→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   474→                })
+   475→
+   476→            # Check 21: No VPC configuration (internet-facing)
+   477→            if _tf_not_in_block(blines, r'vpc_config'):
+   478→                ln = _tf_in_block(blines, r'aws_lambda_function') or start
+   479→                issues.append({
+   480→                    "title": "Lambda Function Not in VPC",
+   481→                    "severity": "low", "category": "network_exposure",
+   482→                    "description": f"Lambda '{label}' runs in the default VPC with direct internet access.",
+   483→                    "evidence": _ev(fname, start + ln - 1),
+   484→                    "remediation": "Place Lambda in a private VPC subnet with VPC endpoints for AWS services.",
+   485→                    "dread_score": _dread("low"), "points_deducted": _pts("low"),
+   486→                })
+   487→
+   488→        # ── TLS Provider Checks ───────────────────────────────────────
+   489→
+   490→        if "tls" in block_type.lower() and ("provider" in block_type.lower() or "min_protocol_version" in joined.lower()):
+   491→            weak_versions = [
+   492→                (r'TLSv1[_\s]?0', "TLS 1.0"),
+   493→                (r'TLSv1[_\s]?1', "TLS 1.1"),
+   494→                (r'SSLv3', "SSL 3.0"),
+   495→            ]
+   496→            for pat, ver_name in weak_versions:
+   497→                ln = _tf_in_block(blines, pat)
+   498→                if ln:
+   499→                    issues.append({
+   500→                        "title": f"TLS Provider with Weak Protocol ({ver_name})",
+   501→                        "severity": "high", "category": "weak_crypto",
+   502→                        "description": f"TLS provider uses {ver_name}, which has known vulnerabilities (BEAST, POODLE, etc.).",
+   503→                        "evidence": _ev(fname, start + ln - 1),
+   504→                        "remediation": "Set min_protocol_version = \"TLSv1.2\" or \"TLSv1.3\".",
+   505→                        "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   506→                    })
+   507→
+   508→        # ── Google Cloud Checks ───────────────────────────────────────
+   509→
+   510→        if "google_compute_firewall" in block_type:
+   511→            if re.search(r'0\.0\.0\.0/0', joined):
+   512→                ln = _tf_in_block(blines, r'0\.0\.0\.0/0') or start
+   513→                issues.append({
+   514→                    "title": "GCP Firewall Rule Open to 0.0.0.0/0",
+   515→                    "severity": "high", "category": "network_exposure",
+   516→                    "description": f"GCP firewall '{label}' allows traffic from 0.0.0.0/0 (entire internet).",
+   517→                    "evidence": _ev(fname, start + ln - 1),
+   518→                    "remediation": "Restrict source_ranges to specific IP ranges or use target tags/service accounts.",
+   519→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   520→                })
+   521→
+   522→        if "google_storage_bucket" in block_type:
+   523→            if re.search(r'uniform_bucket_level_access\s*=\s*false', joined):
+   524→                ln = _tf_in_block(blines, r'uniform_bucket_level_access') or start
+   525→                issues.append({
+   526→                    "title": "GCP Storage Bucket Without Uniform Access",
+   527→                    "severity": "medium", "category": "storage_misconfiguration",
+   528→                    "description": f"GCP bucket '{label}' has uniform_bucket_level_access disabled, allowing ACL-based access.",
+   529→                    "evidence": _ev(fname, start + ln - 1),
+   530→                    "remediation": "Set uniform_bucket_level_access = true and use IAM for access control.",
+   531→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   532→                })
+   533→
+   534→        # ── Azure Checks ──────────────────────────────────────────────
+   535→
+   536→        if "azurerm_network_security_rule" in block_type:
+   537→            if re.search(r'0\.0\.0\.0/0', joined):
+   538→                ln = _tf_in_block(blines, r'0\.0\.0\.0/0') or start
+   539→                issues.append({
+   540→                    "title": "Azure NSG Rule Open to 0.0.0.0/0",
+   541→                    "severity": "high", "category": "network_exposure",
+   542→                    "description": f"Azure NSG rule '{label}' allows traffic from 0.0.0.0/0.",
+   543→                    "evidence": _ev(fname, start + ln - 1),
+   544→                    "remediation": "Restrict source_address_prefix to specific IP ranges.",
+   545→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   546→                })
+   547→
+   548→        if "azurerm_storage_account" in block_type:
+   549→            if re.search(r'allow_blob_public_access\s*=\s*true', joined):
+   550→                ln = _tf_in_block(blines, r'allow_blob_public_access') or start
+   551→                issues.append({
+   552→                    "title": "Azure Storage Account Allows Public Blob Access",
+   553→                    "severity": "high", "category": "storage_misconfiguration",
+   554→                    "description": f"Storage account '{label}' allows public blob access.",
+   555→                    "evidence": _ev(fname, start + ln - 1),
+   556→                    "remediation": "Set allow_blob_public_access = false.",
+   557→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   558→                })
+   559→
+   560→        # ── ECS Task Definition ────────────────────────────────────────
+   561→
+   562→        if "aws_ecs_task_definition" in block_type:
+   563→            priv_ln = _tf_in_block(blines, r'privileged\s*=\s*true')
+   564→            if priv_ln:
+   565→                issues.append({
+   566→                    "title": "ECS Task Definition with Privileged Container",
+   567→                    "severity": "critical", "category": "container_privilege",
+   568→                    "description": "ECS task definition has privileged = true, giving the container full host access.",
+   569→                    "evidence": _ev(fname, start + priv_ln - 1),
+   570→                    "remediation": "Set privileged = false and grant only specific Linux capabilities.",
+   571→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   572→                })
+   573→
+   574→        # ── EFS Checks ────────────────────────────────────────────────
+   575→
+   576→        if "aws_efs_file_system" in block_type:
+   577→            if _tf_not_in_block(blines, r'encrypted\s*=\s*true'):
+   578→                ln = _tf_in_block(blines, r'aws_efs_file_system') or start
+   579→                issues.append({
+   580→                    "title": "EFS File System Unencrypted",
+   581→                    "severity": "high", "category": "encryption",
+   582→                    "description": f"EFS file system '{label}' is not encrypted at rest.",
+   583→                    "evidence": _ev(fname, start + ln - 1),
+   584→                    "remediation": "Set encrypted = true.",
+   585→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   586→                })
+   587→
+   588→        # ── ElastiCache Checks ────────────────────────────────────────
+   589→
+   590→        if "aws_elasticache_cluster" in block_type:
+   591→            if _tf_not_in_block(blines, r'at_rest_encryption_enabled\s*=\s*true'):
+   592→                ln = _tf_in_block(blines, r'aws_elasticache_cluster') or start
+   593→                issues.append({
+   594→                    "title": "ElastiCache Cluster Without At-Rest Encryption",
+   595→                    "severity": "high", "category": "encryption",
+   596→                    "description": f"ElastiCache cluster '{label}' does not encrypt data at rest.",
+   597→                    "evidence": _ev(fname, start + ln - 1),
+   598→                    "remediation": "Set at_rest_encryption_enabled = true.",
+   599→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   600→                })
+   601→
+   602→            if _tf_not_in_block(blines, r'transit_encryption_enabled\s*=\s*true'):
+   603→                ln = _tf_in_block(blines, r'aws_elasticache_cluster') or start
+   604→                issues.append({
+   605→                    "title": "ElastiCache Cluster Without Transit Encryption",
+   606→                    "severity": "high", "category": "encryption",
+   607→                    "description": f"ElastiCache cluster '{label}' does not encrypt data in transit.",
+   608→                    "evidence": _ev(fname, start + ln - 1),
+   609→                    "remediation": "Set transit_encryption_enabled = true.",
+   610→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   611→                })
+   612→
+   613→        # ── SNS Topic Checks ──────────────────────────────────────────
+   614→
+   615→        if "aws_sns_topic" in block_type:
+   616→            if _tf_not_in_block(blines, r'kms_key_id'):
+   617→                ln = _tf_in_block(blines, r'aws_sns_topic') or start
+   618→                issues.append({
+   619→                    "title": "SNS Topic Without Server-Side Encryption",
+   620→                    "severity": "medium", "category": "encryption",
+   621→                    "description": f"SNS topic '{label}' has no KMS key for server-side encryption.",
+   622→                    "evidence": _ev(fname, start + ln - 1),
+   623→                    "remediation": "Specify kms_key_id to encrypt SNS messages at rest.",
+   624→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   625→                })
+   626→
+   627→        # ── SQS Queue Checks ──────────────────────────────────────────
+   628→
+   629→        if "aws_sqs_queue" in block_type:
+   630→            if _tf_not_in_block(blines, r'kms_data_key_reuse_period_seconds|kms_master_key_id|sqs_managed_sse_enabled'):
+   631→                ln = _tf_in_block(blines, r'aws_sqs_queue') or start
+   632→                issues.append({
+   633→                    "title": "SQS Queue Without Encryption",
+   634→                    "severity": "medium", "category": "encryption",
+   635→                    "description": f"SQS queue '{label}' has no encryption configured.",
+   636→                    "evidence": _ev(fname, start + ln - 1),
+   637→                    "remediation": "Set sqs_managed_sse_enabled = true or specify kms_master_key_id.",
+   638→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   639→                })
+   640→
+   641→        # ── KMS Key Checks ────────────────────────────────────────────
+   642→
+   643→        if "aws_kms_key" in block_type:
+   644→            if _tf_not_in_block(blines, r'enable_key_rotation\s*=\s*true'):
+   645→                ln = _tf_in_block(blines, r'aws_kms_key') or start
+   646→                issues.append({
+   647→                    "title": "KMS Key Without Automatic Rotation",
+   648→                    "severity": "medium", "category": "key_management",
+   649→                    "description": f"KMS key '{label}' does not have automatic key rotation enabled.",
+   650→                    "evidence": _ev(fname, start + ln - 1),
+   651→                    "remediation": "Set enable_key_rotation = true to automatically rotate the key material.",
+   652→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   653→                })
+   654→
+   655→        # ── Secrets Manager Checks ────────────────────────────────────
+   656→
+   657→        if "aws_secretsmanager_secret" in block_type:
+   658→            if _tf_not_in_block(blines, r'rotation_rules'):
+   659→                ln = _tf_in_block(blines, r'aws_secretsmanager_secret') or start
+   660→                issues.append({
+   661→                    "title": "Secrets Manager Secret Without Rotation",
+   662→                    "severity": "medium", "category": "secrets_management",
+   663→                    "description": f"Secret '{label}' has no automatic rotation configured.",
+   664→                    "evidence": _ev(fname, start + ln - 1),
+   665→                    "remediation": "Add a rotation_rules block with AutomaticallyAfterDays (min 1, max 365).",
+   666→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   667→                })
+   668→
+   669→        # ── CloudTrail Checks ─────────────────────────────────────────
+   670→
+   671→        if "aws_cloudtrail" in block_type:
+   672→            if _tf_not_in_block(blines, r'kms_key_id'):
+   673→                ln = _tf_in_block(blines, r'aws_cloudtrail') or start
+   674→                issues.append({
+   675→                    "title": "CloudTrail Without KMS Encryption",
+   676→                    "severity": "medium", "category": "encryption",
+   677→                    "description": f"CloudTrail '{label}' logs are not encrypted with a customer-managed KMS key.",
+   678→                    "evidence": _ev(fname, start + ln - 1),
+   679→                    "remediation": "Specify kms_key_id to encrypt CloudTrail log files with a CMK.",
+   680→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   681→                })
+   682→
+   683→            if _tf_not_in_block(blines, r'is_multi_region_trail\s*=\s*true'):
+   684→                ln = _tf_in_block(blines, r'aws_cloudtrail') or start
+   685→                issues.append({
+   686→                    "title": "CloudTrail Not Multi-Region",
+   687→                    "severity": "low", "category": "monitoring",
+   688→                    "description": f"CloudTrail '{label}' is not configured as a multi-region trail.",
+   689→                    "evidence": _ev(fname, start + ln - 1),
+   690→                    "remediation": "Set is_multi_region_trail = true to capture events from all AWS regions.",
+   691→                    "dread_score": _dread("low"), "points_deducted": _pts("low"),
+   692→                })
+   693→
+   694→            log_file_ln = _tf_in_block(blines, r'enable_log_file_validation\s*=\s*false')
+   695→            if log_file_ln:
+   696→                issues.append({
+   697→                    "title": "CloudTrail Log File Validation Disabled",
+   698→                    "severity": "medium", "category": "integrity",
+   699→                    "description": "CloudTrail log file validation is disabled, allowing tampering.",
+   700→                    "evidence": _ev(fname, start + log_file_ln - 1),
+   701→                    "remediation": "Set enable_log_file_validation = true.",
+   702→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   703→                })
+   704→
+   705→        # ── S3 Bucket Object Lock (WORM) ──────────────────────────────
+   706→
+   707→        if "aws_s3_bucket" in block_type and "policy" not in block_type:
+   708→            if _tf_not_in_block(blines, r'object_lock_configuration'):
+   709→                # Only flag if bucket appears to hold sensitive data
+   710→                if re.search(r'(data|backup|log|audit|secret|pii)', label, re.I):
+   711→                    ln = _tf_in_block(blines, r'aws_s3_bucket') or start
+   712→                    issues.append({
+   713→                        "title": f"Sensitive S3 Bucket '{label}' Without Object Lock",
+   714→                        "severity": "medium", "category": "data_protection",
+   715→                        "description": f"S3 bucket '{label}' (appears sensitive) has no object lock configuration for WORM protection.",
+   716→                        "evidence": _ev(fname, start + ln - 1),
+   717→                        "remediation": "Add object_lock_configuration with ObjectLockEnabled = Enabled.",
+   718→                        "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   719→                    })
+   720→
+   721→        # ── Generic: hardcoded credentials in any block ────────────────
+   722→
+   723→        for idx, line in enumerate(blines):
+   724→            if re.search(r'(?:password|secret|token|api_key|private_key)\s*=\s*["\'][^"\']{8,}["\']', line, re.I):
+   725→                issues.append({
+   726→                    "title": "Hardcoded Secret in Terraform",
+   727→                    "severity": "critical", "category": "hardcoded_secret",
+   728→                    "description": "A password, secret, or key is hardcoded in the Terraform file.",
+   729→                    "evidence": _ev(fname, start + idx),
+   730→                    "remediation": "Use variables, SSM Parameter Store, or Vault for secrets. Reference with data sources.",
+   731→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   732→                })
+   733→                break  # One per block
+   734→
+   735→        # ── AWS Redshift Checks ──────────────────────────────────────
+   736→
+   737→        if "aws_redshift_cluster" in block_type:
+   738→            if _tf_not_in_block(blines, r'encrypted\s*=\s*true'):
+   739→                ln = _tf_in_block(blines, r'aws_redshift_cluster') or start
+   740→                issues.append({
+   741→                    "title": "Redshift Cluster Unencrypted",
+   742→                    "severity": "high", "category": "encryption",
+   743→                    "description": f"Redshift cluster '{label}' does not have encryption enabled.",
+   744→                    "evidence": _ev(fname, start + ln - 1),
+   745→                    "remediation": "Set encrypted = true.",
+   746→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   747→                })
+   748→
+   749→            if _tf_not_in_block(blines, r'require_ssl\s*=\s*true'):
+   750→                ln = _tf_in_block(blines, r'aws_redshift_cluster') or start
+   751→                issues.append({
+   752→                    "title": "Redshift Cluster Without Require SSL",
+   753→                    "severity": "medium", "category": "encryption",
+   754→                    "description": f"Redshift cluster '{label}' does not require SSL for connections.",
+   755→                    "evidence": _ev(fname, start + ln - 1),
+   756→                    "remediation": "Set require_ssl = true in the parameter group.",
+   757→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   758→                })
+   759→
+   760→        # ── AWS ALB/NLB Checks ────────────────────────────────────────
+   761→
+   762→        if "aws_lb_listener" in block_type or "aws_alb_listener" in block_type:
+   763→            if _tf_not_in_block(blines, r'certificate_arn|default_action.*fixed-response'):
+   764→                ln = _tf_in_block(blines, r'aws_lb_listener|aws_alb_listener') or start
+   765→                if re.search(r'port\s*=\s*"?80', joined):
+   766→                    issues.append({
+   767→                        "title": "ALB Listener on HTTP (Port 80) Without Redirect",
+   768→                        "severity": "medium", "category": "network_exposure",
+   769→                        "description": f"Load balancer listener '{label}' accepts HTTP (port 80) traffic without redirect to HTTPS.",
+   770→                        "evidence": _ev(fname, start + ln - 1),
+   771→                        "remediation": "Add a redirect action from port 80 to port 443, or use certificate_arn for HTTPS.",
+   772→                        "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   773→                    })
+   774→
+   775→        # ── AWS IAM User Login Profile ───────────────────────────────
+   776→
+   777→        if "aws_iam_user_login_profile" in block_type:
+   778→            if _tf_not_in_block(blines, r'password_reset_required\s*=\s*true'):
+   779→                ln = _tf_in_block(blines, r'aws_iam_user_login_profile') or start
+   780→                issues.append({
+   781→                    "title": "IAM User Login Without Password Reset Required",
+   782→                    "severity": "medium", "category": "iam_misconfiguration",
+   783→                    "description": f"IAM user login profile '{label}' does not require password reset on first login.",
+   784→                    "evidence": _ev(fname, start + ln - 1),
+   785→                    "remediation": "Set password_reset_required = true.",
+   786→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   787→                })
+   788→
+   789→    return issues
+   790→
+   791→
+   792→# ══════════════════════════════════════════════════════════════════════
+   793→# 2. CLOUDFORMATION / YAML PARSER
+   794→# ══════════════════════════════════════════════════════════════════════
+   795→
+   796→
+   797→def _cf_check_security_group(resource: Dict[str, Any], fname: str) -> List[Dict[str, Any]]:
+   798→    """Check CloudFormation SecurityGroup resources."""
+   799→    issues: List[Dict[str, Any]] = []
+   800→    res_name = resource.get("_cf_name", "unknown")
+   801→
+   802→    props = resource.get("Properties", {})
+   803→    if not isinstance(props, dict):
+   804→        return issues
+   805→
+   806→    ingress_rules = props.get("SecurityGroupIngress", [])
+   807→    if not isinstance(ingress_rules, list):
+   808→        ingress_rules = [ingress_rules]
+   809→
+   810→    for rule in ingress_rules:
+   811→        if not isinstance(rule, dict):
+   812→            continue
+   813→        cidr = rule.get("CidrIp", "")
+   814→        if isinstance(cidr, str) and cidr == "0.0.0.0/0":
+   815→            port = rule.get("FromPort", "any")
+   816→            issues.append({
+   817→                "title": f"CloudFormation SecurityGroup Open to Internet (port {port})",
+   818→                "severity": "high", "category": "network_exposure",
+   819→                "description": f"SecurityGroup '{res_name}' allows ingress from 0.0.0.0/0 on port {port}.",
+   820→                "evidence": f"{fname}: {res_name}.SecurityGroupIngress CidrIp=0.0.0.0/0",
+   821→                "remediation": "Restrict CidrIp to specific IP ranges or use VPC CIDR.",
+   822→                "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   823→            })
+   824→
+   825→            # SSH specifically
+   826→            if str(port) == "22":
+   827→                issues.append({
+   828→                    "title": "CloudFormation: SSH (Port 22) Open to Internet",
+   829→                    "severity": "critical", "category": "network_exposure",
+   830→                    "description": f"SecurityGroup '{res_name}' exposes SSH to the entire internet.",
+   831→                    "evidence": f"{fname}: {res_name}.SecurityGroupIngress port 22 CidrIp=0.0.0.0/0",
+   832→                    "remediation": "Restrict SSH CidrIp to bastion host or VPN IP range.",
+   833→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   834→                })
+   835→
+   836→            # RDP specifically
+   837→            if str(port) == "3389":
+   838→                issues.append({
+   839→                    "title": "CloudFormation: RDP (Port 3389) Open to Internet",
+   840→                    "severity": "critical", "category": "network_exposure",
+   841→                    "description": f"SecurityGroup '{res_name}' exposes RDP to the entire internet.",
+   842→                    "evidence": f"{fname}: {res_name}.SecurityGroupIngress port 3389 CidrIp=0.0.0.0/0",
+   843→                    "remediation": "Use AWS Systems Manager Session Manager instead of RDP.",
+   844→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   845→                })
+   846→
+   847→    return issues
+   848→
+   849→
+   850→def _cf_check_bucket_policy(resource: Dict[str, Any], fname: str) -> List[Dict[str, Any]]:
+   851→    """Check CloudFormation S3 BucketPolicy resources."""
+   852→    issues: List[Dict[str, Any]] = []
+   853→    res_name = resource.get("_cf_name", "unknown")
+   854→    props = resource.get("Properties", {})
+   855→    if not isinstance(props, dict):
+   856→        return issues
+   857→
+   858→    policy_doc = props.get("PolicyDocument", {})
+   859→    if not isinstance(policy_doc, dict):
+   860→        return issues
+   861→
+   862→    statements = policy_doc.get("Statement", [])
+   863→    if not isinstance(statements, list):
+   864→        statements = [statements]
+   865→
+   866→    for stmt in statements:
+   867→        if not isinstance(stmt, dict):
+   868→            continue
+   869→        principal = stmt.get("Principal", {})
+   870→        if isinstance(principal, dict) and principal.get("AWS") == "*":
+   871→            issues.append({
+   872→                "title": "CloudFormation: S3 BucketPolicy with Wildcard Principal",
+   873→                "severity": "critical", "category": "s3_misconfiguration",
+   874→                "description": f"BucketPolicy '{res_name}' has Principal: '*' allowing any AWS account access.",
+   875→                "evidence": f"{fname}: {res_name} Principal: *",
+   876→                "remediation": "Restrict Principal to specific AWS account ARNs.",
+   877→                "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   878→            })
+   879→
+   880→        action = stmt.get("Action", "")
+   881→        resource = stmt.get("Resource", "")
+   882→        if action == "*" and resource == "*":
+   883→            issues.append({
+   884→                "title": "CloudFormation: IAM Policy with Full Access",
+   885→                "severity": "critical", "category": "iam_misconfiguration",
+   886→                "description": f"Policy in '{res_name}' grants Action: '*' on Resource: '*'.",
+   887→                "evidence": f"{fname}: {res_name} Action: * Resource: *",
+   888→                "remediation": "Apply least-privilege with explicit actions and ARN patterns.",
+   889→                "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   890→            })
+   891→
+   892→    return issues
+   893→
+   894→
+   895→def _cf_check_rds(resource: Dict[str, Any], fname: str) -> List[Dict[str, Any]]:
+   896→    """Check CloudFormation RDS resources."""
+   897→    issues: List[Dict[str, Any]] = []
+   898→    res_name = resource.get("_cf_name", "unknown")
+   899→    props = resource.get("Properties", {})
+   900→    if not isinstance(props, dict):
+   901→        return issues
+   902→
+   903→    if not props.get("StorageEncrypted", False):
+   904→        issues.append({
+   905→            "title": "CloudFormation: RDS Instance Unencrypted",
+   906→            "severity": "high", "category": "encryption",
+   907→            "description": f"RDS instance '{res_name}' does not have StorageEncrypted enabled.",
+   908→            "evidence": f"{fname}: {res_name} StorageEncrypted not set",
+   909→            "remediation": 'Set StorageEncrypted: true in the RDS resource properties.',
+   910→            "dread_score": _dread("high"), "points_deducted": _pts("high"),
+   911→        })
+   912→
+   913→    if props.get("PubliclyAccessible", False):
+   914→        issues.append({
+   915→            "title": "CloudFormation: RDS Instance Publicly Accessible",
+   916→            "severity": "critical", "category": "network_exposure",
+   917→            "description": f"RDS instance '{res_name}' is PubliclyAccessible.",
+   918→            "evidence": f"{fname}: {res_name} PubliclyAccessible: true",
+   919→            "remediation": 'Set PubliclyAccessible: false.',
+   920→            "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+   921→        })
+   922→
+   923→    return issues
+   924→
+   925→
+   926→def _cf_check_s3_bucket(resource: Dict[str, Any], fname: str) -> List[Dict[str, Any]]:
+   927→    """Check CloudFormation S3 Bucket resources."""
+   928→    issues: List[Dict[str, Any]] = []
+   929→    res_name = resource.get("_cf_name", "unknown")
+   930→    props = resource.get("Properties", {})
+   931→    if not isinstance(props, dict):
+   932→        return issues
+   933→
+   934→    acl = props.get("AccessControl", "")
+   935→    if acl in ("PublicRead", "PublicReadWrite"):
+   936→        sev = "high" if acl == "PublicRead" else "critical"
+   937→        issues.append({
+   938→            "title": f"CloudFormation: S3 Bucket with {acl} ACL",
+   939→            "severity": sev, "category": "s3_misconfiguration",
+   940→            "description": f"S3 bucket '{res_name}' has AccessControl: {acl}.",
+   941→            "evidence": f"{fname}: {res_name} AccessControl: {acl}",
+   942→            "remediation": 'Set AccessControl: Private and use bucket policies for access.',
+   943→            "dread_score": _dread(sev), "points_deducted": _pts(sev),
+   944→        })
+   945→
+   946→    if not props.get("BucketEncryption"):
+   947→        issues.append({
+   948→            "title": "CloudFormation: S3 Bucket Without Encryption",
+   949→            "severity": "medium", "category": "encryption",
+   950→            "description": f"S3 bucket '{res_name}' has no BucketEncryption property.",
+   951→            "evidence": f"{fname}: {res_name} missing BucketEncryption",
+   952→            "remediation": "Add BucketEncryption with ServerSideEncryptionConfiguration.",
+   953→            "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   954→        })
+   955→
+   956→    versioning = props.get("VersioningConfiguration", {})
+   957→    if not isinstance(versioning, dict) or not versioning.get("Status"):
+   958→        issues.append({
+   959→            "title": "CloudFormation: S3 Bucket Without Versioning",
+   960→            "severity": "medium", "category": "s3_misconfiguration",
+   961→            "description": f"S3 bucket '{res_name}' has no VersioningConfiguration enabled.",
+   962→            "evidence": f"{fname}: {res_name} missing VersioningConfiguration",
+   963→            "remediation": "Add VersioningConfiguration with Status: Enabled.",
+   964→            "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+   965→        })
+   966→
+   967→    return issues
+   968→
+   969→
+   970→def _cf_check_iam(resource: Dict[str, Any], fname: str) -> List[Dict[str, Any]]:
+   971→    """Check CloudFormation IAM resources."""
+   972→    issues: List[Dict[str, Any]] = []
+   973→    res_name = resource.get("_cf_name", "unknown")
+   974→    props = resource.get("Properties", {})
+   975→    if not isinstance(props, dict):
+   976→        return issues
+   977→
+   978→    policies = props.get("Policies", [])
+   979→    if not isinstance(policies, list):
+   980→        policies = [policies]
+   981→
+   982→    for pol in policies:
+   983→        if not isinstance(pol, dict):
+   984→            continue
+   985→        pol_doc = pol.get("PolicyDocument", {})
+   986→        if not isinstance(pol_doc, dict):
+   987→            continue
+   988→        statements = pol_doc.get("Statement", [])
+   989→        if not isinstance(statements, list):
+   990→            statements = [statements]
+   991→        for stmt in statements:
+   992→            if not isinstance(stmt, dict):
+   993→                continue
+   994→            action = stmt.get("Action", "")
+   995→            resource = stmt.get("Resource", "")
+   996→            if action == "*" and resource == "*":
+   997→                issues.append({
+   998→                    "title": "CloudFormation: IAM ManagedPolicy with Full Access",
+   999→                    "severity": "critical", "category": "iam_misconfiguration",
+  1000→                    "description": f"IAM role/policy '{res_name}' has a statement with Action: '*' and Resource: '*'.",
+  1001→                    "evidence": f"{fname}: {res_name} Policy Action: * Resource: *",
+  1002→                    "remediation": "Replace wildcard with explicit actions and resource ARNs.",
+  1003→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+  1004→                })
+  1005→
+  1006→    # Check ManagedPolicyDocument directly
+  1007→    doc = props.get("PolicyDocument", {})
+  1008→    if isinstance(doc, dict):
+  1009→        statements = doc.get("Statement", [])
+  1010→        if isinstance(statements, list):
+  1011→            for stmt in statements:
+  1012→                if isinstance(stmt, dict):
+  1013→                    action = stmt.get("Action", "")
+  1014→                    resource = stmt.get("Resource", "")
+  1015→                    if action == "*" and resource == "*":
+  1016→                        issues.append({
+  1017→                            "title": "CloudFormation: ManagedPolicyDocument with Full Access",
+  1018→                            "severity": "critical", "category": "iam_misconfiguration",
+  1019→                            "description": f"Policy '{res_name}' grants full admin access via PolicyDocument.",
+  1020→                            "evidence": f"{fname}: {res_name} PolicyDocument Action: * Resource: *",
+  1021→                            "remediation": "Apply least-privilege: specify explicit actions and resource ARNs.",
+  1022→                            "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+  1023→                        })
+  1024→
+  1025→    return issues
+  1026→
+  1027→
+  1028→def parse_cf_file(path: str) -> List[Dict[str, Any]]:
+  1029→    """Parse a CloudFormation YAML/JSON template and return a list of issue dicts."""
+  1030→    issues: List[Dict[str, Any]] = []
+  1031→    fname = os.path.basename(path)
+  1032→
+  1033→    try:
+  1034→        text = Path(path).read_text(encoding="utf-8", errors="replace")
+  1035→    except OSError:
+  1036→        return issues
+  1037→
+  1038→    template = _simple_yaml_load(text)
+  1039→    if not isinstance(template, dict):
+  1040→        return issues
+  1041→
+  1042→    resources = template.get("Resources", {})
+  1043→    if not isinstance(resources, dict):
+  1044→        return issues
+  1045→
+  1046→    for res_name, resource in resources.items():
+  1047→        if not isinstance(resource, dict):
+  1048→            continue
+  1049→        resource["_cf_name"] = res_name
+  1050→        res_type = str(resource.get("Type", ""))
+  1051→
+  1052→        if "SecurityGroup" in res_type:
+  1053→            issues.extend(_cf_check_security_group(resource, fname))
+  1054→        if "BucketPolicy" in res_type:
+  1055→            issues.extend(_cf_check_bucket_policy(resource, fname))
+  1056→        if "DBInstance" in res_type or "RDS" in res_type:
+  1057→            issues.extend(_cf_check_rds(resource, fname))
+  1058→        if res_type == "AWS::S3::Bucket":
+  1059→            issues.extend(_cf_check_s3_bucket(resource, fname))
+  1060→        if "IAM" in res_type and ("Role" in res_type or "Policy" in res_type or "User" in res_type):
+  1061→            issues.extend(_cf_check_iam(resource, fname))
+  1062→
+  1063→        # Generic: Lambda without VPC
+  1064→        if "Lambda" in res_type and "Function" in res_type:
+  1065→            props = resource.get("Properties", {})
+  1066→            if isinstance(props, dict) and not props.get("VpcConfig"):
+  1067→                issues.append({
+  1068→                    "title": f"CloudFormation: Lambda '{res_name}' Not in VPC",
+  1069→                    "severity": "low", "category": "network_exposure",
+  1070→                    "description": f"Lambda function '{res_name}' has no VpcConfig, running with direct internet access.",
+  1071→                    "evidence": f"{fname}: {res_name} missing VpcConfig",
+  1072→                    "remediation": "Add VpcConfig with SubnetIds and SecurityGroupIds.",
+  1073→                    "dread_score": _dread("low"), "points_deducted": _pts("low"),
+  1074→                })
+  1075→
+  1076→        # EC2 Instance without IAM instance profile
+  1077→        if res_type == "AWS::EC2::Instance":
+  1078→            props = resource.get("Properties", {})
+  1079→            if isinstance(props, dict) and not props.get("IamInstanceProfile"):
+  1080→                issues.append({
+  1081→                    "title": f"CloudFormation: EC2 '{res_name}' Without IAM Profile",
+  1082→                    "severity": "medium", "category": "iam_misconfiguration",
+  1083→                    "description": f"EC2 instance '{res_name}' has no IamInstanceProfile for fine-grained AWS access.",
+  1084→                    "evidence": f"{fname}: {res_name} missing IamInstanceProfile",
+  1085→                    "remediation": "Add an IamInstanceProfile property referencing an IAM instance profile.",
+  1086→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1087→                })
+  1088→
+  1089→        # SecurityGroup missing egress
+  1090→        if "SecurityGroup" in res_type and "Ingress" not in res_type:
+  1091→            props = resource.get("Properties", {})
+  1092→            if isinstance(props, dict):
+  1093→                has_egress = props.get("SecurityGroupEgress", [])
+  1094→                if not has_egress:
+  1095→                    issues.append({
+  1096→                        "title": f"CloudFormation: SecurityGroup '{res_name}' Missing Egress Rules",
+  1097→                        "severity": "medium", "category": "network_exposure",
+  1098→                        "description": f"SecurityGroup '{res_name}' has no egress rules, defaulting to allow all outbound.",
+  1099→                        "evidence": f"{fname}: {res_name} missing SecurityGroupEgress",
+  1100→                        "remediation": "Add explicit SecurityGroupEgress rules to restrict outbound traffic.",
+  1101→                        "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1102→                    })
+  1103→
+  1104→    return issues
+  1105→
+  1106→
+  1107→# ══════════════════════════════════════════════════════════════════════
+  1108→# 3. DOCKERFILE ANALYZER
+  1109→# ══════════════════════════════════════════════════════════════════════
+  1110→
+  1111→
+  1112→# Sensitive file patterns that should never be COPY/ADDed
+  1113→_SENSITIVE_FILE_PATTERNS: List[Tuple[re.Pattern, str]] = [
+  1114→    (re.compile(r"\.env", re.I), ".env file"),
+  1115→    (re.compile(r"\.aws", re.I), ".aws credentials directory"),
+  1116→    (re.compile(r"(id_rsa|id_dsa|id_ecdsa|id_ed25519)", re.I), "SSH private key"),
+  1117→    (re.compile(r"\.ssh", re.I), ".ssh directory"),
+  1118→    (re.compile(r"\.npmrc", re.I), ".npmrc (may contain auth tokens)"),
+  1119→    (re.compile(r"\.pem", re.I), ".pem certificate/key file"),
+  1120→    (re.compile(r"\.key", re.I), ".key private key file"),
+  1121→    (re.compile(r"\.p12|\.pfx", re.I), "PKCS#12 certificate bundle"),
+  1122→    (re.compile(r"credentials\.json|service-account", re.I), "GCP service account credentials"),
+  1123→]
+  1124→
+  1125→# Secret environment variable patterns
+  1126→_SECRET_ENV_PATTERNS = re.compile(
+  1127→    r'(?:PASSWORD|SECRET|TOKEN|API_KEY|PRIVATE_KEY|AUTH_TOKEN|ACCESS_KEY)'
+  1128→    r'\s*=\s*["\x27]\S{1,}["\x27]',
+  1129→    re.I,
+  1130→)
+  1131→
+  1132→# Dangerous ports to expose
+  1133→_DANGEROUS_PORTS: Dict[str, str] = {
+  1134→    "22": "SSH",
+  1135→    "2375": "Docker daemon (unencrypted)",
+  1136→    "2376": "Docker daemon (TLS)",
+  1137→    "6379": "Redis",
+  1138→    "27017": "MongoDB",
+  1139→    "5432": "PostgreSQL",
+  1140→    "3306": "MySQL",
+  1141→    "9200": "Elasticsearch",
+  1142→    "11211": "Memcached",
+  1143→}
+  1144→
+  1145→
+  1146→def parse_dockerfile(path: str) -> List[Dict[str, Any]]:
+  1147→    """Parse a Dockerfile and return a list of issue dicts."""
+  1148→    issues: List[Dict[str, Any]] = []
+  1149→    fname = os.path.basename(path)
+  1150→
+  1151→    try:
+  1152→        text = Path(path).read_text(encoding="utf-8", errors="replace")
+  1153→    except OSError:
+  1154→        return issues
+  1155→
+  1156→    lines = text.splitlines()
+  1157→    has_user = False
+  1158→    has_healthcheck = False
+  1159→    has_from = False
+  1160→    from_line = 0
+  1161→    user_line_num = 0
+  1162→
+  1163→    for idx, line in enumerate(lines):
+  1164→        stripped = line.strip()
+  1165→        if not stripped or stripped.startswith("#"):
+  1166→            continue
+  1167→
+  1168→        ln = idx + 1
+  1169→
+  1170→        # ── FROM checks ───────────────────────────────────────────────
+  1171→        if stripped.upper().startswith("FROM "):
+  1172→            has_from = True
+  1173→            from_line = ln
+  1174→            from_val = stripped[5:].strip()
+  1175→
+  1176→            # Check: FROM scratch
+  1177→            if from_val.lower() == "scratch":
+  1178→                issues.append({
+  1179→                    "title": "Dockerfile Uses FROM scratch",
+  1180→                    "severity": "medium", "category": "container_image",
+  1181→                    "description": "FROM scratch produces a minimal image but provides no package management or shell for debugging.",
+  1182→                    "evidence": _ev(fname, ln),
+  1183→                    "remediation": "Use a minimal base like alpine or distroless if possible.",
+  1184→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1185→                })
+  1186→            # Check: FROM without tag (mutable image)
+  1187→            elif ":" not in from_val.split("@")[0]:
+  1188→                issues.append({
+  1189→                    "title": "Dockerfile FROM Without Specific Tag",
+  1190→                    "severity": "medium", "category": "container_image",
+  1191→                    "description": f"Base image '{from_val}' has no specific tag, using 'latest' which is mutable.",
+  1192→                    "evidence": _ev(fname, ln),
+  1193→                    "remediation": f"Pin the image: {from_val}:<specific-tag> or use a digest @{from_val}@sha256:...",
+  1194→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1195→                })
+  1196→            # Check: FROM using :latest tag
+  1197→            elif from_val.endswith(":latest"):
+  1198→                issues.append({
+  1199→                    "title": "Dockerfile FROM Uses :latest Tag",
+  1200→                    "severity": "medium", "category": "container_image",
+  1201→                    "description": f"Base image uses ':latest' tag which is mutable and non-reproducible.",
+  1202→                    "evidence": _ev(fname, ln),
+  1203→                    "remediation": f"Pin to a specific version tag instead of :latest.",
+  1204→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1205→                })
+  1206→
+  1207→        # ── USER checks ───────────────────────────────────────────────
+  1208→        if stripped.upper().startswith("USER "):
+  1209→            user_val = stripped[5:].strip()
+  1210→            has_user = True
+  1211→            user_line_num = ln
+  1212→
+  1213→            if user_val in ("root", "0"):
+  1214→                issues.append({
+  1215→                    "title": "Dockerfile Explicitly Runs as Root",
+  1216→                    "severity": "high", "category": "container_privilege",
+  1217→                    "description": "USER root/0 is explicitly set, running the container with full root privileges.",
+  1218→                    "evidence": _ev(fname, ln),
+  1219→                    "remediation": "Create a non-root user and set USER <username>.",
+  1220→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1221→                })
+  1222→
+  1223→        # ── COPY / ADD checks ─────────────────────────────────────────
+  1224→        if stripped.upper().startswith(("COPY ", "ADD ")):
+  1225→            # Check for sensitive files
+  1226→            for pat, desc in _SENSITIVE_FILE_PATTERNS:
+  1227→                if pat.search(stripped):
+  1228→                    issues.append({
+  1229→                        "title": f"Dockerfile Copies Sensitive File ({desc})",
+  1230→                        "severity": "critical", "category": "secrets_leak",
+  1231→                        "description": f"COPY or ADD instruction includes {desc} in the image.",
+  1232→                        "evidence": _ev(fname, ln),
+  1233→                        "remediation": f"Do not copy {desc} into the image. Use runtime secrets or multi-stage builds.",
+  1234→                        "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+  1235→                    })
+  1236→                    break
+  1237→
+  1238→            # Check: ADD with remote URL (supply chain risk)
+  1239→            if re.search(r'ADD\s+https?://', stripped, re.I):
+  1240→                issues.append({
+  1241→                    "title": "Dockerfile ADD from Remote URL",
+  1242→                    "severity": "high", "category": "supply_chain",
+  1243→                    "description": "ADD instruction fetches from a remote URL, creating a supply chain risk.",
+  1244→                    "evidence": _ev(fname, ln),
+  1245→                    "remediation": "Use RUN curl/wget with checksum verification instead of ADD for remote URLs.",
+  1246→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1247→                })
+  1248→
+  1249→        # ── ENV checks ────────────────────────────────────────────────
+  1250→        if stripped.upper().startswith("ENV "):
+  1251→            env_val = stripped[4:].strip()
+  1252→            if _SECRET_ENV_PATTERNS.search(env_val):
+  1253→                issues.append({
+  1254→                    "title": "Dockerfile ENV Contains Secret",
+  1255→                    "severity": "high", "category": "hardcoded_secret",
+  1256→                    "description": "An ENV variable appears to contain a hardcoded secret/password/token.",
+  1257→                    "evidence": _ev(fname, ln),
+  1258→                    "remediation": "Use Docker secrets, Kubernetes secrets, or runtime environment injection.",
+  1259→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1260→                })
+  1261→
+  1262→        # ── RUN checks ────────────────────────────────────────────────
+  1263→        if stripped.upper().startswith("RUN "):
+  1264→            run_val = stripped[4:].strip()
+  1265→
+  1266→            # curl|wget piped to bash/sh
+  1267→            if re.search(r'(?:curl|wget)\s+.*\|\s*(?:ba)?sh', run_val):
+  1268→                issues.append({
+  1269→                    "title": "Dockerfile RUN Pipes Remote Script to Shell",
+  1270→                    "severity": "high", "category": "supply_chain",
+  1271→                    "description": "RUN instruction pipes curl/wget output directly to shell — supply chain risk.",
+  1272→                    "evidence": _ev(fname, ln),
+  1273→                    "remediation": "Download the script first, verify its checksum, then execute it.",
+  1274→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1275→                })
+  1276→
+  1277→            # --privileged in RUN (docker run inside docker)
+  1278→            if "--privileged" in run_val:
+  1279→                issues.append({
+  1280→                    "title": "Dockerfile RUN with --privileged Flag",
+  1281→                    "severity": "critical", "category": "container_privilege",
+  1282→                    "description": "RUN instruction uses --privileged, granting full host access to the build container.",
+  1283→                    "evidence": _ev(fname, ln),
+  1284→                    "remediation": "Remove --privileged flag. Grant only specific capabilities.",
+  1285→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+  1286→                })
+  1287→
+  1288→            # Running as root in RUN (sudo/su)
+  1289→            if re.search(r'\b(?:sudo|su\s)\b', run_val):
+  1290→                issues.append({
+  1291→                    "title": "Dockerfile RUN Uses sudo/su",
+  1292→                    "severity": "medium", "category": "container_privilege",
+  1293→                    "description": "RUN uses sudo/su, indicating the container may need root privileges at runtime.",
+  1294→                    "evidence": _ev(fname, ln),
+  1295→                    "remediation": "Avoid sudo/su. If root is needed for install, switch back to non-root user.",
+  1296→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1297→                })
+  1298→
+  1299→            # apt-get without no-install-recommends
+  1300→            if re.search(r'apt-get\s+install', run_val) and "--no-install-recommends" not in run_val:
+  1301→                issues.append({
+  1302→                    "title": "Dockerfile apt-get Without --no-install-recommends",
+  1303→                    "severity": "low", "category": "image_size",
+  1304→                    "description": "apt-get install without --no-install-recommends increases image size and attack surface.",
+  1305→                    "evidence": _ev(fname, ln),
+  1306→                    "remediation": "Add --no-install-recommends to apt-get install and combine RUN layers.",
+  1307→                    "dread_score": _dread("low"), "points_deducted": _pts("low"),
+  1308→                })
+  1309→
+  1310→            # apt-get update without cache cleanup in same layer
+  1311→            if re.search(r'apt-get\s+update', run_val) and not re.search(r'rm\s+-rf\s+/var/lib/apt', run_val):
+  1312→                issues.append({
+  1313→                    "title": "Dockerfile apt-get Cache Not Cleaned",
+  1314→                    "severity": "low", "category": "image_size",
+  1315→                    "description": "apt-get update without cache cleanup in the same layer increases image size.",
+  1316→                    "evidence": _ev(fname, ln),
+  1317→                    "remediation": "Add '&& rm -rf /var/lib/apt/lists/*' in the same RUN instruction.",
+  1318→                    "dread_score": _dread("low"), "points_deducted": _pts("low"),
+  1319→                })
+  1320→
+  1321→        # ── EXPOSE checks ─────────────────────────────────────────────
+  1322→        if stripped.upper().startswith("EXPOSE "):
+  1323→            ports = stripped[7:].strip().split()
+  1324→            for port in ports:
+  1325→                port_clean = port.split("/")[0]
+  1326→                if port_clean in _DANGEROUS_PORTS:
+  1327→                    svc = _DANGEROUS_PORTS[port_clean]
+  1328→                    issues.append({
+  1329→                        "title": f"Dockerfile Exposes {svc} (Port {port_clean})",
+  1330→                        "severity": "medium", "category": "network_exposure",
+  1331→                        "description": f"Dockerfile exposes port {port_clean} ({svc}) which should not be publicly accessible.",
+  1332→                        "evidence": _ev(fname, ln),
+  1333→                        "remediation": f"Do not EXPOSE {svc} in production. Use Docker networks for internal communication.",
+  1334→                        "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1335→                    })
+  1336→
+  1337→        # ── HEALTHCHECK checks ────────────────────────────────────────
+  1338→        if stripped.upper().startswith("HEALTHCHECK"):
+  1339→            has_healthcheck = True
+  1340→
+  1341→    # ── Post-scan checks ──────────────────────────────────────────────
+  1342→
+  1343→    # Check: No USER directive (runs as root)
+  1344→    if has_from and not has_user:
+  1345→        issues.append({
+  1346→            "title": "Dockerfile Has No USER Directive (Runs as Root)",
+  1347→            "severity": "high", "category": "container_privilege",
+  1348→            "description": "No USER instruction found — the container process runs as root by default.",
+  1349→            "evidence": _ev(fname, from_line or 1),
+  1350→            "remediation": "Add 'USER <non-root-user>' before the ENTRYPOINT/CMD.",
+  1351→            "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1352→        })
+  1353→
+  1354→    # Check: No HEALTHCHECK
+  1355→    if has_from and not has_healthcheck:
+  1356→        issues.append({
+  1357→            "title": "Dockerfile Has No HEALTHCHECK Instruction",
+  1358→            "severity": "low", "category": "monitoring",
+  1359→            "description": "No HEALTHCHECK instruction — the orchestrator cannot determine if the container is healthy.",
+  1360→            "evidence": _ev(fname, 1),
+  1361→            "remediation": "Add a HEALTHCHECK instruction (e.g., HEALTHCHECK CMD curl -f http://localhost:8080/ || exit 1).",
+  1362→            "dread_score": _dread("low"), "points_deducted": _pts("low"),
+  1363→        })
+  1364→
+  1365→    # Check: No .dockerignore (info-level — check if .dockerignore exists alongside)
+  1366→    parent = Path(path).parent
+  1367→    dockerignore = parent / ".dockerignore"
+  1368→    if parent.exists() and not dockerignore.exists():
+  1369→        issues.append({
+  1370→            "title": "No .dockerignore File Detected",
+  1371→            "severity": "info", "category": "best_practice",
+  1372→            "description": "No .dockerignore found in the Dockerfile's directory — sensitive files may be included in the build context.",
+  1373→            "evidence": _ev(fname, 1),
+  1374→            "remediation": "Create a .dockerignore file excluding .git, .env, *.pem, node_modules, etc.",
+  1375→            "dread_score": _dread("info"), "points_deducted": _pts("info"),
+  1376→        })
+  1377→
+  1378→    return issues
+  1379→
+  1380→
+  1381→# ══════════════════════════════════════════════════════════════════════
+  1382→# 4. KUBERNETES MANIFEST ANALYZER
+  1383→# ══════════════════════════════════════════════════════════════════════
+  1384→
+  1385→
+  1386→def _k8s_get_containers(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+  1387→    """Extract all container definitions from a K8s manifest."""
+  1388→    containers: List[Dict[str, Any]] = []
+  1389→    spec = doc.get("spec", {})
+  1390→    if not isinstance(spec, dict):
+  1391→        return containers
+  1392→
+  1393→    for c in spec.get("containers", []):
+  1394→        if isinstance(c, dict):
+  1395→            containers.append(c)
+  1396→    for c in spec.get("initContainers", []):
+  1397→        if isinstance(c, dict):
+  1398→            containers.append(c)
+  1399→    return containers
+  1400→
+  1401→
+  1402→def _k8s_get_pods(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
+  1403→    """Extract pod specs from a K8s manifest (handles Deployments, StatefulSets, etc.)."""
+  1404→    specs: List[Dict[str, Any]] = []
+  1405→    spec = doc.get("spec", {})
+  1406→    if not isinstance(spec, dict):
+  1407→        return specs
+  1408→
+  1409→    # Direct Pod spec
+  1410→    if spec.get("containers") or spec.get("initContainers"):
+  1411→        specs.append(spec)
+  1412→    # Template spec (Deployment, StatefulSet, DaemonSet, Job, CronJob)
+  1413→    template = spec.get("template", {})
+  1414→    if isinstance(template, dict):
+  1415→        pod_spec = template.get("spec", {})
+  1416→        if isinstance(pod_spec, dict) and (pod_spec.get("containers") or pod_spec.get("initContainers")):
+  1417→            specs.append(pod_spec)
+  1418→        # CronJob nested template
+  1419→        job_spec = template.get("spec", {})
+  1420→        if isinstance(job_spec, dict):
+  1421→            inner_template = job_spec.get("template", {})
+  1422→            if isinstance(inner_template, dict):
+  1423→                inner_spec = inner_template.get("spec", {})
+  1424→                if isinstance(inner_spec, dict) and (inner_spec.get("containers") or inner_spec.get("initContainers")):
+  1425→                    specs.append(inner_spec)
+  1426→
+  1427→    return specs
+  1428→
+  1429→
+  1430→def _k8s_check_security_context(pod_spec: Dict[str, Any], doc_name: str, fname: str) -> List[Dict[str, Any]]:
+  1431→    """Check pod and container security contexts."""
+  1432→    issues: List[Dict[str, Any]] = []
+  1433→
+  1434→    # Pod-level security context
+  1435→    pod_sc = pod_spec.get("securityContext", {})
+  1436→    if not isinstance(pod_sc, dict):
+  1437→        pod_sc = {}
+  1438→
+  1439→    # Check: privileged at pod level
+  1440→    if pod_sc.get("privileged") is True:
+  1441→        issues.append({
+  1442→            "title": f"K8s: '{doc_name}' Pod securityContext.privileged=true",
+  1443→            "severity": "critical", "category": "container_privilege",
+  1444→            "description": f"Pod '{doc_name}' has privileged=true at pod level — full host access.",
+  1445→            "evidence": f"{fname}: {doc_name} securityContext.privileged: true",
+  1446→            "remediation": "Remove privileged: true. Grant only specific Linux capabilities.",
+  1447→            "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+  1448→        })
+  1449→
+  1450→    # Check: allowPrivilegeEscalation at pod level
+  1451→    if pod_sc.get("allowPrivilegeEscalation") is True:
+  1452→        issues.append({
+  1453→            "title": f"K8s: '{doc_name}' Pod allowPrivilegeEscalation=true",
+  1454→            "severity": "high", "category": "container_privilege",
+  1455→            "description": f"Pod '{doc_name}' allows privilege escalation.",
+  1456→            "evidence": f"{fname}: {doc_name} allowPrivilegeEscalation: true",
+  1457→            "remediation": "Set allowPrivilegeEscalation: false.",
+  1458→            "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1459→        })
+  1460→
+  1461→    # Check: runAsUser: 0 at pod level
+  1462→    if pod_sc.get("runAsUser") == 0:
+  1463→        issues.append({
+  1464→            "title": f"K8s: '{doc_name}' Pod Runs as Root (runAsUser: 0)",
+  1465→            "severity": "high", "category": "container_privilege",
+  1466→            "description": f"Pod '{doc_name}' explicitly runs as root (runAsUser: 0).",
+  1467→            "evidence": f"{fname}: {doc_name} runAsUser: 0",
+  1468→            "remediation": "Set runAsUser to a non-zero UID (e.g., 1000).",
+  1469→            "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1470→        })
+  1471→
+  1472→    # Check: readOnlyRootFilesystem not true at pod level
+  1473→    if pod_sc.get("readOnlyRootFilesystem") is not True and "readOnlyRootFilesystem" in str(pod_sc):
+  1474→        pass  # explicitly false — handled below
+  1475→    elif "readOnlyRootFilesystem" not in pod_sc and pod_sc:
+  1476→        issues.append({
+  1477→            "title": f"K8s: '{doc_name}' Pod Writable Root Filesystem",
+  1478→            "severity": "medium", "category": "container_hardening",
+  1479→            "description": f"Pod '{doc_name}' does not set readOnlyRootFilesystem: true.",
+  1480→            "evidence": f"{fname}: {doc_name} missing readOnlyRootFilesystem: true",
+  1481→            "remediation": "Set readOnlyRootFilesystem: true in securityContext.",
+  1482→            "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1483→        })
+  1484→
+  1485→    # Container-level checks
+  1486→    for container in _k8s_get_containers_from_spec(pod_spec):
+  1487→        cname = container.get("name", "<unnamed>")
+  1488→        csc = container.get("securityContext", {})
+  1489→        if not isinstance(csc, dict):
+  1490→            csc = {}
+  1491→
+  1492→        # Privileged at container level
+  1493→        if csc.get("privileged") is True:
+  1494→            issues.append({
+  1495→                "title": f"K8s: '{doc_name}/{cname}' Container privileged=true",
+  1496→                "severity": "critical", "category": "container_privilege",
+  1497→                "description": f"Container '{cname}' in '{doc_name}' has privileged=true — full host access.",
+  1498→                "evidence": f"{fname}: {doc_name}/{cname} securityContext.privileged: true",
+  1499→                "remediation": "Remove privileged: true. Grant only specific Linux capabilities.",
+  1500→                "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+  1501→            })
+  1502→
+  1503→        # allowPrivilegeEscalation at container level
+  1504→        if csc.get("allowPrivilegeEscalation") is True:
+  1505→            issues.append({
+  1506→                "title": f"K8s: '{doc_name}/{cname}' allowPrivilegeEscalation=true",
+  1507→                "severity": "high", "category": "container_privilege",
+  1508→                "description": f"Container '{cname}' allows privilege escalation.",
+  1509→                "evidence": f"{fname}: {doc_name}/{cname} allowPrivilegeEscalation: true",
+  1510→                "remediation": "Set allowPrivilegeEscalation: false.",
+  1511→                "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1512→            })
+  1513→
+  1514→        # runAsUser: 0 at container level
+  1515→        if csc.get("runAsUser") == 0:
+  1516→            issues.append({
+  1517→                "title": f"K8s: '{doc_name}/{cname}' Runs as Root (runAsUser: 0)",
+  1518→                "severity": "high", "category": "container_privilege",
+  1519→                "description": f"Container '{cname}' explicitly runs as root.",
+  1520→                "evidence": f"{fname}: {doc_name}/{cname} runAsUser: 0",
+  1521→                "remediation": "Set runAsUser to a non-zero UID.",
+  1522→                "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1523→            })
+  1524→
+  1525→        # Writable root filesystem at container level
+  1526→        if csc.get("readOnlyRootFilesystem") is not True and pod_sc.get("readOnlyRootFilesystem") is not True:
+  1527→            issues.append({
+  1528→                "title": f"K8s: '{doc_name}/{cname}' Writable Root Filesystem",
+  1529→                "severity": "medium", "category": "container_hardening",
+  1530→                "description": f"Container '{cname}' has a writable root filesystem.",
+  1531→                "evidence": f"{fname}: {doc_name}/{cname} missing readOnlyRootFilesystem: true",
+  1532→                "remediation": "Set readOnlyRootFilesystem: true and use emptyDir for writable paths.",
+  1533→                "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1534→            })
+  1535→
+  1536→        # Capabilities check
+  1537→        cap = csc.get("capabilities", {})
+  1538→        if isinstance(cap, dict):
+  1539→            adds = cap.get("add", [])
+  1540→            if isinstance(adds, list):
+  1541→                dangerous_caps = ["ALL", "NET_RAW", "SYS_ADMIN", "SYS_PTRACE", "SYS_MODULE",
+  1542→                                  "DAC_OVERRIDE", "NET_ADMIN", "SYSLOG", "KILL"]
+  1543→                for c in adds:
+  1544→                    if c in dangerous_caps:
+  1545→                        sev = "critical" if c == "ALL" else "high"
+  1546→                        issues.append({
+  1547→                            "title": f"K8s: '{doc_name}/{cname}' Adds Capability {c}",
+  1548→                            "severity": sev, "category": "container_privilege",
+  1549→                            "description": f"Container '{cname}' adds Linux capability {c}, expanding its privilege.",
+  1550→                            "evidence": f"{fname}: {doc_name}/{cname} capabilities.add: [{c}]",
+  1551→                            "remediation": f"Remove {c} from capabilities.add. Drop all capabilities and add only those needed.",
+  1552→                            "dread_score": _dread(sev), "points_deducted": _pts(sev),
+  1553→                        })
+  1554→
+  1555→        # No resource limits
+  1556→        resources = container.get("resources", {})
+  1557→        if isinstance(resources, dict):
+  1558→            limits = resources.get("limits", {})
+  1559→            if not limits:
+  1560→                issues.append({
+  1561→                    "title": f"K8s: '{doc_name}/{cname}' No Resource Limits",
+  1562→                    "severity": "medium", "category": "resource_limit",
+  1563→                    "description": f"Container '{cname}' has no resource limits — can consume all node resources.",
+  1564→                    "evidence": f"{fname}: {doc_name}/{cname} missing resources.limits",
+  1565→                    "remediation": "Set resources.limits for cpu and memory.",
+  1566→                    "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1567→                })
+  1568→            else:
+  1569→                # Check for no memory limit specifically
+  1570→                if not limits.get("memory"):
+  1571→                    issues.append({
+  1572→                        "title": f"K8s: '{doc_name}/{cname}' No Memory Limit",
+  1573→                        "severity": "medium", "category": "resource_limit",
+  1574→                        "description": f"Container '{cname}' has resource limits but no memory limit.",
+  1575→                        "evidence": f"{fname}: {doc_name}/{cname} resources.limits missing memory",
+  1576→                        "remediation": "Set resources.limits.memory (e.g., '256Mi').",
+  1577→                        "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1578→                    })
+  1579→                # Check for no CPU limit
+  1580→                if not limits.get("cpu"):
+  1581→                    issues.append({
+  1582→                        "title": f"K8s: '{doc_name}/{cname}' No CPU Limit",
+  1583→                        "severity": "low", "category": "resource_limit",
+  1584→                        "description": f"Container '{cname}' has no CPU limit.",
+  1585→                        "evidence": f"{fname}: {doc_name}/{cname} resources.limits missing cpu",
+  1586→                        "remediation": "Set resources.limits.cpu (e.g., '500m').",
+  1587→                        "dread_score": _dread("low"), "points_deducted": _pts("low"),
+  1588→                    })
+  1589→
+  1590→        # Secrets in env (plain text) vs envFrom/secretRef
+  1591→        env_list = container.get("env", [])
+  1592→        if isinstance(env_list, list):
+  1593→            secret_env_names = []
+  1594→            for env_var in env_list:
+  1595→                if isinstance(env_var, dict):
+  1596→                    name = env_var.get("name", "")
+  1597→                    value = env_var.get("value", "")
+  1598→                    if value and re.search(r'(?:PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL)', name, re.I):
+  1599→                        secret_env_names.append(name)
+  1600→            if secret_env_names:
+  1601→                issues.append({
+  1602→                    "title": f"K8s: '{doc_name}/{cname}' Secrets in Plain ENV",
+  1603→                    "severity": "high", "category": "secrets_management",
+  1604→                    "description": f"Container '{cname}' has secret values in plain env: {', '.join(secret_env_names[:3])}",
+  1605→                    "evidence": f"{fname}: {doc_name}/{cname} env contains secrets",
+  1606→                    "remediation": "Use envFrom with a SecretRef or use valueFrom.secretKeyRef.",
+  1607→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1608→                })
+  1609→
+  1610→        # imagePullPolicy: Always (supply chain risk)
+  1611→        pull_policy = container.get("imagePullPolicy", "")
+  1612→        if pull_policy == "Always":
+  1613→            issues.append({
+  1614→                "title": f"K8s: '{doc_name}/{cname}' imagePullPolicy: Always",
+  1615→                "severity": "low", "category": "supply_chain",
+  1616→                "description": f"Container '{cname}' uses imagePullPolicy: Always, pulling latest on every pod start.",
+  1617→                "evidence": f"{fname}: {doc_name}/{cname} imagePullPolicy: Always",
+  1618→                "remediation": "Use imagePullPolicy: IfNotPresent with pinned image tags, or verify image digests.",
+  1619→                "dread_score": _dread("low"), "points_deducted": _pts("low"),
+  1620→            })
+  1621→
+  1622→    return issues
+  1623→
+  1624→
+  1625→def _k8s_get_containers_from_spec(pod_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+  1626→    """Extract containers from a pod spec."""
+  1627→    containers: List[Dict[str, Any]] = []
+  1628→    for c in pod_spec.get("containers", []):
+  1629→        if isinstance(c, dict):
+  1630→            containers.append(c)
+  1631→    for c in pod_spec.get("initContainers", []):
+  1632→        if isinstance(c, dict):
+  1633→            containers.append(c)
+  1634→    return containers
+  1635→
+  1636→
+  1637→def _k8s_check_host_settings(pod_spec: Dict[str, Any], doc_name: str, fname: str) -> List[Dict[str, Any]]:
+  1638→    """Check host namespace and IPC settings."""
+  1639→    issues: List[Dict[str, Any]] = []
+  1640→
+  1641→    if pod_spec.get("hostPID") is True:
+  1642→        issues.append({
+  1643→            "title": f"K8s: '{doc_name}' hostPID=true",
+  1644→            "severity": "high", "category": "container_privilege",
+  1645→            "description": f"Pod '{doc_name}' shares the host's PID namespace — can see all host processes.",
+  1646→            "evidence": f"{fname}: {doc_name} hostPID: true",
+  1647→            "remediation": "Set hostPID: false (or remove it, as false is default).",
+  1648→            "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1649→        })
+  1650→
+  1651→    if pod_spec.get("hostNetwork") is True:
+  1652→        issues.append({
+  1653→            "title": f"K8s: '{doc_name}' hostNetwork=true",
+  1654→            "severity": "high", "category": "network_exposure",
+  1655→            "description": f"Pod '{doc_name}' uses the host's network namespace — bypasses network policies.",
+  1656→            "evidence": f"{fname}: {doc_name} hostNetwork: true",
+  1657→            "remediation": "Set hostNetwork: false and use CNI networking.",
+  1658→            "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1659→        })
+  1660→
+  1661→    if pod_spec.get("hostIPC") is True:
+  1662→        issues.append({
+  1663→            "title": f"K8s: '{doc_name}' hostIPC=true",
+  1664→            "severity": "medium", "category": "container_privilege",
+  1665→            "description": f"Pod '{doc_name}' shares the host's IPC namespace — potential information leakage.",
+  1666→            "evidence": f"{fname}: {doc_name} hostIPC: true",
+  1667→            "remediation": "Set hostIPC: false (or remove it, as false is default).",
+  1668→            "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1669→        })
+  1670→
+  1671→    return issues
+  1672→
+  1673→
+  1674→def _k8s_check_volumes(pod_spec: Dict[str, Any], doc_name: str, fname: str) -> List[Dict[str, Any]]:
+  1675→    """Check volume mounts for dangerous host paths."""
+  1676→    issues: List[Dict[str, Any]] = []
+  1677→
+  1678→    for container in _k8s_get_containers_from_spec(pod_spec):
+  1679→        cname = container.get("name", "<unnamed>")
+  1680→        mounts = container.get("volumeMounts", [])
+  1681→        if not isinstance(mounts, list):
+  1682→            continue
+  1683→
+  1684→        for mount in mounts:
+  1685→            if not isinstance(mount, dict):
+  1686→                continue
+  1687→            mpath = mount.get("mountPath", "")
+  1688→
+  1689→            # Docker socket
+  1690→            if "/var/run/docker.sock" in mpath:
+  1691→                issues.append({
+  1692→                    "title": f"K8s: '{doc_name}/{cname}' Mounts Docker Socket",
+  1693→                    "severity": "critical", "category": "container_privilege",
+  1694→                    "description": f"Container '{cname}' mounts /var/run/docker.sock — full host container escape.",
+  1695→                    "evidence": f"{fname}: {doc_name}/{cname} mountPath: {mpath}",
+  1696→                    "remediation": "Never mount docker.sock into workloads. Use Kubernetes APIs directly.",
+  1697→                    "dread_score": _dread("critical"), "points_deducted": _pts("critical"),
+  1698→                })
+  1699→
+  1700→            # Root filesystem mounts
+  1701→            dangerous_roots = ["/", "/etc", "/root", "/var", "/usr", "/bin", "/sbin", "/lib"]
+  1702→            if mpath in dangerous_roots:
+  1703→                issues.append({
+  1704→                    "title": f"K8s: '{doc_name}/{cname}' Mounts Host Path {mpath}",
+  1705→                    "severity": "high", "category": "container_privilege",
+  1706→                    "description": f"Container '{cname}' mounts host path '{mpath}' — potential host file access/tampering.",
+  1707→                    "evidence": f"{fname}: {doc_name}/{cname} mountPath: {mpath}",
+  1708→                    "remediation": f"Avoid mounting host path '{mpath}'. Use ConfigMaps, Secrets, or emptyDir instead.",
+  1709→                    "dread_score": _dread("high"), "points_deducted": _pts("high"),
+  1710→                })
+  1711→
+  1712→    return issues
+  1713→
+  1714→
+  1715→def _k8s_check_service_account(pod_spec: Dict[str, Any], doc_name: str, fname: str) -> List[Dict[str, Any]]:
+  1716→    """Check service account token settings."""
+  1717→    issues: List[Dict[str, Any]] = []
+  1718→
+  1719→    auto_mount = pod_spec.get("automountServiceAccountToken")
+  1720→    if auto_mount is True:
+  1721→        issues.append({
+  1722→            "title": f"K8s: '{doc_name}' automountServiceAccountToken=true",
+  1723→            "severity": "medium", "category": "iam_misconfiguration",
+  1724→            "description": f"Pod '{doc_name}' auto-mounts the service account token — exposed to the container.",
+  1725→            "evidence": f"{fname}: {doc_name} automountServiceAccountToken: true",
+  1726→            "remediation": "Set automountServiceAccountToken: false unless the pod needs to call the K8s API.",
+  1727→            "dread_score": _dread("medium"), "points_deducted": _pts("medium"),
+  1728→        })
+  1729→
+  1730→    return issues
+  1731→
+  1732→
+  1733→def _k8s_check_tolerations(pod_spec: Dict[str, Any], doc_name: str, fname: str) -> List[Dict[str, Any]]:
+  1734→    """Check for overly permissive tolerations."""
+  1735→    issues: List[Dict[str, Any]] = []
+  1736→
+  1737→    tolerations = pod_spec.get("tolerations", [])
+  1738→    if not isinstance(tolerations, list):
+  1739→        return issues
+  1740→
+  1741→    for tol in tolerations:
+  1742→        if not isinstance(tol, dict):
+  1743→            continue
+  1744→        operator = tol.get("operator", "")
+  1745→        effect = tol.get("effect", "")
+  1746→        key = tol.get("key", "")
+  1747→        if operator == "Exists" and not key:
+  1748→            sev = "medium" if effect else "high"
+  1749→            effect_desc = f" with effect '{effect}'" if effect else ""
+  1750→            issues.append({
+  1751→                "title": f"K8s: '{doc_name}' Toleration With operator=Exists (No Key)",
+  1752→                "severity": sev, "category": "scheduling",
+  1753→                "description": f"Pod '{doc_name}' tolerates all taints{effect_desc} — may schedule on dedicated/master nodes.",
+  1754→                "evidence": f"{fname}: {doc_name} toleration operator: Exists, key: (empty)",
+  1755→                "remediation": "Specify a specific taint key or restrict tolerations to known taints.",
+  1756→                "dread_score": _dread(sev), "points_deducted": _pts(sev),
+  1757→            })
+  1758→
+  1759→    return issues
+  1760→
+  1761→
+  1762→def parse_k8s_yaml(path: str) -> List[Dict[str, Any]]:
+  1763→    """Parse a Kubernetes YAML manifest and return a list of issue dicts."""
+  1764→    issues: List[Dict[str, Any]] = []
+  1765→    fname = os.path.basename(path)
+  1766→
+  1767→    try:
+  1768→        text = Path(path).read_text(encoding="utf-8", errors="replace")
+  1769→    except OSError:
+  1770→        return issues
+  1771→
+  1772→    docs = _yaml_load_all(text)
+  1773→
+  1774→    for doc in docs:
+  1775→        if not isinstance(doc, dict):
+  1776→            continue
+  1777→
+  1778→        kind = str(doc.get("kind", ""))
+  1779→        metadata = doc.get("metadata", {})
+  1780→        doc_name = metadata.get("name", "<unnamed>") if isinstance(metadata, dict) else "<unnamed>"
+  1781→
+  1782→        pod_specs = _k8s_get_pods(doc)
+  1783→        if not pod_specs:
+  1784→            continue
+  1785→
+  1786→        for pod_spec in pod_specs:
+  1787→            # Security context checks
+  1788→            issues.extend(_k8s_check_security_context(pod_spec, doc_name, fname))
+  1789→            # Host namespace checks
+  1790→            issues.extend(_k8s_check_host_settings(pod_spec, doc_name, fname))
+  1791→            # Volume mount checks
+  1792→            issues.extend(_k8s_check_volumes(pod_spec, doc_name, fname))
+  1793→            # Service account checks
+  1794→            issues.extend(_k8s_check_service_account(pod_spec, doc_name, fname))
+  1795→            # Toleration checks
+  1796→            issues.extend(_k8s_check_tolerations(pod_spec, doc_name, fname))
+  1797→
+  1798→    return issues
+  1799→
+  1800→
+  1801→# ══════════════════════════════════════════════════════════════════════
+  1802→# 5. RUN FUNCTION
+  1803→# ══════════════════════════════════════════════════════════════════════
+  1804→
+  1805→
+  1806→# File extensions and names we scan
+  1807→_TF_EXTS = {".tf", ".tfstate", ".tfvars"}
+  1808→_CF_EXTS = {".yaml", ".yml", ".json"}
+  1809→_DOCKERFILE_NAMES = {"Dockerfile", "dockerfile", "DockerFile"}
+  1810→_DOCKER_COMPOSE_NAMES = {"docker-compose.yml", "docker-compose.yaml", "docker-compose"}
+  1811→
+  1812→
+  1813→def _is_likely_cloudformation(path: Path, text: str) -> bool:
+  1814→    """Heuristic to determine if a YAML/JSON file is a CloudFormation template."""
+  1815→    if re.search(r'AWSTemplateFormatVersion|AWS::', text):
+  1816→        return True
+  1817→    if re.search(r'Resources:\s*$', text, re.M):
+  1818→        # Could be K8s or CF — check for CF-specific keys
+  1819→        if re.search(r'Type:\s*AWS::|Description:\s*', text):
+  1820→            return True
+  1821→    return False
+  1822→
+  1823→
+  1824→def _is_likely_k8s(path: Path, text: str) -> bool:
+  1825→    """Heuristic to determine if a YAML file is a Kubernetes manifest."""
+  1826→    return bool(re.search(r'apiVersion:\s*(?:v1|apps/|extensions/|batch/|networking\.k8s\.io|rbac\.authorization)', text))
+  1827→
+  1828→
+  1829→def _is_likely_docker_compose(path: Path, text: str) -> bool:
+  1830→    """Heuristic to determine if a YAML file is a docker-compose file."""
+  1831→    return bool(re.search(r'version:\s*["\']?3|services:\s*$', text, re.M))
+  1832→
+  1833→
+  1834→def run(target: str, base_url: str, **kwargs) -> Tuple[List[Finding], int, str, str]:
+  1835→    """Scan a directory for IaC security issues.
+  1836→
+  1837→    Recursively discovers Terraform, CloudFormation, Dockerfile, and
+  1838→    Kubernetes manifest files, runs the appropriate parser, and
+  1839→    converts all issues to Finding objects.
+  1840→
+  1841→    Returns:
+  1842→        (findings, max_points, module_name, category)
+  1843→    """
+  1844→    findings: List[Finding] = []
+  1845→    target_path = Path(target)
+  1846→
+  1847→    max_points = 100
+  1848→    module_name = "iac_audit"
+  1849→    category = "infrastructure_as_code"
+  1850→
+  1851→    if not target_path.is_dir():
+  1852→        # Single file mode
+  1853→        _scan_file(target_path, findings)
+  1854→    else:
+  1855→        # Recursive directory scan
+  1856→        for p in sorted(target_path.rglob("*")):
+  1857→            if not p.is_file():
+  1858→                continue
+  1859→            # Skip hidden dirs and common non-IaC dirs
+  1860→            parts = p.parts
+  1861→            if any(part.startswith(".") for part in parts if part != "."):
+  1862→                continue
+  1863→            if any(part in ("node_modules", "vendor", "__pycache__", ".git", "venv") for part in parts):
+  1864→                continue
+  1865→            _scan_file(p, findings)
+  1866→
+  1867→    # Deduplicate by title + evidence
+  1868→    seen: set = set()
+  1869→    deduped: List[Finding] = []
+  1870→    for f in findings:
+  1871→        key = (f.title, f.evidence)
+  1872→        if key not in seen:
+  1873→            seen.add(key)
+  1874→            deduped.append(f)
+  1875→
+  1876→    return (deduped, max_points, module_name, category)
+  1877→
+  1878→
+  1879→def _scan_file(p: Path, findings: List[Finding]) -> None:
+  1880→    """Route a file to the appropriate parser."""
+  1881→    name = p.name
+  1882→    ext = p.suffix.lower()
+  1883→
+  1884→    try:
+  1885→        text = p.read_text(encoding="utf-8", errors="replace")
+  1886→    except OSError:
+  1887→        return
+  1888→
+  1889→    # ── Terraform ─────────────────────────────────────────────────────
+  1890→    if ext in _TF_EXTS:
+  1891→        for issue in parse_tf_file(str(p)):
+  1892→            findings.append(Finding(
+  1893→                title=issue["title"],
+  1894→                severity=issue["severity"],
+  1895→                category=issue["category"],
+  1896→                module="iac_audit",
+  1897→                description=issue["description"],
+  1898→                evidence=issue["evidence"],
+  1899→                asset=str(p),
+  1900→                points_deducted=issue["points_deducted"],
+  1901→                remediation=issue["remediation"],
+  1902→                dread_score=issue["dread_score"],
+  1903→            ))
+  1904→        return
+  1905→
+  1906→    # ── Dockerfile ─────────────────────────────────────────────────────
+  1907→    if name in _DOCKERFILE_NAMES:
+  1908→        for issue in parse_dockerfile(str(p)):
+  1909→            findings.append(Finding(
+  1910→                title=issue["title"],
+  1911→                severity=issue["severity"],
+  1912→                category=issue["category"],
+  1913→                module="iac_audit",
+  1914→                description=issue["description"],
+  1915→                evidence=issue["evidence"],
+  1916→                asset=str(p),
+  1917→                points_deducted=issue["points_deducted"],
+  1918→                remediation=issue["remediation"],
+  1919→                dread_score=issue["dread_score"],
+  1920→            ))
+  1921→        return
+  1922→
+  1923→    # ── Docker Compose ────────────────────────────────────────────────
+  1924→    if name in _DOCKER_COMPOSE_NAMES:
+  1925→        # Analyze docker-compose files for security issues
+  1926→        for issue in _parse_docker_compose(str(p), text):
+  1927→            findings.append(Finding(
+  1928→                title=issue["title"],
+  1929→                severity=issue["severity"],
+  1930→                category=issue["category"],
+  1931→                module="iac_audit",
+  1932→                description=issue["description"],
+  1933→                evidence=issue["evidence"],
+  1934→                asset=str(p),
+  1935→                points_deducted=issue["points_deducted"],
+  1936→                remediation=issue["remediation"],
+  1937→                dread_score=issue["dread_score"],
+  1938→            ))
+  1939→        return
+  1940→
+  1941→    # ── YAML / JSON: CloudFormation or Kubernetes ──────────────────────
+  1942→    if ext in _CF_EXTS:
+  1943→        if _is_likely_cloudformation(p, text):
+  1944→            for issue in parse_cf_file(str(p)):
+  1945→                findings.append(Finding(
+  1946→                    title=issue["title"],
+  1947→                    severity=issue["severity"],
+  1948→                    category=issue["category"],
+  1949→                    module="iac_audit",
+  1950→                    description=issue["description"],
+  1951→                    evidence=issue["evidence"],
+  1952→                    asset=str(p),
+  1953→                    points_deducted=issue["points_deducted"],
+  1954→                    remediation=issue["remediation"],
+  1955→                    dread_score=issue["dread_score"],
+  1956→                ))
+  1957→        elif _is_likely_k8s(p, text):
+  1958→            for issue in parse_k8s_yaml(str(p)):
+  1959→                findings.append(Finding(
+  1960→                    title=issue["title"],
+  1961→                    severity=issue["severity"],
+  1962→                    category=issue["category"],
+  1963→                    module="iac_audit",
+  1964→                    description=issue["description"],
+  1965→                    evidence=issue["evidence"],
+  1966→                    asset=str(p),
+  1967→                    points_deducted=issue["points_deducted"],
+  1968→                    remediation=issue["remediation"],
+  1969→                    dread_score=issue["dread_score"],
+  1970→                ))
+  1971→        # If neither CF nor K8s, skip silently (not an IaC file)
+  1972→
+  1973→
+  1974→# ── Docker Compose Analyzer ──────────────────────────────────────────
+  1975→
+  1976→
+  1977→def _parse_docker_compose(path: str, text: str) -> List[Dict[str, Any]]:
+  1978→    """Analyze docker-compose files for security issues."""
+  1979→    issues: List[Dict[str, Any]] = []
+  1980→    fname = os.path.basename(path)
+  1981→    doc = _simple_yaml_load(text)
+  1982→    if not isinstance(doc, dict):
+  1983→        return issues
+  1984→
+  1985→    services = doc.get("services", {})
+  1986→    if not isinstance(services, dict):
+  1987→        return issues
+  1988→
+  1989→    for svc_name, svc_config in services.items():
+  1990→        if not isinstance(svc_config, dict):
+  1991→            continue
+  1992→
+  1993→        # Check: privileged
+  1994→        if svc_config.get("privileged") is True:
+  1995→            issues.append({
+  1996→                "title": f"Docker Compose: '{svc_name}' Runs Privileged",
+  1997→                "severity": "critical", "category": "container_privilege",
+  1998→                "description": f"Service '{svc_name}' runs with --privileged flag.",
+  1999→                "evidence": f"{fname}: services.{svc_name}.privileged: true",
+  2000→                "remediation": "Remove privileged: true from the service.",
+
+[showing lines 1-2000 of 2122; use offset=2001 with limit to continue reading]

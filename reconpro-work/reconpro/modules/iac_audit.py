@@ -1831,7 +1831,7 @@ def _is_likely_docker_compose(path: Path, text: str) -> bool:
     return bool(re.search(r'version:\s*["\']?3|services:\s*$', text, re.M))
 
 
-def run(target: str, base_url: str, **kwargs) -> Tuple[List[Finding], int, str, str]:
+def run_iac_audit(target: str, base_url: str, **kwargs) -> List[Finding]:
     """Scan a directory for IaC security issues.
 
     Recursively discovers Terraform, CloudFormation, Dockerfile, and
@@ -1839,14 +1839,10 @@ def run(target: str, base_url: str, **kwargs) -> Tuple[List[Finding], int, str, 
     converts all issues to Finding objects.
 
     Returns:
-        (findings, max_points, module_name, category)
+        List[Finding]
     """
     findings: List[Finding] = []
     target_path = Path(target)
-
-    max_points = 100
-    module_name = "iac_audit"
-    category = "infrastructure_as_code"
 
     if not target_path.is_dir():
         # Single file mode
@@ -1873,7 +1869,7 @@ def run(target: str, base_url: str, **kwargs) -> Tuple[List[Finding], int, str, 
             seen.add(key)
             deduped.append(f)
 
-    return (deduped, max_points, module_name, category)
+    return deduped
 
 
 def _scan_file(p: Path, findings: List[Finding]) -> None:

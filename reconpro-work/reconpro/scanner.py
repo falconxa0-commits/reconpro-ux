@@ -111,7 +111,8 @@ def scan(
         # vibesec returns (findings, score, grade, badge_md)
         if mod_id == "vibesec":
             findings, score, grade, badge_md = runner(
-                target, base_url, timeout=timeout, verify_tls=verify_tls
+                target, base_url, timeout=timeout, verify_tls=verify_tls,
+                limiter=limiter,
             )
             all_findings.extend(findings)
             vibesec_score = score
@@ -123,7 +124,8 @@ def scan(
             }
         else:
             findings = runner(target, base_url,
-                              timeout=timeout, verify_tls=verify_tls)
+                              timeout=timeout, verify_tls=verify_tls,
+                              limiter=limiter)
             all_findings.extend(findings)
             module_results[mod_id] = {
                 "findings": [f.to_dict() for f in findings],

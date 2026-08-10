@@ -43,7 +43,7 @@ logger = logging.getLogger("reconpro.threat_feeds")
 
 FEEDS_DIR: Path = Path.home() / ".reconpro" / "threat_feeds"
 DEFAULT_TTL: int = 6 * 3600  # 6 hours in seconds
-USER_AGENT: str = "ReconPro/9.1.0 (Threat Intelligence Aggregator; +https://reconpro.dev)"
+USER_AGENT: str = "ReconPro/11.0.0 (Threat Intelligence Aggregator; +https://reconpro.dev)"
 
 # DNSBL servers to query — (zone, human-readable name)
 DNSBL_SERVERS: List[Tuple[str, str]] = [

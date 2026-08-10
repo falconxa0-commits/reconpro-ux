@@ -140,7 +140,7 @@ class AIEndpointDiscovery:
     """
 
     TIMEOUT = 8  # seconds
-    USER_AGENT = "ReconPro-AI-RedTeam/9.1.0"
+    USER_AGENT = "ReconPro/11.0.0-AI-RedTeam"
 
     def __init__(self, extra_patterns: Optional[List[str]] = None) -> None:
         self._patterns = list(AI_ENDPOINT_PATTERNS)
@@ -382,7 +382,7 @@ class AIVendorFingerprinter:
     """
 
     TIMEOUT = 10
-    USER_AGENT = "ReconPro-AI-RedTeam/9.1.0"
+    USER_AGENT = "ReconPro/11.0.0-AI-RedTeam"
     PROBE_PATHS = ["/v1/models", "/", "/health", "/api/docs", "/v1/chat/completions"]
 
     def fingerprint(self, base_url: str) -> List[Dict[str, Any]]:
@@ -898,7 +898,7 @@ def run_ai_red_team(target: str, base_url: str, timeout: int = 8,
     secrets = []
     try:
         import urllib.request as _urllib_request
-        req = _urllib_request.Request(base_url, headers={"User-Agent": "ReconPro-AI-RedTeam/9.1.0"})
+        req = _urllib_request.Request(base_url, headers={"User-Agent": "ReconPro/11.0.0-AI-RedTeam"})
         ctx = None
         if not verify_tls:
             import ssl as _ssl

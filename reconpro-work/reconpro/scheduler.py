@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
+from .constants import GRADE_COLORS
 from .scanner import scan, audit_scan
 from .history import save_scan
 
@@ -93,8 +94,7 @@ def run_scheduled(
                 prog.update(task, completed=True)
             
             g = result.grade
-            gc = {"A+": "bright_green", "A": "green", "B": "yellow", 
-                  "C": "red", "D": "bright_red", "F": "bold bright_red"}.get(g, "white")
+            gc = GRADE_COLORS.get(g, "white")
             console.print(f"    [{gc}]{result.total_score}/100 ({g})[/{gc}] — {len(result.findings)} findings")
             
         except Exception as e:

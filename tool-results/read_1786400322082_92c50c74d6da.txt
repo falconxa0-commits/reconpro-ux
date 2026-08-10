@@ -1,0 +1,1019 @@
+     1→"""Container Sandbox Escape Analysis for ReconPro v8.0.
+     2→
+     3→Analyzes Docker and Kubernetes configurations for container escape vectors.
+     4→Deep inspection of Dockerfiles, K8s manifests, and compound escape patterns.
+     5→
+     6→Zero external dependencies — stdlib only (re, json, pathlib, os).
+     7→For YAML: attempts ``import yaml``, falls back to simple line parser.
+     8→"""
+     9→from __future__ import annotations
+    10→
+    11→import json
+    12→import os
+    13→import re
+    14→from pathlib import Path
+    15→from typing import Any, Dict, List, Optional, Tuple
+    16→
+    17→from ..http_layer import Finding, compute_grade, badge_markdown
+    18→
+    19→
+    20→# ── Severity / score helpers ─────────────────────────────────────────
+    21→
+    22→_SEV_WEIGHT: Dict[str, float] = {
+    23→    "critical": 10.0,
+    24→    "high": 7.5,
+    25→    "medium": 5.0,
+    26→    "low": 2.5,
+    27→    "info": 1.0,
+    28→}
+    29→
+    30→_PTS_MAP: Dict[str, int] = {
+    31→    "critical": 15,
+    32→    "high": 10,
+    33→    "medium": 6,
+    34→    "low": 3,
+    35→    "info": 1,
+    36→}
+    37→
+    38→
+    39→def _dread(severity: str) -> float:
+    40→    return _SEV_WEIGHT.get(severity.lower(), 2.5)
+    41→
+    42→
+    43→def _pts(severity: str) -> int:
+    44→    return _PTS_MAP.get(severity.lower(), 3)
+    45→
+    46→
+    47→def _ev(file: str, line: int) -> str:
+    48→    return f"{file}:{line}"
+    49→
+    50→
+    51→def _read_file(path: str, max_size: int = 1048576) -> str:
+    52→    """Read file contents safely."""
+    53→    try:
+    54→        size = os.path.getsize(path)
+    55→        if size > max_size:
+    56→            return "[file too large]"
+    57→        with open(path, errors="replace") as f:
+    58→            return f.read()
+    59→    except Exception:
+    60→        return ""
+    61→
+    62→
+    63→def _simple_yaml_parse(text: str) -> Any:
+    64→    """Fallback YAML parser when PyYAML is not installed."""
+    65→    try:
+    66→        import yaml  # type: ignore[import-untyped]
+    67→        return yaml.safe_load(text)
+    68→    except Exception:
+    69→        pass
+    70→    try:
+    71→        return json.loads(text)
+    72→    except Exception:
+    73→        pass
+    74→    result: Dict[str, Any] = {}
+    75→    current_list_key: Optional[str] = None
+    76→    list_items: List[Dict[str, Any]] = []
+    77→    for line in text.splitlines():
+    78→        stripped = line.strip()
+    79→        if not stripped or stripped.startswith("#"):
+    80→            continue
+    81→        list_match = re.match(r"^\s*-\s+(\w+):\s*(.*)$", line)
+    82→        if list_match:
+    83→            key, val = list_match.group(1), list_match.group(2).strip()
+    84→            if key != current_list_key:
+    85→                if current_list_key is not None and list_items:
+    86→                    result[current_list_key] = list_items
+    87→                current_list_key = key
+    88→                list_items = []
+    89→            item: Dict[str, Any] = {key: val}
+    90→            list_items.append(item)
+    91→            continue
+    92→        kv_match = re.match(r"^([\w.]+):\s*(.*)$", stripped)
+    93→        if kv_match:
+    94→            key, val = kv_match.group(1), kv_match.group(2).strip()
+    95→            if current_list_key is not None:
+    96→                pass
+    97→            if val.lower() in ("true", "false", "null"):
+    98→                result[key] = {"true": True, "false": False, "null": None}[val.lower()]
+    99→            else:
+   100→                try:
+   101→                    result[key] = json.loads(val)
+   102→                except Exception:
+   103→                    result[key] = val
+   104→    if current_list_key is not None and list_items:
+   105→        result[current_list_key] = list_items
+   106→    return result
+   107→
+   108→
+   109→def _yaml_load_all(text: str) -> List[Any]:
+   110→    """Load all YAML documents from text."""
+   111→    try:
+   112→        import yaml  # type: ignore[import-untyped]
+   113→        return list(yaml.safe_load_all(text)) or []
+   114→    except Exception:
+   115→        pass
+   116→    docs: List[Any] = [_simple_yaml_parse(text)]
+   117→    return docs
+   118→
+   119→
+   120→def _dict_get(data: Any, *keys: str, default: Any = None) -> Any:
+   121→    """Deep get from nested dicts, safe against missing keys."""
+   122→    current = data
+   123→    for k in keys:
+   124→        if isinstance(current, dict):
+   125→            current = current.get(k, default)
+   126→        else:
+   127→            return default
+   128→    return current
+   129→
+   130→
+   131→def _search_dicts(data: Any, key: str) -> List[Any]:
+   132→    """Recursively find all values for a given key in nested structures."""
+   133→    results: List[Any] = []
+   134→    if isinstance(data, dict):
+   135→        if key in data:
+   136→            results.append(data[key])
+   137→        for v in data.values():
+   138→            results.extend(_search_dicts(v, key))
+   139→    elif isinstance(data, list):
+   140→        for item in data:
+   141→            results.extend(_search_dicts(item, key))
+   142→    return results
+   143→
+   144→
+   145→def _has_value_in_structure(data: Any, key: str, target_value: Any) -> bool:
+   146→    """Check if any occurrence of key has the target value."""
+   147→    values = _search_dicts(data, key)
+   148→    return target_value in values
+   149→
+   150→
+   151→def _get_key_values(data: Any, key: str) -> List[Any]:
+   152→    """Get all values for a key, flattening lists."""
+   153→    flat: List[Any] = []
+   154→    for v in _search_dicts(data, key):
+   155→        if isinstance(v, list):
+   156→            flat.extend(v)
+   157→        else:
+   158→            flat.append(v)
+   159→    return flat
+   160→
+   161→
+   162→def _find_container_specs(data: Any) -> List[Dict[str, Any]]:
+   163→    """Find all container spec dicts in a K8s manifest."""
+   164→    specs: List[Dict[str, Any]] = []
+   165→    if isinstance(data, dict):
+   166→        spec = data.get("spec")
+   167→        if isinstance(spec, dict):
+   168→            for ck in ("containers", "initContainers"):
+   169→                containers = spec.get(ck)
+   170→                if isinstance(containers, list):
+   171→                    specs.extend(containers)
+   172→            template = spec.get("template")
+   173→            if isinstance(template, dict):
+   174→                tmpl_spec = template.get("spec")
+   175→                if isinstance(tmpl_spec, dict):
+   176→                    for ck in ("containers", "initContainers"):
+   177→                        containers = tmpl_spec.get(ck)
+   178→                        if isinstance(containers, list):
+   179→                            specs.extend(containers)
+   180→    return specs
+   181→
+   182→
+   183→def _find_pod_or_template_spec(data: Any) -> Optional[Dict[str, Any]]:
+   184→    """Find the pod-level spec (or template spec for Deployments)."""
+   185→    if isinstance(data, dict):
+   186→        spec = data.get("spec")
+   187→        if isinstance(spec, dict):
+   188→            template = spec.get("template")
+   189→            if isinstance(template, dict):
+   190→                tmpl_spec = template.get("spec")
+   191→                if isinstance(tmpl_spec, dict):
+   192→                    return tmpl_spec
+   193→            return spec
+   194→    return None
+   195→
+   196→
+   197→# ══════════════════════════════════════════════════════════════════════
+   198→#  DockerfileAnalyzer
+   199→# ══════════════════════════════════════════════════════════════════════
+   200→
+   201→class DockerfileAnalyzer:
+   202→    """Analyzes Dockerfiles for security misconfigurations and escape vectors."""
+   203→
+   204→    SENSITIVE_PATHS = re.compile(
+   205→        r"\.(env|aws|ssh)|id_rsa|.*\.pem|credentials",
+   206→        re.IGNORECASE,
+   207→    )
+   208→    SECRET_ENV_PATTERN = re.compile(
+   209→        r"(?i)ENV\s+.*(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL)",
+   210→    )
+   211→    DANGEROUS_PORTS = {22, 2375, 2376, 6379, 27017, 5432, 3306}
+   212→
+   213→    def analyze(self, path: str) -> List[Dict[str, Any]]:
+   214→        """Analyze a Dockerfile and return a list of finding dicts."""
+   215→        findings: List[Dict[str, Any]] = []
+   216→        content = _read_file(path)
+   217→        if not content or content.startswith("[file too large]"):
+   218→            return findings
+   219→
+   220→        lines = content.splitlines()
+   221→        fname = os.path.basename(path)
+   222→        has_user = False
+   223→        had_nonroot_user = False
+   224→        has_healthcheck = False
+   225→        has_from = False
+   226→        from_lines: List[int] = []
+   227→        secret_env_in_builder = False
+   228→
+   229→        # Check 1: No .dockerignore found
+   230→        dockerignore_path = os.path.join(os.path.dirname(path), ".dockerignore")
+   231→        if not os.path.exists(dockerignore_path):
+   232→            findings.append({
+   233→                "title": "No .dockerignore Found",
+   234→                "severity": "low",
+   235→                "category": "docker_build",
+   236→                "description": "No .dockerignore file found alongside Dockerfile. Unnecessary files may be included in the build context.",
+   237→                "evidence": f"{fname}: missing .dockerignore",
+   238→                "remediation": "Create a .dockerignore file to exclude .git, .env, node_modules, and other unnecessary files from the build context.",
+   239→                "line_number": 0,
+   240→            })
+   241→
+   242→        for idx, line in enumerate(lines, start=1):
+   243→            stripped = line.strip()
+   244→            directive_match = re.match(r"^(?:FROM|RUN|COPY|ADD|ENV|EXPOSE|USER|HEALTHCHECK|ARG|ENTRYPOINT|CMD)\b", stripped, re.IGNORECASE)
+   245→
+   246→            # Check 2: FROM without tag or :latest
+   247→            if re.match(r"^FROM\b", stripped, re.IGNORECASE):
+   248→                has_from = True
+   249→                from_lines.append(idx)
+   250→                from_part = stripped[4:].strip()
+   251→                if from_part.startswith("--platform="):
+   252→                    from_part = re.sub(r"^--platform=\S+\s+", "", from_part)
+   253→                if re.match(r"^AS\b", from_part, re.IGNORECASE):
+   254→                    from_part = re.sub(r"^AS\s+\S+\s*", "", from_part, flags=re.IGNORECASE)
+   255→                if ":" not in from_part:
+   256→                    findings.append({
+   257→                        "title": f"FROM Without Tag: {from_part}",
+   258→                        "severity": "medium",
+   259→                        "category": "docker_build",
+   260→                        "description": f"Base image '{from_part}' has no explicit tag. Defaults to ':latest' which is non-reproducible.",
+   261→                        "evidence": _ev(fname, idx),
+   262→                        "remediation": f"Pin the base image to a specific digest: FROM {from_part}:<tag>@<digest>",
+   263→                        "line_number": idx,
+   264→                    })
+   265→                elif from_part.endswith(":latest"):
+   266→                    findings.append({
+   267→                        "title": f"FROM Uses :latest Tag: {from_part}",
+   268→                        "severity": "medium",
+   269→                        "category": "docker_build",
+   270→                        "description": f"Base image '{from_part}' uses the ':latest' tag. Builds are non-reproducible and may break unexpectedly.",
+   271→                        "evidence": _ev(fname, idx),
+   272→                        "remediation": f"Pin to a specific version and digest: FROM {from_part.split(':')[0]}:<version>@<digest>",
+   273→                        "line_number": idx,
+   274→                    })
+   275→
+   276→            # Check 3: COPY/ADD of sensitive paths
+   277→            copy_match = re.match(r"^(?:COPY|ADD)\s+(.+?)(?:\s+(?:/|\S+))?$", stripped, re.IGNORECASE)
+   278→            if copy_match:
+   279→                src_part = copy_match.group(1).strip()
+   280→                # Remove flags like --chown=, --from=
+   281→                src_part = re.sub(r"^--\w+[=\s]+\S+\s+", "", src_part)
+   282→                # Could be multi-source: "src1 src2  dest"
+   283→                src_parts = src_part.split()
+   284→                for sp in src_parts:
+   285→                    if self.SENSITIVE_PATHS.search(sp):
+   286→                        findings.append({
+   287→                            "title": f"Sensitive Path in COPY/ADD: {sp}",
+   288→                            "severity": "critical",
+   289→                            "category": "docker_secret_leak",
+   290→                            "description": f"Sensitive file '{sp}' is being copied into the container image. This may expose secrets, SSH keys, or cloud credentials.",
+   291→                            "evidence": _ev(fname, idx),
+   292→                            "remediation": f"Avoid copying '{sp}' into the image. Use multi-stage builds, Docker secrets, or runtime volume mounts instead.",
+   293→                            "line_number": idx,
+   294→                        })
+   295→
+   296→            # Check 4: ADD of remote URL (supply chain risk)
+   297→            add_match = re.match(r"^ADD\s+(https?://\S+)", stripped, re.IGNORECASE)
+   298→            if add_match:
+   299→                url = add_match.group(1).split()[0]
+   300→                findings.append({
+   301→                    "title": f"ADD Remote URL (Supply Chain Risk): {url[:60]}",
+   302→                    "severity": "medium",
+   303→                    "category": "docker_supply_chain",
+   304→                    "description": f"ADD fetches from a remote URL. The remote content could change, introducing malicious files.",
+   305→                    "evidence": _ev(fname, idx),
+   306→                    "remediation": "Use COPY with a locally-verified file, or use RUN curl/wget with integrity verification (checksums, GPG).",
+   307→                    "line_number": idx,
+   308→                })
+   309→
+   310→            # Check 5: ENV with secret patterns
+   311→            if self.SECRET_ENV_PATTERN.search(stripped):
+   312→                env_match = re.match(r"^ENV\s+(\S+?)=(.*)$", stripped, re.IGNORECASE)
+   313→                if env_match:
+   314→                    var_name = env_match.group(1)
+   315→                    var_val = env_match.group(2).strip().strip('"').strip("'")
+   316→                    if var_val and not var_val.startswith("$"):
+   317→                        findings.append({
+   318→                            "title": f"Secret in ENV Variable: {var_name}",
+   319→                            "severity": "high",
+   320→                            "category": "docker_secret_leak",
+   321→                            "description": f"Environment variable '{var_name}' appears to contain a hardcoded secret. This is baked into the image and visible in 'docker inspect'.",
+   322→                            "evidence": _ev(fname, idx),
+   323→                            "remediation": f"Use Docker secrets, a secret management system (Vault, AWS Secrets Manager), or pass secrets at runtime via -e or --env-file.",
+   324→                            "line_number": idx,
+   325→                        })
+   326→                        if len(from_lines) > 1:
+   327→                            secret_env_in_builder = True
+   328→
+   329→            # Check 6: EXPOSE dangerous ports
+   330→            expose_match = re.match(r"^EXPOSE\s+(.+)$", stripped, re.IGNORECASE)
+   331→            if expose_match:
+   332→                ports_str = expose_match.group(1)
+   333→                for port_tok in re.findall(r"(\d+)", ports_str):
+   334→                    port = int(port_tok)
+   335→                    if port in self.DANGEROUS_PORTS:
+   336→                        svc_map = {22: "SSH", 2375: "Docker API (unencrypted)", 2376: "Docker API (TLS)",
+   337→                                   6379: "Redis", 27017: "MongoDB", 5432: "PostgreSQL", 3306: "MySQL"}
+   338→                        findings.append({
+   339→                            "title": f"Dangerous Port Exposed: {port} ({svc_map.get(port, 'unknown')})",
+   340→                            "severity": "medium",
+   341→                            "category": "docker_network",
+   342→                            "description": f"Port {port} ({svc_map.get(port, 'unknown')}) is exposed. Exposing database or management ports increases the attack surface.",
+   343→                            "evidence": _ev(fname, idx),
+   344→                            "remediation": f"Remove the EXPOSE directive for port {port} or ensure it is only accessible within an internal Docker network.",
+   345→                            "line_number": idx,
+   346→                        })
+   347→
+   348→            # Check 7: --privileged in RUN
+   349→            if re.search(r"--privileged", stripped, re.IGNORECASE):
+   350→                findings.append({
+   351→                    "title": "--privileged Flag in RUN",
+   352→                    "severity": "critical",
+   353→                    "category": "docker_privilege",
+   354→                    "description": "The --privileged flag in RUN gives the build step full host access. This is almost never needed and is extremely dangerous.",
+   355→                    "evidence": _ev(fname, idx),
+   356→                    "remediation": "Remove --privileged. If specific capabilities are needed, use --cap-add for individual capabilities.",
+   357→                    "line_number": idx,
+   358→                })
+   359→
+   360→            # Check 8: apt-get without no-install-recommends or without rm -rf /var/lib/apt
+   361→            if "apt-get" in stripped and "install" in stripped:
+   362→                if "no-install-recommends" not in stripped:
+   363→                    findings.append({
+   364→                        "title": "apt-get install Without --no-install-recommends",
+   365→                        "severity": "low",
+   366→                        "category": "docker_image_size",
+   367→                        "description": "apt-get install without --no-install-recommends installs unnecessary recommended packages, increasing image size and attack surface.",
+   368→                        "evidence": _ev(fname, idx),
+   369→                        "remediation": "Use 'apt-get install --no-install-recommends' to minimize installed packages.",
+   370→                        "line_number": idx,
+   371→                    })
+   372→
+   373→            # Track USER directive
+   374→            if re.match(r"^USER\b", stripped, re.IGNORECASE):
+   375→                has_user = True
+   376→                user_val = stripped[4:].strip()
+   377→                if user_val.lower() in ("root", "0"):
+   378→                    if had_nonroot_user:
+   379→                        # Check 10: USER changed back to root after being non-root
+   380→                        findings.append({
+   381→                            "title": "USER Reverted to Root After Non-Root User",
+   382→                            "severity": "high",
+   383→                            "category": "docker_privilege",
+   384→                            "description": "A non-root USER was set earlier, but has been changed back to root. This defeats the purpose of dropping privileges.",
+   385→                            "evidence": _ev(fname, idx),
+   386→                            "remediation": "Ensure the final USER directive is a non-root user. If root is needed for specific steps, use multi-stage builds.",
+   387→                            "line_number": idx,
+   388→                        })
+   389→                else:
+   390→                    had_nonroot_user = True
+   391→
+   392→            # Check 9: HEALTHCHECK
+   393→            if re.match(r"^HEALTHCHECK\b", stripped, re.IGNORECASE):
+   394→                has_healthcheck = True
+   395→
+   396→        # Check 9 (post-loop): No HEALTHCHECK
+   397→        if not has_healthcheck:
+   398→            findings.append({
+   399→                "title": "No HEALTHCHECK Instruction",
+   400→                "severity": "low",
+   401→                "category": "docker_monitoring",
+   402→                "description": "No HEALTHCHECK instruction found. The container orchestrator cannot determine if the application is healthy.",
+   403→                "evidence": f"{fname}: no HEALTHCHECK",
+   404→                "remediation": "Add a HEALTHCHECK instruction: HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD <health-command>",
+   405→                "line_number": 0,
+   406→            })
+   407→
+   408→        # Check 1 (post-loop): Runs as root (no USER directive or USER root)
+   409→        if not has_user:
+   410→            findings.append({
+   411→                "title": "Container Runs as Root",
+   412→                "severity": "high",
+   413→                "category": "docker_privilege",
+   414→                "description": "No USER directive found. The container will run as root by default, giving full control to any process inside the container.",
+   415→                "evidence": f"{fname}: no USER directive",
+   416→                "remediation": "Add 'USER <non-root-user>' near the end of the Dockerfile. Create a dedicated user with 'RUN useradd -m appuser'.",
+   417→                "line_number": 0,
+   418→            })
+   419→        elif not had_nonroot_user:
+   420→            # USER was set but only to root
+   421→            findings.append({
+   422→                "title": "Container Explicitly Runs as Root",
+   423→                "severity": "high",
+   424→                "category": "docker_privilege",
+   425→                "description": "USER directive is set to root. The container runs with full root privileges inside the container.",
+   426→                "evidence": f"{fname}: USER root",
+   427→                "remediation": "Change USER to a non-root account. Create a dedicated user and switch to it before ENTRYPOINT/CMD.",
+   428→                "line_number": 0,
+   429→            })
+   430→
+   431→        # Check apt-get cleanup (post-loop, look for rm -rf /var/lib/apt in any RUN)
+   432→        has_apt_install = False
+   433→        has_apt_cleanup = False
+   434→        for line in lines:
+   435→            stripped = line.strip()
+   436→            if "apt-get" in stripped and "install" in stripped:
+   437→                has_apt_install = True
+   438→            if "rm" in stripped and ("/var/lib/apt" in stripped or "/var/cache/apt" in stripped):
+   439→                has_apt_cleanup = True
+   440→        if has_apt_install and not has_apt_cleanup:
+   441→            findings.append({
+   442→                "title": "apt-get Cache Not Cleaned",
+   443→                "severity": "low",
+   444→                "category": "docker_image_size",
+   445→                "description": "apt-get install is used but the package cache is not cleaned. This significantly increases image size.",
+   446→                "evidence": f"{fname}: missing 'rm -rf /var/lib/apt/lists/*'",
+   447→                "remediation": "Combine apt-get install and cleanup in one RUN layer: 'apt-get update && apt-get install --no-install-recommends -y pkg && rm -rf /var/lib/apt/lists/*'",
+   448→                "line_number": 0,
+   449→            })
+   450→
+   451→        # Check 12: Multi-stage build with secrets in builder stage
+   452→        if len(from_lines) > 1 and secret_env_in_builder:
+   453→            findings.append({
+   454→                "title": "Multi-Stage Build with Secrets in Builder Stage",
+   455→                "severity": "high",
+   456→                "category": "docker_secret_leak",
+   457→                "description": "Multi-stage build detected with ENV secrets in builder stages. Builder stage secrets may persist in build cache or intermediate layers.",
+   458→                "evidence": f"{fname}: {len(from_lines)} FROM directives, secrets in ENV",
+   459→                "remediation": "Use --secret flag (BuildKit) or pass secrets via ARG with --build-arg. Never use ENV for secrets in builder stages.",
+   460→                "line_number": from_lines[1] if len(from_lines) > 1 else 0,
+   461→            })
+   462→
+   463→        return findings
+   464→
+   465→
+   466→# ══════════════════════════════════════════════════════════════════════
+   467→#  K8sAnalyzer
+   468→# ══════════════════════════════════════════════════════════════════════
+   469→
+   470→class K8sAnalyzer:
+   471→    """Analyzes Kubernetes YAML manifests for security misconfigurations."""
+   472→
+   473→    DANGEROUS_CAPS = {"ALL", "NET_RAW", "SYS_ADMIN", "SYS_PTRACE", "SYS_MODULE", "NET_ADMIN"}
+   474→    HOST_MOUNT_PATHS = {"/", "/etc", "/root", "/var/run", "/sys", "/proc"}
+   475→
+   476→    def analyze_file(self, path: str) -> List[Dict[str, Any]]:
+   477→        """Analyze a K8s YAML manifest and return a list of finding dicts."""
+   478→        findings: List[Dict[str, Any]] = []
+   479→        content = _read_file(path)
+   480→        if not content or content.startswith("[file too large]"):
+   481→            return findings
+   482→
+   483→        fname = os.path.basename(path)
+   484→        docs = _yaml_load_all(content)
+   485→        kind_counts: Dict[str, int] = {}
+   486→
+   487→        for doc in docs:
+   488→            if not isinstance(doc, dict):
+   489→                continue
+   490→            kind = doc.get("kind", "")
+   491→            if kind:
+   492→                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+   493→            findings.extend(self._analyze_doc(doc, fname, path))
+   494→
+   495→        # Check 17: No NetworkPolicy in namespace
+   496→        if "NetworkPolicy" not in kind_counts:
+   497→            if any(k in kind_counts for k in ("Pod", "Deployment", "DaemonSet", "StatefulSet", "ReplicaSet", "Job")):
+   498→                findings.append({
+   499→                    "title": "No NetworkPolicy Defined",
+   500→                    "severity": "low",
+   501→                    "category": "k8s_network",
+   502→                    "description": "No NetworkPolicy resource found in this manifest. All pods can communicate with each other without restriction.",
+   503→                    "evidence": f"{fname}: no NetworkPolicy resource",
+   504→                    "remediation": "Define NetworkPolicy resources to restrict pod-to-pod communication. Use default-deny ingress/egress policies.",
+   505→                    "line_number": 0,
+   506→                })
+   507→
+   508→        # Check 18: Service type LoadBalancer without annotation
+   509→        for doc in docs:
+   510→            if not isinstance(doc, dict):
+   511→                continue
+   512→            if doc.get("kind") == "Service":
+   513→                svc_type = _dict_get(doc, "spec", "type", default="")
+   514→                if svc_type == "LoadBalancer":
+   515→                    annotations = _dict_get(doc, "metadata", "annotations", default={})
+   516→                    if not isinstance(annotations, dict):
+   517→                        annotations = {}
+   518→                    has_safety_annotation = any(
+   519→                        k.lower() for k in annotations
+   520→                        if "whitelist" in k.lower() or "allowlist" in k.lower()
+   521→                        or "security" in k.lower() or "firewall" in k.lower()
+   522→                    )
+   523→                    if not has_safety_annotation:
+   524→                        findings.append({
+   525→                            "title": "LoadBalancer Service Without Security Annotation",
+   526→                            "severity": "low",
+   527→                            "category": "k8s_network",
+   528→                            "description": "Service of type LoadBalancer exposes the service to the internet without any security/whitelist annotation.",
+   529→                            "evidence": f"{fname}: Service type=LoadBalancer, no security annotation",
+   530→                            "remediation": "Add network restrictions via annotations or use an Ingress with TLS and auth. Consider internal load balancers for non-public services.",
+   531→                            "line_number": 0,
+   532→                        })
+   533→
+   534→        # Check 19: Ingress without TLS
+   535→        for doc in docs:
+   536→            if not isinstance(doc, dict):
+   537→                continue
+   538→            if doc.get("kind") == "Ingress":
+   539→                tls_config = _dict_get(doc, "spec", "tls")
+   540→                if not tls_config:
+   541→                    findings.append({
+   542→                        "title": "Ingress Without TLS",
+   543→                        "severity": "medium",
+   544→                        "category": "k8s_network",
+   545→                        "description": "Ingress resource has no TLS configuration. Traffic is served over unencrypted HTTP.",
+   546→                        "evidence": f"{fname}: Ingress missing spec.tls",
+   547→                        "remediation": "Add a TLS section to the Ingress spec with a secretRef to a TLS certificate secret.",
+   548→                        "line_number": 0,
+   549→                    })
+   550→
+   551→        return findings
+   552→
+   553→    def _analyze_doc(self, doc: Dict[str, Any], fname: str, fpath: str) -> List[Dict[str, Any]]:
+   554→        """Analyze a single K8s document."""
+   555→        findings: List[Dict[str, Any]] = []
+   556→        kind = doc.get("kind", "")
+   557→        metadata = doc.get("metadata", {})
+   558→        name = metadata.get("name", "<unnamed>") if isinstance(metadata, dict) else "<unnamed>"
+   559→        line_prefix = f"{fname}: {kind}/{name}"
+   560→
+   561→        pod_spec = _find_pod_or_template_spec(doc)
+   562→        containers = _find_container_specs(doc)
+   563→
+   564→        if pod_spec:
+   565→            # Check 3: hostPID
+   566→            if pod_spec.get("hostPID") is True:
+   567→                findings.append({
+   568→                    "title": f"hostPID Enabled: {kind}/{name}",
+   569→                    "severity": "high",
+   570→                    "category": "k8s_privilege",
+   571→                    "description": "hostPID allows the pod to see all processes on the host. An attacker can observe or kill host processes.",
+   572→                    "evidence": line_prefix,
+   573→                    "remediation": "Remove hostPID: true. Use process namespacing within the container.",
+   574→                    "line_number": 0,
+   575→                })
+   576→
+   577→            # Check 4: hostNetwork
+   578→            if pod_spec.get("hostNetwork") is True:
+   579→                findings.append({
+   580→                    "title": f"hostNetwork Enabled: {kind}/{name}",
+   581→                    "severity": "high",
+   582→                    "category": "k8s_privilege",
+   583→                    "description": "hostNetwork gives the pod direct access to the host's network namespace. The pod can bind to any host port.",
+   584→                    "evidence": line_prefix,
+   585→                    "remediation": "Remove hostNetwork: true. Use container ports with a Service for network access.",
+   586→                    "line_number": 0,
+   587→                })
+   588→
+   589→            # Check 5: hostIPC
+   590→            if pod_spec.get("hostIPC") is True:
+   591→                findings.append({
+   592→                    "title": f"hostIPC Enabled: {kind}/{name}",
+   593→                    "severity": "medium",
+   594→                    "category": "k8s_privilege",
+   595→                    "description": "hostIPC allows the pod to access host IPC resources. This can be used for inter-process attacks.",
+   596→                    "evidence": line_prefix,
+   597→                    "remediation": "Remove hostIPC: true.",
+   598→                    "line_number": 0,
+   599→                })
+   600→
+   601→            # Check 10: automountServiceAccountToken
+   602→            if pod_spec.get("automountServiceAccountToken") is True:
+   603→                findings.append({
+   604→                    "title": f"Service Account Token Auto-Mounted: {kind}/{name}",
+   605→                    "severity": "medium",
+   606→                    "category": "k8s_auth",
+   607→                    "description": "automountServiceAccountToken: true mounts the service account token into the pod. If the pod is compromised, the token can be used to access the K8s API.",
+   608→                    "evidence": line_prefix,
+   609→                    "remediation": "Set automountServiceAccountToken: false unless the pod needs to access the K8s API. Use a minimal RBAC role.",
+   610→                    "line_number": 0,
+   611→                })
+   612→
+   613→            # Check 20: Pod anti-affinity not set
+   614→            replicas = _dict_get(doc, "spec", "replicas", default=1)
+   615→            if isinstance(replicas, int) and replicas > 1:
+   616→                affinity = pod_spec.get("affinity")
+   617→                pod_anti = None
+   618→                if isinstance(affinity, dict):
+   619→                    pod_anti = affinity.get("podAntiAffinity")
+   620→                if not pod_anti:
+   621→                    findings.append({
+   622→                        "title": f"No Pod Anti-Affinity: {kind}/{name}",
+   623→                        "severity": "low",
+   624→                        "category": "k8s_availability",
+   625→                        "description": f"Deployment has {replicas} replicas but no pod anti-affinity. All pods may be scheduled on the same node (single point of failure).",
+   626→                        "evidence": line_prefix,
+   627→                        "remediation": "Add podAntiAffinity rules to spread replicas across nodes. Use requiredDuringSchedulingIgnoredDuringExecution with topology key 'kubernetes.io/hostname'.",
+   628→                        "line_number": 0,
+   629→                    })
+   630→
+   631→            # Check 15: Tolerations for all taints
+   632→            tolerations = pod_spec.get("tolerations")
+   633→            if isinstance(tolerations, list):
+   634→                for tol in tolerations:
+   635→                    if isinstance(tol, dict):
+   636→                        if (tol.get("effect") == "NoSchedule"
+   637→                                and tol.get("operator") == "Exists"
+   638→                                and "key" not in tol):
+   639→                            findings.append({
+   640→                                "title": f"Toleration for All Taints: {kind}/{name}",
+   641→                                "severity": "medium",
+   642→                                "category": "k8s_scheduling",
+   643→                                "description": "Pod tolerates all taints (operator: Exists, no key). This pod can be scheduled on any node including dedicated/master nodes.",
+   644→                                "evidence": line_prefix,
+   645→                                "remediation": "Specify explicit toleration keys instead of tolerating all taints. Remove or restrict the toleration.",
+   646→                                "line_number": 0,
+   647→                            })
+   648→                            break
+   649→
+   650→        # Per-container checks
+   651→        for container in containers:
+   652→            if not isinstance(container, dict):
+   653→                continue
+   654→            cname = container.get("name", "<unnamed>")
+   655→            cprefix = f"{line_prefix} container/{cname}"
+   656→            sec_ctx = container.get("securityContext", {})
+   657→            if not isinstance(sec_ctx, dict):
+   658→                sec_ctx = {}
+   659→
+   660→            # Also check pod-level securityContext as fallback
+   661→            if not sec_ctx and pod_spec:
+   662→                sec_ctx = pod_spec.get("securityContext", {})
+   663→                if not isinstance(sec_ctx, dict):
+   664→                    sec_ctx = {}
+   665→
+   666→            # Check 1: securityContext.privileged: true
+   667→            if sec_ctx.get("privileged") is True:
+   668→                findings.append({
+   669→                    "title": f"Privileged Container: {cname}",
+   670→                    "severity": "critical",
+   671→                    "category": "k8s_privilege",
+   672→                    "description": f"Container '{cname}' runs in privileged mode. This grants full access to all host devices and effectively removes container isolation.",
+   673→                    "evidence": cprefix + " securityContext.privileged: true",
+   674→                    "remediation": f"Remove privileged: true for '{cname}'. If specific capabilities are needed, use securityContext.capabilities.add with minimal caps.",
+   675→                    "line_number": 0,
+   676→                })
+   677→
+   678→            # Check 2: allowPrivilegeEscalation: true
+   679→            ape = sec_ctx.get("allowPrivilegeEscalation")
+   680→            if ape is True or (ape is None and sec_ctx.get("privileged") is not True):
+   681→                # It's a problem when explicitly true; default is true if not set
+   682→                if ape is True:
+   683→                    findings.append({
+   684→                        "title": f"Allow Privilege Escalation: {cname}",
+   685→                        "severity": "high",
+   686→                        "category": "k8s_privilege",
+   687→                        "description": f"Container '{cname}' has allowPrivilegeEscalation: true. Processes can gain additional privileges (e.g., setuid binaries).",
+   688→                        "evidence": cprefix + " securityContext.allowPrivilegeEscalation: true",
+   689→                        "remediation": f"Set allowPrivilegeEscalation: false for '{cname}' unless explicitly required.",
+   690→                        "line_number": 0,
+   691→                    })
+   692→
+   693→            # Check 6: Volume mount of docker.sock
+   694→            vol_mounts = container.get("volumeMounts", [])
+   695→            if isinstance(vol_mounts, list):
+   696→                for vm in vol_mounts:
+   697→                    if isinstance(vm, dict) and vm.get("mountPath") == "/var/run/docker.sock":
+   698→                        findings.append({
+   699→                            "title": f"Docker Socket Mounted: {cname}",
+   700→                            "severity": "critical",
+   701→                            "category": "k8s_escape",
+   702→                            "description": f"Container '{cname}' mounts /var/run/docker.sock. Full container escape is trivial from here — the pod can launch privileged containers on the host.",
+   703→                            "evidence": cprefix + " mountPath: /var/run/docker.sock",
+   704→                            "remediation": "Remove the docker.sock volume mount. If Docker-in-Docker is needed, use a sidecar with Docker socket proxy or use Podman/Systemd.",
+   705→                            "line_number": 0,
+   706→                        })
+   707→
+   708→                    # Check 7: Host-sensitive path mounted
+   709→                    mp = vm.get("mountPath", "") if isinstance(vm, dict) else ""
+   710→                    if mp in self.HOST_MOUNT_PATHS:
+   711→                        findings.append({
+   712→                            "title": f"Host Path Mounted: {mp} in {cname}",
+   713→                            "severity": "high",
+   714→                            "category": "k8s_escape",
+   715→                            "description": f"Container '{cname}' mounts host path '{mp}'. This provides direct access to host filesystem data and configuration.",
+   716→                            "evidence": cprefix + f" mountPath: {mp}",
+   717→                            "remediation": f"Remove the hostPath volume mount for '{mp}'. Use ConfigMaps, Secrets, or PersistentVolumeClaims instead.",
+   718→                            "line_number": 0,
+   719→                        })
+   720→
+   721→            # Check 8: No resource limits
+   722→            resources = container.get("resources", {})
+   723→            if not isinstance(resources, dict) or not resources.get("limits"):
+   724→                findings.append({
+   725→                    "title": f"No Resource Limits: {cname}",
+   726→                    "severity": "medium",
+   727→                    "category": "k8s_resources",
+   728→                    "description": f"Container '{cname}' has no resource limits defined. A compromised or buggy container can consume all node resources (Denial of Service).",
+   729→                    "evidence": cprefix + " missing resources.limits",
+   730→                    "remediation": f"Add resource limits for '{cname}': resources.limits.cpu and resources.limits.memory.",
+   731→                    "line_number": 0,
+   732→                })
+   733→
+   734→            # Check 9: No liveness/readiness probe
+   735→            has_liveness = "livenessProbe" in container and container["livenessProbe"]
+   736→            has_readiness = "readinessProbe" in container and container["readinessProbe"]
+   737→            if not has_liveness and not has_readiness:
+   738→                findings.append({
+   739→                    "title": f"No Probes: {cname}",
+   740→                    "severity": "low",
+   741→                    "category": "k8s_monitoring",
+   742→                    "description": f"Container '{cname}' has neither livenessProbe nor readinessProbe. The orchestrator cannot detect or recover from failures.",
+   743→                    "evidence": cprefix + " missing livenessProbe/readinessProbe",
+   744→                    "remediation": f"Add livenessProbe and readinessProbe to '{cname}' to enable automatic health monitoring and restart.",
+   745→                    "line_number": 0,
+   746→                })
+   747→
+   748→            # Check 11: imagePullPolicy missing
+   749→            pull_policy = container.get("imagePullPolicy")
+   750→            image = container.get("image", "")
+   751→            if not pull_policy and image:
+   752→                if ":latest" in image or ":" not in image:
+   753→                    findings.append({
+   754→                        "title": f"imagePullPolicy Missing (latest tag): {cname}",
+   755→                        "severity": "low",
+   756→                        "category": "k8s_supply_chain",
+   757→                        "description": f"Container '{cname}' uses image '{image}' without explicit imagePullPolicy. Default 'Always' for :latest can lead to supply chain attacks.",
+   758→                        "evidence": cprefix + f" image: {image}",
+   759→                        "remediation": f"Set imagePullPolicy: IfNotPresent and pin image to a specific tag for '{cname}'.",
+   760→                        "line_number": 0,
+   761→                    })
+   762→
+   763→            # Check 12: runAsUser: 0
+   764→            run_as_user = sec_ctx.get("runAsUser")
+   765→            if run_as_user == 0:
+   766→                findings.append({
+   767→                    "title": f"Container Runs as Root (runAsUser: 0): {cname}",
+   768→                    "severity": "high",
+   769→                    "category": "k8s_privilege",
+   770→                    "description": f"Container '{cname}' has runAsUser: 0. The container process runs as root inside the pod.",
+   771→                    "evidence": cprefix + " securityContext.runAsUser: 0",
+   772→                    "remediation": f"Set runAsUser to a non-zero UID and runAsNonRoot: true for '{cname}'.",
+   773→                    "line_number": 0,
+   774→                })
+   775→
+   776→            # Check 13: readOnlyRootFilesystem not true
+   777→            read_only = sec_ctx.get("readOnlyRootFilesystem")
+   778→            if read_only is not True:
+   779→                findings.append({
+   780→                    "title": f"Writable Root Filesystem: {cname}",
+   781→                    "severity": "medium",
+   782→                    "category": "k8s_hardening",
+   783→                    "description": f"Container '{cname}' has a writable root filesystem. An attacker can write malicious binaries or modify application code.",
+   784→                    "evidence": cprefix + " missing readOnlyRootFilesystem: true",
+   785→                    "remediation": f"Set readOnlyRootFilesystem: true for '{cname}' and use emptyDir volumes for directories that need write access.",
+   786→                    "line_number": 0,
+   787→                })
+   788→
+   789→            # Check 14: Dangerous capabilities
+   790→            caps = _dict_get(sec_ctx, "capabilities", "add", default=[])
+   791→            if isinstance(caps, list):
+   792→                for cap in caps:
+   793→                    cap_str = str(cap).upper().replace("CAP_", "")
+   794→                    if cap_str in self.DANGEROUS_CAPS:
+   795→                        sev = "critical" if cap_str == "ALL" else "high"
+   796→                        findings.append({
+   797→                            "title": f"Dangerous Capability: CAP_{cap_str} on {cname}",
+   798→                            "severity": sev,
+   799→                            "category": "k8s_privilege",
+   800→                            "description": f"Container '{cname}' adds Linux capability CAP_{cap_str}. This capability can be used for container escape or privilege escalation.",
+   801→                            "evidence": cprefix + f" capabilities.add: CAP_{cap_str}",
+   802→                            "remediation": f"Remove CAP_{cap_str} from capabilities.add. Apply least-privilege principle — only grant capabilities explicitly needed.",
+   803→                            "line_number": 0,
+   804→                        })
+   805→
+   806→            # Check 21: Secret mounted as env var (not volume)
+   807→            env_list = container.get("env", [])
+   808→            if isinstance(env_list, list):
+   809→                for env_item in env_list:
+   810→                    if isinstance(env_item, dict):
+   811→                        val_from = env_item.get("valueFrom")
+   812→                        if isinstance(val_from, dict) and "secretKeyRef" in val_from:
+   813→                            var_name = env_item.get("name", "<unknown>")
+   814→                            findings.append({
+   815→                                "title": f"Secret Mounted as Env Var: {var_name} in {cname}",
+   816→                                "severity": "medium",
+   817→                                "category": "k8s_secret_handling",
+   818→                                "description": f"Secret '{var_name}' is mounted as an environment variable in '{cname}'. Env vars are visible in process listings, child processes, and may leak via error messages.",
+   819→                                "evidence": cprefix + f" env[{var_name}].valueFrom.secretKeyRef",
+   820→                                "remediation": f"Mount the secret as a file (volume) instead of an env var for '{var_name}'. Use secretRef volumes with 0400 permissions.",
+   821→                                "line_number": 0,
+   822→                            })
+   823→
+   824→        return findings
+   825→
+   826→
+   827→# ══════════════════════════════════════════════════════════════════════
+   828→#  EscapeVectorEvaluator
+   829→# ══════════════════════════════════════════════════════════════════════
+   830→
+   831→class EscapeVectorEvaluator:
+   832→    """Combines individual findings into compound escape vectors."""
+   833→
+   834→    _PATTERNS = [
+   835→        {
+   836→            "name": "Full Container Escape",
+   837→            "severity": "critical",
+   838→            "description": ("Combination of privileged mode, hostPID, and docker.sock access. "
+   839→                            "An attacker can access the host, observe all processes, and launch new "
+   840→                            "privileged containers — achieving full host compromise."),
+   841→            "remediation": "Remove privileged, hostPID, and docker.sock mount. Apply Pod Security Standards (restricted profile).",
+   842→            "any_of": [
+   843→                {"category": "k8s_privilege", "title_sub": "Privileged Container"},
+   844→                {"category": "k8s_privilege", "title_sub": "hostPID"},
+   845→                {"category": "k8s_escape", "title_sub": "Docker Socket"},
+   846→            ],
+   847→        },
+   848→        {
+   849→            "name": "Network Escape",
+   850→            "severity": "high",
+   851→            "description": ("Privileged container with hostNetwork access. The container has full access to "
+   852→                            "the host's network stack, can sniff all traffic, and bind to any port."),
+   853→            "remediation": "Remove hostNetwork: true and privileged: true. Use container networking with Service resources.",
+   854→            "any_of": [
+   855→                {"category": "k8s_privilege", "title_sub": "Privileged Container"},
+   856→                {"category": "k8s_privilege", "title_sub": "hostNetwork"},
+   857→            ],
+   858→        },
+   859→        {
+   860→            "name": "Resource Exhaustion to Host",
+   861→            "severity": "high",
+   862→            "description": ("hostPID access combined with no resource limits. An attacker can fork-bomb the "
+   863→                            "container which, via hostPID, can impact host process management."),
+   864→            "remediation": "Add resource limits (CPU/memory) and remove hostPID. Use LimitRange at the namespace level.",
+   865→            "any_of": [
+   866→                {"category": "k8s_privilege", "title_sub": "hostPID"},
+   867→                {"category": "k8s_resources", "title_sub": "No Resource Limits"},
+   868→            ],
+   869→        },
+   870→        {
+   871→            "name": "Filesystem Escape",
+   872→            "severity": "critical",
+   873→            "description": ("Privileged container with host root filesystem mounted. The container has "
+   874→                            "full read/write access to the host's root filesystem — trivial host compromise."),
+   875→            "remediation": "Remove privileged: true and the hostPath '/' volume mount. Use Pod Security Standards (restricted profile).",
+   876→            "any_of": [
+   877→                {"category": "k8s_privilege", "title_sub": "Privileged Container"},
+   878→                {"category": "k8s_escape", "title_sub": "Host Path Mounted: /"},
+   879→            ],
+   880→        },
+   881→        {
+   882→            "name": "Kernel Exploit Vector",
+   883→            "severity": "high",
+   884→            "description": ("Privilege escalation allowed with SYS_ADMIN capability. An attacker can "
+   885→                            "exploit kernel vulnerabilities or use SYS_ADMIN to mount filesystems, "
+   886→                            "modify network configuration, or access sensitive kernel interfaces."),
+   887→            "remediation": "Set allowPrivilegeEscalation: false and remove CAP_SYS_ADMIN. Apply least-privilege capabilities.",
+   888→            "any_of": [
+   889→                {"category": "k8s_privilege", "title_sub": "Allow Privilege Escalation"},
+   890→                {"category": "k8s_privilege", "title_sub": "SYS_ADMIN"},
+   891→            ],
+   892→        },
+   893→        {
+   894→            "name": "Lateral Movement",
+   895→            "severity": "medium",
+   896→            "description": ("No NetworkPolicy combined with exposed services. Pods can communicate freely "
+   897→                            "with any other pod in the cluster, enabling lateral movement if compromised."),
+   898→            "remediation": "Define NetworkPolicy resources with default-deny rules. Segment pods by function and apply least-access network policies.",
+   899→            "any_of": [
+   900→                {"category": "k8s_network", "title_sub": "No NetworkPolicy"},
+   901→                {"category": "k8s_network", "title_sub": "LoadBalancer"},
+   902→            ],
+   903→        },
+   904→    ]
+   905→
+   906→    def evaluate(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+   907→        """Identify compound escape vectors from individual findings."""
+   908→        compound: List[Dict[str, Any]] = []
+   909→
+   910→        for pattern in self._PATTERNS:
+   911→            matched_conditions: List[str] = []
+   912→            matched_evidence: List[str] = []
+   913→            all_match = True
+   914→
+   915→            for condition in pattern["any_of"]:
+   916→                found = False
+   917→                for f in findings:
+   918→                    cat = f.get("category", "")
+   919→                    title = f.get("title", "")
+   920→                    if cat == condition["category"] and condition["title_sub"] in title:
+   921→                        matched_conditions.append(title)
+   922→                        matched_evidence.append(f.get("evidence", ""))
+   923→                        found = True
+   924→                        break
+   925→                if not found:
+   926→                    all_match = False
+   927→                    break
+   928→
+   929→            if all_match:
+   930→                compound.append({
+   931→                    "title": f"Escape Vector: {pattern['name']}",
+   932→                    "severity": pattern["severity"],
+   933→                    "category": "container_escape_vector",
+   934→                    "description": pattern["description"],
+   935→                    "evidence": "; ".join(matched_evidence),
+   936→                    "remediation": pattern["remediation"],
+   937→                    "line_number": 0,
+   938→                    "component_findings": matched_conditions,
+   939→                })
+   940→
+   941→        return compound
+   942→
+   943→
+   944→# ══════════════════════════════════════════════════════════════════════
+   945→#  run() — module entry point
+   946→# ══════════════════════════════════════════════════════════════════════
+   947→
+   948→def run(target: str, base_url: str = "", **kwargs: Any) -> Tuple[List[Finding], int, str, str]:
+   949→    """Container sandbox escape analysis.
+   950→
+   951→    Recursively scans a directory for Dockerfiles and Kubernetes manifests,
+   952→    runs all analyzers, evaluates compound escape vectors, and returns
+   953→    a standard ReconPro module result tuple.
+   954→
+   955→    Returns:
+   956→        (findings, total_points_deducted, grade, badge_markdown)
+   957→    """
+   958→    dockerfile_analyzer = DockerfileAnalyzer()
+   959→    k8s_analyzer = K8sAnalyzer()
+   960→    escape_evaluator = EscapeVectorEvaluator()
+   961→
+   962→    base = os.path.abspath(target)
+   963→    raw_findings: List[Dict[str, Any]] = []
+   964→
+   965→    # Recursively find relevant files
+   966→    for root, _dirs, files in os.walk(base):
+   967→        for fname in files:
+   968→            fpath = os.path.join(root, fname)
+   969→
+   970→            # Dockerfiles (exact name or Dockerfile.*)
+   971→            if fname == "Dockerfile" or fname.startswith("Dockerfile."):
+   972→                raw_findings.extend(dockerfile_analyzer.analyze(fpath))
+   973→
+   974→            # K8s manifests (*.yaml, *.yml) — but skip docker-compose files
+   975→            elif fname.endswith((".yaml", ".yml")):
+   976→                if fname not in ("docker-compose.yml", "docker-compose.yaml",
+   977→                                  "docker-compose.override.yml", "docker-compose.override.yaml"):
+   978→                    # Quick heuristic: only parse files that look like K8s manifests
+   979→                    content = _read_file(fpath)
+   980→                    if content and ("apiVersion:" in content or "kind:" in content):
+   981→                        raw_findings.extend(k8s_analyzer.analyze_file(fpath))
+   982→
+   983→    # Evaluate compound escape vectors
+   984→    escape_vectors = escape_evaluator.evaluate(raw_findings)
+   985→    raw_findings.extend(escape_vectors)
+   986→
+   987→    # Convert raw dicts to Finding objects
+   988→    findings: List[Finding] = []
+   989→    total_deducted = 0
+   990→
+   991→    for rf in raw_findings:
+   992→        sev = rf.get("severity", "medium").lower()
+   993→        dread = rf.get("dread_score", _dread(sev))
+   994→        pts = rf.get("points_deducted", _pts(sev))
+   995→        total_deducted += pts
+   996→
+   997→        findings.append(Finding(
+   998→            title=rf.get("title", "Untitled Finding"),
+   999→            severity=sev,
+  1000→            category=rf.get("category", "container_security"),
+  1001→            module="container_sec",
+  1002→            description=rf.get("description", ""),
+  1003→            evidence=rf.get("evidence", ""),
+  1004→            asset=target,
+  1005→            points_deducted=pts,
+  1006→            dread_score=dread,
+  1007→            remediation=rf.get("remediation", ""),
+  1008→        ))
+  1009→
+  1010→    # Sort: critical first, then high, medium, low, info
+  1011→    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+  1012→    findings.sort(key=lambda f: sev_order.get(f.severity, 5))
+  1013→
+  1014→    score = max(0, 100 - total_deducted)
+  1015→    grade = compute_grade(score)
+  1016→    badge = badge_markdown(target, grade)
+  1017→
+  1018→    return findings, total_deducted, grade, badge
+  1019→

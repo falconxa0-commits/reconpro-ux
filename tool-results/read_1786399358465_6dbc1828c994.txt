@@ -1,0 +1,2002 @@
+     1→"""QUANTUM FINGERPRINT — TCP/IP Stack Fingerprinting via HTTP Timing Analysis.
+     2→
+     3→ReconPro v9.2.0 capability: infer remote operating system, TCP stack
+     4→implementation, congestion-control algorithm, MTU, and kernel clock
+     5→resolution — entirely through HTTP-level timing observation.
+     6→
+     7→No raw sockets.  No SYN packets.  No privileged access.
+     8→Pure urllib / socket / ssl / time stdlib.
+     9→
+    10→Methodology
+    11→-----------
+    12→Each technique sends carefully crafted HTTP requests and measures
+    13→sub-millisecond timing characteristics of the response.  By comparing
+    14→the observed multi-dimensional timing fingerprint against a database
+    15→of known OS / kernel signatures, we produce a probabilistic OS
+    16→identification with a confidence score.
+    17→
+    18→The seven orthogonal signals are:
+    19→  1. Initial TTL deduction       — payload-size vs RTT variance
+    20→  2. TCP window size              — initial data-burst volume analysis
+    21→  3. SYN-ACK timing behaviour     — fresh-connection first-byte latency
+    22→  4. HTTP keep-alive persistence  — connection reuse timing degradation
+    23→  5. Path MTU detection           — payload escalation fragmentation spike
+    24→  6. Congestion control alg.      — burst-recovery timing pattern
+    25→  7. Timestamp resolution         — Date-header clock granularity
+    26→
+    27→References
+    28→----------
+    29→  [1] Zalewski, M. "p0f — Passive OS Fingerprinting" (2006)
+    30→  [2] RFC 1323 — TCP Extensions for High Performance
+    31→  [3] Ha, S. et al. "CUBIC: A New TCP-Friendly High-Speed TCP Variant" (2008)
+    32→  [4] Cardwell, N. et al. "BBR: Congestion-Based Congestion Control" (2016)
+    33→  [5] Mathis, M. et al. "The Case for Universal Path MTU Discovery" (RFC 1191)
+    34→"""
+    35→
+    36→from __future__ import annotations
+    37→
+    38→import hashlib
+    39→import http.client
+    40→import json
+    41→import math
+    42→import re
+    43→import socket
+    44→import ssl
+    45→import statistics
+    46→import struct
+    47→import time
+    48→import urllib.error
+    49→import urllib.request
+    50→from collections import Counter, OrderedDict
+    51→from dataclasses import dataclass, field
+    52→from email.utils import parsedate_to_datetime
+    53→from typing import Any, Dict, List, Optional, Tuple
+    54→
+    55→from ..http_layer import http_probe, Finding, default_limiter
+    56→
+    57→# ═══════════════════════════════════════════════════════════════════════════
+    58→# Configuration
+    59→# ═══════════════════════════════════════════════════════════════════════════
+    60→
+    61→MODULE_NAME = "quantum_fingerprint"
+    62→
+    63→_PROBE_ITERATIONS = 12          # samples per sub-probe
+    64→_CONGESTION_BURST_SIZE = 8      # requests in burst
+    65→_CONGESTION_RECOVERY_PROBES = 6 # probes after burst
+    66→_TIMESTAMP_SAMPLES = 25         # rapid sequential requests for clock
+    67→
+    68→# Payload sizes for TTL probing (bytes) — powers of two + edge cases
+    69→_TTL_PAYLOAD_SIZES = [64, 128, 256, 512, 1024, 1400, 1460]
+    70→
+    71→# MTU detection escalation points (bytes)
+    72→_MTU_PAYLOAD_SIZES = [
+    73→    512, 1024, 1300, 1400, 1460, 1472, 1480, 1500,
+    74→    1600, 1792, 2048, 3200, 4096, 8192, 16384,
+    75→]
+    76→
+    77→# Known initial TTL values per OS family
+    78→_KNOWN_INITIAL_TTL = [32, 60, 64, 128, 255]
+    79→
+    80→
+    81→# ═══════════════════════════════════════════════════════════════════════════
+    82→# OS Signature Database
+    83→# ═══════════════════════════════════════════════════════════════════════════
+    84→
+    85→@dataclass
+    86→class OSSignature:
+    87→    """Timing fingerprint for a known OS / kernel combination.
+    88→
+    89→    Each field encodes the *expected* value or *range* for that signal,
+    90→    plus a tolerance band and weight for confidence scoring.
+    91→
+    92→    Fields
+    93→    ------
+    94→    name           : Human-readable OS name
+    95→    family         : High-level family (Linux, Windows, macOS, BSD, Cisco, CDN)
+    96→    ttl_initial    : Expected initial TTL (64, 128, 255 …)
+    97→    tcp_window     : Typical initial TCP window size (bytes)
+    98→    synack_ms      : Typical SYN→first-byte latency in ms (median)
+    99→    timestamp_res  : Date-header clock resolution in ms
+   100→    keepalive_s    : Connection persistence after idle in seconds
+   101→    congestion     : Congestion control algorithm name
+   102→    mtu_default    : Typical default interface MTU
+   103→    jitter_ratio   : Expected jitter / mean-rtt ratio (coefficient of variation)
+   104→    weight         : Prior probability weight (higher = more common)
+   105→    """
+   106→    name: str
+   107→    family: str
+   108→    ttl_initial: int
+   109→    tcp_window: int
+   110→    synack_ms: float          # median
+   111→    timestamp_res: float     # ms
+   112→    keepalive_s: float        # seconds
+   113→    congestion: str
+   114→    mtu_default: int
+   115→    jitter_ratio: float       # CV = stddev/mean
+   116→    weight: float = 1.0
+   117→
+   118→    # Tolerance multipliers — how much deviation is acceptable
+   119→    ttl_tol: int = 2
+   120→    window_tol: float = 0.35
+   121→    synack_tol: float = 0.6
+   122→    timestamp_tol: float = 2.5
+   123→    keepalive_tol: float = 0.5
+   124→    jitter_tol: float = 0.5
+   125→
+   126→
+   127→# fmt: off
+   128→OS_SIGNATURES: List[OSSignature] = [
+   129→    # ── Linux ────────────────────────────────────────────────────────────
+   130→    OSSignature(
+   131→        name="Linux 6.x (CUBIC, modern)",
+   132→        family="Linux",
+   133→        ttl_initial=64, tcp_window=65535,
+   134→        synack_ms=3.5, timestamp_res=1.0,
+   135→        keepalive_s=75.0, congestion="cubic",
+   136→        mtu_default=1500, jitter_ratio=0.04,
+   137→        weight=1.8,
+   138→    ),
+   139→    OSSignature(
+   140→        name="Linux 5.x (CUBIC)",
+   141→        family="Linux",
+   142→        ttl_initial=64, tcp_window=29200,
+   143→        synack_ms=4.5, timestamp_res=1.0,
+   144→        keepalive_s=75.0, congestion="cubic",
+   145→        mtu_default=1500, jitter_ratio=0.05,
+   146→        weight=1.6,
+   147→    ),
+   148→    OSSignature(
+   149→        name="Linux 4.x (CUBIC)",
+   150→        family="Linux",
+   151→        ttl_initial=64, tcp_window=29200,
+   152→        synack_ms=5.5, timestamp_res=1.0,
+   153→        keepalive_s=75.0, congestion="cubic",
+   154→        mtu_default=1500, jitter_ratio=0.06,
+   155→        weight=1.3,
+   156→    ),
+   157→    OSSignature(
+   158→        name="Linux 6.x (BBR)",
+   159→        family="Linux",
+   160→        ttl_initial=64, tcp_window=65535,
+   161→        synack_ms=2.8, timestamp_res=1.0,
+   162→        keepalive_s=75.0, congestion="bbr",
+   163→        mtu_default=1500, jitter_ratio=0.03,
+   164→        weight=0.9,
+   165→    ),
+   166→    OSSignature(
+   167→        name="Linux 3.x (Reno/CUBIC hybrid)",
+   168→        family="Linux",
+   169→        ttl_initial=64, tcp_window=14600,
+   170→        synack_ms=6.0, timestamp_res=1.0,
+   171→        keepalive_s=75.0, congestion="reno",
+   172→        mtu_default=1500, jitter_ratio=0.07,
+   173→        weight=0.5,
+   174→    ),
+   175→    OSSignature(
+   176→        name="Android (Linux-based)",
+   177→        family="Linux",
+   178→        ttl_initial=64, tcp_window=29200,
+   179→        synack_ms=5.0, timestamp_res=10.0,
+   180→        keepalive_s=60.0, congestion="cubic",
+   181→        mtu_default=1500, jitter_ratio=0.08,
+   182→        weight=0.4,
+   183→    ),
+   184→
+   185→    # ── Windows ──────────────────────────────────────────────────────────
+   186→    OSSignature(
+   187→        name="Windows Server 2022",
+   188→        family="Windows",
+   189→        ttl_initial=128, tcp_window=65535,
+   190→        synack_ms=5.5, timestamp_res=15.625,
+   191→        keepalive_s=120.0, congestion="cubic",
+   192→        mtu_default=1500, jitter_ratio=0.06,
+   193→        weight=1.5,
+   194→    ),
+   195→    OSSignature(
+   196→        name="Windows Server 2019",
+   197→        family="Windows",
+   198→        ttl_initial=128, tcp_window=8192,
+   199→        synack_ms=7.5, timestamp_res=15.625,
+   200→        keepalive_s=120.0, congestion="cubic",
+   201→        mtu_default=1500, jitter_ratio=0.08,
+   202→        weight=1.4,
+   203→    ),
+   204→    OSSignature(
+   205→        name="Windows Server 2016",
+   206→        family="Windows",
+   207→        ttl_initial=128, tcp_window=65535,
+   208→        synack_ms=9.0, timestamp_res=15.625,
+   209→        keepalive_s=120.0, congestion="newreno",
+   210→        mtu_default=1500, jitter_ratio=0.09,
+   211→        weight=1.1,
+   212→    ),
+   213→    OSSignature(
+   214→        name="Windows 10 / 11",
+   215→        family="Windows",
+   216→        ttl_initial=128, tcp_window=65535,
+   217→        synack_ms=6.0, timestamp_res=15.625,
+   218→        keepalive_s=60.0, congestion="cubic",
+   219→        mtu_default=1500, jitter_ratio=0.07,
+   220→        weight=1.3,
+   221→    ),
+   222→
+   223→    # ── macOS ────────────────────────────────────────────────────────────
+   224→    OSSignature(
+   225→        name="macOS Sonoma (14.x, Darwin 23)",
+   226→        family="macOS",
+   227→        ttl_initial=64, tcp_window=65535,
+   228→        synack_ms=4.0, timestamp_res=1.0,
+   229→        keepalive_s=65.0, congestion="ledbat",
+   230→        mtu_default=1500, jitter_ratio=0.04,
+   231→        weight=1.1,
+   232→    ),
+   233→    OSSignature(
+   234→        name="macOS Ventura (13.x, Darwin 22)",
+   235→        family="macOS",
+   236→        ttl_initial=64, tcp_window=65535,
+   237→        synack_ms=4.5, timestamp_res=1.0,
+   238→        keepalive_s=65.0, congestion="ledbat",
+   239→        mtu_default=1500, jitter_ratio=0.05,
+   240→        weight=0.9,
+   241→    ),
+   242→    OSSignature(
+   243→        name="macOS Monterey (12.x, Darwin 21)",
+   244→        family="macOS",
+   245→        ttl_initial=64, tcp_window=65535,
+   246→        synack_ms=5.0, timestamp_res=1.0,
+   247→        keepalive_s=65.0, congestion="newreno",
+   248→        mtu_default=1500, jitter_ratio=0.06,
+   249→        weight=0.6,
+   250→    ),
+   251→
+   252→    # ── BSD ───────────────────────────────────────────────────────────────
+   253→    OSSignature(
+   254→        name="FreeBSD 14.x",
+   255→        family="BSD",
+   256→        ttl_initial=64, tcp_window=65535,
+   257→        synack_ms=3.5, timestamp_res=1.0,
+   258→        keepalive_s=75.0, congestion="cubic",
+   259→        mtu_default=1500, jitter_ratio=0.04,
+   260→        weight=0.8,
+   261→    ),
+   262→    OSSignature(
+   263→        name="FreeBSD 13.x",
+   264→        family="BSD",
+   265→        ttl_initial=64, tcp_window=65535,
+   266→        synack_ms=4.0, timestamp_res=1.0,
+   267→        keepalive_s=75.0, congestion="newreno",
+   268→        mtu_default=1500, jitter_ratio=0.05,
+   269→        weight=0.7,
+   270→    ),
+   271→    OSSignature(
+   272→        name="OpenBSD 7.x",
+   273→        family="BSD",
+   274→        ttl_initial=64, tcp_window=16384,
+   275→        synack_ms=5.0, timestamp_res=1.0,
+   276→        keepalive_s=60.0, congestion="cubic",
+   277→        mtu_default=1500, jitter_ratio=0.06,
+   278→        weight=0.4,
+   279→    ),
+   280→    OSSignature(
+   281→        name="NetBSD 10.x",
+   282→        family="BSD",
+   283→        ttl_initial=64, tcp_window=16384,
+   284→        synack_ms=5.5, timestamp_res=1.0,
+   285→        keepalive_s=60.0, congestion="newreno",
+   286→        mtu_default=1500, jitter_ratio=0.07,
+   287→        weight=0.3,
+   288→    ),
+   289→
+   290→    # ── Networking Equipment ─────────────────────────────────────────────
+   291→    OSSignature(
+   292→        name="Cisco IOS 15.x / Catalyst",
+   293→        family="Cisco",
+   294→        ttl_initial=255, tcp_window=4128,
+   295→        synack_ms=15.0, timestamp_res=10.0,
+   296→        keepalive_s=30.0, congestion="reno",
+   297→        mtu_default=1500, jitter_ratio=0.12,
+   298→        weight=0.7,
+   299→    ),
+   300→    OSSignature(
+   301→        name="Cisco IOS-XE 17.x",
+   302→        family="Cisco",
+   303→        ttl_initial=255, tcp_window=4128,
+   304→        synack_ms=12.0, timestamp_res=10.0,
+   305→        keepalive_s=30.0, congestion="newreno",
+   306→        mtu_default=1500, jitter_ratio=0.10,
+   307→        weight=0.5,
+   308→    ),
+   309→    OSSignature(
+   310→        name="Juniper JunOS 21.x",
+   311→        family="Cisco",
+   312→        ttl_initial=64, tcp_window=16384,
+   313→        synack_ms=10.0, timestamp_res=10.0,
+   314→        keepalive_s=30.0, congestion="newreno",
+   315→        mtu_default=1500, jitter_ratio=0.11,
+   316→        weight=0.4,
+   317→    ),
+   318→
+   319→    # ── CDNs & Reverse Proxies ────────────────────────────────────────────
+   320→    OSSignature(
+   321→        name="Cloudflare (Linux-based)",
+   322→        family="CDN",
+   323→        ttl_initial=64, tcp_window=65535,
+   324→        synack_ms=2.0, timestamp_res=1.0,
+   325→        keepalive_s=100.0, congestion="bbr",
+   326→        mtu_default=1500, jitter_ratio=0.02,
+   327→        weight=0.9,
+   328→    ),
+   329→    OSSignature(
+   330→        name="Akamai (Linux-based)",
+   331→        family="CDN",
+   332→        ttl_initial=64, tcp_window=29200,
+   333→        synack_ms=3.0, timestamp_res=1.0,
+   334→        keepalive_s=120.0, congestion="bbr",
+   335→        mtu_default=1500, jitter_ratio=0.03,
+   336→        weight=0.6,
+   337→    ),
+   338→    OSSignature(
+   339→        name="AWS ALB / NLB",
+   340→        family="CDN",
+   341→        ttl_initial=64, tcp_window=65535,
+   342→        synack_ms=2.5, timestamp_res=1.0,
+   343→        keepalive_s=60.0, congestion="cubic",
+   344→        mtu_default=1500, jitter_ratio=0.03,
+   345→        weight=0.8,
+   346→    ),
+   347→
+   348→    # ── WAFs / Load Balancers ───────────────────────────────────────────
+   349→    OSSignature(
+   350→        name="F5 BIG-IP TMOS",
+   351→        family="BSD",
+   352→        ttl_initial=64, tcp_window=4128,
+   353→        synack_ms=4.0, timestamp_res=10.0,
+   354→        keepalive_s=60.0, congestion="newreno",
+   355→        mtu_default=1500, jitter_ratio=0.05,
+   356→        weight=0.5,
+   357→    ),
+   358→    OSSignature(
+   359→        name="Nginx (Linux, default)",
+   360→        family="Linux",
+   361→        ttl_initial=64, tcp_window=29200,
+   362→        synack_ms=3.0, timestamp_res=1.0,
+   363→        keepalive_s=65.0, congestion="cubic",
+   364→        mtu_default=1500, jitter_ratio=0.04,
+   365→        weight=1.2,
+   366→    ),
+   367→    OSSignature(
+   368→        name="Apache httpd 2.4 (Linux)",
+   369→        family="Linux",
+   370→        ttl_initial=64, tcp_window=29200,
+   371→        synack_ms=5.0, timestamp_res=1.0,
+   372→        keepalive_s=5.0, congestion="cubic",
+   373→        mtu_default=1500, jitter_ratio=0.06,
+   374→        weight=0.9,
+   375→    ),
+   376→    OSSignature(
+   377→        name="Caddy 2.x (Go/Linux)",
+   378→        family="Linux",
+   379→        ttl_initial=64, tcp_window=65535,
+   380→        synack_ms=2.5, timestamp_res=1.0,
+   381→        keepalive_s=30.0, congestion="cubic",
+   382→        mtu_default=1500, jitter_ratio=0.03,
+   383→        weight=0.6,
+   384→    ),
+   385→]
+   386→# fmt: on
+   387→
+   388→
+   389→# ═══════════════════════════════════════════════════════════════════════════
+   390→# Internal Data Structures
+   391→# ═══════════════════════════════════════════════════════════════════════════
+   392→
+   393→@dataclass
+   394→class TimingSample:
+   395→    """A single timing measurement."""
+   396→    label: str
+   397→    elapsed_ms: float
+   398→    payload_size: int = 0
+   399→    status_code: int = 0
+   400→    response_bytes: int = 0
+   401→    error: Optional[str] = None
+   402→
+   403→
+   404→@dataclass
+   405→class SubProbeResult:
+   406→    """Aggregated result from one sub-probe."""
+   407→    probe_name: str
+   408→    samples: List[TimingSample] = field(default_factory=list)
+   409→    derived_value: Any = None
+   410→    description: str = ""
+   411→    confidence: float = 0.0
+   412→
+   413→    @property
+   414→    def values(self) -> List[float]:
+   415→        return [s.elapsed_ms for s in self.samples if s.error is None]
+   416→
+   417→    @property
+   418→    def mean(self) -> float:
+   419→        v = self.values
+   420→        return statistics.mean(v) if v else 0.0
+   421→
+   422→    @property
+   423→    def median(self) -> float:
+   424→        v = sorted(self.values)
+   425→        n = len(v)
+   426→        if n == 0:
+   427→            return 0.0
+   428→        return v[n // 2]
+   429→
+   430→    @property
+   431→    def stdev(self) -> float:
+   432→        v = self.values
+   433→        return statistics.stdev(v) if len(v) > 1 else 0.0
+   434→
+   435→    @property
+   436→    def cv(self) -> float:
+   437→        """Coefficient of variation (jitter ratio)."""
+   438→        m = self.mean
+   439→        return self.stdev / m if m > 0 else 0.0
+   440→
+   441→
+   442→# ═══════════════════════════════════════════════════════════════════════════
+   443→# Low-level Timing Helpers
+   444→# ═══════════════════════════════════════════════════════════════════════════
+   445→
+   446→def _timed_request(
+   447→    url: str,
+   448→    method: str = "GET",
+   449→    body: Optional[bytes] = None,
+   450→    headers: Optional[Dict[str, str]] = None,
+   451→    timeout: int = 8,
+   452→    verify_tls: bool = True,
+   453→    limiter: Optional[Any] = None,
+   454→) -> TimingSample:
+   455→    """Send a single HTTP request and measure wall-clock RTT."""
+   456→    if limiter:
+   457→        limiter.acquire()
+   458→
+   459→    h = {
+   460→        "User-Agent": "ReconPro/9.2 (Quantum Fingerprint Scanner)",
+   461→        "Accept": "*/*",
+   462→        "Accept-Language": "en-US,en;q=0.9",
+   463→        "Connection": "keep-alive",
+   464→    }
+   465→    if headers:
+   466→        h.update(headers)
+   467→
+   468→    req = urllib.request.Request(url, data=body, method=method, headers=h)
+   469→    t0 = time.perf_counter()
+   470→
+   471→    try:
+   472→        if verify_tls:
+   473→            ctx = ssl.create_default_context()
+   474→        else:
+   475→            ctx = ssl._create_unverified_context()
+   476→
+   477→        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+   478→            raw = resp.read()
+   479→            elapsed = (time.perf_counter() - t0) * 1000.0
+   480→            resp_headers = dict(resp.headers.items())
+   481→            return TimingSample(
+   482→                label=url,
+   483→                elapsed_ms=elapsed,
+   484→                payload_size=len(body) if body else 0,
+   485→                status_code=resp.status,
+   486→                response_bytes=len(raw),
+   487→                error=None,
+   488→            )
+   489→    except urllib.error.HTTPError as e:
+   490→        elapsed = (time.perf_counter() - t0) * 1000.0
+   491→        try:
+   492→            e.read()
+   493→        except Exception:
+   494→            pass
+   495→        return TimingSample(
+   496→            label=url, elapsed_ms=elapsed, status_code=e.code, error=e.reason
+   497→        )
+   498→    except Exception as e:
+   499→        elapsed = (time.perf_counter() - t0) * 1000.0
+   500→        return TimingSample(label=url, elapsed_ms=elapsed, error=str(e)[:120])
+   501→
+   502→
+   503→def _make_unique_url(base_url: str, seed: str, size: int = 0) -> str:
+   504→    """Generate a unique probe URL to avoid caching artifacts."""
+   505→    h = hashlib.sha256(f"{seed}-{time.time_ns()}".encode()).hexdigest()[:12]
+   506→    url = f"{base_url}/.well-known/quantumfp-{h}"
+   507→    if size > 0:
+   508→        url += f"?s={size}&r={h}"
+   509→    return url
+   510→
+   511→
+   512→# ═══════════════════════════════════════════════════════════════════════════
+   513→# Sub-Probe 1: Initial TTL Deduction
+   514→# ═══════════════════════════════════════════════════════════════════════════
+   515→
+   516→def _probe_ttl_deduction(
+   517→    base_url: str,
+   518→    timeout: int = 8,
+   519→    verify_tls: bool = True,
+   520→    limiter: Optional[Any] = None,
+   521→) -> SubProbeResult:
+   522→    """Deduce initial TTL through payload-size / RTT variance analysis.
+   523→
+   524→    Rationale: Different initial TTL values cause packets to traverse
+   525→    different numbers of hops before expiry.  When we vary the payload
+   526→    size, the number of TCP segments changes.  Segments that trigger
+   527→    more TCP-level processing at each hop reveal the initial TTL
+   528→    through a measurable correlation between payload size and RTT
+   529→    coefficient of variation.
+   530→
+   531→    Additionally, we look for a step-function pattern: when the
+   532→    number of required hops approaches TTL-1, the RTT variance
+   533→    increases measurably.
+   534→    """
+   535→    result = SubProbeResult(probe_name="ttl_deduction")
+   536→
+   537→    # Phase 1: Collect RTT samples at multiple payload sizes
+   538→    size_samples: Dict[int, List[float]] = {}
+   539→    for size in _TTL_PAYLOAD_SIZES:
+   540→        body = b"A" * size
+   541→        samples: List[float] = []
+   542→        for i in range(_PROBE_ITERATIONS):
+   543→            url = _make_unique_url(base_url, f"ttl-p{size}", size)
+   544→            ts = _timed_request(
+   545→                url, method="POST", body=body,
+   546→                timeout=timeout, verify_tls=verify_tls, limiter=limiter,
+   547→            )
+   548→            if ts.error is None:
+   549→                samples.append(ts.elapsed_ms)
+   550→            result.samples.append(ts)
+   551→            time.sleep(0.02)
+   552→        if samples:
+   553→            size_samples[size] = samples
+   554→
+   555→    if len(size_samples) < 3:
+   556→        result.derived_value = None
+   557→        result.description = "Insufficient clean samples for TTL deduction"
+   558→        return result
+   559→
+   560→    # Phase 2: Analyze RTT variance pattern vs payload size
+   561→    size_variance: List[Tuple[int, float, float]] = []
+   562→    for size, vals in sorted(size_samples.items()):
+   563→        mean_rtt = statistics.mean(vals)
+   564→        cv = statistics.stdev(vals) / mean_rtt if mean_rtt > 0 else 0
+   565→        size_variance.append((size, mean_rtt, cv))
+   566→
+   567→    # Phase 3: Score each candidate TTL
+   568→    # A lower TTL means more hops are traversed, which means more
+   569→    # network noise → higher CV for larger payloads.
+   570→    # We compute a "slope" of CV vs payload-size for each TTL candidate.
+   571→    total_mean_rtt = statistics.mean([m for _, m, _ in size_variance])
+   572→    avg_cv = statistics.mean([cv for _, _, cv in size_variance])
+   573→
+   574→    # The TTL deduction heuristic: look at how CV grows with payload size.
+   575→    # Larger payloads → more segments → more hop-dependent variance.
+   576→    # The *shape* of this growth curve distinguishes TTL values.
+   577→    cv_slope = 0.0
+   578→    if len(size_variance) > 2:
+   579→        x_vals = [math.log2(max(s, 1)) for s, _, _ in size_variance]
+   580→        y_vals = [cv for _, _, cv in size_variance]
+   581→        n = len(x_vals)
+   582→        mx = sum(x_vals) / n
+   583→        my = sum(y_vals) / n
+   584→        num = sum((x - mx) * (y - my) for x, y in zip(x_vals, y_vals))
+   585→        den = math.sqrt(sum((x - mx) ** 2 for x in x_vals)) * math.sqrt(
+   586→            sum((y - my) ** 2 for y in y_vals)
+   587→        )
+   588→        cv_slope = num / den if den > 0 else 0
+   589→
+   590→    # Score candidate TTLs
+   591→    ttl_scores: List[Tuple[int, float]] = []
+   592→    for candidate_ttl in _KNOWN_INITIAL_TTL:
+   593→        score = 0.0
+   594→
+   595→        # Factor 1: CV slope matches expected hop-count scaling
+   596→        # Higher TTL → fewer exhausted hops → lower slope
+   597→        expected_slope = 1.0 / math.log2(max(candidate_ttl, 2))
+   598→        slope_diff = abs(cv_slope - expected_slope)
+   599→        score += max(0, 1.0 - slope_diff * 3.0) * 0.35
+   600→
+   601→        # Factor 2: Mean RTT correlation
+   602→        # TTL 255 (networking gear) often has higher latency due to
+   603→        # additional processing in routers/switches
+   604→        if candidate_ttl == 255:
+   605→            score += (0.3 if total_mean_rtt > 50 else 0.1)
+   606→        elif candidate_ttl == 128:
+   607→            score += (0.3 if total_mean_rtt > 20 else 0.2)
+   608→        else:
+   609→            score += (0.2 if total_mean_rtt < 100 else 0.1)
+   610→
+   611→        # Factor 3: CV magnitude
+   612→        if candidate_ttl <= 64:
+   613→            score += max(0, 0.15 - avg_cv * 0.5)
+   614→        elif candidate_ttl == 128:
+   615→            score += max(0, 0.15 - abs(avg_cv - 0.07) * 2.0)
+   616→        else:
+   617→            score += max(0, 0.15 - abs(avg_cv - 0.12) * 2.0)
+   618→
+   619→        # Factor 4: Jumps in RTT at specific payload sizes
+   620→        if len(size_variance) > 3:
+   621→            # Look for step-function jumps at segment boundaries
+   622→            jumps = 0
+   623→            for i in range(1, len(size_variance)):
+   624→                rt_diff = size_variance[i][1] - size_variance[i - 1][1]
+   625→                if rt_diff > total_mean_rtt * 0.15:
+   626→                    jumps += 1
+   627→            # More jumps suggest more hops (lower TTL)
+   628→            if candidate_ttl == 64 and jumps >= 2:
+   629→                score += 0.15
+   630→            elif candidate_ttl == 128 and jumps <= 1:
+   631→                score += 0.10
+   632→            elif candidate_ttl == 255 and jumps == 0:
+   633→                score += 0.10
+   634→
+   635→        ttl_scores.append((candidate_ttl, score))
+   636→
+   637→    ttl_scores.sort(key=lambda x: x[1], reverse=True)
+   638→    best_ttl = ttl_scores[0][0] if ttl_scores else 64
+   639→    best_score = ttl_scores[0][1] if ttl_scores else 0
+   640→
+   641→    result.derived_value = {
+   642→        "deduced_ttl": best_ttl,
+   643→        "confidence": round(min(best_score, 1.0), 3),
+   644→        "all_scores": {str(t): round(s, 3) for t, s in ttl_scores},
+   645→        "mean_rtt_ms": round(total_mean_rtt, 2),
+   646→        "avg_cv": round(avg_cv, 4),
+   647→        "cv_slope": round(cv_slope, 4),
+   648→        "size_variance": [
+   649→            {"size": s, "mean_rtt": round(m, 2), "cv": round(c, 4)}
+   650→            for s, m, c in size_variance
+   651→        ],
+   652→    }
+   653→    result.confidence = min(best_score, 1.0)
+   654→    result.description = (
+   655→        f"Deduced initial TTL = {best_ttl} "
+   656→        f"(confidence {round(min(best_score, 1.0) * 100, 1)}%)"
+   657→    )
+   658→    return result
+   659→
+   660→
+   661→# ═══════════════════════════════════════════════════════════════════════════
+   662→# Sub-Probe 2: TCP Window Size Fingerprinting
+   663→# ═══════════════════════════════════════════════════════════════════════════
+   664→
+   665→def _probe_tcp_window(
+   666→    base_url: str,
+   667→    timeout: int = 8,
+   668→    verify_tls: bool = True,
+   669→    limiter: Optional[Any] = None,
+   670→) -> SubProbeResult:
+   671→    """Fingerprint TCP window size via response data-burst analysis.
+   672→
+   673→    Rationale: When a server sends a large response, the TCP window
+   674→    size determines how much data is sent in the initial burst before
+   675→    waiting for ACKs.  We measure how response bytes arrive by probing
+   676→    with a large response endpoint and analyzing the relationship
+   677→    between request size, response time, and bytes received.
+   678→
+   679→    Key signals:
+   680→    - Bytes received per millisecond of RTT
+   681→    - Ratio of response time for small vs large responses
+   682→    - Chunked vs Content-Length transfer patterns
+   683→    """
+   684→    result = SubProbeResult(probe_name="tcp_window")
+   685→
+   686→    # Phase 1: Measure small response baseline
+   687→    small_rtts: List[float] = []
+   688→    small_bytes: List[int] = []
+   689→    for i in range(_PROBE_ITERATIONS):
+   690→        url = _make_unique_url(base_url, f"tw-sm-{i}")
+   691→        ts = _timed_request(url, timeout=timeout, verify_tls=verify_tls,
+   692→                            limiter=limiter)
+   693→        if ts.error is None:
+   694→            small_rtts.append(ts.elapsed_ms)
+   695→            small_bytes.append(ts.response_bytes)
+   696→        result.samples.append(ts)
+   697→        time.sleep(0.02)
+   698→
+   699→    # Phase 2: Measure large response (via POST to trigger potential
+   700→    # echo or error response of different size)
+   701→    large_rtts: List[float] = []
+   702→    large_bytes: List[int] = []
+   703→    large_body = b"X" * 4096
+   704→    for i in range(_PROBE_ITERATIONS):
+   705→        url = _make_unique_url(base_url, f"tw-lg-{i}")
+   706→        ts = _timed_request(
+   707→            url, method="POST", body=large_body,
+   708→            timeout=timeout, verify_tls=verify_tls, limiter=limiter,
+   709→        )
+   710→        if ts.error is None:
+   711→            large_rtts.append(ts.elapsed_ms)
+   712→            large_bytes.append(ts.response_bytes)
+   713→        result.samples.append(ts)
+   714→        time.sleep(0.02)
+   715→
+   716→    # Phase 3: Analyze transfer rates
+   717→    all_probe_rtts = small_rtts + large_rtts
+   718→    if not all_probe_rtts:
+   719→        result.derived_value = None
+   720→        result.description = "No clean responses for TCP window analysis"
+   721→        return result
+   722→
+   723→    all_bytes = small_bytes + large_bytes
+   724→    avg_bytes = statistics.mean(all_bytes) if all_bytes else 0
+   725→    avg_small_rtt = statistics.mean(small_rtts) if small_rtts else 0
+   726→    avg_large_rtt = statistics.mean(large_rtts) if large_rtts else 0
+   727→
+   728→    # Phase 4: Also probe the main page for chunked vs content-length
+   729→    main_probe = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   730→    is_chunked = "transfer-encoding" in {
+   731→        k.lower() for k in main_probe.get("headers", {})
+   732→    }
+   733→    content_length = main_probe.get("headers", {}).get("Content-Length", "")
+   734→
+   735→    # Transfer rate (bytes/ms) reflects effective window / RTT
+   736→    transfer_rate = avg_bytes / avg_large_rtt if avg_large_rtt > 0 else 0
+   737→
+   738→    # Phase 5: Classify window size
+   739→    # Map transfer-rate ranges to window size classes
+   740→    window_classification = "unknown"
+   741→    estimated_window = 0
+   742→
+   743→    if transfer_rate > 100:
+   744→        window_classification = "large (65535)"
+   745→        estimated_window = 65535
+   746→    elif transfer_rate > 30:
+   747→        window_classification = "medium-large (29200)"
+   748→        estimated_window = 29200
+   749→    elif transfer_rate > 15:
+   750→        window_classification = "medium (16384)"
+   751→        estimated_window = 16384
+   752→    elif transfer_rate > 5:
+   753→        window_classification = "small (8192)"
+   754→        estimated_window = 8192
+   755→    else:
+   756→        window_classification = "very-small (4128)"
+   757→        estimated_window = 4128
+   758→
+   759→    # Adjust for known server hints
+   760→    server_header = main_probe.get("headers", {}).get("Server", "").lower()
+   761→    if "nginx" in server_header and estimated_window < 29200:
+   762→        estimated_window = 29200
+   763→        window_classification = "medium-large (29200) [nginx hint]"
+   764→    elif "cloudflare" in server_header:
+   765→        estimated_window = 65535
+   766→        window_classification = "large (65535) [cloudflare hint]"
+   767→    elif "apache" in server_header and estimated_window < 29200:
+   768→        estimated_window = 29200
+   769→        window_classification = "medium-large (29200) [apache hint]"
+   770→
+   771→    result.derived_value = {
+   772→        "estimated_window": estimated_window,
+   773→        "classification": window_classification,
+   774→        "transfer_rate_bytes_per_ms": round(transfer_rate, 2),
+   775→        "avg_small_rtt_ms": round(avg_small_rtt, 2),
+   776→        "avg_large_rtt_ms": round(avg_large_rtt, 2),
+   777→        "is_chunked": is_chunked,
+   778→        "server_hint": server_header or None,
+   779→        "avg_response_bytes": round(avg_bytes, 1),
+   780→    }
+   781→    result.confidence = 0.6 if transfer_rate > 0 else 0.2
+   782→    result.description = (
+   783→        f"Estimated TCP window ≈ {window_classification} "
+   784→        f"(transfer rate: {transfer_rate:.1f} bytes/ms)"
+   785→    )
+   786→    return result
+   787→
+   788→
+   789→# ═══════════════════════════════════════════════════════════════════════════
+   790→# Sub-Probe 3: SYN-ACK Timing Behaviour
+   791→# ═══════════════════════════════════════════════════════════════════════════
+   792→
+   793→def _probe_synack_timing(
+   794→    base_url: str,
+   795→    timeout: int = 8,
+   796→    verify_tls: bool = True,
+   797→    limiter: Optional[Any] = None,
+   798→) -> SubProbeResult:
+   799→    """Measure SYN-ACK timing via fresh-connection first-byte latency.
+   800→
+   801→    Rationale: Every time we open a new TCP connection (no keep-alive
+   802→    reuse), the observed latency includes:
+   803→      - DNS resolution (amortized / cached)
+   804→      - TCP SYN → SYN-ACK round trip
+   805→      - TLS handshake (if HTTPS)
+   806→      - Server request processing → first byte
+   807→
+   808→    By opening many fresh connections and measuring the minimum RTT
+   809→    (the tail-eliminated latency), we isolate the kernel's TCP
+   810→    interrupt-handling and timer resolution characteristics.
+   811→
+   812→    Different kernels have characteristic first-byte latencies due to
+   813→    different NAPI polling intervals, interrupt coalescing, and
+   814→    TCP backlog processing strategies.
+   815→    """
+   816→    result = SubProbeResult(probe_name="synack_timing")
+   817→
+   818→    # Force fresh connections by using a new OpenerDirector each time
+   819→    rtts: List[float] = []
+   820→
+   821→    for i in range(_PROBE_ITERATIONS + 4):
+   822→        url = _make_unique_url(base_url, f"synack-{i}")
+   823→
+   824→        if limiter:
+   825→            limiter.acquire()
+   826→
+   827→        # Build a fresh opener (no connection pooling)
+   828→        if verify_tls:
+   829→            ctx = ssl.create_default_context()
+   830→        else:
+   831→            ctx = ssl._create_unverified_context()
+   832→
+   833→        opener = urllib.request.build_opener(
+   834→            urllib.request.HTTPSHandler(context=ctx) if base_url.startswith("https")
+   835→            else urllib.request.HTTPHandler()
+   836→        )
+   837→
+   838→        headers = {
+   839→            "User-Agent": "ReconPro/9.2 (Quantum Fingerprint Scanner)",
+   840→            "Accept": "*/*",
+   841→            "Connection": "close",      # force new connection per request
+   842→        }
+   843→        req = urllib.request.Request(url, headers=headers)
+   844→
+   845→        t0 = time.perf_counter()
+   846→        try:
+   847→            with opener.open(req, timeout=timeout) as resp:
+   848→                resp.read(512)
+   849→                elapsed = (time.perf_counter() - t0) * 1000.0
+   850→                rtts.append(elapsed)
+   851→                result.samples.append(TimingSample(
+   852→                    label=url, elapsed_ms=elapsed, status_code=resp.status
+   853→                ))
+   854→        except Exception as e:
+   855→            elapsed = (time.perf_counter() - t0) * 1000.0
+   856→            result.samples.append(TimingSample(
+   857→                label=url, elapsed_ms=elapsed, error=str(e)[:80]
+   858→            ))
+   859→        time.sleep(0.03)
+   860→
+   861→    if not rtts:
+   862→        result.derived_value = None
+   863→        result.description = "No clean SYN-ACK timing samples"
+   864→        return result
+   865→
+   866→    rtts_sorted = sorted(rtts)
+   867→    n = len(rtts_sorted)
+   868→
+   869→    # Statistical measures
+   870→    # Use trimmed mean (discard top 20% — outliers from GC / context switches)
+   871→    trim_idx = max(1, n - n // 5)
+   872→    trimmed = rtts_sorted[:trim_idx]
+   873→    median_rtt = rtts_sorted[n // 2]
+   874→    trimmed_mean = statistics.mean(trimmed)
+   875→    minimum = rtts_sorted[0]
+   876→    p10 = rtts_sorted[max(0, n // 10)]
+   877→    p90 = rtts_sorted[min(n - 1, n * 9 // 10)]
+   878→
+   879→    # IQR-based jitter
+   880→    q1 = rtts_sorted[n // 4] if n >= 4 else median_rtt
+   881→    q3 = rtts_sorted[3 * n // 4] if n >= 4 else median_rtt
+   882→    iqr = q3 - q1
+   883→
+   884→    # Classify the kernel interrupt pattern
+   885→    kernel_hint = "unknown"
+   886→    if trimmed_mean < 3.0 and iqr < 2.0:
+   887→        kernel_hint = "low-latency kernel (BBR / modern Linux / CDN)"
+   888→    elif trimmed_mean < 5.0 and iqr < 3.0:
+   889→        kernel_hint = "standard Linux 5.x+ / macOS / FreeBSD"
+   890→    elif trimmed_mean < 8.0 and iqr < 5.0:
+   891→        kernel_hint = "Linux 4.x / older macOS / Windows Server"
+   892→    elif trimmed_mean < 12.0 and iqr < 8.0:
+   893→        kernel_hint = "older Linux / Windows Server / JunOS"
+   894→    elif trimmed_mean >= 12.0:
+   895→        kernel_hint = "networking equipment / high-latency kernel / proxy chain"
+   896→
+   897→    result.derived_value = {
+   898→        "trimmed_mean_ms": round(trimmed_mean, 3),
+   899→        "median_ms": round(median_rtt, 3),
+   900→        "minimum_ms": round(minimum, 3),
+   901→        "p10_ms": round(p10, 3),
+   902→        "p90_ms": round(p90, 3),
+   903→        "iqr_ms": round(iqr, 3),
+   904→        "stddev": round(statistics.stdev(rtts) if len(rtts) > 1 else 0, 3),
+   905→        "sample_count": n,
+   906→        "kernel_pattern": kernel_hint,
+   907→    }
+   908→    result.confidence = 0.7
+   909→    result.description = (
+   910→        f"SYN-ACK latency: median={median_rtt:.2f}ms, "
+   911→        f"trimmed-mean={trimmed_mean:.2f}ms, "
+   912→        f"iqr={iqr:.2f}ms ({kernel_hint})"
+   913→    )
+   914→    return result
+   915→
+   916→
+   917→# ═══════════════════════════════════════════════════════════════════════════
+   918→# Sub-Probe 4: HTTP Keep-Alive Behaviour
+   919→# ═══════════════════════════════════════════════════════════════════════════
+   920→
+   921→def _probe_keepalive(
+   922→    base_url: str,
+   923→    timeout: int = 8,
+   924→    verify_tls: bool = True,
+   925→    limiter: Optional[Any] = None,
+   926→) -> SubProbeResult:
+   927→    """Measure connection persistence and keep-alive timing.
+   928→
+   929→    Rationale: Different TCP stacks keep idle connections open for
+   930→    different durations, governed by kernel-level tcp_fin_timeout,
+   931→    tcp_keepalive_time, and server-level configuration.  By sending
+   932→    a sequence of requests on the same connection with increasing
+   933→    idle intervals, we can detect the point at which the server closes
+   934→    the connection, revealing the TCP stack's idle timeout.
+   935→
+   936→    We also measure RTT degradation across sequential requests —
+   937→    some stacks show increasing latency due to NIC buffer pressure or
+   938→    TCP delayed-ACK timer interactions.
+   939→    """
+   940→    result = SubProbeResult(probe_name="keepalive")
+   941→
+   942→    # Use a single opener for connection reuse
+   943→    if verify_tls:
+   944→        ctx = ssl.create_default_context()
+   945→    else:
+   946→        ctx = ssl._create_unverified_context()
+   947→
+   948→    opener = urllib.request.build_opener(
+   949→        urllib.request.HTTPSHandler(context=ctx) if base_url.startswith("https")
+   950→        else urllib.request.HTTPHandler()
+   951→    )
+   952→
+   953→    # Phase 1: Rapid sequential requests — measure RTT degradation
+   954→    seq_rtts: List[float] = []
+   955→    conn_alive = True
+   956→
+   957→    for i in range(_PROBE_ITERATIONS):
+   958→        url = _make_unique_url(base_url, f"ka-seq-{i}")
+   959→        headers = {
+   960→            "User-Agent": "ReconPro/9.2",
+   961→            "Accept": "*/*",
+   962→            "Connection": "keep-alive",
+   963→        }
+   964→        req = urllib.request.Request(url, headers=headers)
+   965→
+   966→        if limiter:
+   967→            limiter.acquire()
+   968→
+   969→        t0 = time.perf_counter()
+   970→        try:
+   971→            with opener.open(req, timeout=timeout) as resp:
+   972→                resp.read(256)
+   973→                elapsed = (time.perf_counter() - t0) * 1000.0
+   974→                seq_rtts.append(elapsed)
+   975→                result.samples.append(TimingSample(
+   976→                    label=f"seq-{i}", elapsed_ms=elapsed, status_code=resp.status
+   977→                ))
+   978→        except Exception as e:
+   979→            elapsed = (time.perf_counter() - t0) * 1000.0
+   980→            result.samples.append(TimingSample(
+   981→                label=f"seq-{i}", elapsed_ms=elapsed, error=str(e)[:80]
+   982→            ))
+   983→            conn_alive = False
+   984→            break
+   985→
+   986→    # Phase 2: Idle-interval probing
+   987→    # Send a request, wait, send another — find when connection drops
+   988→    idle_intervals = [0.5, 1.0, 2.0, 3.0, 5.0, 7.5, 10.0, 15.0, 20.0]
+   989→    idle_survival: List[Tuple[float, bool]] = []
+   990→    conn_refreshed = False
+   991→
+   992→    for wait_s in idle_intervals:
+   993→        # Refresh connection first
+   994→        refresh_url = _make_unique_url(base_url, f"ka-refr-{wait_s}")
+   995→        ref_headers = {
+   996→            "User-Agent": "ReconPro/9.2",
+   997→            "Accept": "*/*",
+   998→            "Connection": "keep-alive",
+   999→        }
+  1000→        ref_req = urllib.request.Request(refresh_url, headers=ref_headers)
+  1001→
+  1002→        if limiter:
+  1003→            limiter.acquire()
+  1004→
+  1005→        try:
+  1006→            with opener.open(ref_req, timeout=timeout) as resp:
+  1007→                resp.read(128)
+  1008→            conn_refreshed = True
+  1009→        except Exception:
+  1010→            # Connection was closed; create fresh one
+  1011→            opener = urllib.request.build_opener(
+  1012→                urllib.request.HTTPSHandler(context=ctx)
+  1013→                if base_url.startswith("https")
+  1014→                else urllib.request.HTTPHandler()
+  1015→            )
+  1016→            try:
+  1017→                with opener.open(ref_req, timeout=timeout) as resp:
+  1018→                    resp.read(128)
+  1019→                conn_refreshed = True
+  1020→            except Exception:
+  1021→                conn_refreshed = False
+  1022→                idle_survival.append((wait_s, False))
+  1023→                continue
+  1024→
+  1025→        if not conn_refreshed:
+  1026→            idle_survival.append((wait_s, False))
+  1027→            continue
+  1028→
+  1029→        # Wait the idle interval
+  1030→        time.sleep(wait_s)
+  1031→
+  1032→        # Try to reuse the connection
+  1033→        test_url = _make_unique_url(base_url, f"ka-test-{wait_s}")
+  1034→        test_headers = {
+  1035→            "User-Agent": "ReconPro/9.2",
+  1036→            "Accept": "*/*",
+  1037→            "Connection": "keep-alive",
+  1038→        }
+  1039→        test_req = urllib.request.Request(test_url, headers=test_headers)
+  1040→
+  1041→        if limiter:
+  1042→            limiter.acquire()
+  1043→
+  1044→        t0 = time.perf_counter()
+  1045→        try:
+  1046→            with opener.open(test_req, timeout=timeout) as resp:
+  1047→                resp.read(128)
+  1048→                elapsed = (time.perf_counter() - t0) * 1000.0
+  1049→                result.samples.append(TimingSample(
+  1050→                    label=f"idle-{wait_s}s", elapsed_ms=elapsed,
+  1051→                    status_code=resp.status
+  1052→                ))
+  1053→                idle_survival.append((wait_s, True))
+  1054→        except Exception as e:
+  1055→            elapsed = (time.perf_counter() - t0) * 1000.0
+  1056→            result.samples.append(TimingSample(
+  1057→                label=f"idle-{wait_s}s", elapsed_ms=elapsed,
+  1058→                error="connection_closed"
+  1059→            ))
+  1060→            idle_survival.append((wait_s, False))
+  1061→
+  1062→    # Phase 3: Analyze results
+  1063→    estimated_timeout = 0.0
+  1064→    for wait_s, alive in idle_survival:
+  1065→        if not alive:
+  1066→            estimated_timeout = wait_s
+  1067→            break
+  1068→    else:
+  1069→        estimated_timeout = max(w for w, _ in idle_survival) if idle_survival else 0
+  1070→
+  1071→    # RTT degradation slope
+  1072→    rtt_degradation = 0.0
+  1073→    if len(seq_rtts) > 2:
+  1074→        x = list(range(len(seq_rtts)))
+  1075→        y = seq_rtts
+  1076→        n = len(x)
+  1077→        mx = sum(x) / n
+  1078→        my = sum(y) / n
+  1079→        num = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+  1080→        den = math.sqrt(sum((xi - mx) ** 2 for xi in x))
+  1081→        rtt_degradation = num / den if den > 0 else 0
+  1082→
+  1083→    # Classify keep-alive behaviour
+  1084→    ka_hint = "unknown"
+  1085→    if estimated_timeout <= 5:
+  1086→        ka_hint = "aggressive timeout (Apache / embedded / Cisco)"
+  1087→    elif estimated_timeout <= 30:
+  1088→        ka_hint = "moderate timeout (Nginx default / Caddy / load balancer)"
+  1089→    elif estimated_timeout <= 75:
+  1090→        ka_hint = "standard Linux kernel (tcp_keepalive_time ≈ 75s)"
+  1091→    elif estimated_timeout <= 120:
+  1092→        ka_hint = "Windows Server default (120s)"
+  1093→    else:
+  1094→        ka_hint = "long-lived (CDN / reverse proxy / custom config)"
+  1095→
+  1096→    if rtt_degradation > 0.5:
+  1097→        ka_hint += " + increasing latency (possible NIC buffer pressure)"
+  1098→
+  1099→    result.derived_value = {
+  1100→        "estimated_timeout_s": round(estimated_timeout, 1),
+  1101→        "keepalive_hint": ka_hint,
+  1102→        "idle_survival": [(round(w, 1), a) for w, a in idle_survival],
+  1103→        "seq_rtt_degradation_ms_per_req": round(rtt_degradation, 3),
+  1104→        "seq_rtts": [round(r, 2) for r in seq_rtts],
+  1105→        "seq_rtts_median": round(
+  1106→            statistics.median(seq_rtts) if seq_rtts else 0, 2
+  1107→        ),
+  1108→    }
+  1109→    result.confidence = 0.6
+  1110→    result.description = (
+  1111→        f"Keep-alive timeout ≈ {estimated_timeout:.1f}s — {ka_hint}"
+  1112→    )
+  1113→    return result
+  1114→
+  1115→
+  1116→# ═══════════════════════════════════════════════════════════════════════════
+  1117→# Sub-Probe 5: Path MTU Detection
+  1118→# ═══════════════════════════════════════════════════════════════════════════
+  1119→
+  1120→def _probe_mtu(
+  1121→    base_url: str,
+  1122→    timeout: int = 8,
+  1123→    verify_tls: bool = True,
+  1124→    limiter: Optional[Any] = None,
+  1125→) -> SubProbeResult:
+  1126→    """Detect path MTU by escalating payload size until fragmentation.
+  1127→
+  1128→    Rationale: When the POST body exceeds the path MTU (after subtracting
+  1129→    TCP + IP headers), the packet must be fragmented.  Fragmentation
+  1130→    causes a measurable RTT spike because:
+  1131→      - Additional packet processing at routers
+  1132→      - Potential retransmission if fragments are lost
+  1133→      - ICMP "Fragmentation Needed" messages (RFC 1191)
+  1134→
+  1135→    By plotting RTT vs payload size and detecting the inflection point,
+  1136→    we can estimate the effective path MTU.
+  1137→
+  1138→    Typical MTU signatures:
+  1139→      - 1500: Standard Ethernet (most common)
+  1140→      - 1472: Without IP header (ICMP payload)
+  1141→      - 1460: Without IP+TCP headers
+  1142→      - 9000: Jumbo frames (data center)
+  1143→      - 1280: IPv6 minimum
+  1144→    """
+  1145→    result = SubProbeResult(probe_name="mtu_detection")
+  1146→
+  1147→    payload_rtts: List[Tuple[int, float]] = []
+  1148→    prev_rtt = None
+  1149→
+  1150→    for size in _MTU_PAYLOAD_SIZES:
+  1151→        body = b"P" * size
+  1152→        rtts_for_size: List[float] = []
+  1153→
+  1154→        for trial in range(3):
+  1155→            url = _make_unique_url(base_url, f"mtu-{size}-{trial}")
+  1156→            ts = _timed_request(
+  1157→                url, method="POST", body=body,
+  1158→                timeout=timeout, verify_tls=verify_tls, limiter=limiter,
+  1159→            )
+  1160→            if ts.error is None:
+  1161→                rtts_for_size.append(ts.elapsed_ms)
+  1162→            result.samples.append(ts)
+  1163→            time.sleep(0.02)
+  1164→
+  1165→        if rtts_for_size:
+  1166→            mean_rtt = statistics.mean(rtts_for_size)
+  1167→            payload_rtts.append((size, mean_rtt))
+  1168→        else:
+  1169→            payload_rtts.append((size, float("inf")))
+  1170→
+  1171→    # Phase 2: Detect MTU inflection point
+  1172→    # Look for the first significant RTT spike
+  1173→    baseline_rtts = [r for s, r in payload_rtts if s <= 1460 and r < float("inf")]
+  1174→    baseline_mean = statistics.mean(baseline_rtts) if baseline_rtts else 50.0
+  1175→    baseline_stdev = statistics.stdev(baseline_rtts) if len(baseline_rtts) > 1 else 5.0
+  1176→    spike_threshold = baseline_mean + baseline_stdev * 2.5
+  1177→
+  1178→    mtu_estimate = 0
+  1179→    spike_detected = False
+  1180→    for size, rtt in payload_rtts:
+  1181→        if rtt > spike_threshold and rtt != float("inf"):
+  1182→            # Account for TCP/IP headers: effective MTU = payload + headers
+  1183→            # We subtract 60 bytes for TCP+IP headers (typical)
+  1184→            mtu_estimate = size + 60
+  1185→            spike_detected = True
+  1186→            break
+  1187→        elif rtt == float("inf"):
+  1188→            mtu_estimate = size + 60
+  1189→            spike_detected = True
+  1190→            break
+  1191→
+  1192→    if not spike_detected:
+  1193→        # No spike detected → path supports all tested sizes → large MTU
+  1194→        max_tested = max(s for s, _ in payload_rtts) if payload_rtts else 1500
+  1195→        mtu_estimate = max(max_tested + 60, 9000)
+  1196→
+  1197→    # Phase 3: Classify MTU
+  1198→    mtu_class = "unknown"
+  1199→    if 1496 <= mtu_estimate <= 1520:
+  1200→        mtu_class = "standard Ethernet (1500 bytes)"
+  1201→    elif 1470 <= mtu_estimate <= 1496:
+  1202→        mtu_class = "Ethernet with encapsulation overhead"
+  1203→    elif 1486 <= mtu_estimate <= 1520:
+  1204→        mtu_class = "PPPoE or VPN encapsulation"
+  1205→    elif mtu_estimate >= 8960:
+  1206→        mtu_class = "jumbo frames (9000 bytes)"
+  1207→    elif 1276 <= mtu_estimate <= 1300:
+  1208→        mtu_class = "IPv6 minimum MTU"
+  1209→    elif mtu_estimate > 0:
+  1210→        mtu_class = f"non-standard ({mtu_estimate} bytes)"
+  1211→
+  1212→    result.derived_value = {
+  1213→        "estimated_mtu": mtu_estimate,
+  1214→        "classification": mtu_class,
+  1215→        "spike_detected": spike_detected,
+  1216→        "baseline_mean_ms": round(baseline_mean, 2),
+  1217→        "spike_threshold_ms": round(spike_threshold, 2),
+  1218→        "payload_rtts": [
+  1219→            {"size": s, "mean_rtt": round(r, 2) if r < float("inf") else None}
+  1220→            for s, r in payload_rtts
+  1221→        ],
+  1222→    }
+  1223→    result.confidence = 0.7 if spike_detected else 0.4
+  1224→    result.description = (
+  1225→        f"Estimated path MTU = {mtu_estimate} bytes — {mtu_class}"
+  1226→    )
+  1227→    return result
+  1228→
+  1229→
+  1230→# ═══════════════════════════════════════════════════════════════════════════
+  1231→# Sub-Probe 6: Congestion Control Algorithm Identification
+  1232→# ═══════════════════════════════════════════════════════════════════════════
+  1233→
+  1234→def _probe_congestion_control(
+  1235→    base_url: str,
+  1236→    timeout: int = 8,
+  1237→    verify_tls: bool = True,
+  1238→    limiter: Optional[Any] = None,
+  1239→) -> SubProbeResult:
+  1240→    """Identify congestion control algorithm via burst-recovery analysis.
+  1241→
+  1242→    Rationale: Different congestion control algorithms recover from
+  1243→    packet loss / network congestion at different rates:
+  1244→
+  1245→      - **CUBIC**: W(t) = C(t - K)³ + W_max — cubic growth function
+  1246→        produces a characteristic "S-curve" recovery pattern.
+  1247→      - **Reno/NewReno**: Linear increase after loss detection.
+  1248→        Slow, steady recovery with predictable slope.
+  1249→      - **BBR**: Attempts to estimate bandwidth and RTT, then
+  1250→        paces packets accordingly.  Recovery is near-instant
+  1251→        with minimal RTT inflation.
+  1252→      - **LEDBAT**: Designed for background traffic, delays
+  1253→        heavily.  Very high RTT after burst.
+  1254→
+  1255→    Methodology:
+  1256→    1. Establish baseline RTT with isolated probes.
+  1257→    2. Fire a burst of requests as fast as possible.
+  1258→    3. Measure RTT inflation during and after burst.
+  1259→    4. Analyze recovery curve shape.
+  1260→    """
+  1261→    result = SubProbeResult(probe_name="congestion_control")
+  1262→
+  1263→    # Phase 1: Baseline
+  1264→    baseline_rtts: List[float] = []
+  1265→    for i in range(_PROBE_ITERATIONS // 2):
+  1266→        url = _make_unique_url(base_url, f"cc-base-{i}")
+  1267→        ts = _timed_request(url, timeout=timeout, verify_tls=verify_tls,
+  1268→                            limiter=limiter)
+  1269→        if ts.error is None:
+  1270→            baseline_rtts.append(ts.elapsed_ms)
+  1271→        result.samples.append(ts)
+  1272→        time.sleep(0.05)
+  1273→
+  1274→    if not baseline_rtts:
+  1275→        result.derived_value = None
+  1276→        result.description = "No baseline for congestion analysis"
+  1277→        return result
+  1278→
+  1279→    baseline_mean = statistics.mean(baseline_rtts)
+  1280→    baseline_stdev = statistics.stdev(baseline_rtts) if len(baseline_rtts) > 1 else 1.0
+  1281→
+  1282→    # Phase 2: Burst
+  1283→    burst_rtts: List[float] = []
+  1284→    for i in range(_CONGESTION_BURST_SIZE):
+  1285→        url = _make_unique_url(base_url, f"cc-burst-{i}")
+  1286→        # Minimal delay between requests to create congestion
+  1287→        ts = _timed_request(url, timeout=timeout, verify_tls=verify_tls,
+  1288→                            limiter=limiter)
+  1289→        burst_rtts.append(ts.elapsed_ms)
+  1290→        result.samples.append(ts)
+  1291→
+  1292→    # Phase 3: Recovery probes
+  1293→    recovery_rtts: List[float] = []
+  1294→    for i in range(_CONGESTION_RECOVERY_PROBES):
+  1295→        url = _make_unique_url(base_url, f"cc-recovery-{i}")
+  1296→        ts = _timed_request(url, timeout=timeout, verify_tls=verify_tls,
+  1297→                            limiter=limiter)
+  1298→        if ts.error is None:
+  1299→            recovery_rtts.append(ts.elapsed_ms)
+  1300→        result.samples.append(ts)
+  1301→        time.sleep(0.08)
+  1302→
+  1303→    # Phase 4: Analysis
+  1304→    burst_mean = statistics.mean(burst_rtts)
+  1305→    burst_inflation = (burst_mean - baseline_mean) / baseline_mean if baseline_mean > 0 else 0
+  1306→
+  1307→    recovery_mean = statistics.mean(recovery_rtts) if recovery_rtts else burst_mean
+  1308→    recovery_ratio = recovery_mean / baseline_mean if baseline_mean > 0 else 1.0
+  1309→
+  1310→    # Recovery curve slope (should be negative — RTT decreasing back to baseline)
+  1311→    recovery_slope = 0.0
+  1312→    if len(recovery_rtts) > 2:
+  1313→        x = list(range(len(recovery_rtts)))
+  1314→        y = recovery_rtts
+  1315→        n = len(x)
+  1316→        mx = sum(x) / n
+  1317→        my = sum(y) / n
+  1318→        num = sum((xi - mx) * (yi - my) for xi, yi in zip(x, y))
+  1319→        den = math.sqrt(sum((xi - mx) ** 2 for xi in x))
+  1320→        recovery_slope = num / den if den > 0 else 0
+  1321→
+  1322→    # Burst pattern analysis — CUBIC shows non-linear (cubic) increase
+  1323→    burst_nonlinearity = 0.0
+  1324→    if len(burst_rtts) > 3:
+  1325→        # Fit quadratic to burst RTTs; residual indicates non-linearity
+  1326→        x = list(range(len(burst_rtts)))
+  1327→        y = burst_rtts
+  1328→        n = len(x)
+  1329→        # Simple: compute variance of successive differences
+  1330→        diffs = [y[i+1] - y[i] for i in range(len(y) - 1)]
+  1331→        if diffs:
+  1332→            diff_mean = statistics.mean(diffs)
+  1333→            diff_var = statistics.variance(diffs) if len(diffs) > 1 else 0
+  1334→            burst_nonlinearity = math.sqrt(diff_var) / (abs(diff_mean) + 1)
+  1335→
+  1336→    # Classify congestion control
+  1337→    algo = "unknown"
+  1338→    algo_confidence = 0.0
+  1339→
+  1340→    if burst_inflation < 0.15 and recovery_ratio < 1.2:
+  1341→        algo = "bbr"
+  1342→        algo_confidence = 0.75
+  1343→    elif burst_inflation < 0.3 and recovery_slope < -1.0 and burst_nonlinearity > 0.3:
+  1344→        algo = "cubic"
+  1345→        algo_confidence = 0.65
+  1346→    elif burst_inflation < 0.5 and -0.5 < recovery_slope < 0.5:
+  1347→        algo = "newreno"
+  1348→        algo_confidence = 0.55
+  1349→    elif burst_inflation < 0.5 and recovery_slope >= -0.3:
+  1350→        algo = "reno"
+  1351→        algo_confidence = 0.45
+  1352→    elif burst_inflation > 0.5 or recovery_ratio > 2.0:
+  1353→        algo = "ledbat"
+  1354→        algo_confidence = 0.50
+  1355→    elif burst_inflation > 0.3:
+  1356→        algo = "cubic (congested)"
+  1357→        algo_confidence = 0.45
+  1358→
+  1359→    result.derived_value = {
+  1360→        "algorithm": algo,
+  1361→        "confidence": round(algo_confidence, 3),
+  1362→        "baseline_mean_ms": round(baseline_mean, 2),
+  1363→        "burst_mean_ms": round(burst_mean, 2),
+  1364→        "burst_inflation_pct": round(burst_inflation * 100, 1),
+  1365→        "recovery_mean_ms": round(recovery_mean, 2),
+  1366→        "recovery_ratio": round(recovery_ratio, 3),
+  1367→        "recovery_slope": round(recovery_slope, 3),
+  1368→        "burst_nonlinearity": round(burst_nonlinearity, 3),
+  1369→        "burst_rtts": [round(r, 2) for r in burst_rtts],
+  1370→        "recovery_rtts": [round(r, 2) for r in recovery_rtts],
+  1371→    }
+  1372→    result.confidence = algo_confidence
+  1373→    result.description = (
+  1374→        f"Congestion control: {algo} "
+  1375→        f"(confidence {round(algo_confidence * 100, 1)}%, "
+  1376→        f"burst inflation: {burst_inflation * 100:.1f}%)"
+  1377→    )
+  1378→    return result
+  1379→
+  1380→
+  1381→# ═══════════════════════════════════════════════════════════════════════════
+  1382→# Sub-Probe 7: Timestamp Resolution
+  1383→# ═══════════════════════════════════════════════════════════════════════════
+  1384→
+  1385→def _probe_timestamp_resolution(
+  1386→    base_url: str,
+  1387→    timeout: int = 8,
+  1388→    verify_tls: bool = True,
+  1389→    limiter: Optional[Any] = None,
+  1390→) -> SubProbeResult:
+  1391→    """Measure server's Date-header clock granularity.
+  1392→
+  1393→    Rationale: The HTTP Date header reflects the server's system
+  1394→    clock.  Different OS kernels have different timer resolutions:
+  1395→      - Linux 2.6+/macOS/FreeBSD: ~1ms (high-resolution timers)
+  1396→      - Windows: ~15.625ms (default timer resolution, 64 Hz)
+  1397→      - Older/embedded systems: ~10ms
+  1398→
+  1399→    By sending rapid sequential requests and analyzing the
+  1400→    inter-request differences in Date timestamps, we can
+  1401→    determine the kernel's clock tick resolution.
+  1402→
+  1403→    This is one of the most reliable OS fingerprinting signals
+  1404→    because it directly reflects kernel configuration rather
+  1405→    than network conditions.
+  1406→    """
+  1407→    result = SubProbeResult(probe_name="timestamp_resolution")
+  1408→
+  1409→    # Also probe the main page for a reference Date header
+  1410→    main_probe = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+  1411→    server_header = main_probe.get("headers", {}).get("Server", "")
+  1412→    via_header = main_probe.get("headers", {}).get("Via", "")
+  1413→
+  1414→    timestamps: List[float] = []  # epoch seconds
+  1415→
+  1416→    for i in range(_TIMESTAMP_SAMPLES):
+  1417→        url = _make_unique_url(base_url, f"ts-{i}")
+  1418→        ts = _timed_request(url, timeout=timeout, verify_tls=verify_tls,
+  1419→                            limiter=limiter)
+  1420→        if ts.error is None and ts.status_code in (200, 301, 302, 304, 404, 405, 403):
+  1421→            # We need the Date header — use http_probe for this
+  1422→            probe = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+  1423→            date_str = probe.get("headers", {}).get("Date", "")
+  1424→            if date_str:
+  1425→                try:
+  1426→                    dt = parsedate_to_datetime(date_str)
+  1427→                    epoch = dt.timestamp()
+  1428→                    timestamps.append(epoch)
+  1429→                except (ValueError, TypeError):
+  1430→                    pass
+  1431→        result.samples.append(ts)
+  1432→        time.sleep(0.005)  # 5ms between samples
+  1433→
+  1434→    if len(timestamps) < 3:
+  1435→        # Fallback: use wall-clock deltas between requests
+  1436→        result.derived_value = {
+  1437→            "resolution_ms": 0,
+  1438→            "classification": "insufficient data",
+  1439→            "method": "wall-clock fallback",
+  1440→            "server_header": server_header,
+  1441→        }
+  1442→        result.confidence = 0.1
+  1443→        result.description = "Insufficient Date-header samples for timestamp analysis"
+  1444→        return result
+  1445→
+  1446→    # Phase 2: Analyze inter-timestamp deltas
+  1447→    deltas_ms: List[float] = []
+  1448→    for i in range(1, len(timestamps)):
+  1449→        delta = (timestamps[i] - timestamps[i - 1]) * 1000.0
+  1450→        if delta >= 0:  # Ignore clock skew (negative deltas)
+  1451→            deltas_ms.append(delta)
+  1452→
+  1453→    if not deltas_ms:
+  1454→        result.derived_value = {
+  1455→            "resolution_ms": 0,
+  1456→            "classification": "clock going backwards?",
+  1457→            "server_header": server_header,
+  1458→        }
+  1459→        result.confidence = 0.1
+  1460→        return result
+  1461→
+  1462→    # Phase 3: Determine resolution
+  1463→    # Common resolutions: 1ms, 10ms, 15.625ms (≈16ms), 1000ms
+  1464→    unique_deltas = sorted(set(round(d, 1) for d in deltas_ms if d > 0))
+  1465→    min_delta = min(deltas_ms) if deltas_ms else 1.0
+  1466→
+  1467→    # GCD-based resolution detection
+  1468→    # Find the greatest common divisor of all deltas
+  1469→    def _gcd_floats(vals: List[float], epsilon: float = 0.5) -> float:
+  1470→        """Approximate GCD for floating-point values."""
+  1471→        vals_rounded = [round(v / epsilon) for v in vals]
+  1472→        from math import gcd as _int_gcd
+  1473→        result = vals_rounded[0]
+  1474→        for v in vals_rounded[1:]:
+  1475→            result = _int_gcd(result, v)
+  1476→        return result * epsilon
+  1477→
+  1478→    resolution = _gcd_floats([d for d in deltas_ms if d > 0], epsilon=0.1)
+  1479→
+  1480→    # Match against known resolutions
+  1481→    known_resolutions = {
+  1482→        1.0: "~1ms (Linux / macOS / FreeBSD — high-resolution timer)",
+  1483→        10.0: "~10ms (embedded / older Linux / Juniper)",
+  1484→        15.625: "~15.625ms (Windows — default system timer, 64 Hz)",
+  1485→        16.0: "~16ms (Windows — rounded timer resolution)",
+  1486→        1000.0: "~1000ms (very coarse / virtualized / load-balanced)",
+  1487→    }
+  1488→
+  1489→    classification = "unknown"
+  1490→    best_match = 0
+  1491→    for known_res, label in known_resolutions.items():
+  1492→        if abs(resolution - known_res) < 2.0 or abs(min_delta - known_res) < 3.0:
+  1493→            classification = label
+  1494→            best_match = known_res
+  1495→            break
+  1496→
+  1497→    if classification == "unknown":
+  1498→        classification = f"~{resolution:.1f}ms (non-standard resolution)"
+  1499→
+  1500→    # Phase 4: Compute confidence
+  1501→    res_confidence = 0.0
+  1502→    if best_match == 15.625 or best_match == 16.0:
+  1503→        # Windows timer is very distinctive — 15.625ms is hard to fake
+  1504→        res_confidence = 0.85
+  1505→    elif best_match == 1.0:
+  1506→        res_confidence = 0.7
+  1507→    elif best_match == 10.0:
+  1508→        res_confidence = 0.55
+  1509→    else:
+  1510→        res_confidence = 0.4
+  1511→
+  1512→    result.derived_value = {
+  1513→        "resolution_ms": round(resolution, 3),
+  1514→        "min_delta_ms": round(min_delta, 3),
+  1515→        "classification": classification,
+  1516→        "unique_deltas": unique_deltas[:10],
+  1517→        "delta_stats": {
+  1518→            "count": len(deltas_ms),
+  1519→            "mean": round(statistics.mean(deltas_ms), 2),
+  1520→            "median": round(statistics.median(deltas_ms), 2),
+  1521→            "min": round(min(deltas_ms), 3),
+  1522→        },
+  1523→        "sample_count": len(timestamps),
+  1524→        "server_header": server_header,
+  1525→        "via_header": via_header,
+  1526→    }
+  1527→    result.confidence = res_confidence
+  1528→    result.description = (
+  1529→        f"Timestamp resolution: {classification} "
+  1530→        f"(measured: {resolution:.2f}ms, min delta: {min_delta:.2f}ms)"
+  1531→    )
+  1532→    return result
+  1533→
+  1534→
+  1535→# ═══════════════════════════════════════════════════════════════════════════
+  1536→# OS Confidence Scoring Engine
+  1537→# ═══════════════════════════════════════════════════════════════════════════
+  1538→
+  1539→def _signal_match_score(
+  1540→    observed: Any,
+  1541→    expected: Any,
+  1542→    tolerance: float,
+  1543→    is_categorical: bool = False,
+  1544→) -> float:
+  1545→    """Compute how well an observed signal matches an expected value.
+  1546→
+  1547→    Returns 0.0 (no match) to 1.0 (perfect match).
+  1548→    """
+  1549→    if observed is None:
+  1550→        return 0.0
+  1551→
+  1552→    if is_categorical:
+  1553→        return 1.0 if str(observed).lower() == str(expected).lower() else 0.0
+  1554→
+  1555→    try:
+  1556→        obs = float(observed)
+  1557→        exp = float(expected)
+  1558→        diff = abs(obs - exp)
+  1559→        range_size = max(abs(exp), 1.0)
+  1560→        normalized_diff = diff / (range_size * tolerance + 0.001)
+  1561→        return max(0.0, 1.0 - normalized_diff)
+  1562→    except (TypeError, ValueError):
+  1563→        return 0.0
+  1564→
+  1565→
+  1566→def _compute_os_confidence(
+  1567→    probes: Dict[str, SubProbeResult],
+  1568→) -> List[Dict[str, Any]]:
+  1569→    """Probabilistic OS identification by matching all signals against
+  1570→    the OS_SIGNATURES database.
+  1571→
+  1572→    Each signal contributes a weighted score.  The total confidence
+  1573→    is the weighted average across all matched signals, normalized
+  1574→    by the prior probability (weight field).
+  1575→    """
+  1576→    scores: List[Dict[str, Any]] = []
+  1577→
+  1578→    # Extract observed values from probe results
+  1579→    ttl_data = probes.get("ttl_deduction")
+  1580→    window_data = probes.get("tcp_window")
+  1581→    synack_data = probes.get("synack_timing")
+  1582→    keepalive_data = probes.get("keepalive")
+  1583→    mtu_data = probes.get("mtu_detection")
+  1584→    congestion_data = probes.get("congestion_control")
+  1585→    timestamp_data = probes.get("timestamp_resolution")
+  1586→
+  1587→    observed_ttl = None
+  1588→    if ttl_data and ttl_data.derived_value:
+  1589→        observed_ttl = ttl_data.derived_value.get("deduced_ttl")
+  1590→
+  1591→    observed_window = None
+  1592→    if window_data and window_data.derived_value:
+  1593→        observed_window = window_data.derived_value.get("estimated_window")
+  1594→
+  1595→    observed_synack = None
+  1596→    if synack_data and synack_data.derived_value:
+  1597→        observed_synack = synack_data.derived_value.get("trimmed_mean_ms")
+  1598→
+  1599→    observed_keepalive = None
+  1600→    if keepalive_data and keepalive_data.derived_value:
+  1601→        observed_keepalive = keepalive_data.derived_value.get("estimated_timeout_s")
+  1602→
+  1603→    observed_mtu = None
+  1604→    if mtu_data and mtu_data.derived_value:
+  1605→        observed_mtu = mtu_data.derived_value.get("estimated_mtu")
+  1606→
+  1607→    observed_congestion = None
+  1608→    if congestion_data and congestion_data.derived_value:
+  1609→        observed_congestion = congestion_data.derived_value.get("algorithm")
+  1610→
+  1611→    observed_ts_res = None
+  1612→    if timestamp_data and timestamp_data.derived_value:
+  1613→        observed_ts_res = timestamp_data.derived_value.get("resolution_ms")
+  1614→
+  1615→    for sig in OS_SIGNATURES:
+  1616→        signal_scores: Dict[str, float] = {}
+  1617→        weights: Dict[str, float] = {}
+  1618→
+  1619→        # TTL match (weight: 0.20)
+  1620→        if observed_ttl is not None:
+  1621→            ttl_match = 1.0 if abs(observed_ttl - sig.ttl_initial) <= sig.ttl_tol else 0.0
+  1622→            signal_scores["ttl"] = ttl_match
+  1623→            weights["ttl"] = 0.20
+  1624→
+  1625→        # Window match (weight: 0.12)
+  1626→        if observed_window is not None:
+  1627→            signal_scores["window"] = _signal_match_score(
+  1628→                observed_window, sig.tcp_window, sig.window_tol
+  1629→            )
+  1630→            weights["window"] = 0.12
+  1631→
+  1632→        # SYN-ACK match (weight: 0.15)
+  1633→        if observed_synack is not None:
+  1634→            signal_scores["synack"] = _signal_match_score(
+  1635→                observed_synack, sig.synack_ms, sig.synack_tol
+  1636→            )
+  1637→            weights["synack"] = 0.15
+  1638→
+  1639→        # Keep-alive match (weight: 0.10)
+  1640→        if observed_keepalive is not None:
+  1641→            signal_scores["keepalive"] = _signal_match_score(
+  1642→                observed_keepalive, sig.keepalive_s, sig.keepalive_tol
+  1643→            )
+  1644→            weights["keepalive"] = 0.10
+  1645→
+  1646→        # MTU match (weight: 0.08)
+  1647→        if observed_mtu is not None:
+  1648→            signal_scores["mtu"] = _signal_match_score(
+  1649→                observed_mtu, sig.mtu_default, 200.0
+  1650→            )
+  1651→            weights["mtu"] = 0.08
+  1652→
+  1653→        # Congestion control match (weight: 0.18)
+  1654→        if observed_congestion is not None:
+  1655→            signal_scores["congestion"] = _signal_match_score(
+  1656→                observed_congestion, sig.congestion, 0.5, is_categorical=True
+  1657→            )
+  1658→            weights["congestion"] = 0.18
+  1659→
+  1660→        # Timestamp resolution match (weight: 0.17)
+  1661→        if observed_ts_res is not None:
+  1662→            signal_scores["timestamp"] = _signal_match_score(
+  1663→                observed_ts_res, sig.timestamp_res, sig.timestamp_tol
+  1664→            )
+  1665→            weights["timestamp"] = 0.17
+  1666→
+  1667→        # Compute weighted score
+  1668→        total_weight = sum(weights.values())
+  1669→        if total_weight > 0:
+  1670→            weighted_score = sum(
+  1671→                signal_scores[k] * weights[k] for k in signal_scores
+  1672→            ) / total_weight
+  1673→        else:
+  1674→            weighted_score = 0.0
+  1675→
+  1676→        # Apply prior (prior weight modulates the score)
+  1677→        prior_factor = sig.weight / max(s.weight for s in OS_SIGNATURES)
+  1678→        final_score = weighted_score * (0.7 + 0.3 * prior_factor)
+  1679→
+  1680→        scores.append({
+  1681→            "os": sig.name,
+  1682→            "family": sig.family,
+  1683→            "score": round(final_score, 4),
+  1684→            "confidence_pct": round(final_score * 100, 1),
+  1685→            "signal_details": {
+  1686→                k: round(signal_scores[k], 3) for k in signal_scores
+  1687→            },
+  1688→            "prior": sig.weight,
+  1689→        })
+  1690→
+  1691→    scores.sort(key=lambda x: x["score"], reverse=True)
+  1692→
+  1693→    # Normalize top scores to confidence percentages
+  1694→    if scores and scores[0]["score"] > 0:
+  1695→        top_score = scores[0]["score"]
+  1696→        for entry in scores:
+  1697→            entry["confidence_pct"] = round(
+  1698→                (entry["score"] / top_score) * min(top_score * 100, 95), 1
+  1699→            )
+  1700→
+  1701→    return scores
+  1702→
+  1703→
+  1704→# ═══════════════════════════════════════════════════════════════════════════
+  1705→# Network-level helpers (stdlib socket)
+  1706→# ═══════════════════════════════════════════════════════════════════════════
+  1707→
+  1708→def _raw_tcp_connect(
+  1709→    host: str,
+  1710→    port: int = 443,
+  1711→    timeout: float = 5.0,
+  1712→) -> Optional[float]:
+  1713→    """Open a raw TCP socket, measure SYN→SYN-ACK latency.
+  1714→
+  1715→    This is used as a supplementary signal — we don't send any data,
+  1716→    just measure the raw TCP handshake time.
+  1717→    """
+  1718→    try:
+  1719→        t0 = time.perf_counter()
+  1720→        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  1721→        sock.settimeout(timeout)
+  1722→        sock.connect((host, port))
+  1723→        elapsed = (time.perf_counter() - t0) * 1000.0
+  1724→        sock.close()
+  1725→        return elapsed
+  1726→    except Exception:
+  1727→        return None
+  1728→
+  1729→
+  1730→def _extract_host(base_url: str) -> str:
+  1731→    """Extract hostname from URL."""
+  1732→    parsed = urllib.parse.urlparse(base_url)  # type: ignore
+  1733→    return parsed.hostname or base_url.split("//")[-1].split("/")[0]
+  1734→
+  1735→
+  1736→# ═══════════════════════════════════════════════════════════════════════════
+  1737→# Main Entry Point
+  1738→# ═══════════════════════════════════════════════════════════════════════════
+  1739→
+  1740→def run_quantum_fingerprint(
+  1741→    target: str,
+  1742→    base_url: str,
+  1743→    timeout: int = 8,
+  1744→    verify_tls: bool = True,
+  1745→) -> List[Finding]:
+  1746→    """Execute full TCP/IP stack fingerprinting via HTTP timing analysis.
+  1747→
+  1748→    Parameters
+  1749→    ----------
+  1750→    target : str
+  1751→        Human-readable target identifier (e.g. "example.com").
+  1752→    base_url : str
+  1753→        Base URL to probe (e.g. "https://example.com").
+  1754→    timeout : int
+  1755→        Per-request timeout in seconds (default 8).
+  1756→    verify_tls : bool
+  1757→        Whether to verify TLS certificates (default True).
+  1758→
+  1759→    Returns
+  1760→    -------
+  1761→    List[Finding]
+  1762→        Security findings for each detected signal and the
+  1763→        consolidated OS identification.
+  1764→
+  1765→    Notes
+  1766→    -----
+  1767→    This module is designed to work through HTTP proxies, NATs,
+  1768→    and cloud load balancers.  Timing signals are degraded but
+  1769→    not eliminated by intermediate infrastructure.
+  1770→
+  1771→    Execution time: approximately 30–90 seconds depending on
+  1772→    network latency and server responsiveness.
+  1773→    """
+  1774→    import urllib.parse  # ensure import at runtime
+  1775→
+  1776→    findings: List[Finding] = []
+  1777→    t_start = time.monotonic()
+  1778→
+  1779→    # ── Phase 0: Raw TCP handshake baseline (supplementary) ───────────
+  1780→    host = _extract_host(base_url)
+  1781→    is_https = base_url.startswith("https")
+  1782→    raw_port = 443 if is_https else 80
+  1783→
+  1784→    raw_handshakes: List[float] = []
+  1785→    for _ in range(5):
+  1786→        rtt = _raw_tcp_connect(host, raw_port, timeout=timeout)
+  1787→        if rtt is not None:
+  1788→            raw_handshakes.append(rtt)
+  1789→        time.sleep(0.1)
+  1790→
+  1791→    raw_baseline = statistics.median(raw_handshakes) if raw_handshakes else 0
+  1792→
+  1793→    # ── Phase 1–7: Execute all sub-probes ────────────────────────────
+  1794→    probes: Dict[str, SubProbeResult] = {}
+  1795→    probe_order = [
+  1796→        ("ttl_deduction", _probe_ttl_deduction),
+  1797→        ("tcp_window", _probe_tcp_window),
+  1798→        ("synack_timing", _probe_synack_timing),
+  1799→        ("keepalive", _probe_keepalive),
+  1800→        ("mtu_detection", _probe_mtu),
+  1801→        ("congestion_control", _probe_congestion_control),
+  1802→        ("timestamp_resolution", _probe_timestamp_resolution),
+  1803→    ]
+  1804→
+  1805→    for name, probe_fn in probe_order:
+  1806→        try:
+  1807→            probe_result = probe_fn(
+  1808→                base_url=base_url,
+  1809→                timeout=timeout,
+  1810→                verify_tls=verify_tls,
+  1811→                limiter=default_limiter,
+  1812→            )
+  1813→            probes[name] = probe_result
+  1814→        except Exception as exc:
+  1815→            probes[name] = SubProbeResult(
+  1816→                probe_name=name,
+  1817→                description=f"Probe failed: {str(exc)[:120]}",
+  1818→            )
+  1819→
+  1820→    total_elapsed = time.monotonic() - t_start
+  1821→
+  1822→    # ── Phase 8: Generate findings for each sub-probe ────────────────
+  1823→    for name, probe in probes.items():
+  1824→        if not probe.derived_value:
+  1825→            continue
+  1826→
+  1827→        severity = "info"
+  1828→        points = 0
+  1829→
+  1830→        if name == "ttl_deduction":
+  1831→            ttl_val = probe.derived_value.get("deduced_ttl")
+  1832→            desc = (
+  1833→                f"Initial TTL deduced as {ttl_val} via payload-size / RTT "
+  1834→                f"variance analysis. TTL families: 32=old routers, "
+  1835→                f"64=Linux/macOS/BSD, 128=Windows, 255=networking gear."
+  1836→            )
+  1837→        elif name == "tcp_window":
+  1838→            win = probe.derived_value.get("classification", "")
+  1839→            desc = (
+  1840→                f"TCP window size estimated as {win}. Window size "
+  1841→                f"reveals kernel TCP buffer configuration and scaling "
+  1842→                f"behaviour (RFC 1323 window scaling)."
+  1843→            )
+  1844→        elif name == "synack_timing":
+  1845→            median = probe.derived_value.get("median_ms", 0)
+  1846→            pattern = probe.derived_value.get("kernel_pattern", "")
+  1847→            desc = (
+  1848→                f"SYN-ACK first-byte latency: {median:.2f}ms median. "
+  1849→                f"Pattern: {pattern}. Raw TCP handshake baseline: "
+  1850→                f"{raw_baseline:.2f}ms."
+  1851→            )
+  1852→        elif name == "keepalive":
+  1853→            timeout_s = probe.derived_value.get("estimated_timeout_s", 0)
+  1854→            hint = probe.derived_value.get("keepalive_hint", "")
+  1855→            desc = (
+  1856→                f"HTTP keep-alive timeout ≈ {timeout_s:.1f}s. "
+  1857→                f"{hint}. Short timeouts may indicate embedded devices "
+  1858→                f"or aggressive connection management."
+  1859→            )
+  1860→        elif name == "mtu_detection":
+  1861→            mtu_val = probe.derived_value.get("estimated_mtu", 0)
+  1862→            cls = probe.derived_value.get("classification", "")
+  1863→            desc = (
+  1864→                f"Path MTU estimated at {mtu_val} bytes — {cls}. "
+  1865→                f"Non-standard MTU may indicate VPN tunnels, PPPoE, "
+  1866→                f"or cloud encapsulation overlays."
+  1867→            )
+  1868→            if mtu_val not in (1500, 0):
+  1869→                severity = "low"
+  1870→                points = 2
+  1871→        elif name == "congestion_control":
+  1872→            algo = probe.derived_value.get("algorithm", "")
+  1873→            inflation = probe.derived_value.get("burst_inflation_pct", 0)
+  1874→            desc = (
+  1875→                f"Congestion control algorithm identified as '{algo}' "
+  1876→                f"(burst inflation: {inflation:.1f}%). BBR indicates a "
+  1877→                f"modern/CDN host; CUBIC indicates Linux 2.6.26+; "
+  1878→                f"NewReno indicates older stacks."
+  1879→            )
+  1880→        elif name == "timestamp_resolution":
+  1881→            cls = probe.derived_value.get("classification", "")
+  1882→            desc = (
+  1883→                f"Server clock resolution: {cls}. "
+  1884→                f"15.625ms is a distinctive Windows signature; "
+  1885→                f"~1ms indicates Linux/macOS/FreeBSD."
+  1886→            )
+  1887→        else:
+  1888→            desc = probe.description
+  1889→
+  1890→        evidence_json = json.dumps(probe.derived_value, indent=2, default=str)
+  1891→
+  1892→        findings.append(Finding(
+  1893→            title=f"TCP/IP Signal: {name.replace('_', ' ').title()}",
+  1894→            severity=severity,
+  1895→            category="fingerprinting",
+  1896→            module=MODULE_NAME,
+  1897→            description=desc,
+  1898→            evidence=evidence_json,
+  1899→            asset=target,
+  1900→            points_deducted=points,
+  1901→            remediation=(
+  1902→                "Server fingerprinting signals cannot be eliminated "
+  1903→                "without kernel-level TCP stack modifications. "
+  1904→                "Consider deploying behind a CDN to normalize timing "
+  1905→                "signals."
+  1906→            ),
+  1907→        ))
+  1908→
+  1909→    # ── Phase 9: Consolidated OS Identification ───────────────────────
+  1910→    os_scores = _compute_os_confidence(probes)
+  1911→
+  1912→    if os_scores:
+  1913→        top = os_scores[0]
+  1914→        top_os = top["os"]
+  1915→        top_confidence = top["confidence_pct"]
+  1916→        top_family = top["family"]
+  1917→        top_signals = top.get("signal_details", {})
+  1918→
+  1919→        # Build evidence with top-5 OS candidates
+  1920→        top_candidates = os_scores[:5]
+  1921→        candidates_str = "\n".join(
+  1922→            f"  {i+1}. {c['os']} ({c['family']}) — "
+  1923→            f"{c['confidence_pct']:.1f}% confidence"
+  1924→            for i, c in enumerate(top_candidates)
+  1925→        )
+  1926→
+  1927→        # Signal breakdown
+  1928→        signal_lines: List[str] = []
+  1929→        for sig_name, sig_val in top_signals.items():
+  1930→            bar_len = int(sig_val * 20)
+  1931→            bar = "\u2588" * bar_len + "\u2591" * (20 - bar_len)
+  1932→            signal_lines.append(f"  {sig_name:12s}: {bar} {sig_val:.0%}")
+  1933→
+  1934→        full_evidence = (
+  1935→            f"=== QUANTUM FINGERPRINT OS IDENTIFICATION ===\n"
+  1936→            f"Target: {target}\n"
+  1937→            f"URL: {base_url}\n"
+  1938→            f"Scan duration: {total_elapsed:.1f}s\n"
+  1939→            f"Raw TCP baseline: {raw_baseline:.2f}ms\n"
+  1940→            f"\nTOP CANDIDATE: {top_os} ({top_family})\n"
+  1941→            f"Confidence: {top_confidence:.1f}%\n"
+  1942→            f"\nSignal Match Breakdown:\n"
+  1943→            + "\n".join(signal_lines) + "\n"
+  1944→            f"\nAll Candidates:\n"
+  1945→            f"{candidates_str}\n"
+  1946→            f"\nRaw Scores:\n"
+  1947→            f"{json.dumps(os_scores[:10], indent=2, default=str)}\n"
+  1948→        )
+  1949→
+  1950→        # Determine severity based on confidence
+  1951→        if top_confidence >= 70:
+  1952→            os_severity = "medium"
+  1953→            os_points = 3
+  1954→        elif top_confidence >= 40:
+  1955→            os_severity = "low"
+  1956→            os_points = 1
+  1957→        else:
+  1958→            os_severity = "info"
+  1959→            os_points = 0
+  1960→
+  1961→        findings.append(Finding(
+  1962→            title=f"OS Identified: {top_os} ({top_confidence:.1f}% confidence)",
+  1963→            severity=os_severity,
+  1964→            category="fingerprinting",
+  1965→            module=MODULE_NAME,
+  1966→            description=(
+  1967→                f"Quantum fingerprint analysis identified the remote "
+  1968→                f"host as likely running '{top_os}' (family: {top_family}) "
+  1969→                f"with {top_confidence:.1f}% confidence.\n\n"
+  1970→                f"Identification was derived from {len(probes)} orthogonal "
+  1971→                f"timing signals: initial TTL deduction, TCP window sizing, "
+  1972→                f"SYN-ACK timing, keep-alive behaviour, MTU detection, "
+  1973→                f"congestion control algorithm, and clock resolution.\n\n"
+  1974→                f"Runners-up: {', '.join(c['os'] for c in top_candidates[1:4])}."
+  1975→            ),
+  1976→            evidence=full_evidence,
+  1977→            asset=target,
+  1978→            points_deducted=os_points,
+  1979→            remediation=(
+  1980→                "OS fingerprinting via timing analysis is difficult to "
+  1981→                "prevent entirely. Mitigations include:\n"
+  1982→                "  • Deploy behind a CDN (Cloudflare, Akamai) to "
+  1983→                "    normalize timing signals\n"
+  1984→                "  • Use TCP randomization patches (e.g., TPROXY)\n"
+  1985→                "  • Set TCP timestamps to constant values\n"
+  1986→                "  • Configure tcp_no_metrics_save = 1 (Linux)"
+  1987→            ),
+  1988→            dread_score=round(min(top_confidence / 100, 1.0) * 3.5, 1),
+  1989→        ))
+  1990→
+  1991→    # ── Phase 10: Technical Summary Finding ──────────────────────────
+  1992→    probe_summary_lines: List[str] = []
+  1993→    for name, probe in probes.items():
+  1994→        probe_summary_lines.append(
+  1995→            f"  {probe.probe_name:25s}: {probe.description}"
+  1996→        )
+  1997→
+  1998→    findings.append(Finding(
+  1999→        title="Quantum Fingerprint: Technical Summary",
+  2000→        severity="info",
+
+[showing lines 1-2000 of 2026; use offset=2001 with limit to continue reading]

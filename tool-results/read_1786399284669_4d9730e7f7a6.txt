@@ -1,0 +1,812 @@
+     1→"""ReconPro v10 — Security Hardening Layer.
+     2→
+     3→Centralized security utilities for input validation, safe parsing,
+     4→secret detection, and audit logging. Pure Python, zero dependencies.
+     5→
+     6→This module provides defensive utilities that other modules CAN adopt
+     7→but are NOT forced to — preserving backward compatibility.
+     8→"""
+     9→from __future__ import annotations
+    10→
+    11→import hashlib
+    12→import html
+    13→import json
+    14→import logging
+    15→import logging.handlers
+    16→import os
+    17→import re
+    18→import urllib.parse
+    19→import xml.etree.ElementTree as ET
+    20→from datetime import datetime, timezone
+    21→from pathlib import Path
+    22→from typing import Any, Dict, List, Optional, Set, Tuple
+    23→
+    24→
+    25→# ── Threat Classification ────────────────────────────────────────────────
+    26→
+    27→THREAT_CATEGORIES: Dict[str, Set[str]] = {
+    28→    "injection": {"sql", "xss", "command", "ldap", "xml", "header"},
+    29→    "crypto": {"weak_hash", "weak_cipher", "expired_cert", "self_signed"},
+    30→    "network": {"open_port", "exposed_service", "default_creds"},
+    31→    "data": {"exposure", "leak", "breach", "pii"},
+    32→    "auth": {"bypass", "weak_password", "missing_mfa", "session_fixation"},
+    33→}
+    34→
+    35→
+    36→# ── Input Sanitization ───────────────────────────────────────────────────
+    37→
+    38→def sanitize_target(target: str) -> str:
+    39→    """Strip dangerous characters and normalize a scan target.
+    40→
+    41→    Removes null bytes, control characters (except space), shell metacharacters,
+    42→    and excessive whitespace. Strips leading/trailing whitespace.
+    43→
+    44→    Args:
+    45→        target: Raw user-supplied target string.
+    46→
+    47→    Returns:
+    48→        Sanitized target string.
+    49→    """
+    50→    if not target:
+    51→        return ""
+    52→    # Remove null bytes
+    53→    result = target.replace("\x00", "")
+    54→    # Remove control characters (except space = 0x20, tab = 0x09)
+    55→    result = "".join(
+    56→        ch for ch in result
+    57→        if ord(ch) >= 0x20 or ch in ("\t",)
+    58→    )
+    59→    # Strip whitespace
+    60→    result = result.strip()
+    61→    # Remove shell metacharacters that could cause injection
+    62→    result = re.sub(r'[;|`$&><]', '', result)
+    63→    # Collapse multiple whitespace into single space
+    64→    result = re.sub(r'\s+', ' ', result)
+    65→    return result
+    66→
+    67→
+    68→def sanitize_path(path: str) -> str:
+    69→    """Prevent path traversal attacks.
+    70→
+    71→    Strips null bytes, resolves path traversal sequences, and limits
+    72→    the resulting path to a safe representation.
+    73→
+    74→    Args:
+    75→        path: Raw file path string.
+    76→
+    77→    Returns:
+    78→        Sanitized path with traversal sequences removed.
+    79→    """
+    80→    if not path:
+    81→        return ""
+    82→    # Remove null bytes
+    83→    result = path.replace("\x00", "")
+    84→    # Remove control characters
+    85→    result = "".join(ch for ch in result if ord(ch) >= 0x20 or ch == "\t")
+    86→    # Strip whitespace
+    87→    result = result.strip()
+    88→    # Decode percent-encoded dots and slashes
+    89→    try:
+    90→        result = urllib.parse.unquote(result)
+    91→    except Exception:
+    92→        pass
+    93→    # Collapse path separators and remove traversal
+    94→    # Replace backslashes with forward slashes for uniformity
+    95→    result = result.replace("\\", "/")
+    96→    # Split on /, filter out empty and traversal components
+    97→    parts = result.split("/")
+    98→    safe_parts: List[str] = []
+    99→    for part in parts:
+   100→        if part == "" or part == ".":
+   101→            continue
+   102→        if part == "..":
+   103→            # Don't go above root — pop last safe part if any
+   104→            if safe_parts:
+   105→                safe_parts.pop()
+   106→            continue
+   107→        safe_parts.append(part)
+   108→    # Rejoin
+   109→    result = "/".join(safe_parts)
+   110→    # Limit total length
+   111→    if len(result) > 4096:
+   112→        result = result[:4096]
+   113→    return result
+   114→
+   115→
+   116→def sanitize_filename(name: str) -> str:
+   117→    """Remove directory components and dangerous characters from a filename.
+   118→
+   119→    Args:
+   120→        name: Raw filename string.
+   121→
+   122→    Returns:
+   123→        Safe filename with no path components or dangerous characters.
+   124→    """
+   125→    if not name:
+   126→        return "unnamed"
+   127→    # Remove null bytes
+   128→    result = name.replace("\x00", "")
+   129→    # Take only the basename (last component after / or \\)
+   130→    result = result.replace("\\", "/")
+   131→    result = result.split("/")[-1]
+   132→    # Remove characters not safe for filenames
+   133→    # Allow: letters, digits, dots, dashes, underscores
+   134→    result = re.sub(r'[^a-zA-Z0-9._\-]', '_', result)
+   135→    # Don't allow hidden files to start with dot (security risk)
+   136→    if result.startswith("."):
+   137→        result = "_" + result[1:]
+   138→    # Limit length
+   139→    if len(result) > 255:
+   140→        result = result[:255]
+   141→    # Don't return empty string — use a fallback
+   142→    if not result:
+   143→        return "unnamed"
+   144→    return result
+   145→
+   146→
+   147→def sanitize_html(text: str) -> str:
+   148→    """Escape HTML entities to prevent XSS.
+   149→
+   150→    Uses Python's built-in html.escape which converts:
+   151→    - & -> &amp;
+   152→    - < -> &lt;
+   153→    - > -> &gt;
+   154→    - " -> &quot;
+   155→    - ' -> &#x27;
+   156→
+   157→    Args:
+   158→        text: Raw text that may contain HTML.
+   159→
+   160→    Returns:
+   161→        HTML-escaped string safe for rendering.
+   162→    """
+   163→    if not text:
+   164→        return ""
+   165→    return html.escape(text, quote=True)
+   166→
+   167→
+   168→def sanitize_shell(text: str) -> str:
+   169→    """Escape shell metacharacters to prevent command injection.
+   170→
+   171→    Wraps dangerous shell characters in single quotes and handles
+   172→    single quotes within the text by ending the quoted section,
+   173→    adding an escaped single quote, and restarting the quote.
+   174→
+   175→    Args:
+   176→        text: Raw text that may be used in a shell context.
+   177→
+   178→    Returns:
+   179→        Shell-escaped string.
+   180→    """
+   181→    if not text:
+   182→        return ""
+   183→    # Remove null bytes
+   184→    result = text.replace("\x00", "")
+   185→    # Escape shell metacharacters by wrapping in single quotes
+   186→    # and handling embedded single quotes
+   187→    # Split on single quotes, wrap each part, rejoin with escaped single quotes
+   188→    parts = result.split("'")
+   189→    quoted = "'\\''".join(parts)
+   190→    return f"'{quoted}'"
+   191→
+   192→
+   193→def sanitize_log(text: str) -> str:
+   194→    """Remove CRLF injection vectors from log text.
+   195→
+   196→    Strips carriage returns, newlines, and other control characters
+   197→    that could be used to inject fake log entries.
+   198→
+   199→    Args:
+   200→        text: Raw log text.
+   201→
+   202→    Returns:
+   203→        Sanitized text with CRLF characters removed.
+   204→    """
+   205→    if not text:
+   206→        return ""
+   207→    # Remove CRLF and other line-terminating control characters
+   208→    result = text.replace("\r", "").replace("\n", " ")
+   209→    # Remove other control characters that could disrupt log parsing
+   210→    result = "".join(
+   211→        ch for ch in result
+   212→        if ord(ch) >= 0x20 or ch in ("\t",)
+   213→    )
+   214→    # Collapse multiple spaces
+   215→    result = re.sub(r' +', ' ', result)
+   216→    return result.strip()
+   217→
+   218→
+   219→# ── Secret Detection ─────────────────────────────────────────────────────
+   220→
+   221→# Compiled regex patterns for secret detection
+   222→_SECRET_PATTERNS: List[Tuple[str, re.Pattern[str], str]] = [
+   223→    (
+   224→        "aws_key",
+   225→        re.compile(r'AKIA[0-9A-Z]{16}'),
+   226→        "high",
+   227→    ),
+   228→    (
+   229→        "github_token",
+   230→        re.compile(r'ghp_[A-Za-z0-9]{36}'),
+   231→        "high",
+   232→    ),
+   233→    (
+   234→        "github_token_fine_grained",
+   235→        re.compile(r'github_pat_[A-Za-z0-9_]{22,}'),
+   236→        "high",
+   237→    ),
+   238→    (
+   239→        "generic_api_key",
+   240→        re.compile(r'(?:api_key|apikey|key|token|secret|password)\s*[=:]\s*["\']?([A-Za-z0-9_\-]{20,})["\']?', re.IGNORECASE),
+   241→        "medium",
+   242→    ),
+   243→    (
+   244→        "private_key_rsa",
+   245→        re.compile(r'-----BEGIN\s+RSA\s+PRIVATE\s+KEY-----'),
+   246→        "critical",
+   247→    ),
+   248→    (
+   249→        "private_key_ec",
+   250→        re.compile(r'-----BEGIN\s+EC\s+PRIVATE\s+KEY-----'),
+   251→        "critical",
+   252→    ),
+   253→    (
+   254→        "private_key_generic",
+   255→        re.compile(r'-----BEGIN\s+PRIVATE\s+KEY-----'),
+   256→        "critical",
+   257→    ),
+   258→    (
+   259→        "password_in_url",
+   260→        re.compile(r'https?://[^:]+:([^@]{3,})@[^\s]+'),
+   261→        "high",
+   262→    ),
+   263→    (
+   264→        "db_connection_string",
+   265→        re.compile(r'(?:mongodb|mysql|postgres|postgresql|redis|amqp)://[^\s"\']+[:@][^\s"\']+', re.IGNORECASE),
+   266→        "high",
+   267→    ),
+   268→    (
+   269→        "jwt_token",
+   270→        re.compile(r'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'),
+   271→        "medium",
+   272→    ),
+   273→]
+   274→
+   275→
+   276→def detect_secrets_in_text(text: str) -> List[Dict[str, Any]]:
+   277→    """Detect secrets and credentials in text using regex patterns.
+   278→
+   279→    Scans the provided text for known secret patterns including AWS keys,
+   280→    GitHub tokens, API keys, private keys, passwords in URLs, database
+   281→    connection strings, and JWT tokens.
+   282→
+   283→    Args:
+   284→        text: The text content to scan for secrets.
+   285→
+   286→    Returns:
+   287→        List of dicts with keys: type, match, line, offset, confidence.
+   288→        Each dict represents a detected secret.
+   289→    """
+   290→    if not text:
+   291→        return []
+   292→
+   293→    findings: List[Dict[str, Any]] = []
+   294→    lines = text.split("\n")
+   295→
+   296→    for secret_type, pattern, confidence in _SECRET_PATTERNS:
+   297→        for line_num, line in enumerate(lines, start=1):
+   298→            for match in pattern.finditer(line):
+   299→                matched_text = match.group(0)
+   300→                findings.append({
+   301→                    "type": secret_type,
+   302→                    "match": matched_text,
+   303→                    "line": line_num,
+   304→                    "offset": match.start(),
+   305→                    "confidence": confidence,
+   306→                })
+   307→
+   308→    return findings
+   309→
+   310→
+   311→# ── Safe Parsing ─────────────────────────────────────────────────────────
+   312→
+   313→# Parsing limits
+   314→_MAX_JSON_SIZE = 1_048_576  # 1 MB
+   315→_MAX_JSON_DEPTH = 20
+   316→_MAX_JSON_KEYS = 10_000
+   317→_MAX_URL_LENGTH = 2048
+   318→_ALLOWED_SCHEMES = {"http", "https"}
+   319→
+   320→
+   321→def safe_json_parse(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+   322→    """Safely parse JSON with size, depth, and key count limits.
+   323→
+   324→    Args:
+   325→        text: JSON string to parse.
+   326→
+   327→    Returns:
+   328→        Tuple of (parsed_dict_or_None, error_message_or_None).
+   329→        On success: (dict, None)
+   330→        On failure: (None, error_description)
+   331→    """
+   332→    if not text:
+   333→        return None, "Empty input"
+   334→
+   335→    # Size check
+   336→    if len(text) > _MAX_JSON_SIZE:
+   337→        return None, f"JSON input exceeds maximum size of {_MAX_JSON_SIZE} bytes"
+   338→
+   339→    # Try parsing
+   340→    try:
+   341→        data = json.loads(text)
+   342→    except json.JSONDecodeError as e:
+   343→        return None, f"Invalid JSON: {e}"
+   344→    except Exception as e:
+   345→        return None, f"JSON parse error: {e}"
+   346→
+   347→    # Must be a dict at top level
+   348→    if not isinstance(data, dict):
+   349→        return None, "JSON root must be an object (dict)"
+   350→
+   351→    # Check key count
+   352→    key_count = _count_keys(data)
+   353→    if key_count > _MAX_JSON_KEYS:
+   354→        return None, f"JSON has {key_count} keys, exceeding limit of {_MAX_JSON_KEYS}"
+   355→
+   356→    # Check depth
+   357→    depth = _measure_depth(data)
+   358→    if depth > _MAX_JSON_DEPTH:
+   359→        return None, f"JSON has depth {depth}, exceeding limit of {_MAX_JSON_DEPTH}"
+   360→
+   361→    return data, None
+   362→
+   363→
+   364→def _count_keys(obj: Any) -> int:
+   365→    """Recursively count all keys in a JSON-like structure."""
+   366→    if isinstance(obj, dict):
+   367→        count = len(obj)
+   368→        for v in obj.values():
+   369→            count += _count_keys(v)
+   370→        return count
+   371→    elif isinstance(obj, list):
+   372→        count = 0
+   373→        for item in obj:
+   374→            count += _count_keys(item)
+   375→        return count
+   376→    return 0
+   377→
+   378→
+   379→def _measure_depth(obj: Any, current: int = 1) -> int:
+   380→    """Measure the maximum nesting depth of a JSON-like structure."""
+   381→    if isinstance(obj, dict):
+   382→        if not obj:
+   383→            return current
+   384→        return max(_measure_depth(v, current + 1) for v in obj.values())
+   385→    elif isinstance(obj, list):
+   386→        if not obj:
+   387→            return current
+   388→        return max(_measure_depth(item, current + 1) for item in obj)
+   389→    return current
+   390→
+   391→
+   392→def safe_url_parse(url: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+   393→    """Safely parse a URL with scheme whitelist and length limits.
+   394→
+   395→    Only allows http and https schemes. Enforces a maximum URL length.
+   396→
+   397→    Args:
+   398→        url: URL string to parse.
+   399→
+   400→    Returns:
+   401→        Tuple of (parsed_components_or_None, error_message_or_None).
+   402→        On success: (dict with scheme, netloc, path, params, query, fragment, None)
+   403→        On failure: (None, error_description)
+   404→    """
+   405→    if not url:
+   406→        return None, "Empty URL"
+   407→
+   408→    # Length check
+   409→    if len(url) > _MAX_URL_LENGTH:
+   410→        return None, f"URL exceeds maximum length of {_MAX_URL_LENGTH} characters"
+   411→
+   412→    # Parse
+   413→    try:
+   414→        parsed = urllib.parse.urlparse(url.strip())
+   415→    except Exception as e:
+   416→        return None, f"URL parse error: {e}"
+   417→
+   418→    # Scheme whitelist
+   419→    scheme = parsed.scheme.lower()
+   420→    if not scheme:
+   421→        return None, "URL must include a scheme (http or https)"
+   422→    if scheme not in _ALLOWED_SCHEMES:
+   423→        return None, f"URL scheme '{scheme}' is not allowed. Allowed: {', '.join(sorted(_ALLOWED_SCHEMES))}"
+   424→
+   425→    # Must have a netloc (hostname)
+   426→    if not parsed.netloc:
+   427→        return None, "URL must include a hostname"
+   428→
+   429→    return {
+   430→        "scheme": scheme,
+   431→        "netloc": parsed.netloc,
+   432→        "path": parsed.path,
+   433→        "params": parsed.params,
+   434→        "query": parsed.query,
+   435→        "fragment": parsed.fragment,
+   436→    }, None
+   437→
+   438→
+   439→def safe_xml_parse(text: str) -> Tuple[Optional[str], Optional[str]]:
+   440→    """Safely parse XML with entity expansion prevention.
+   441→
+   442→    Uses Python's xml.etree.ElementTree with security limits to prevent
+   443→    billion laughs (XML bomb) attacks.
+   444→
+   445→    Args:
+   446→        text: XML string to parse.
+   447→
+   448→    Returns:
+   449→        Tuple of (root_tag_or_None, error_message_or_None).
+   450→        On success: (root_element_tag_name, None)
+   451→        On failure: (None, error_description)
+   452→    """
+   453→    if not text:
+   454→        return None, "Empty input"
+   455→
+   456→    # Size limit
+   457→    if len(text) > _MAX_JSON_SIZE:  # Reuse 1MB limit
+   458→        return None, f"XML input exceeds maximum size of {_MAX_JSON_SIZE} bytes"
+   459→
+   460→    # Define a custom parser that disables entity expansion
+   461→    class _SafeXMLParser(ET.XMLParser):
+   462→        """XML parser that blocks entity declarations."""
+   463→        pass
+   464→
+   465→    try:
+   466→        parser = _SafeXMLParser()
+   467→        # Block DTD loading and entity declarations
+   468→        if hasattr(parser, 'parser'):
+   469→            parser.parser.EntityDeclHandler = lambda *args: (_ for _ in ()).throw(ValueError("Entity declarations are blocked"))  # type: ignore[attr-defined]
+   470→        root = ET.fromstring(text, parser=parser)
+   471→        return root.tag, None
+   472→    except ET.ParseError as e:
+   473→        return None, f"XML parse error: {e}"
+   474→    except ValueError as e:
+   475→        return None, f"XML security violation: {e}"
+   476→    except Exception as e:
+   477→        return None, f"XML error: {e}"
+   478→
+   479→
+   480→# ── Audit Logger ─────────────────────────────────────────────────────────
+   481→
+   482→class SecurityAuditLogger:
+   483→    """Structured security audit logging.
+   484→
+   485→    Logs security events with consistent format:
+   486→    - timestamp (ISO 8601)
+   487→    - level (INFO, WARN, ALERT)
+   488→    - event_type (SCAN_START, FINDING, PLUGIN_LOAD, etc.)
+   489→    - module
+   490→    - target
+   491→    - details (dict)
+   492→
+   493→    Outputs to ~/.reconpro/audit.log with rotation (10MB max, 5 backups).
+   494→    Pure Python implementation using logging.handlers.RotatingFileHandler.
+   495→    """
+   496→
+   497→    _MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+   498→    _BACKUP_COUNT = 5
+   499→    _LOG_DIR_NAME = ".reconpro"
+   500→    _LOG_FILENAME = "audit.log"
+   501→
+   502→    def __init__(
+   503→        self,
+   504→        log_dir: Optional[str] = None,
+   505→        module_name: str = "security",
+   506→    ) -> None:
+   507→        """Initialize the audit logger.
+   508→
+   509→        Args:
+   510→            log_dir: Override directory for log files. Defaults to ~/.reconpro/
+   511→            module_name: Name of the module using this logger (for the 'module' field).
+   512→        """
+   513→        self.module_name = module_name
+   514→        if log_dir is None:
+   515→            log_dir = os.path.join(os.path.expanduser("~"), self._LOG_DIR_NAME)
+   516→        self.log_dir = log_dir
+   517→        self._log_path = os.path.join(log_dir, self._LOG_FILENAME)
+   518→
+   519→        # Ensure directory exists
+   520→        os.makedirs(log_dir, exist_ok=True)
+   521→
+   522→        # Set up rotating file handler
+   523→        self._handler = logging.handlers.RotatingFileHandler(
+   524→            self._log_path,
+   525→            maxBytes=self._MAX_BYTES,
+   526→            backupCount=self._BACKUP_COUNT,
+   527→            encoding="utf-8",
+   528→        )
+   529→        self._handler.setFormatter(logging.Formatter("%(message)s"))
+   530→
+   531→        self._logger = logging.getLogger(f"reconpro.audit.{module_name}")
+   532→        self._logger.setLevel(logging.DEBUG)
+   533→        # Avoid duplicate handlers if logger already configured
+   534→        if not self._logger.handlers:
+   535→            self._logger.addHandler(self._handler)
+   536→
+   537→    def _emit(self, level: str, event_type: str, target: str = "", details: Optional[Dict[str, Any]] = None) -> None:
+   538→        """Emit a structured audit log entry."""
+   539→        entry = {
+   540→            "timestamp": datetime.now(timezone.utc).isoformat(),
+   541→            "level": level,
+   542→            "event_type": event_type,
+   543→            "module": self.module_name,
+   544→            "target": sanitize_log(target),
+   545→            "details": details or {},
+   546→        }
+   547→        msg = json.dumps(entry, default=str)
+   548→        if level == "ALERT":
+   549→            self._logger.critical(msg)
+   550→        elif level == "WARN":
+   551→            self._logger.warning(msg)
+   552→        else:
+   553→            self._logger.info(msg)
+   554→
+   555→    def info(self, event_type: str, target: str = "", details: Optional[Dict[str, Any]] = None) -> None:
+   556→        """Log an INFO-level audit event."""
+   557→        self._emit("INFO", event_type, target, details)
+   558→
+   559→    def warn(self, event_type: str, target: str = "", details: Optional[Dict[str, Any]] = None) -> None:
+   560→        """Log a WARN-level audit event."""
+   561→        self._emit("WARN", event_type, target, details)
+   562→
+   563→    def alert(self, event_type: str, target: str = "", details: Optional[Dict[str, Any]] = None) -> None:
+   564→        """Log an ALERT-level audit event."""
+   565→        self._emit("ALERT", event_type, target, details)
+   566→
+   567→    @property
+   568→    def log_path(self) -> str:
+   569→        """Return the path to the audit log file."""
+   570→        return self._log_path
+   571→
+   572→    def close(self) -> None:
+   573→        """Close the logger and release resources."""
+   574→        self._handler.close()
+   575→        self._logger.removeHandler(self._handler)
+   576→
+   577→
+   578→# ── Signature Verification ───────────────────────────────────────────────
+   579→
+   580→def compute_file_hash(filepath: str, algorithm: str = "sha256") -> str:
+   581→    """Compute the hash of a file.
+   582→
+   583→    Args:
+   584→        filepath: Path to the file to hash.
+   585→        algorithm: Hash algorithm (sha256, sha512, md5, sha1).
+   586→
+   587→    Returns:
+   588→        Hex-encoded hash string, or empty string on error.
+   589→    """
+   590→    if not os.path.isfile(filepath):
+   591→        return ""
+   592→    try:
+   593→        h = hashlib.new(algorithm)
+   594→        with open(filepath, "rb") as f:
+   595→            while True:
+   596→                chunk = f.read(65536)  # 64 KB chunks
+   597→                if not chunk:
+   598→                    break
+   599→                h.update(chunk)
+   600→        return h.hexdigest()
+   601→    except (ValueError, OSError, IOError):
+   602→        return ""
+   603→
+   604→
+   605→def verify_module_signature(module_name: str, source_hash: str) -> bool:
+   606→    """Placeholder for future code-signing verification.
+   607→
+   608→    Currently always returns True. In a future version, this will:
+   609→    1. Locate the module source file
+   610→    2. Compute its hash
+   611→    3. Compare against a known-good hash store
+   612→
+   613→    Args:
+   614→        module_name: Dotted module name (e.g., 'reconpro.scanner').
+   615→        source_hash: Expected hash of the module source.
+   616→
+   617→    Returns:
+   618→        True (placeholder — always trusts).
+   619→    """
+   620→    # Placeholder: future implementation will verify actual hashes
+   621→    return True
+   622→
+   623→
+   624→# ── Supply Chain ─────────────────────────────────────────────────────────
+   625→
+   626→def check_dependency_integrity() -> Dict[str, Any]:
+   627→    """Check that reconpro has no unexpected dependencies.
+   628→
+   629→    Scans the reconpro package for import statements and reports
+   630→    which external (non-stdlib) packages are imported.
+   631→
+   632→    Returns:
+   633→        Dict with keys:
+   634→        - "status": "ok" or "warning"
+   635→        - "stdlib_imports": set of stdlib module names found
+   636→        - "external_imports": set of non-stdlib module names found
+   637→        - "details": human-readable summary
+   638→    """
+   639→    stdlib_modules = {
+   640→        "os", "sys", "re", "json", "hashlib", "html", "logging",
+   641→        "urllib", "xml", "datetime", "pathlib", "typing", "math",
+   642→        "collections", "itertools", "functools", "time", "socket",
+   643→        "ssl", "http", "subprocess", "threading", "asyncio",
+   644→        "io", "struct", "unittest", "argparse", "copy", "csv",
+   645→        "base64", "hmac", "secrets", "shutil", "tempfile",
+   646→        "importlib", "pkgutil", "traceback", "warnings", "contextlib",
+   647→        "dataclasses", "enum", "abc", "operator", "statistics",
+   648→        "textwrap", "difflib", "fileinput", "fnmatch", "glob",
+   649→        "linecache", "posixpath", "ntpath", "genericpath",
+   650→        "codecs", "binascii", "mimetypes", "email", "html",
+   651→        "xmlrpc", "multiprocessing", "concurrent", "queue",
+   652→        "smtplib", "ftplib", "poplib", "imaplib", "nntplib",
+   653→        "telnetlib", "uuid", "string", "random", "numbers",
+   654→        "decimal", "fractions", "array", "weakref",
+   655→        "types", "pdb", "profile", "cProfile", "timeit",
+   656→        "pprint", "reprlib", "enum", "numbers",
+   657→    }
+   658→
+   659→    # Read all Python files in the reconpro package
+   660→    reconpro_dir = os.path.dirname(os.path.abspath(__file__))
+   661→    external_imports: Set[str] = set()
+   662→    stdlib_imports: Set[str] = set()
+   663→
+   664→    import_pattern = re.compile(
+   665→        r'^(?:from|import)\s+([a-zA-Z_][a-zA-Z0-9_]*)',
+   666→        re.MULTILINE,
+   667→    )
+   668→
+   669→    for root, _dirs, files in os.walk(reconpro_dir):
+   670→        # Skip __pycache__
+   671→        if "__pycache__" in root:
+   672→            continue
+   673→        for fname in files:
+   674→            if not fname.endswith(".py"):
+   675→                continue
+   676→            filepath = os.path.join(root, fname)
+   677→            try:
+   678→                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+   679→                    content = f.read()
+   680→            except OSError:
+   681→                continue
+   682→
+   683→            for m in import_pattern.finditer(content):
+   684→                mod = m.group(1)
+   685→                # Skip relative imports and reconpro internal imports
+   686→                if mod.startswith(".") or mod == "reconpro":
+   687→                    continue
+   688→                if mod in stdlib_modules:
+   689→                    stdlib_imports.add(mod)
+   690→                elif mod not in ("__future__", "__main__"):
+   691→                    external_imports.add(mod)
+   692→
+   693→    status = "ok" if not external_imports else "warning"
+   694→    details = (
+   695→        f"Found {len(stdlib_imports)} stdlib imports, "
+   696→        f"{len(external_imports)} external imports."
+   697→    )
+   698→
+   699→    return {
+   700→        "status": status,
+   701→        "stdlib_imports": stdlib_imports,
+   702→        "external_imports": external_imports,
+   703→        "details": details,
+   704→    }
+   705→
+   706→
+   707→def get_security_profile() -> Dict[str, Any]:
+   708→    """Return a summary of the security configuration.
+   709→
+   710→    Returns:
+   711→        Dict describing current security settings and capabilities.
+   712→    """
+   713→    return {
+   714→        "version": "1.0.0",
+   715→        "module": "security",
+   716→        "sanitization": {
+   717→            "sanitize_target": True,
+   718→            "sanitize_path": True,
+   719→            "sanitize_filename": True,
+   720→            "sanitize_html": True,
+   721→            "sanitize_shell": True,
+   722→            "sanitize_log": True,
+   723→        },
+   724→        "secret_detection": {
+   725→            "patterns": len(_SECRET_PATTERNS),
+   726→            "types": [p[0] for p in _SECRET_PATTERNS],
+   727→        },
+   728→        "safe_parsing": {
+   729→            "json_max_size_bytes": _MAX_JSON_SIZE,
+   730→            "json_max_depth": _MAX_JSON_DEPTH,
+   731→            "json_max_keys": _MAX_JSON_KEYS,
+   732→            "url_max_length": _MAX_URL_LENGTH,
+   733→            "allowed_url_schemes": sorted(_ALLOWED_SCHEMES),
+   734→        },
+   735→        "audit_logging": {
+   736→            "max_log_size_bytes": SecurityAuditLogger._MAX_BYTES,
+   737→            "backup_count": SecurityAuditLogger._BACKUP_COUNT,
+   738→            "log_dir": os.path.join(os.path.expanduser("~"), ".reconpro"),
+   739→        },
+   740→        "threat_categories": THREAT_CATEGORIES,
+   741→    }
+   742→
+   743→
+   744→# ── Threat Classification ────────────────────────────────────────────────
+   745→
+   746→def classify_threat(finding: Dict[str, Any]) -> str:
+   747→    """Map a finding dict to a threat category.
+   748→
+   749→    Looks at the finding's 'type', 'category', 'severity', and 'description'
+   750→    fields to determine the most appropriate threat category.
+   751→
+   752→    Args:
+   753→        finding: A dict with at least 'type' or 'category' key.
+   754→
+   755→    Returns:
+   756→        Threat category string (e.g., "injection", "crypto", "network", "data", "auth")
+   757→        or "unknown" if no match is found.
+   758→    """
+   759→    if not finding:
+   760→        return "unknown"
+   761→
+   762→    # Collect all text to search through
+   763→    search_fields: List[str] = []
+   764→    for key in ("type", "category", "subtype", "name"):
+   765→        if key in finding:
+   766→            search_fields.append(str(finding[key]).lower())
+   767→    if "description" in finding:
+   768→        search_fields.append(str(finding["description"]).lower())
+   769→    if "severity" in finding:
+   770→        search_fields.append(str(finding["severity"]).lower())
+   771→
+   772→    combined = " ".join(search_fields)
+   773→
+   774→    # Check each category for keyword matches
+   775→    for category, keywords in THREAT_CATEGORIES.items():
+   776→        for keyword in keywords:
+   777→            if keyword in combined:
+   778→                return category
+   779→
+   780→    # Additional heuristic mappings
+   781→    # SQL-related patterns
+   782→    sql_indicators = {"sql", "query", "select", "inject", "sqli"}
+   783→    if any(ind in combined for ind in sql_indicators):
+   784→        return "injection"
+   785→
+   786→    # XSS-related patterns
+   787→    xss_indicators = {"xss", "cross-site", "script", "javascript", "dom"}
+   788→    if any(ind in combined for ind in xss_indicators):
+   789→        return "injection"
+   790→
+   791→    # Crypto-related patterns
+   792→    crypto_indicators = {"tls", "ssl", "certificate", "cipher", "encrypt", "hash"}
+   793→    if any(ind in combined for ind in crypto_indicators):
+   794→        return "crypto"
+   795→
+   796→    # Network patterns
+   797→    network_indicators = {"port", "service", "open", "exposed", "firewall"}
+   798→    if any(ind in combined for ind in network_indicators):
+   799→        return "network"
+   800→
+   801→    # Data patterns
+   802→    data_indicators = {"data", "leak", "exposure", "pii", "personal", "gdpr"}
+   803→    if any(ind in combined for ind in data_indicators):
+   804→        return "data"
+   805→
+   806→    # Auth patterns
+   807→    auth_indicators = {"auth", "login", "password", "session", "token", "mfa", "credential"}
+   808→    if any(ind in combined for ind in auth_indicators):
+   809→        return "auth"
+   810→
+   811→    return "unknown"
+   812→

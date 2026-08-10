@@ -40,7 +40,8 @@ except ImportError:
     HAS_ANTHROPIC = False
 
 console = Console()
-MEMORY_DIR = Path.home() / ".reconpro" / "memory"
+
+from .constants import MEMORY_DIR
 CONTEXT_FILE = MEMORY_DIR / "agent_context.json"
 MAX_ITERATIONS = 10
 

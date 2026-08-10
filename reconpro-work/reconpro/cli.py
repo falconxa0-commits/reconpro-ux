@@ -12,7 +12,7 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
-from .theme import Theme
+from .constants import SEV_COLORS, GRADE_COLORS
 from .scanner import (
     scan, audit_scan, MODULE_REGISTRY, LOCAL_MODULES,
     ALL_MODULES, DEFAULT_MODULES, DEFAULT_LOCAL_MODULES,
@@ -33,25 +33,7 @@ BANNER = r"""[bold bright_white]
 [/bold bright_white][dim]          E L E V E N   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.[/dim]
 """
 
-# Colors from unified theme system
-_cli_theme = Theme.current()
-
-SEV_COLORS = {
-    "critical": "bright_red",
-    "high": "red",
-    "medium": "yellow",
-    "low": "green",
-    "info": "dim",
-}
-
-GRADE_COLORS = {
-    "A+": _cli_theme.grade_rich("A+"),
-    "A": _cli_theme.grade_rich("A"),
-    "B": _cli_theme.grade_rich("B"),
-    "C": _cli_theme.grade_rich("C"),
-    "D": _cli_theme.grade_rich("D"),
-    "F": _cli_theme.grade_rich("F"),
-}
+# Colors imported from constants.py
 
 
 # ── Rich rendering ──────────────────────────────────────────────────────

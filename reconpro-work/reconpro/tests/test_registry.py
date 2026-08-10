@@ -19,12 +19,12 @@ from reconpro.registry import (
 
 
 class TestModuleRegistryCount(unittest.TestCase):
-    """Test MODULE_REGISTRY entry count (11 core + 12 advanced = 23)."""
+    """Test MODULE_REGISTRY entry count (11 core + 12 advanced + 2 orphaned = 25)."""
 
     def test_module_registry_has_correct_count(self):
-        # 11 core + 12 advanced = 23 remote modules
-        self.assertEqual(len(MODULE_REGISTRY), 23,
-                         f"Expected 23, got {len(MODULE_REGISTRY)}: {list(MODULE_REGISTRY.keys())}")
+        # 11 core + 12 advanced + 2 orphaned = 25 remote modules
+        self.assertEqual(len(MODULE_REGISTRY), 25,
+                         f"Expected 25, got {len(MODULE_REGISTRY)}: {list(MODULE_REGISTRY.keys())}")
 
 
 class TestLocalModulesCount(unittest.TestCase):
@@ -39,11 +39,11 @@ class TestLocalModulesCount(unittest.TestCase):
 
 
 class TestAllModulesCount(unittest.TestCase):
-    """Test ALL_MODULES count (23 remote + 3 local = 26)."""
+    """Test ALL_MODULES count (25 remote + 3 local = 28)."""
 
     def test_all_modules_count(self):
-        # 23 remote + 3 local = 26 total
-        self.assertEqual(len(ALL_MODULES), 26)
+        # 25 remote + 3 local = 28 total
+        self.assertEqual(len(ALL_MODULES), 28)
 
 
 class TestDefaultModulesCount(unittest.TestCase):

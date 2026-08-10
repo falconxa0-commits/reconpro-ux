@@ -10,6 +10,8 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from .constants import SEVERITY_LEVELS
+
 try:
     import openai
     _HAS_OPENAI = True
@@ -42,7 +44,7 @@ AUDIENCE_MODES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
 _SEVERITY_EMOJI = {
     "critical": "CRITICAL",
     "high": "HIGH",
@@ -382,7 +384,7 @@ class ExecutiveSummaryGenerator:
     def _sort_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return sorted(
             findings,
-            key=lambda x: (_SEVERITY_ORDER.get(x.get("severity", "info"), 9), x.get("title", "")),
+            key=lambda x: (SEVERITY_LEVELS.get(x.get("severity", "info"), 99), x.get("title", "")),
         )
 
 

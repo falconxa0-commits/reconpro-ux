@@ -1,0 +1,936 @@
+     1→     1→"""
+     2→     2→ReconPro v9.2.0 - OSINT Social Graph Intelligence Engine
+     3→     3→
+     4→     4→Extracts and maps relationships from reconnaissance data, building a graph of
+     5→     5→entities (domains, IPs, organizations, emails, etc.) and the connections
+     6→     6→between them. Pure Python stdlib — zero external dependencies.
+     7→     7→
+     8→     8→Classes:
+     9→     9→    Entity           - A node in the social graph (domain, IP, org, etc.)
+    10→    10→    Relationship     - A directed edge between two entities
+    11→    11→    RelationshipExtractor - Pulls entities/relationships from DNS, WHOIS, HTTP, crt.sh
+    12→    12→    SocialGraph      - In-memory graph with analysis algorithms
+    13→    13→    GraphIntelligence - Top-level orchestrator that builds a full graph for a target
+    14→    14→"""
+    15→    15→from __future__ import annotations
+    16→    16→
+    17→    17→import json
+    18→    18→import logging
+    19→    19→import re
+    20→    20→import socket
+    21→    21→import subprocess
+    22→    22→import urllib.error
+    23→    23→import urllib.parse
+    24→    24→import urllib.request
+    25→    25→from collections import defaultdict, deque
+    26→    26→from dataclasses import dataclass, field
+    27→    27→from datetime import datetime, timezone
+    28→    28→from typing import Any, Dict, List, Optional, Set, Tuple
+    29→    29→
+    30→    30→logger = logging.getLogger(__name__)
+    31→    31→
+    32→    32→# Valid entity types recognised by the graph
+    33→    33→VALID_ENTITY_TYPES = {
+    34→    34→    "domain", "ip", "org", "email", "person", "asn", "certificate", "service",
+    35→    35→}
+    36→    36→
+    37→    37→
+    38→    38→# ---------------------------------------------------------------------------
+    39→    39→# Data classes
+    40→    40→# ---------------------------------------------------------------------------
+    41→    41→
+    42→    42→@dataclass
+    43→    43→class Entity:
+    44→    44→    """A node in the social graph.
+    45→    45→
+    46→    46→    Attributes:
+    47→    47→        entity_id:    Unique identifier (e.g. the domain name, IP address, or email).
+    48→    48→        entity_type:  One of VALID_ENTITY_TYPES.
+    49→    49→        name:         Human-readable display name.
+    50→    50→        properties:   Arbitrary key-value metadata.
+    51→    51→    """
+    52→    52→    entity_id: str
+    53→    53→    entity_type: str
+    54→    54→    name: str
+    55→    55→    properties: Dict[str, Any] = field(default_factory=dict)
+    56→    56→
+    57→    57→    def __post_init__(self) -> None:
+    58→    58→        if self.entity_type not in VALID_ENTITY_TYPES:
+    59→    59→            raise ValueError(
+    60→    60→                f"Invalid entity_type {self.entity_type!r}. "
+    61→    61→                f"Must be one of {sorted(VALID_ENTITY_TYPES)}"
+    62→    62→            )
+    63→    63→
+    64→    64→    def to_dict(self) -> Dict[str, Any]:
+    65→    65→        return {
+    66→    66→            "entity_id": self.entity_id,
+    67→    67→            "entity_type": self.entity_type,
+    68→    68→            "name": self.name,
+    69→    69→            "properties": self.properties,
+    70→    70→        }
+    71→    71→
+    72→    72→
+    73→    73→@dataclass
+    74→    74→class Relationship:
+    75→    75→    """A directed edge between two entities.
+    76→    76→
+    77→    77→    Attributes:
+    78→    78→        source:           entity_id of the source node.
+    79→    79→        target:           entity_id of the target node.
+    80→    80→        relationship_type: Semantic label (e.g. 'resolves_to', 'managed_by').
+    81→    81→        confidence:       0.0 – 1.0 confidence score.
+    82→    82→        evidence:         Free-text justification.
+    83→    83→        timestamp:        ISO-8601 timestamp of when the relationship was discovered.
+    84→    84→    """
+    85→    85→    source: str
+    86→    86→    target: str
+    87→    87→    relationship_type: str
+    88→    88→    confidence: float
+    89→    89→    evidence: str
+    90→    90→    timestamp: str = field(
+    91→    91→        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    92→    92→    )
+    93→    93→
+    94→    94→    def __post_init__(self) -> None:
+    95→    95→        if not 0.0 <= self.confidence <= 1.0:
+    96→    96→            raise ValueError("confidence must be between 0.0 and 1.0")
+    97→    97→
+    98→    98→    def to_dict(self) -> Dict[str, Any]:
+    99→    99→        return {
+   100→   100→            "source": self.source,
+   101→   101→            "target": self.target,
+   102→   102→            "relationship_type": self.relationship_type,
+   103→   103→            "confidence": self.confidence,
+   104→   104→            "evidence": self.evidence,
+   105→   105→            "timestamp": self.timestamp,
+   106→   106→        }
+   107→   107→
+   108→   108→
+   109→   109→# ---------------------------------------------------------------------------
+   110→   110→# RelationshipExtractor
+   111→   111→# ---------------------------------------------------------------------------
+   112→   112→
+   113→   113→class RelationshipExtractor:
+   114→   114→    """Passively extracts Entity/Relationship pairs from various OSINT sources.
+   115→   115→
+   116→   116→    Each ``extract_from_*`` method returns ``(entities, relationships)`` where
+   117→   117→    *entities* is a list of :class:`Entity` and *relationships* is a list of
+   118→   118→    :class:`Relationship`.
+   119→   119→    """
+   120→   120→
+   121→   121→    DNS_TIMEOUT: float = 5.0
+   122→   122→    WHOIS_TIMEOUT: int = 10
+   123→   123→    HTTP_TIMEOUT: int = 8
+   124→   124→    CRTSH_TIMEOUT: int = 15
+   125→   125→
+   126→   126→    # -- DNS ---------------------------------------------------------------
+   127→   127→
+   128→   128→    def extract_from_dns(self, target: str) -> Tuple[List[Entity], List[Relationship]]:
+   129→   129→        """Resolve *target* via DNS and create entities/relationships.
+   130→   130→
+   131→   131→        Attempts A, AAAA, MX, NS, TXT, and CNAME lookups.
+   132→   132→        """
+   133→   133→        entities: List[Entity] = []
+   134→   134→        relationships: List[Relationship] = []
+   135→   135→        ts = datetime.now(timezone.utc).isoformat()
+   136→   136→
+   137→   137→        # Determine if target looks like an IP or domain
+   138→   138→        is_ip = self._looks_like_ip(target)
+   139→   139→
+   140→   140→        # A records
+   141→   141→        try:
+   142→   142→            addrs = socket.getaddrinfo(target, None, socket.AF_INET, socket.SOCK_STREAM)
+   143→   143→            seen: Set[str] = set()
+   144→   144→            for family, _stype, _proto, _canonname, sockaddr in addrs:
+   145→   145→                ip = sockaddr[0]
+   146→   146→                if ip in seen:
+   147→   147→                    continue
+   148→   148→                seen.add(ip)
+   149→   149→                entities.append(Entity(entity_id=ip, entity_type="ip", name=ip))
+   150→   150→                rel_type = "binds_to" if is_ip else "resolves_to"
+   151→   151→                relationships.append(
+   152→   152→                    Relationship(
+   153→   153→                        source=target, target=ip, relationship_type=rel_type,
+   154→   154→                        confidence=0.95,
+   155→   155→                        evidence=f"DNS A record: {target} -> {ip}",
+   156→   156→                        timestamp=ts,
+   157→   157→                    )
+   158→   158→                )
+   159→   159→        except (socket.gaierror, OSError) as exc:
+   160→   160→            logger.debug("DNS A lookup failed for %s: %s", target, exc)
+   161→   161→
+   162→   162→        # AAAA records
+   163→   163→        try:
+   164→   164→            addrs6 = socket.getaddrinfo(target, None, socket.AF_INET6, socket.SOCK_STREAM)
+   165→   165→            seen6: Set[str] = set()
+   166→   166→            for family, _stype, _proto, _canonname, sockaddr in addrs6:
+   167→   167→                ip6 = sockaddr[0]
+   168→   168→                if ip6 in seen6:
+   169→   169→                    continue
+   170→   170→                seen6.add(ip6)
+   171→   171→                entities.append(Entity(entity_id=ip6, entity_type="ip", name=ip6))
+   172→   172→                relationships.append(
+   173→   173→                    Relationship(
+   174→   174→                        source=target, target=ip6, relationship_type="resolves_to",
+   175→   175→                        confidence=0.95,
+   176→   176→                        evidence=f"DNS AAAA record: {target} -> {ip6}",
+   177→   177→                        timestamp=ts,
+   178→   178→                    )
+   179→   179→                )
+   180→   180→        except (socket.gaierror, OSError) as exc:
+   181→   181→            logger.debug("DNS AAAA lookup failed for %s: %s", target, exc)
+   182→   182→
+   183→   183→        # Try MX, NS, CNAME, TXT via dig subprocess (if available)
+   184→   184→        for rtype in ("MX", "NS", "CNAME", "TXT"):
+   185→   185→            try:
+   186→   186→                result = subprocess.run(
+   187→   187→                    ["dig", "+short", target, rtype],
+   188→   188→                    capture_output=True, text=True, timeout=self.DNS_TIMEOUT,
+   189→   189→                )
+   190→   190→                for line in result.stdout.strip().splitlines():
+   191→   191→                    line = line.strip()
+   192→   192→                    if not line:
+   193→   193→                        continue
+   194→   194→                    value = line.rstrip(".")
+   195→   195→                    if rtype == "MX":
+   196→   196→                        # Format: priority mailserver
+   197→   197→                        parts = value.split()
+   198→   198→                        if len(parts) >= 2:
+   199→   199→                            mailserver = parts[1].rstrip(".")
+   200→   200→                            entities.append(
+   201→   201→                                Entity(entity_id=mailserver, entity_type="domain",
+   202→   202→                                       name=mailserver, properties={"record_type": "MX"})
+   203→   203→                            )
+   204→   204→                            relationships.append(
+   205→   205→                                Relationship(
+   206→   206→                                    source=target, target=mailserver,
+   207→   207→                                    relationship_type="mx_record",
+   208→   208→                                    confidence=0.9,
+   209→   209→                                    evidence=f"DNS MX: {line}", timestamp=ts,
+   210→   210→                                )
+   211→   211→                            )
+   212→   212→                    elif rtype == "NS":
+   213→   213→                        entities.append(
+   214→   214→                            Entity(entity_id=value, entity_type="service",
+   215→   215→                                   name=value, properties={"record_type": "NS"})
+   216→   216→                        )
+   217→   217→                        relationships.append(
+   218→   218→                            Relationship(
+   219→   219→                                source=target, target=value,
+   220→   220→                                relationship_type="nameserver",
+   221→   221→                                confidence=0.9,
+   222→   222→                                evidence=f"DNS NS: {value}", timestamp=ts,
+   223→   223→                            )
+   224→   224→                        )
+   225→   225→                    elif rtype == "CNAME":
+   226→   226→                        entities.append(
+   227→   227→                            Entity(entity_id=value, entity_type="domain",
+   228→   228→                                   name=value, properties={"record_type": "CNAME"})
+   229→   229→                        )
+   230→   230→                        relationships.append(
+   231→   231→                            Relationship(
+   232→   232→                                source=target, target=value,
+   233→   233→                                relationship_type="cname_of",
+   234→   234→                                confidence=0.9,
+   235→   235→                                evidence=f"DNS CNAME: {target} -> {value}", timestamp=ts,
+   236→   236→                            )
+   237→   237→                        )
+   238→   238→                    elif rtype == "TXT":
+   239→   239→                        entities.append(
+   240→   240→                            Entity(entity_id=f"txt:{target}", entity_type="service",
+   241→   241→                                   name=f"TXT record for {target}",
+   242→   242→                                   properties={"value": line, "record_type": "TXT"})
+   243→   243→                        )
+   244→   244→                        relationships.append(
+   245→   245→                            Relationship(
+   246→   246→                                source=target, target=f"txt:{target}",
+   247→   247→                                relationship_type="has_txt",
+   248→   248→                                confidence=0.85,
+   249→   249→                                evidence=f"DNS TXT: {line}", timestamp=ts,
+   250→   250→                            )
+   251→   251→                        )
+   252→   252→            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+   253→   253→                logger.debug("dig %s %s failed: %s", rtype, target, exc)
+   254→   254→
+   255→   255→        return entities, relationships
+   256→   256→
+   257→   257→    # -- WHOIS -------------------------------------------------------------
+   258→   258→
+   259→   259→    def extract_from_whois(self, target: str) -> Tuple[List[Entity], List[Relationship]]:
+   260→   260→        """Parse WHOIS output for org names, emails, and nameservers.
+   261→   261→
+   262→   262→        Falls back to ``whois`` command-line tool.
+   263→   263→        """
+   264→   264→        entities: List[Entity] = []
+   265→   265→        relationships: List[Relationship] = []
+   266→   266→        ts = datetime.now(timezone.utc).isoformat()
+   267→   267→
+   268→   268→        raw = self._run_whois(target)
+   269→   269→        if not raw:
+   270→   270→            return entities, relationships
+   271→   271→
+   272→   272→        # Organisation / registrant
+   273→   273→        org_patterns = [
+   274→   274→            r"(?i)org(?:anisation|anization)?[\s:]+(.+)",
+   275→   275→            r"(?i)registrant[\s_](?:org|organisation)[\s:]+(.+)",
+   276→   276→            r"(?i)registrant[\s_](?:name|organization)[\s:]+(.+)",
+   277→   277→        ]
+   278→   278→        for pat in org_patterns:
+   279→   279→            m = re.search(pat, raw)
+   280→   280→            if m:
+   281→   281→                org_name = m.group(1).strip()
+   282→   282→                if org_name and len(org_name) > 2:
+   283→   283→                    eid = re.sub(r"\s+", "_", org_name.lower())
+   284→   284→                    entities.append(
+   285→   285→                        Entity(entity_id=eid, entity_type="org", name=org_name)
+   286→   286→                    )
+   287→   287→                    relationships.append(
+   288→   288→                        Relationship(
+   289→   289→                            source=target, target=eid,
+   290→   290→                            relationship_type="registered_to",
+   291→   291→                            confidence=0.8,
+   292→   292→                            evidence=f"WHOIS org field: {org_name}",
+   293→   293→                            timestamp=ts,
+   294→   294→                        )
+   295→   295→                    )
+   296→   296→                    break  # take first match
+   297→   297→
+   298→   298→        # Emails
+   299→   299→        emails = re.findall(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", raw, re.IGNORECASE)
+   300→   300→        seen_emails: Set[str] = set()
+   301→   301→        for email in emails:
+   302→   302→            if email in seen_emails:
+   303→   303→                continue
+   304→   304→            seen_emails.add(email)
+   305→   305→            entities.append(
+   306→   306→                Entity(entity_id=email, entity_type="email", name=email)
+   307→   307→            )
+   308→   308→            relationships.append(
+   309→   309→                Relationship(
+   310→   310→                    source=target, target=email,
+   311→   311→                    relationship_type="contact_email",
+   312→   312→                    confidence=0.75,
+   313→   313→                    evidence=f"WHOIS email: {email}",
+   314→   314→                    timestamp=ts,
+   315→   315→                )
+   316→   316→            )
+   317→   317→
+   318→   318→        # Name servers (from WHOIS rather than dig)
+   319→   319→        ns_matches = re.findall(r"(?i)name\s*server[:\s]+([\w.-]+)", raw)
+   320→   320→        seen_ns: Set[str] = set()
+   321→   321→        for ns in ns_matches:
+   322→   322→            ns = ns.rstrip(".").lower()
+   323→   323→            if ns in seen_ns:
+   324→   324→                continue
+   325→   325→            seen_ns.add(ns)
+   326→   326→            entities.append(
+   327→   327→                Entity(entity_id=ns, entity_type="service", name=ns,
+   328→   328→                       properties={"record_type": "NS"})
+   329→   329→            )
+   330→   330→            relationships.append(
+   331→   331→                Relationship(
+   332→   332→                    source=target, target=ns,
+   333→   333→                    relationship_type="nameserver",
+   334→   334→                    confidence=0.85,
+   335→   335→                    evidence=f"WHOIS NS: {ns}",
+   336→   336→                    timestamp=ts,
+   337→   337→                )
+   338→   338→            )
+   339→   339→
+   340→   340→        # Registrar
+   341→   341→        reg_m = re.search(r"(?i)registrar[:\s]+(.+)", raw)
+   342→   342→        if reg_m:
+   343→   343→            registrar = reg_m.group(1).strip()
+   344→   344→            eid = re.sub(r"\s+", "_", registrar.lower())
+   345→   345→            entities.append(
+   346→   346→                Entity(entity_id=eid, entity_type="org", name=registrar,
+   347→   347→                       properties={"role": "registrar"})
+   348→   348→            )
+   349→   349→            relationships.append(
+   350→   350→                Relationship(
+   351→   351→                    source=target, target=eid,
+   352→   352→                    relationship_type="registered_via",
+   353→   353→                    confidence=0.8,
+   354→   354→                    evidence=f"WHOIS registrar: {registrar}",
+   355→   355→                    timestamp=ts,
+   356→   356→                )
+   357→   357→            )
+   358→   358→
+   359→   359→        return entities, relationships
+   360→   360→
+   361→   361→    # -- HTTP headers ------------------------------------------------------
+   362→   362→
+   363→   363→    def extract_from_headers(self, base_url: str) -> Tuple[List[Entity], List[Relationship]]:
+   364→   364→        """Fetch HTTP headers from *base_url* and derive CDN, proxy, forwarding relationships.
+   365→   365→        """
+   366→   366→        entities: List[Entity] = []
+   367→   367→        relationships: List[Relationship] = []
+   368→   368→        ts = datetime.now(timezone.utc).isoformat()
+   369→   369→
+   370→   370→        headers = self._fetch_headers(base_url)
+   371→   371→        if headers is None:
+   372→   372→            return entities, relationships
+   373→   373→
+   374→   374→        # CDN / hosting detection
+   375→   375→        cdn_headers = {
+   376→   376→            "cf-ray": "Cloudflare",
+   377→   377→            "x-amz-cf-id": "AWS CloudFront",
+   378→   378→            "x-fastly-request-id": "Fastly",
+   379→   379→            "x-served-by": "Fastly",
+   380→   380→            "x-vercel-id": "Vercel",
+   381→   381→            "x-netlify-request-id": "Netlify",
+   382→   382→            "fly-request-id": "Fly.io",
+   383→   383→            "x-edge-ip": "Akamai",
+   384→   384→            "x-akamai": "Akamai",
+   385→   385→            "x-cdn": "Generic CDN",
+   386→   386→        }
+   387→   387→        for hdr, provider in cdn_headers.items():
+   388→   388→            val = headers.get(hdr)
+   389→   389→            if val:
+   390→   390→                eid = provider.lower().replace(" ", "_")
+   391→   391→                entities.append(
+   392→   392→                    Entity(entity_id=eid, entity_type="org", name=provider,
+   393→   393→                           properties={"header": hdr, "value": val})
+   394→   394→                )
+   395→   395→                relationships.append(
+   396→   396→                    Relationship(
+   397→   397→                        source=base_url, target=eid,
+   398→   398→                        relationship_type="cdn_protected_by",
+   399→   399→                        confidence=0.85,
+   400→   400→                        evidence=f"Header {hdr}: {val}",
+   401→   401→                        timestamp=ts,
+   402→   402→                    )
+   403→   403→                )
+   404→   404→
+   405→   405→        # Server header
+   406→   406→        server = headers.get("server", "")
+   407→   407→        if server:
+   408→   408→            eid = f"server:{server.lower()}"
+   409→   409→            entities.append(
+   410→   410→                Entity(entity_id=eid, entity_type="service", name=server,
+   411→   411→                       properties={"header": "Server"})
+   412→   412→            )
+   413→   413→            relationships.append(
+   414→   414→                Relationship(
+   415→   415→                    source=base_url, target=eid,
+   416→   416→                    relationship_type="uses_server",
+   417→   417→                    confidence=0.9,
+   418→   418→                    evidence=f"Server header: {server}",
+   419→   419→                    timestamp=ts,
+   420→   420→                )
+   421→   421→            )
+   422→   422→
+   423→   423→        # X-Forwarded-For / Via (proxy chains)
+   424→   424→        proxy_headers = ["x-forwarded-for", "x-forwarded-host", "via", "x-real-ip"]
+   425→   425→        for hdr in proxy_headers:
+   426→   426→            val = headers.get(hdr)
+   427→   427→            if val:
+   428→   428→                for proxy_ip in val.split(","):
+   429→   429→                    proxy_ip = proxy_ip.strip()
+   430→   430→                    if self._looks_like_ip(proxy_ip):
+   431→   431→                        entities.append(
+   432→   432→                            Entity(entity_id=proxy_ip, entity_type="ip",
+   433→   433→                                   name=proxy_ip)
+   434→   434→                        )
+   435→   435→                        relationships.append(
+   436→   436→                            Relationship(
+   437→   437→                                source=base_url, target=proxy_ip,
+   438→   438→                                relationship_type="forwarded_via",
+   439→   439→                                confidence=0.7,
+   440→   440→                                evidence=f"{hdr}: {proxy_ip}",
+   441→   441→                                timestamp=ts,
+   442→   442→                            )
+   443→   443→                        )
+   444→   444→
+   445→   445→        # Strict-Transport-Security → HSTS
+   446→   446→        if headers.get("strict-transport-security"):
+   447→   447→            entities.append(
+   448→   448→                Entity(entity_id="hsts_enabled", entity_type="service",
+   449→   449→                       name="HSTS Enabled",
+   450→   450→                       properties={"value": headers["strict-transport-security"]})
+   451→   451→            )
+   452→   452→            relationships.append(
+   453→   453→                Relationship(
+   454→   454→                    source=base_url, target="hsts_enabled",
+   455→   455→                    relationship_type="security_header",
+   456→   456→                    confidence=0.95,
+   457→   457→                    evidence=f"HSTS: {headers['strict-transport-security']}",
+   458→   458→                    timestamp=ts,
+   459→   459→                )
+   460→   460→            )
+   461→   461→
+   462→   462→        # Link header for discovered URLs
+   463→   463→        link_hdr = headers.get("link", "")
+   464→   464→        if link_hdr:
+   465→   465→            for url_match in re.finditer(r"<(https?://[^>]+)", link_hdr):
+   466→   466→                disc_url = url_match.group(1)
+   467→   467→                entities.append(
+   468→   468→                    Entity(entity_id=disc_url, entity_type="domain",
+   469→   469→                           name=disc_url)
+   470→   470→                )
+   471→   471→                relationships.append(
+   472→   472→                    Relationship(
+   473→   473→                        source=base_url, target=disc_url,
+   474→   474→                        relationship_type="linked_resource",
+   475→   475→                        confidence=0.8,
+   476→   476→                        evidence=f"Link header: {disc_url}",
+   477→   477→                        timestamp=ts,
+   478→   478→                    )
+   479→   479→                )
+   480→   480→
+   481→   481→        return entities, relationships
+   482→   482→
+   483→   483→    # -- crt.sh ------------------------------------------------------------
+   484→   484→
+   485→   485→    def extract_from_crtsh(self, domain: str) -> Tuple[List[Entity], List[Relationship]]:
+   486→   486→        """Query crt.sh for certificate transparency logs and co-hosted domains.
+   487→   487→
+   488→   488→        Uses the JSON endpoint: ``https://crt.sh/?q=%.{domain}&output=json``
+   489→   489→        """
+   490→   490→        entities: List[Entity] = []
+   491→   491→        relationships: List[Relationship] = []
+   492→   492→        ts = datetime.now(timezone.utc).isoformat()
+   493→   493→
+   494→   494→        url = f"https://crt.sh/?q=%.{urllib.parse.quote(domain)}&output=json"
+   495→   495→        try:
+   496→   496→            req = urllib.request.Request(url, headers={
+   497→   497→                "User-Agent": "ReconPro/9.2.0 (OSINT Research)",
+   498→   498→                "Accept": "application/json",
+   499→   499→            })
+   500→   500→            with urllib.request.urlopen(req, timeout=self.CRTSH_TIMEOUT) as resp:
+   501→   501→                raw = resp.read().decode("utf-8", errors="replace")
+   502→   502→                certs = json.loads(raw)
+   503→   503→        except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError) as exc:
+   504→   504→            logger.warning("crt.sh query failed for %s: %s", domain, exc)
+   505→   505→            return entities, relationships
+   506→   506→
+   507→   507→        if not isinstance(certs, list):
+   508→   508→            return entities, relationships
+   509→   509→
+   510→   510→        seen_names: Set[str] = set()
+   511→   511→        for cert in certs:
+   512→   512→            if not isinstance(cert, dict):
+   513→   513→                continue
+   514→   514→            # name_value may contain multiple names separated by newlines
+   515→   515→            raw_names = cert.get("name_value", "")
+   516→   516→            for name in raw_names.split("\n"):
+   517→   517→                name = name.strip().lstrip("*.")
+   518→   518→                if not name or name in seen_names:
+   519→   519→                    continue
+   520→   520→                if not self._valid_domain(name):
+   521→   521→                    continue
+   522→   522→                seen_names.add(name)
+   523→   523→
+   524→   524→                cert_id = str(cert.get("id", ""))
+   525→   525→                eid = f"cert:{cert_id}" if cert_id else f"cert:{name}"
+   526→   526→
+   527→   527→                # Certificate entity
+   528→   528→                entities.append(
+   529→   529→                    Entity(
+   530→   530→                        entity_id=eid, entity_type="certificate",
+   531→   531→                        name=f"Certificate for {name}",
+   532→   532→                        properties={
+   533→   533→                            "common_name": name,
+   534→   534→                            "issuer": cert.get("issuer_name", ""),
+   535→   535→                            "not_before": cert.get("not_before", ""),
+   536→   536→                            "not_after": cert.get("not_after", ""),
+   537→   537→                            "serial_number": cert.get("serial_number", ""),
+   538→   538→                        },
+   539→   539→                    )
+   540→   540→                )
+   541→   541→                relationships.append(
+   542→   542→                    Relationship(
+   543→   543→                        source=name, target=eid,
+   544→   544→                        relationship_type="has_certificate",
+   545→   545→                        confidence=0.95,
+   546→   546→                        evidence=f"crt.sh certificate #{cert_id} covers {name}",
+   547→   547→                        timestamp=ts,
+   548→   548→                    )
+   549→   549→                )
+   550→   550→
+   551→   551→                # Domain entity (if not the query domain itself)
+   552→   552→                if name.lower() != domain.lower():
+   553→   553→                    entities.append(
+   554→   554→                        Entity(entity_id=name, entity_type="domain", name=name)
+   555→   555→                    )
+   556→   556→                    relationships.append(
+   557→   557→                        Relationship(
+   558→   558→                            source=domain, target=name,
+   559→   559→                            relationship_type="co_hosted",
+   560→   560→                            confidence=0.8,
+   561→   561→                            evidence=f"Shared certificate on crt.sh: {cert_id}",
+   562→   562→                            timestamp=ts,
+   563→   563→                        )
+   564→   564→                    )
+   565→   565→
+   566→   566→        return entities, relationships
+   567→   567→
+   568→   568→    # -- helpers -----------------------------------------------------------
+   569→   569→
+   570→   570→    @staticmethod
+   571→   571→    def _looks_like_ip(s: str) -> bool:
+   572→   572→        """Return True if *s* looks like an IPv4 or IPv6 address."""
+   573→   573→        parts = s.split(".")
+   574→   574→        if len(parts) == 4:
+   575→   575→            try:
+   576→   576→                return all(0 <= int(p) <= 255 for p in parts)
+   577→   577→            except ValueError:
+   578→   578→                pass
+   579→   579→        if ":" in s:
+   580→   580→            try:
+   581→   581→                socket.inet_pton(socket.AF_INET6, s)
+   582→   582→                return True
+   583→   583→            except OSError:
+   584→   584→                pass
+   585→   585→        return False
+   586→   586→
+   587→   587→    @staticmethod
+   588→   588→    def _valid_domain(s: str) -> bool:
+   589→   589→        """Rough domain-name validation."""
+   590→   590→        return bool(re.match(r"^(?:[\w-]+\.)+[a-z]{2,}$", s, re.IGNORECASE))
+   591→   591→
+   592→   592→    @staticmethod
+   593→   593→    def _run_whois(target: str, timeout: int = 10) -> Optional[str]:
+   594→   594→        """Run the system ``whois`` command and return stdout."""
+   595→   595→        try:
+   596→   596→            result = subprocess.run(
+   597→   597→                ["whois", target],
+   598→   598→                capture_output=True, text=True, timeout=timeout,
+   599→   599→            )
+   600→   600→            return result.stdout or ""
+   601→   601→        except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+   602→   602→            logger.debug("whois failed for %s: %s", target, exc)
+   603→   603→            return None
+   604→   604→
+   605→   605→    @staticmethod
+   606→   606→    def _fetch_headers(base_url: str, timeout: int = 8) -> Optional[Dict[str, str]]:
+   607→   607→        """Issue a HEAD request and return a dict of response headers."""
+   608→   608→        try:
+   609→   609→            req = urllib.request.Request(
+   610→   610→                base_url, method="HEAD",
+   611→   611→                headers={"User-Agent": "ReconPro/9.2.0"},
+   612→   612→            )
+   613→   613→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   614→   614→                return {k.lower(): v for k, v in resp.getheaders()}
+   615→   615→        except (urllib.error.URLError, ValueError, OSError, TimeoutError) as exc:
+   616→   616→            logger.debug("HTTP HEAD %s failed: %s", base_url, exc)
+   617→   617→            return None
+   618→   618→
+   619→   619→
+   620→   620→# ---------------------------------------------------------------------------
+   621→   621→# SocialGraph
+   622→   622→# ---------------------------------------------------------------------------
+   623→   623→
+   624→   624→class SocialGraph:
+   625→   625→    """In-memory entity-relationship graph with analysis primitives.
+   626→   626→
+   627→   627→    Stores entities in a dict keyed by ``entity_id`` and relationships in a
+   628→   628→    flat list.  Provides graph algorithms: clustering, bridge detection, and
+   629→   629→    shortest-path (unweighted BFS).
+   630→   630→    """
+   631→   631→
+   632→   632→    def __init__(self) -> None:
+   633→   633→        self.entities: Dict[str, Entity] = {}
+   634→   634→        self.relationships: List[Relationship] = []
+   635→   635→        # Adjacency list for fast lookups
+   636→   636→        self._adj: Dict[str, List[str]] = defaultdict(list)
+   637→   637→        self._rev_adj: Dict[str, List[str]] = defaultdict(list)
+   638→   638→
+   639→   639→    # -- mutation ----------------------------------------------------------
+   640→   640→
+   641→   641→    def add_entity(self, entity: Entity) -> None:
+   642→   642→        """Insert an entity; silently skip duplicates."""
+   643→   643→        if entity.entity_id not in self.entities:
+   644→   644→            self.entities[entity.entity_id] = entity
+   645→   645→
+   646→   646→    def add_relationship(self, rel: Relationship) -> None:
+   647→   647→        """Insert a relationship and update adjacency lists."""
+   648→   648→        self.relationships.append(rel)
+   649→   649→        self._adj[rel.source].append(rel.target)
+   650→   650→        self._rev_adj[rel.target].append(rel.source)
+   651→   651→
+   652→   652→    # -- queries -----------------------------------------------------------
+   653→   653→
+   654→   654→    def get_neighbors(self, entity_id: str, direction: str = "both") -> List[str]:
+   655→   655→        """Return neighbour entity IDs.
+   656→   656→
+   657→   657→        Args:
+   658→   658→            entity_id: The node to query.
+   659→   659→            direction:  ``'out'`` (follows source→target), ``'in'`` (reverse),
+   660→   660→                        or ``'both'`` (default).
+   661→   661→        """
+   662→   662→        neighbours: List[str] = []
+   663→   663→        if direction in ("out", "both"):
+   664→   664→            neighbours.extend(self._adj.get(entity_id, []))
+   665→   665→        if direction in ("in", "both"):
+   666→   666→            neighbours.extend(self._rev_adj.get(entity_id, []))
+   667→   667→        return list(dict.fromkeys(neighbours))  # deduplicate, preserve order
+   668→   668→
+   669→   669→    def get_relationships(self, source: Optional[str] = None,
+   670→   670→                          target: Optional[str] = None) -> List[Relationship]:
+   671→   671→        """Filter relationships by source and/or target."""
+   672→   672→        results: List[Relationship] = []
+   673→   673→        for rel in self.relationships:
+   674→   674→            if source and rel.source != source:
+   675→   675→                continue
+   676→   676→            if target and rel.target != target:
+   677→   677→                continue
+   678→   678→            results.append(rel)
+   679→   679→        return results
+   680→   680→
+   681→   681→    def find_entities_by_type(self, entity_type: str) -> List[Entity]:
+   682→   682→        """Return all entities of a given type."""
+   683→   683→        return [
+   684→   684→            e for e in self.entities.values() if e.entity_type == entity_type
+   685→   685→        ]
+   686→   686→
+   687→   687→    # -- algorithms --------------------------------------------------------
+   688→   688→
+   689→   689→    def find_clusters(self) -> List[Set[str]]:
+   690→   690→        """Compute connected components using BFS.
+   691→   691→
+   692→   692→        Returns a list of sets, each set being the entity IDs in one cluster.
+   693→   693→        """
+   694→   694→        visited: Set[str] = set()
+   695→   695→        all_nodes = set(self._adj.keys()) | set(self._rev_adj.keys())
+   696→   696→        # Also include isolated entity IDs
+   697→   697→        all_nodes.update(self.entities.keys())
+   698→   698→
+   699→   699→        clusters: List[Set[str]] = []
+   700→   700→        for node in all_nodes:
+   701→   701→            if node in visited:
+   702→   702→                continue
+   703→   703→            cluster: Set[str] = set()
+   704→   704→            queue = deque([node])
+   705→   705→            while queue:
+   706→   706→                current = queue.popleft()
+   707→   707→                if current in visited:
+   708→   708→                    continue
+   709→   709→                visited.add(current)
+   710→   710→                cluster.add(current)
+   711→   711→                for neighbour in self._adj.get(current, []):
+   712→   712→                    if neighbour not in visited:
+   713→   713→                        queue.append(neighbour)
+   714→   714→                for neighbour in self._rev_adj.get(current, []):
+   715→   715→                    if neighbour not in visited:
+   716→   716→                        queue.append(neighbour)
+   717→   717→            clusters.append(cluster)
+   718→   718→        return clusters
+   719→   719→
+   720→   720→    def find_bridge_entities(self) -> List[str]:
+   721→   721→        """Identify nodes that connect otherwise-disconnected clusters.
+   722→   722→
+   723→   723→        A bridge entity is any node whose removal would increase the number
+   724→   724→        of connected components.  We use a simple articulation-point check
+   725→   725→        (Tarjan-style DFS) on the undirected view of the graph.
+   726→   726→        """
+   727→   727→        # Build undirected adjacency
+   728→   728→        undirected: Dict[str, Set[str]] = defaultdict(set)
+   729→   729→        for rel in self.relationships:
+   730→   730→            undirected[rel.source].add(rel.target)
+   731→   731→            undirected[rel.target].add(rel.source)
+   732→   732→        # Add isolated nodes
+   733→   733→        for eid in self.entities:
+   734→   734→            if eid not in undirected:
+   735→   735→                undirected[eid]  # ensure key exists
+   736→   736→
+   737→   737→        bridges: List[str] = []
+   738→   738→        disc: Dict[str, int] = {}
+   739→   739→        low: Dict[str, int] = {}
+   740→   740→        parent: Dict[str, Optional[str]] = {}
+   741→   741→        ap: Set[str] = set()
+   742→   742→        time_counter = [0]
+   743→   743→
+   744→   744→        def dfs(u: str) -> None:
+   745→   745→            children = 0
+   746→   746→            disc[u] = low[u] = time_counter[0]
+   747→   747→            time_counter[0] += 1
+   748→   748→            for v in undirected.get(u, set()):
+   749→   749→                if v not in disc:
+   750→   750→                    children += 1
+   751→   751→                    parent[v] = u
+   752→   752→                    dfs(v)
+   753→   753→                    low[u] = min(low[u], low[v])
+   754→   754→                    # u is an articulation point if:
+   755→   755→                    if parent.get(u) is None and children > 1:
+   756→   756→                        ap.add(u)
+   757→   757→                    if parent.get(u) is not None and low[v] >= disc[u]:
+   758→   758→                        ap.add(u)
+   759→   759→                elif v != parent.get(u):
+   760→   760→                    low[u] = min(low[u], disc[v])
+   761→   761→
+   762→   762→        for node in undirected:
+   763→   763→            if node not in disc:
+   764→   764→                parent[node] = None
+   765→   765→                dfs(node)
+   766→   766→
+   767→   767→        bridges = sorted(ap)
+   768→   768→        return bridges
+   769→   769→
+   770→   770→    def shortest_path(self, start: str, end: str) -> Optional[List[str]]:
+   771→   771→        """Unweighted BFS shortest path on the undirected graph.
+   772→   772→
+   773→   773→        Returns a list of entity IDs from *start* to *end* (inclusive), or
+   774→   774→        ``None`` if no path exists.
+   775→   775→        """
+   776→   776→        if start == end:
+   777→   777→            return [start]
+   778→   778→
+   779→   779→        # Build undirected adjacency for BFS
+   780→   780→        undirected: Dict[str, List[str]] = defaultdict(list)
+   781→   781→        for rel in self.relationships:
+   782→   782→            if rel.target not in undirected[rel.source]:
+   783→   783→                undirected[rel.source].append(rel.target)
+   784→   784→            if rel.source not in undirected[rel.target]:
+   785→   785→                undirected[rel.target].append(rel.source)
+   786→   786→
+   787→   787→        visited: Set[str] = {start}
+   788→   788→        prev: Dict[str, Optional[str]] = {start: None}
+   789→   789→        queue = deque([start])
+   790→   790→
+   791→   791→        while queue:
+   792→   792→            current = queue.popleft()
+   793→   793→            for neighbour in undirected.get(current, []):
+   794→   794→                if neighbour in visited:
+   795→   795→                    continue
+   796→   796→                visited.add(neighbour)
+   797→   797→                prev[neighbour] = current
+   798→   798→                if neighbour == end:
+   799→   799→                    # Reconstruct path
+   800→   800→                    path: List[str] = []
+   801→   801→                    node: Optional[str] = end
+   802→   802→                    while node is not None:
+   803→   803→                        path.append(node)
+   804→   804→                        node = prev[node]
+   805→   805→                    path.reverse()
+   806→   806→                    return path
+   807→   807→                queue.append(neighbour)
+   808→   808→        return None
+   809→   809→
+   810→   810→    # -- serialization -----------------------------------------------------
+   811→   811→
+   812→   812→    def export_json(self, indent: int = 2) -> str:
+   813→   813→        """Serialize the graph to a JSON string."""
+   814→   814→        data = {
+   815→   815→            "entities": [e.to_dict() for e in self.entities.values()],
+   816→   816→            "relationships": [r.to_dict() for r in self.relationships],
+   817→   817→            "stats": self.stats(),
+   818→   818→        }
+   819→   819→        return json.dumps(data, indent=indent, default=str)
+   820→   820→
+   821→   821→    def stats(self) -> Dict[str, Any]:
+   822→   822→        """Return summary statistics about the graph."""
+   823→   823→        type_counts: Dict[str, int] = defaultdict(int)
+   824→   824→        for e in self.entities.values():
+   825→   825→            type_counts[e.entity_type] += 1
+   826→   826→        clusters = self.find_clusters()
+   827→   827→        bridges = self.find_bridge_entities()
+   828→   828→        return {
+   829→   829→            "total_entities": len(self.entities),
+   830→   830→            "total_relationships": len(self.relationships),
+   831→   831→            "entity_type_breakdown": dict(type_counts),
+   832→   832→            "clusters": len(clusters),
+   833→   833→            "cluster_sizes": [len(c) for c in clusters],
+   834→   834→            "bridge_entities": bridges,
+   835→   835→            "bridge_count": len(bridges),
+   836→   836→        }
+   837→   837→
+   838→   838→    def __repr__(self) -> str:
+   839→   839→        return (
+   840→   840→            f"SocialGraph(entities={len(self.entities)}, "
+   841→   841→            f"relationships={len(self.relationships)})"
+   842→   842→        )
+   843→   843→
+   844→   844→
+   845→   845→# ---------------------------------------------------------------------------
+   846→   846→# GraphIntelligence
+   847→   847→# ---------------------------------------------------------------------------
+   848→   848→
+   849→   849→class GraphIntelligence:
+   850→   850→    """Top-level orchestrator that builds a complete SocialGraph for a target.
+   851→   851→
+   852→   852→    Usage::
+   853→   853→
+   854→   854→        gi = GraphIntelligence()
+   855→   855→        graph = gi.build_graph("example.com", "https://example.com")
+   856→   856→        print(graph.stats())
+   857→   857→        print(graph.export_json())
+   858→   858→    """
+   859→   859→
+   860→   860→    def __init__(self) -> None:
+   861→   861→        self.extractor = RelationshipExtractor()
+   862→   862→        self._results: Dict[str, Any] = {}
+   863→   863→
+   864→   864→    def build_graph(self, target: str, base_url: Optional[str] = None) -> SocialGraph:
+   865→   865→        """Build and return a :class:`SocialGraph` for *target*.
+   866→   866→
+   867→   867→        Runs all extraction pipelines in sequence and merges results into a
+   868→   868→        single graph.
+   869→   869→
+   870→   870→        Args:
+   871→   871→            target:   Domain name or IP address to analyse.
+   872→   872→            base_url: Optional URL for HTTP header analysis (e.g.
+   873→   873→                      ``"https://example.com"``).
+   874→   874→        """
+   875→   875→        graph = SocialGraph()
+   876→   876→
+   877→   877→        # Ensure the target itself is an entity
+   878→   878→        target_type = "ip" if self.extractor._looks_like_ip(target) else "domain"
+   879→   879→        graph.add_entity(Entity(
+   880→   880→            entity_id=target, entity_type=target_type, name=target,
+   881→   881→            properties={"primary_target": True},
+   882→   882→        ))
+   883→   883→
+   884→   884→        # 1) DNS
+   885→   885→        logger.info("[SocialGraph] Extracting from DNS for %s", target)
+   886→   886→        dns_entities, dns_rels = self.extractor.extract_from_dns(target)
+   887→   887→        for e in dns_entities:
+   888→   888→            graph.add_entity(e)
+   889→   889→        for r in dns_rels:
+   890→   890→            graph.add_relationship(r)
+   891→   891→        self._results["dns"] = {
+   892→   892→            "entities": len(dns_entities), "relationships": len(dns_rels),
+   893→   893→        }
+   894→   894→
+   895→   895→        # 2) WHOIS
+   896→   896→        logger.info("[SocialGraph] Extracting from WHOIS for %s", target)
+   897→   897→        whois_entities, whois_rels = self.extractor.extract_from_whois(target)
+   898→   898→        for e in whois_entities:
+   899→   899→            graph.add_entity(e)
+   900→   900→        for r in whois_rels:
+   901→   901→            graph.add_relationship(r)
+   902→   902→        self._results["whois"] = {
+   903→   903→            "entities": len(whois_entities), "relationships": len(whois_rels),
+   904→   904→        }
+   905→   905→
+   906→   906→        # 3) HTTP headers
+   907→   907→        if base_url:
+   908→   908→            logger.info("[SocialGraph] Extracting from HTTP headers for %s", base_url)
+   909→   909→            hdr_entities, hdr_rels = self.extractor.extract_from_headers(base_url)
+   910→   910→            for e in hdr_entities:
+   911→   911→                graph.add_entity(e)
+   912→   912→            for r in hdr_rels:
+   913→   913→                graph.add_relationship(r)
+   914→   914→            self._results["http_headers"] = {
+   915→   915→                "entities": len(hdr_entities), "relationships": len(hdr_rels),
+   916→   916→            }
+   917→   917→
+   918→   918→        # 4) crt.sh (only for domains)
+   919→   919→        if not self.extractor._looks_like_ip(target):
+   920→   920→            logger.info("[SocialGraph] Querying crt.sh for %s", target)
+   921→   921→            cert_entities, cert_rels = self.extractor.extract_from_crtsh(target)
+   922→   922→            for e in cert_entities:
+   923→   923→                graph.add_entity(e)
+   924→   924→            for r in cert_rels:
+   925→   925→                graph.add_relationship(r)
+   926→   926→            self._results["crtsh"] = {
+   927→   927→                "entities": len(cert_entities), "relationships": len(cert_rels),
+   928→   928→            }
+   929→   929→
+   930→   930→        logger.info("[SocialGraph] Graph built: %s", graph)
+   931→   931→        return graph
+   932→   932→
+   933→   933→    def get_extraction_results(self) -> Dict[str, Any]:
+   934→   934→        """Return per-pipeline extraction counts from the last run."""
+   935→   935→        return self._results
+   936→   936→

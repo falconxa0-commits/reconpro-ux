@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..http_layer import Finding, compute_grade, badge_markdown
+from ..http_layer import Finding
 
 
 # ── Severity / score helpers ─────────────────────────────────────────
@@ -942,18 +942,18 @@ class EscapeVectorEvaluator:
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  run() — module entry point
+#  run_container_sec() — module entry point
 # ══════════════════════════════════════════════════════════════════════
 
-def run(target: str, base_url: str = "", **kwargs: Any) -> Tuple[List[Finding], int, str, str]:
+def run_container_sec(target: str, base_url: str = "", **kwargs: Any) -> List[Finding]:
     """Container sandbox escape analysis.
 
     Recursively scans a directory for Dockerfiles and Kubernetes manifests,
     runs all analyzers, evaluates compound escape vectors, and returns
-    a standard ReconPro module result tuple.
+    a list of Finding objects.
 
     Returns:
-        (findings, total_points_deducted, grade, badge_markdown)
+        List[Finding]
     """
     dockerfile_analyzer = DockerfileAnalyzer()
     k8s_analyzer = K8sAnalyzer()
@@ -1011,8 +1011,4 @@ def run(target: str, base_url: str = "", **kwargs: Any) -> Tuple[List[Finding], 
     sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
     findings.sort(key=lambda f: sev_order.get(f.severity, 5))
 
-    score = max(0, 100 - total_deducted)
-    grade = compute_grade(score)
-    badge = badge_markdown(target, grade)
-
-    return findings, total_deducted, grade, badge
+    return findings

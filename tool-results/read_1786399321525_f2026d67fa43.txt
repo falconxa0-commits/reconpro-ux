@@ -1,0 +1,1185 @@
+     1→"""Module: API Discovery — Dynamic API Blueprint Reconstruction for ReconPro v8.0.
+     2→
+     3→Discovers hidden/undocumented APIs by analyzing JavaScript bundles,
+     4→GraphQL introspection, OpenAPI specs, link crawling, and auth matrix testing.
+     5→
+     6→Classes:
+     7→    JsEndpointExtractor  — regex-based API extraction from JS sources
+     8→    GraphQLIntrospector  — probe & introspect GraphQL endpoints
+     9→    OpenAPISpecParser   — fetch and parse Swagger/OpenAPI specs
+    10→    LinkCrawler         — BFS link discovery with form action extraction
+    11→    AuthMatrix          — multi-state auth testing on discovered endpoints
+    12→    GrpcIntrospector    — detect and probe gRPC / Twirp / gRPC-Web endpoints
+    13→
+    14→Functions:
+    15→    discover_api(target, base_url) -> tuple[list[Finding], int, str, str]
+    16→"""
+    17→from __future__ import annotations
+    18→
+    19→import json
+    20→import re
+    21→import urllib.error
+    22→import urllib.request
+    23→from typing import Any, Dict, List, Optional, Tuple
+    24→from urllib.parse import urljoin, urlparse, urlunparse
+    25→
+    26→from .http_layer import Finding, http_probe, compute_grade, badge_markdown, default_limiter
+    27→
+    28→
+    29→# ── JS Endpoint Extractor ────────────────────────────────────────────────
+    30→
+    31→
+    32→class JsEndpointExtractor:
+    33→    """Extract API endpoint URLs from JavaScript source code using regex.
+    34→
+    35→    Supports REST paths, fetch/axios calls, jQuery AJAX, XMLHttpRequest,
+    36→    ES module imports, and template-literal interpolations.
+    37→    """
+    38→
+    39→    # Ordered list of (name, pattern, default_method, confidence, group_idx)
+    40→    # group_idx points to the capturing group that contains the URL string.
+    41→    _PATTERNS: List[Tuple[str, re.Pattern, str, float, int]] = []
+    42→
+    43→    def __init__(self) -> None:
+    44→        if not JsEndpointExtractor._PATTERNS:
+    45→            JsEndpointExtractor._PATTERNS = [
+    46→                # REST-style versioned paths: /api/v1/users
+    47→                ("rest_versioned", re.compile(
+    48→                    r'(?i)(?:\"|\'|`)(/(?:api|rest)/v\d+/[\w/\-\.\{\}]+?)(?:\"|\'|`)',
+    49→                ), "GET", 0.95, 1),
+    50→
+    51→                # /v1/ or /v2/ versioned paths
+    52→                ("versioned_path", re.compile(
+    53→                    r'(?i)(?:\"|\'|`)(/v\d+/[\w/\-\.\{\}]+?)(?:\"|\'|`)',
+    54→                ), "GET", 0.80, 1),
+    55→
+    56→                # fetch("https://...") or fetch('https://...')
+    57→                ("fetch_call", re.compile(
+    58→                    r'(?i)fetch\s*\(\s*(?:\"|\'|`)(https?://[^"\'`\s]+?)(?:\"|\'|`)',
+    59→                ), "GET", 0.95, 1),
+    60→
+    61→                # fetch() with method option: fetch(url, { method: 'POST' })
+    62→                ("fetch_with_method", re.compile(
+    63→                    r'(?i)fetch\s*\(\s*(?:\"|\'|`)(https?://[^"\'`\s]+?)(?:\"|\'|`)'
+    64→                    r'[^}]*?method\s*:\s*(?:\"|\'|`)(GET|POST|PUT|DELETE|PATCH)',
+    65→                    re.S,
+    66→                ), "GET", 0.95, 1),
+    67→
+    68→                # axios.get/post/put/delete/patch("url")
+    69→                ("axios_method", re.compile(
+    70→                    r'(?i)axios\.(get|post|put|delete|patch)\s*\('
+    71→                    r'\s*(?:\"|\'|`)(https?://[^"\'`]+?)(?:\"|\'|`)',
+    72→                ), "GET", 0.95, 2),
+    73→
+    74→                # axios({ method, url })
+    75→                ("axios_config", re.compile(
+    76→                    r'(?i)axios\s*\(\s*\{[^}]*?url\s*:\s*(?:\"|\'|`)(https?://[^"\'`]+?)(?:\"|\'|`)'
+    77→                    r'[^}]*?method\s*:\s*(?:\"|\'|`)(GET|POST|PUT|DELETE|PATCH)',
+    78→                    re.S,
+    79→                ), "GET", 0.90, 1),
+    80→
+    81→                # $.ajax({ url: ... })
+    82→                ("jquery_ajax", re.compile(
+    83→                    r'(?i)\$\.ajax\s*\(\s*\{[^}]*?url\s*:\s*(?:\"|\'|`)(https?://[^"\'`]+?)(?:\"|\'|`)'
+    84→                    r'[^}]*?(?:type|method)\s*:\s*(?:\"|\'|`)(GET|POST|PUT|DELETE|PATCH)',
+    85→                    re.S,
+    86→                ), "GET", 0.90, 1),
+    87→
+    88→                # $.get("url"), $.post("url")
+    89→                ("jquery_short", re.compile(
+    90→                    r'(?i)\$\.(get|post)\s*\(\s*(?:\"|\'|`)(https?://[^"\'`]+?)(?:\"|\'|`)',
+    91→                ), "GET", 0.95, 2),
+    92→
+    93→                # xhttp.open("METHOD", "url")
+    94→                ("xmlhttp_open", re.compile(
+    95→                    r'(?i)xhttp\.open\s*\(\s*(?:\"|\'|`)(GET|POST|PUT|DELETE|PATCH)(?:\"|\'|`)'
+    96→                    r'\s*,\s*(?:\"|\'|`)(https?://[^"\'`]+?)(?:\"|\'|`)',
+    97→                ), "GET", 0.95, 2),
+    98→
+    99→                # new XMLHttpRequest() followed by .open
+   100→                ("xmlhttp_new", re.compile(
+   101→                    r'(?i)new\s+XMLHttpRequest[^;]*?\.open\s*\(\s*(?:\"|\'|`)'
+   102→                    r'(GET|POST|PUT|DELETE|PATCH)(?:\"|\'|`)'
+   103→                    r'\s*,\s*(?:\"|\'|`)(https?://[^"\'`]+?)(?:\"|\'|`)',
+   104→                    re.S,
+   105→                ), "GET", 0.90, 2),
+   106→
+   107→                # import ... from '.../api/...'
+   108→                ("es_import", re.compile(
+   109→                    r'(?i)import\s+.*?from\s+(?:\"|\'|`)'
+   110→                    r'(https?://[^"\'`]*?/api/[^"\'`]*?)(?:\"|\'|`)',
+   111→                ), "GET", 0.75, 1),
+   112→
+   113→                                # Template literal: `/api/${...}` or `https://host/api/${...}`
+   114→                ("template_literal", re.compile(
+   115→                    r'(?i)(?:\"|\'|`)(/api/[\w/\-\.{}]*\${[\w.]+}[\w/\-\.{}]*)(?:\"|\'|`)?',
+   116→                ), "GET", 0.70, 1),
+   117→
+   118→                # Relative REST paths in string literals (no scheme)
+   119→                ("relative_rest", re.compile(
+   120→                    r'(?i)(?:\"|\'|`)(/api/[\w/\-\.\{\}]+?)(?:\"|\'|`)'
+   121→                    r'(?=[^\w/\-]|$)',
+   122→                ), "GET", 0.65, 1),
+   123→            ]
+   124→
+   125→    def extract_from_url(self, url: str) -> List[Dict[str, Any]]:
+   126→        """Fetch a JS file and extract API URLs from it.
+   127→
+   128→        Parameters
+   129→        ----------
+   130→        url : str
+   131→            Full URL to a JavaScript file.
+   132→
+   133→        Returns
+   134→        -------
+   135→        list[dict]
+   136→            Each dict has keys: url, method, source_pattern, confidence.
+   137→        """
+   138→        resp = http_probe(url)
+   139→        if not resp.get("ok") or resp.get("status", 0) != 200:
+   140→            return []
+   141→        body = resp.get("body", "")
+   142→        if len(body) < 20:
+   143→            return []
+   144→        parsed = urlparse(url)
+   145→        base = f"{parsed.scheme}://{parsed.netloc}"
+   146→        return self.extract_from_content(body, base_url=base)
+   147→
+   148→    def extract_from_content(
+   149→        self, js_content: str, base_url: str = ""
+   150→    ) -> List[Dict[str, Any]]:
+   151→        """Extract API URLs from raw JavaScript content.
+   152→
+   153→        Parameters
+   154→        ----------
+   155→        js_content : str
+   156→            Raw JavaScript source text.
+   157→        base_url : str
+   158→            Origin (scheme + host) used to resolve relative paths.
+   159→
+   160→        Returns
+   161→        -------
+   162→        list[dict]
+   163→            Each dict: {url, method, source_pattern, confidence}.
+   164→        """
+   165→        results: List[Dict[str, Any]] = []
+   166→        seen: set = set()
+   167→
+   168→        for name, pattern, default_method, confidence, url_group in self._PATTERNS:
+   169→            for m in pattern.finditer(js_content):
+   170→                raw_url = m.group(url_group).strip()
+   171→                # Determine actual method
+   172→                method = default_method
+   173→                if url_group == 2:
+   174→                    # Pattern has method in group 1, url in group 2
+   175→                    method = m.group(1).upper()
+   176→                elif "fetch_with_method" in name and len(m.groups()) >= 2:
+   177→                    method = m.group(2).upper()
+   178→                elif "axios_config" in name and len(m.groups()) >= 2:
+   179→                    method = m.group(2).upper()
+   180→                elif "jquery_ajax" in name and len(m.groups()) >= 2:
+   181→                    method = m.group(2).upper()
+   182→
+   183→                # Resolve relative URLs against base_url
+   184→                if raw_url.startswith("/") and base_url:
+   185→                    full_url = urljoin(base_url, raw_url)
+   186→                else:
+   187→                    full_url = raw_url
+   188→
+   189→                # Skip non-HTTP, data URIs, and obvious non-endpoints
+   190→                if not full_url.startswith(("http://", "https://")):
+   191→                    continue
+   192→                if ".css" in full_url.rsplit("?", 1)[0] or ".png" in full_url.rsplit("?", 1)[0]:
+   193→                    continue
+   194→
+   195→                # Deduplicate by (url, method)
+   196→                key = (full_url, method)
+   197→                if key in seen:
+   198→                    continue
+   199→                seen.add(key)
+   200→
+   201→                results.append({
+   202→                    "url": full_url,
+   203→                    "method": method,
+   204→                    "source_pattern": name,
+   205→                    "confidence": confidence,
+   206→                })
+   207→
+   208→        # Sort by confidence descending
+   209→        results.sort(key=lambda r: r["confidence"], reverse=True)
+   210→        return results
+   211→
+   212→
+   213→# ── GraphQL Introspector ─────────────────────────────────────────────────
+   214→
+   215→
+   216→class GraphQLIntrospector:
+   217→    """Probe and introspect GraphQL endpoints to enumerate schema.
+   218→
+   219→    Tries common GraphQL paths, runs the introspection query, and
+   220→    extracts query/mutation/type definitions.
+   221→    """
+   222→
+   223→    _INTROSPECTION_QUERY = json.dumps({
+   224→        "query": """
+   225→        query IntrospectionQuery {
+   226→            __schema {
+   227→                queryType { name }
+   228→                mutationType { name }
+   229→                subscriptionType { name }
+   230→                types {
+   231→                    name
+   232→                    kind
+   233→                    fields {
+   234→                        name
+   235→                        args { name type { name kind ofType { name } } }
+   236→                    }
+   237→                    inputFields { name type { name kind ofType { name } } }
+   238→                }
+   239→            }
+   240→        }
+   241→        """
+   242→    }).encode("utf-8")
+   243→
+   244→    # Candidate paths to check for GraphQL
+   245→    _PROBE_PATHS = [
+   246→        "/graphql",
+   247→        "/api/graphql",
+   248→        "/graphql/v1",
+   249→        "/gql",
+   250→        "/api/gql",
+   251→        "/query",
+   252→    ]
+   253→
+   254→    def probe(self, base_url: str) -> Optional[Dict[str, Any]]:
+   255→        """Check if a GraphQL endpoint exists at common paths.
+   256→
+   257→        Parameters
+   258→        ----------
+   259→        base_url : str
+   260→            Target base URL (e.g. ``https://example.com``).
+   261→
+   262→        Returns
+   263→        -------
+   264→        dict | None
+   265→            ``{"endpoint": url}`` if a GraphQL endpoint was found, else ``None``.
+   266→        """
+   267→        origin = base_url.rstrip("/")
+   268→
+   269→        for path in self._PROBE_PATHS:
+   270→            url = origin + path
+   271→            # Try POST first (most GraphQL servers accept POST)
+   272→            resp = http_probe(
+   273→                url,
+   274→                method="POST",
+   275→                body=self._INTROSPECTION_QUERY,
+   276→                headers={"Content-Type": "application/json"},
+   277→            )
+   278→            if resp.get("status") == 200:
+   279→                body = resp.get("body", "")
+   280→                if "__schema" in body or "__type" in body:
+   281→                    return {"endpoint": url}
+   282→            # Try GET with query param
+   283→            get_url = url + "?query=%7B__schema%7BqueryType%7Bname%7D%7D%7D"
+   284→            resp2 = http_probe(get_url)
+   285→            if resp2.get("status") == 200:
+   286→                body2 = resp2.get("body", "")
+   287→                if "__schema" in body2 or "__type" in body2:
+   288→                    return {"endpoint": url}
+   289→
+   290→            # Also check if the path responds at all (even without introspection)
+   291→            resp3 = http_probe(url, method="POST", body=b'{"query":"{__typename}"}',
+   292→                                headers={"Content-Type": "application/json"})
+   293→            if resp3.get("status") == 200:
+   294→                body3 = resp3.get("body", "")
+   295→                if "__typename" in body3:
+   296→                    return {"endpoint": url}
+   297→
+   298→        return None
+   299→
+   300→    def introspect(self, url: str) -> Dict[str, Any]:
+   301→        """Run the full introspection query against a GraphQL endpoint.
+   302→
+   303→        Parameters
+   304→        ----------
+   305→        url : str
+   306→            Full URL of the GraphQL endpoint.
+   307→
+   308→        Returns
+   309→        -------
+   310→        dict
+   311→            ``{endpoint, queries, mutations, types}``.
+   312→        """
+   313→        result: Dict[str, Any] = {
+   314→            "endpoint": url,
+   315→            "queries": [],
+   316→            "mutations": [],
+   317→            "types": [],
+   318→        }
+   319→
+   320→        # Try POST introspection
+   321→        resp = http_probe(
+   322→            url,
+   323→            method="POST",
+   324→            body=self._INTROSPECTION_QUERY,
+   325→            headers={"Content-Type": "application/json"},
+   326→        )
+   327→        if not resp.get("ok") and resp.get("status", 0) != 200:
+   328→            # Try GET
+   329→            encoded = ("{__schema{queryType{name}mutationType{name}types{name kind "
+   330→                        "fields{name args{name type{name kind ofType{name}}}}}}}")
+   331→            get_url = url + "?query=" + encoded.replace(" ", "")
+   332→            resp = http_probe(get_url)
+   333→
+   334→        body = resp.get("body", "")
+   335→        if not body:
+   336→            return result
+   337→
+   338→        try:
+   339→            data = json.loads(body)
+   340→        except (json.JSONDecodeError, ValueError):
+   341→            return result
+   342→
+   343→        # Navigate the response envelope
+   344→        schema_data = data.get("data", {}).get("__schema")
+   345→        if not schema_data:
+   346→            # Maybe errors
+   347→            if data.get("errors"):
+   348→                result["error"] = str(data["errors"])[:500]
+   349→            return result
+   350→
+   351→        # Extract query type name
+   352→        query_type_name = None
+   353→        qt = schema_data.get("queryType")
+   354→        if qt:
+   355→            query_type_name = qt.get("name")
+   356→
+   357→        # Extract mutation type name
+   358→        mutation_type_name = None
+   359→        mt = schema_data.get("mutationType")
+   360→        if mt:
+   361→            mutation_type_name = mt.get("name")
+   362→
+   363→        # Walk all types and collect fields
+   364→        for t in schema_data.get("types", []):
+   365→            type_name = t.get("name", "")
+   366→            type_kind = t.get("kind", "")
+   367→
+   368→            type_entry: Dict[str, Any] = {
+   369→                "name": type_name,
+   370→                "kind": type_kind,
+   371→                "fields": [],
+   372→                "input_fields": [],
+   373→            }
+   374→
+   375→            for f in t.get("fields", []) or []:
+   376→                field_info: Dict[str, Any] = {"name": f.get("name", "")}
+   377→                args = []
+   378→                for a in f.get("args", []) or []:
+   379→                    arg_type = a.get("type", {})
+   380→                    args.append({
+   381→                        "name": a.get("name", ""),
+   382→                        "type": self._resolve_type_name(arg_type),
+   383→                    })
+   384→                field_info["args"] = args
+   385→                type_entry["fields"].append(field_info)
+   386→
+   387→            for f in t.get("inputFields", []) or []:
+   388→                arg_type = f.get("type", {})
+   389→                type_entry["input_fields"].append({
+   390→                    "name": f.get("name", ""),
+   391→                    "type": self._resolve_type_name(arg_type),
+   392→                })
+   393→
+   394→            result["types"].append(type_entry)
+   395→
+   396→            # If this is the root Query type, extract query names
+   397→            if type_name == query_type_name:
+   398→                result["queries"] = [
+   399→                    f["name"] for f in type_entry["fields"] if f["name"]
+   400→                ]
+   401→
+   402→            # If this is the root Mutation type, extract mutation names
+   403→            if type_name == mutation_type_name:
+   404→                result["mutations"] = [
+   405→                    f["name"] for f in type_entry["fields"] if f["name"]
+   406→                ]
+   407→
+   408→        return result
+   409→
+   410→    @staticmethod
+   411→    def _resolve_type_name(type_obj: Any) -> str:
+   412→        """Resolve a GraphQL type reference to its name string."""
+   413→        if not isinstance(type_obj, dict):
+   414→            return str(type_obj)
+   415→        if type_obj.get("name"):
+   416→            return type_obj["name"]
+   417→        of_type = type_obj.get("ofType")
+   418→        if of_type and isinstance(of_type, dict):
+   419→            inner = GraphQLIntrospector._resolve_type_name(of_type)
+   420→            kind = type_obj.get("kind", "")
+   421→            if kind == "NON_NULL":
+   422→                return f"{inner}!"
+   423→            if kind == "LIST":
+   424→                return f"[{inner}]"
+   425→            return inner
+   426→        return type_obj.get("kind", "UNKNOWN")
+   427→
+   428→
+   429→# ── OpenAPI Spec Parser ──────────────────────────────────────────────────
+   430→
+   431→
+   432→class OpenAPISpecParser:
+   433→    """Fetch and parse OpenAPI / Swagger specification files.
+   434→
+   435→    Probes common spec locations and extracts endpoint definitions.
+   436→    """
+   437→
+   438→    _SPEC_PATHS = [
+   439→        "/swagger.json",
+   440→        "/openapi.json",
+   441→        "/api-docs",
+   442→        "/api-docs/json",
+   443→        "/docs",
+   444→        "/v3/api-docs",
+   445→        "/v2/api-docs",
+   446→        "/swagger/v1/swagger.json",
+   447→        "/api/swagger.json",
+   448→        "/api/openapi.json",
+   449→        "/static/swagger.json",
+   450→    ]
+   451→
+   452→    def probe(self, base_url: str) -> Optional[Dict[str, Any]]:
+   453→        """Try common OpenAPI/Swagger spec paths.
+   454→
+   455→        Parameters
+   456→        ----------
+   457→        base_url : str
+   458→            Target base URL.
+   459→
+   460→        Returns
+   461→        -------
+   462→        dict | None
+   463→            ``{"url": url, "spec": parsed_dict}`` if found, else ``None``.
+   464→        """
+   465→        origin = base_url.rstrip("/")
+   466→
+   467→        for path in self._SPEC_PATHS:
+   468→            url = origin + path
+   469→            resp = http_probe(
+   470→                url,
+   471→                headers={"Accept": "application/json"},
+   472→            )
+   473→            if resp.get("status") != 200:
+   474→                # Some endpoints redirect to an HTML doc page
+   475→                if resp.get("status") in (301, 302, 307, 308):
+   476→                    loc = resp.get("headers", {}).get("location", "")
+   477→                    if loc:
+   478→                        url = urljoin(url, loc)
+   479→                        resp = http_probe(url, headers={"Accept": "application/json"})
+   480→                        if resp.get("status") != 200:
+   481→                            continue
+   482→                    else:
+   483→                        continue
+   484→                else:
+   485→                    continue
+   486→
+   487→            body = resp.get("body", "")
+   488→            # Try to parse as JSON
+   489→            try:
+   490→                spec = json.loads(body)
+   491→                if isinstance(spec, dict) and (
+   492→                    "openapi" in spec or "swagger" in spec or "paths" in spec
+   493→                ):
+   494→                    return {"url": url, "spec": spec}
+   495→            except (json.JSONDecodeError, ValueError):
+   496→                # Maybe it's YAML — skip (no yaml in stdlib)
+   497→                pass
+   498→
+   499→        return None
+   500→
+   501→    def parse_spec(self, spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+   502→        """Extract endpoints from an OpenAPI/Swagger specification.
+   503→
+   504→        Parameters
+   505→        ----------
+   506→        spec : dict
+   507→            Parsed OpenAPI JSON spec.
+   508→
+   509→        Returns
+   510→        -------
+   511→        list[dict]
+   512→            Each dict: {path, method, parameters, summary, tags}.
+   513→        """
+   514→        results: List[Dict[str, Any]] = []
+   515→        paths = spec.get("paths", {})
+   516→
+   517→        for path, path_item in paths.items():
+   518→            if not isinstance(path_item, dict):
+   519→                continue
+   520→            for method in ("get", "post", "put", "delete", "patch", "options", "head"):
+   521→                op = path_item.get(method)
+   522→                if not isinstance(op, dict):
+   523→                    continue
+   524→
+   525→                parameters: List[Dict[str, str]] = []
+   526→                for p in op.get("parameters", []):
+   527→                    if isinstance(p, dict):
+   528→                        parameters.append({
+   529→                            "name": p.get("name", ""),
+   530→                            "in": p.get("in", ""),
+   531→                            "type": p.get("schema", {}).get("type", ""),
+   532→                            "required": str(p.get("required", False)),
+   533→                        })
+   534→
+   535→                # Also pull path-level parameters
+   536→                for p in path_item.get("parameters", []):
+   537→                    if isinstance(p, dict):
+   538→                        p_name = p.get("name", "")
+   539→                        if not any(param["name"] == p_name for param in parameters):
+   540→                            parameters.append({
+   541→                                "name": p_name,
+   542→                                "in": p.get("in", ""),
+   543→                                "type": p.get("schema", {}).get("type", ""),
+   544→                                "required": str(p.get("required", False)),
+   545→                            })
+   546→
+   547→                results.append({
+   548→                    "path": path,
+   549→                    "method": method.upper(),
+   550→                    "parameters": parameters,
+   551→                    "summary": op.get("summary", ""),
+   552→                    "tags": op.get("tags", []),
+   553→                })
+   554→
+   555→        # Also check webhooks (OpenAPI 3.1)
+   556→        for hook_path, hook_item in spec.get("webhooks", {}).items():
+   557→            if isinstance(hook_item, dict):
+   558→                for method in ("post", "get", "put"):
+   559→                    op = hook_item.get(method)
+   560→                    if isinstance(op, dict):
+   561→                        results.append({
+   562→                            "path": hook_path,
+   563→                            "method": method.upper(),
+   564→                            "parameters": [],
+   565→                            "summary": op.get("summary", ""),
+   566→                            "tags": op.get("tags", []) + ["webhook"],
+   567→                        })
+   568→
+   569→        return results
+   570→
+   571→
+   572→# ── Link Crawler ──────────────────────────────────────────────────────────
+   573→
+   574→
+   575→class LinkCrawler:
+   576→    """BFS link crawler that discovers API-like URLs from HTML pages.
+   577→
+   578→    Extracts links from href, src, and form action attributes,
+   579→    filters by domain and API patterns, and follows links
+   580→    up to a configurable depth.
+   581→    """
+   582→
+   583→    # Regex for extracting URLs from HTML attributes
+   584→    _HREF_RE = re.compile(r'href\s*=\s*(?:"([^"\s]+)"|\'([^\'\s]+)\')', re.I)
+   585→    _SRC_RE = re.compile(r'src\s*=\s*(?:"([^"\s]+)"|\'([^\'\s]+)\')', re.I)
+   586→    _ACTION_RE = re.compile(
+   587→        r'<form[^>]*action\s*=\s*(?:"([^"\s]+)"|\'([^\'\s]+)\')' 
+   588→        r'[^>]*(?:method\s*=\s*(?:"(GET|POST|PUT|DELETE|PATCH)"|\'(GET|POST|PUT|DELETE|PATCH)\'))?',
+   589→        re.I,
+   590→    )
+   591→    _API_PATTERN = re.compile(
+   592→        r'(?i)(?:/api/|/rest/|/v\d+/|/graphql|/gql|/trpc|/rpc|/_next/data|'
+   593→        r'/__api|/api-docs|/swagger|/openapi)',
+   594→    )
+   595→
+   596→    def crawl(
+   597→        self,
+   598→        start_url: str,
+   599→        max_pages: int = 50,
+   600→        same_domain: bool = True,
+   601→        max_depth: int = 3,
+   602→    ) -> List[Dict[str, Any]]:
+   603→        """Crawl a website and discover API-like URLs.
+   604→
+   605→        Parameters
+   606→        ----------
+   607→        start_url : str
+   608→            Starting URL for the crawl.
+   609→        max_pages : int
+   610→            Maximum number of pages to fetch.
+   611→        same_domain : bool
+   612→            If True, only follow links within the same domain.
+   613→        max_depth : int
+   614→            Maximum BFS depth.
+   615→
+   616→        Returns
+   617→        -------
+   618→        list[dict]
+   619→            Each dict: {url, source_page, method, type}.
+   620→        """
+   621→        results: List[Dict[str, Any]] = []
+   622→        seen_urls: set = set()
+   623→        seen_results: set = set()
+   624→
+   625→        parsed_start = urlparse(start_url)
+   626→        start_domain = parsed_start.netloc
+   627→
+   628→        # BFS queue: (url, depth, source_page)
+   629→        queue: List[Tuple[str, int, str]] = [(start_url, 0, start_url)]
+   630→        seen_urls.add(start_url.rstrip("/") or start_url)
+   631→
+   632→        pages_fetched = 0
+   633→
+   634→        while queue and pages_fetched < max_pages:
+   635→            url, depth, source = queue.pop(0)
+   636→
+   637→            if depth > max_depth:
+   638→                continue
+   639→
+   640→            resp = http_probe(url)
+   641→            pages_fetched += 1
+   642→
+   643→            if resp.get("status", 0) not in (200, 301, 302, 307, 308):
+   644→                continue
+   645→
+   646→            body = resp.get("body", "")
+   647→            content_type = resp.get("headers", {}).get("content-type", "").lower()
+   648→
+   649→            # Only parse HTML pages for links
+   650→            if "text/html" not in content_type and depth == 0:
+   651→                # At depth 0 we always try; beyond that, skip non-HTML
+   652→                if "text/html" not in content_type:
+   653→                    continue
+   654→
+   655→            # Extract all href links
+   656→            hrefs = set()
+   657→            for m in self._HREF_RE.finditer(body):
+   658→                href = m.group(1) or m.group(2) or ""
+   659→                if href and not href.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+   660→                    hrefs.add(href)
+   661→
+   662→            # Extract src links (scripts, iframes)
+   663→            srcs = set()
+   664→            for m in self._SRC_RE.finditer(body):
+   665→                src = m.group(1) or m.group(2) or ""
+   666→                if src and not src.startswith(("data:", "blob:")):
+   667→                    srcs.add(src)
+   668→
+   669→            # Extract form actions
+   670→            form_methods: Dict[str, str] = {}
+   671→            for m in self._ACTION_RE.finditer(body):
+   672→                action = m.group(1) or m.group(2) or ""
+   673→                method = m.group(3) or m.group(4) or "POST"
+   674→                if action:
+   675→                    form_methods[action] = method
+   676→
+   677→            # Resolve and classify all discovered URLs
+   678→            all_raw = hrefs | srcs | set(form_methods.keys())
+   679→
+   680→            for raw in all_raw:
+   681→                resolved = urljoin(url, raw)
+   682→                parsed = urlparse(resolved)
+   683→
+   684→                # Domain filter
+   685→                if same_domain and parsed.netloc != start_domain:
+   686→                    continue
+   687→
+   688→                # Skip common non-useful extensions
+   689→                skip_ext = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+   690→                           ".css", ".woff", ".woff2", ".ttf", ".eot",
+   691→                           ".mp4", ".mp3", ".webp", ".webm")
+   692→                path_lower = parsed.path.lower()
+   693→                if any(path_lower.endswith(ext) for ext in skip_ext):
+   694→                    continue
+   695→
+   696→                # Classify the link
+   697→                is_api = bool(self._API_PATTERN.search(resolved))
+   698→                is_form = raw in form_methods
+   699→                is_js = path_lower.endswith(".js")
+   700→
+   701→                link_type = "link"
+   702→                method = "GET"
+   703→
+   704→                if is_form:
+   705→                    link_type = "form"
+   706→                    method = form_methods[raw]
+   707→                elif is_api:
+   708→                    link_type = "api"
+   709→                elif is_js:
+   710→                    link_type = "js"
+   711→
+   712→                result_key = (resolved, method)
+   713→                if result_key not in seen_results:
+   714→                    seen_results.add(result_key)
+   715→                    results.append({
+   716→                        "url": resolved,
+   717→                        "source_page": url,
+   718→                        "method": method,
+   719→                        "type": link_type,
+   720→                    })
+   721→
+   722→                # Queue HTML links for further crawling
+   723→                if link_type in ("link", "api") and depth < max_depth:
+   724→                    normalized = resolved.rstrip("/") or resolved
+   725→                    if normalized not in seen_urls:
+   726→                        seen_urls.add(normalized)
+   727→                        queue.append((resolved, depth + 1, url))
+   728→
+   729→        return results
+   730→
+   731→
+   732→# ── Auth Matrix ───────────────────────────────────────────────────────────
+   733→
+   734→
+   735→class AuthMatrix:
+   736→    """Test endpoints with multiple authentication states to find
+   737→    access control issues.
+   738→
+   739→    Checks: no auth, invalid auth, case-sensitivity bypass.
+   740→    """
+   741→
+   742→    def test_endpoint(self, url: str) -> Dict[str, Any]:
+   743→        """Test a single endpoint with multiple auth states.
+   744→
+   745→        Parameters
+   746→        ----------
+   747→        url : str
+   748→            The endpoint URL to test.
+   749→
+   750→        Returns
+   751→        -------
+   752→        dict
+   753→            {url, no_auth_status, no_auth_body_len, broken_auth, auth_required}
+   754→        """
+   755→        result: Dict[str, Any] = {
+   756→            "url": url,
+   757→            "no_auth_status": 0,
+   758→            "no_auth_body_len": 0,
+   759→            "broken_auth": False,
+   760→            "auth_required": False,
+   761→        }
+   762→
+   763→        # Test 1: No authentication
+   764→        resp_none = http_probe(url)
+   765→        status_none = resp_none.get("status", 0)
+   766→        body_none = resp_none.get("body", "")
+   767→        result["no_auth_status"] = status_none
+   768→        result["no_auth_body_len"] = len(body_none)
+   769→
+   770→        # Test 2: Invalid/broken auth (Bearer token with garbage)
+   771→        resp_bad = http_probe(
+   772→            url,
+   773→            headers={"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.INVALID.TOKEN"},
+   774→        )
+   775→        status_bad = resp_bad.get("status", 0)
+   776→        body_bad = resp_bad.get("body", "")
+   777→
+   778→        # Auth is required if the server returns 401/403 for either request
+   779→        is_auth_required = status_none in (401, 403) or status_bad in (401, 403)
+   780→        result["auth_required"] = is_auth_required
+   781→
+   782→        # Broken auth = invalid token accepted (same status as no-auth or 200
+   783→        # when no-auth returns 401/403)
+   784→        if is_auth_required and status_bad == 200:
+   785→            result["broken_auth"] = True
+   786→        elif status_none in (401, 403) and status_bad not in (401, 403):
+   787→            # Server treats invalid token differently from no token — possible bypass
+   788→            result["broken_auth"] = True
+   789→
+   790→        # Test 3: Case sensitivity bypass (bearer vs Bearer, etc.)
+   791→        case_variants = [
+   792→            {"authorization": "bearer invalid_token"},     # lowercase
+   793→            {"Authorization": "Bearer  invalid_token"},   # double space
+   794→            {"authorization": "Bearer invalid_token"},     # lower header name
+   795→        ]
+   796→        case_bypass = False
+   797→        for headers in case_variants:
+   798→            resp_case = http_probe(url, headers=headers)
+   799→            sc = resp_case.get("status", 0)
+   800→            if status_none in (401, 403) and sc == 200:
+   801→                case_bypass = True
+   802→                break
+   803→            if status_bad in (401, 403) and sc == 200:
+   804→                case_bypass = True
+   805→                break
+   806→        result["case_bypass"] = case_bypass
+   807→
+   808→        # No auth returns data when it should be protected
+   809→        if status_none == 200 and is_auth_required:
+   810→            result["broken_auth"] = True
+   811→
+   812→        return result
+   813→
+   814→
+   815→# ── gRPC Introspector ──────────────────────────────────────────────────────
+   816→
+   817→
+   818→class GrpcIntrospector:
+   819→    """Detect and probe gRPC endpoints.
+   820→
+   821→    gRPC uses HTTP/2 with specific content-types and paths:
+   822→    - POST /grpcservice.MethodName with content-type: application/grpc
+   823→    - POST /twirp/ServiceName/Method with standard content-type
+   824→    - gRPC-Web uses application/grpc-web+proto or application/grpc-web+json
+   825→
+   826→    Detection methods:
+   827→    1. Probe common gRPC paths with gRPC content-type header
+   828→    2. Check for gRPC reflection (server reflection service)
+   829→    3. Look for gRPC-Web endpoints
+   830→    """
+   831→
+   832→    GRPC_PATHS = [
+   833→        "/grpc/", "/api/grpc/", "/twirp/",
+   834→        "/grpc.Service/", "/grpc.Reflection/",
+   835→        "/helloworld.Greeter/", "/echo.Echo/",
+   836→    ]
+   837→
+   838→    GRPC_REFLECTION_METHODS = [
+   839→        "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo",
+   840→        "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo",
+   841→    ]
+   842→
+   843→    CONTENT_TYPES = [
+   844→        "application/grpc",
+   845→        "application/grpc+proto",
+   846→        "application/grpc-web+proto",
+   847→        "application/grpc-web+json",
+   848→        "application/proto",
+   849→    ]
+   850→
+   851→    def __init__(self, base_url: str, timeout: float = 8.0):
+   852→        self.base_url = base_url.rstrip("/")
+   853→        self.timeout = timeout
+   854→        self.findings: List[Finding] = []
+   855→
+   856→    def detect(self) -> List[Finding]:
+   857→        """Run gRPC detection. Returns list of findings."""
+   858→        self._probe_grpc_paths()
+   859→        self._probe_reflection()
+   860→        self._probe_twirp()
+   861→        return self.findings
+   862→
+   863→    def _probe_grpc_paths(self):
+   864→        """Probe common gRPC paths."""
+   865→        for path in self.GRPC_PATHS:
+   866→            url = f"{self.base_url}{path}"
+   867→            for ct in self.CONTENT_TYPES[:2]:  # Try top 2 content types
+   868→                try:
+   869→                    # Send a 5-byte gRPC frame (compressed=0, length=0)
+   870→                    payload = b"\x00\x00\x00\x00\x00"
+   871→                    req = urllib.request.Request(
+   872→                        url, data=payload, method="POST",
+   873→                        headers={
+   874→                            "Content-Type": ct,
+   875→                            "TE": "trailers",
+   876→                            "User-Agent": "ReconPro-grpc/9",
+   877→                            "grpc-encoding": "identity",
+   878→                        },
+   879→                    )
+   880→                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+   881→                        body = resp.read()
+   882→                        resp_ct = resp.headers.get("Content-Type", "")
+   883→                        if "grpc" in resp_ct.lower():
+   884→                            self.findings.append(Finding(
+   885→                                title=f"gRPC endpoint detected: {path}",
+   886→                                severity="medium",
+   887→                                category="grpc_exposure",
+   888→                                module="api_discovery",
+   889→                                description=f"gRPC service found at {url} with response content-type: {resp_ct}",
+   890→                                evidence=f"Response: {resp.status} | Content-Type: {resp_ct} | Body length: {len(body)}",
+   891→                                asset=url,
+   892→                                points_deducted=3,
+   893→                                remediation="Ensure gRPC endpoints require authentication and are not publicly accessible.",
+   894→                            ))
+   895→                            break  # Don't double-report for same path
+   896→                except Exception:
+   897→                    pass
+   898→
+   899→    def _probe_reflection(self):
+   900→        """Probe gRPC server reflection."""
+   901→        for method in self.GRPC_REFLECTION_METHODS:
+   902→            url = f"{self.base_url}{method}"
+   903→            try:
+   904→                # gRPC reflection request (empty message, compressed=0, length=0)
+   905→                payload = b"\x00\x00\x00\x00\x00"
+   906→                req = urllib.request.Request(
+   907→                    url, data=payload, method="POST",
+   908→                    headers={
+   909→                        "Content-Type": "application/grpc",
+   910→                        "TE": "trailers",
+   911→                        "User-Agent": "ReconPro-grpc/9",
+   912→                    },
+   913→                )
+   914→                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+   915→                    body = resp.read()
+   916→                    if len(body) > 5:
+   917→                        self.findings.append(Finding(
+   918→                            title="gRPC Server Reflection enabled",
+   919→                            severity="high",
+   920→                            category="grpc_exposure",
+   921→                            module="api_discovery",
+   922→                            description=f"gRPC server reflection is enabled at {url}, allowing service enumeration.",
+   923→                            evidence=f"Reflection endpoint responded with {len(body)} bytes",
+   924→                            asset=url,
+   925→                            points_deducted=8,
+   926→                            remediation="Disable gRPC server reflection in production: use grpc.Server reflection=None.",
+   927→                        ))
+   928→                        return  # Only report once
+   929→            except Exception:
+   930→                pass
+   931→
+   932→    def _probe_twirp(self):
+   933→        """Probe Twirp (gRPC-compatible) endpoints."""
+   934→        twirp_paths = [
+   935→            "/twirp/", "/twirp/auth.Auth/",
+   936→            "/twirp/user.UserService/",
+   937→            "/twirp/admin.AdminService/",
+   938→        ]
+   939→        for path in twirp_paths:
+   940→            url = f"{self.base_url}{path}"
+   941→            try:
+   942→                req = urllib.request.Request(
+   943→                    url, data=b"{}", method="POST",
+   944→                    headers={
+   945→                        "Content-Type": "application/json",
+   946→                        "User-Agent": "ReconPro-twirp/9",
+   947→                    },
+   948→                )
+   949→                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+   950→                    body = resp.read()
+   951→                    resp_ct = resp.headers.get("Content-Type", "")
+   952→                    if resp.status in (200, 400) and "twirp" in resp_ct.lower():
+   953→                        self.findings.append(Finding(
+   954→                            title=f"Twirp endpoint detected: {path}",
+   955→                            severity="medium",
+   956→                            category="grpc_exposure",
+   957→                            module="api_discovery",
+   958→                            description=f"Twirp (gRPC-compatible) endpoint found at {url}",
+   959→                            evidence=f"Status: {resp.status} | Content-Type: {resp_ct}",
+   960→                            asset=url,
+   961→                            points_deducted=3,
+   962→                            remediation="Ensure Twirp endpoints are protected behind authentication.",
+   963→                        ))
+   964→            except Exception:
+   965→                pass
+   966→
+   967→
+   968→# ── Orchestrator ──────────────────────────────────────────────────────────
+   969→
+   970→
+   971→def discover_api(
+   972→    target: str,
+   973→    base_url: str,
+   974→    timeout: int = 10,
+   975→    verify_tls: bool = True,
+   976→) -> Tuple[List[Finding], int, str, str]:
+   977→    """Orchestrate all API discovery techniques against a target.
+   978→
+   979→    Runs JS endpoint extraction (on JS files found via link crawl),
+   980→    GraphQL introspection, OpenAPI spec parsing, link crawling, and
+   981→    auth matrix testing.  Converts discovered endpoints into Findings.
+   982→
+   983→    Parameters
+   984→    ----------
+   985→    target : str
+   986→        Domain or host string.
+   987→    base_url : str
+   988→        Full base URL (e.g. ``https://example.com``).
+   989→    timeout : int
+   990→        Per-request HTTP timeout in seconds.
+   991→    verify_tls : bool
+   992→        Whether to verify TLS certificates.
+   993→
+   994→    Returns
+   995→    -------
+   996→    tuple[list[Finding], int, str, str]
+   997→        (findings, score, grade, badge_markdown)
+   998→    """
+   999→    findings: List[Finding] = []
+  1000→    deductions = 0
+  1001→    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+  1002→    origin = base_url.rstrip("/")
+  1003→
+  1004→    def add(
+  1005→        title: str, severity: str, category: str,
+  1006→        desc: str, evidence: str, pts: int = 0,
+  1007→    ) -> None:
+  1008→        nonlocal deductions
+  1009→        findings.append(Finding(
+  1010→            title=title, severity=severity, category=category,
+  1011→            module="api_discovery", description=desc, evidence=evidence,
+  1012→            asset=host, points_deducted=pts,
+  1013→        ))
+  1014→        deductions += pts
+  1015→
+  1016→    # ── Phase 1: Link crawl to discover JS files and pages ──────────
+  1017→    crawler = LinkCrawler()
+  1018→    crawled = crawler.crawl(origin, max_pages=30, same_domain=True, max_depth=2)
+  1019→    js_urls = [item["url"] for item in crawled if item["type"] == "js"]
+  1020→    api_links = [item for item in crawled if item["type"] in ("api", "form")]
+  1021→
+  1022→    # ── Phase 2: JS endpoint extraction ─────────────────────────────
+  1023→    js_extractor = JsEndpointExtractor()
+  1024→    all_js_endpoints: List[Dict[str, Any]] = []
+  1025→
+  1026→    for js_url in js_urls[:15]:  # Limit JS files to process
+  1027→        endpoints = js_extractor.extract_from_url(js_url)
+  1028→        all_js_endpoints.extend(endpoints)
+  1029→
+  1030→    # Also try extracting from the main page itself
+  1031→    main_resp = http_probe(origin)
+  1032→    if main_resp.get("status") == 200:
+  1033→        main_body = main_resp.get("body", "")
+  1034→        inline_endpoints = js_extractor.extract_from_content(main_body, base_url=origin)
+  1035→        all_js_endpoints.extend(inline_endpoints)
+  1036→
+  1037→    # Deduplicate
+  1038→    seen_eps: set = set()
+  1039→    unique_js: List[Dict[str, Any]] = []
+  1040→    for ep in all_js_endpoints:
+  1041→        key = (ep["url"], ep["method"])
+  1042→        if key not in seen_eps:
+  1043→            seen_eps.add(key)
+  1044→            unique_js.append(ep)
+  1045→
+  1046→    if unique_js:
+  1047→        add(
+  1048→            f"JS API surface: {len(unique_js)} endpoints discovered",
+  1049→            "medium", "js_api_discovery",
+  1050→            f"Found {len(unique_js)} API endpoints by analyzing JavaScript sources",
+  1051→            ", ".join(f"{e['method']} {e['url'][:80]}" for e in unique_js[:5]),
+  1052→            3,
+  1053→        )
+  1054→
+  1055→    # ── Phase 3: GraphQL introspection ───────────────────────────────
+  1056→    gql = GraphQLIntrospector()
+  1057→    gql_probe = gql.probe(origin)
+  1058→    if gql_probe:
+  1059→        gql_url = gql_probe["endpoint"]
+  1060→        schema = gql.introspect(gql_url)
+  1061→        n_queries = len(schema.get("queries", []))
+  1062→        n_mutations = len(schema.get("mutations", []))
+  1063→        n_types = len(schema.get("types", []))
+  1064→
+  1065→        add(
+  1066→            f"GraphQL endpoint exposed: {gql_url}",
+  1067→            "high", "graphql_exposed",
+  1068→            f"GraphQL introspection enabled — {n_queries} queries, "
+  1069→            f"{n_mutations} mutations, {n_types} types enumerable",
+  1070→            f"POST {gql_url} -> introspection success, "
+  1071→            f"queries=[{', '.join(schema['queries'][:10])}]" if n_queries else f"POST {gql_url}",
+  1072→            10,
+  1073→        )
+  1074→
+  1075→        # Check for dangerous mutations
+  1076→        dangerous_keywords = ("delete", "remove", "admin", "reset", "config",
+  1077→                             "password", "user", "role", "permission")
+  1078→        for mutation in schema.get("mutations", []):
+  1079→            if any(kw in mutation.lower() for kw in dangerous_keywords):
+  1080→                add(
+  1081→                    f"Dangerous GraphQL mutation: {mutation}",
+  1082→                    "high", "graphql_dangerous_mutation",
+  1083→                    f"Mutation '{mutation}' may allow privileged operations via introspection",
+  1084→                    f"Mutation: {mutation} at {gql_url}",
+  1085→                    8,
+  1086→                )
+  1087→    
+  1088→    # ── Phase 4: OpenAPI / Swagger spec ──────────────────────────────
+  1089→    oas = OpenAPISpecParser()
+  1090→    spec_result = oas.probe(origin)
+  1091→    if spec_result:
+  1092→        spec = spec_result["spec"]
+  1093→        endpoints = oas.parse_spec(spec)
+  1094→        add(
+  1095→            f"OpenAPI/Swagger spec exposed: {spec_result['url']}",
+  1096→            "medium", "openapi_exposed",
+  1097→            f"API specification publicly accessible — {len(endpoints)} endpoints documented",
+  1098→            f"GET {spec_result['url']} -> 200 ({len(endpoints)} paths)",
+  1099→            4,
+  1100→        )
+  1101→
+  1102→        # Flag sensitive endpoints found in the spec
+  1103→        sensitive_words = ("admin", "internal", "debug", "config", "secret",
+  1104→                          "credential", "key", "token", "webhook")
+  1105→        for ep in endpoints:
+  1106→            path = ep["path"].lower()
+  1107→            if any(sw in path for sw in sensitive_words):
+  1108→                add(
+  1109→                    f"Sensitive endpoint in spec: {ep['method']} {ep['path']}",
+  1110→                    "medium", "openapi_sensitive_endpoint",
+  1111→                    f"API spec documents potentially sensitive endpoint",
+  1112→                    f"{ep['method']} {ep['path']}",
+  1113→                    3,
+  1114→                )
+  1115→
+  1116→    # ── Phase 5: Auth matrix testing on discovered endpoints ─────────
+  1117→    auth_tester = AuthMatrix()
+  1118→    # Gather candidate endpoints to test
+  1119→    test_candidates: List[str] = []
+  1120→    
+  1121→    # From JS extraction
+  1122→    for ep in unique_js[:10]:
+  1123→        if ep["url"].startswith(origin):
+  1124→            test_candidates.append(ep["url"])
+  1125→    
+  1126→    # From link crawl API/form results
+  1127→    for item in api_links[:10]:
+  1128→        if item["url"].startswith(origin):
+  1129→            test_candidates.append(item["url"])
+  1130→    
+  1131→    # Deduplicate candidates
+  1132→    test_candidates = list(dict.fromkeys(test_candidates))
+  1133→
+  1134→    for endpoint_url in test_candidates[:8]:  # Limit auth tests
+  1135→        auth_result = auth_tester.test_endpoint(endpoint_url)
+  1136→
+  1137→        if auth_result.get("broken_auth"):
+  1138→            add(
+  1139→                f"Auth bypass: {endpoint_url[:80]}",
+  1140→                "high", "auth_bypass",
+  1141→                "Endpoint accessible with broken or missing authentication",
+  1142→                f"no_auth={auth_result['no_auth_status']}, "
+  1143→                f"broken_auth=True"
+  1144→                + (", case_bypass=True" if auth_result.get("case_bypass") else ""),
+  1145→                12,
+  1146→            )
+  1147→        elif auth_result.get("case_bypass"):
+  1148→            add(
+  1149→                f"Case-sensitivity auth bypass: {endpoint_url[:80]}",
+  1150→                "high", "auth_case_bypass",
+  1151→                "Authorization header case variation bypasses auth check",
+  1152→                f"case_bypass=True on {endpoint_url}",
+  1153→                10,
+  1154→            )
+  1155→        elif not auth_result.get("auth_required") and auth_result["no_auth_status"] == 200:
+  1156→            # Endpoint accessible without auth — flag if it looks sensitive
+  1157→            sensitive = any(
+  1158→                kw in endpoint_url.lower()
+  1159→                for kw in ("admin", "user", "config", "internal", "delete", "key")
+  1160→            )
+  1161→            if sensitive:
+  1162→                add(
+  1163→                    f"Unprotected sensitive endpoint: {endpoint_url[:80]}",
+  1164→                    "high", "unprotected_endpoint",
+  1165→                    "Sensitive API endpoint accessible without authentication",
+  1166→                    f"GET {endpoint_url} -> 200 (no auth)",
+  1167→                    8,
+  1168→                )
+  1169→
+  1170→    # ── Phase 6: gRPC endpoint detection ────────────────────────────
+  1171→    grpc_scanner = GrpcIntrospector(origin)
+  1172→    grpc_findings = grpc_scanner.detect()
+  1173→    for gf in grpc_findings:
+  1174→        findings.append(gf)
+  1175→        deductions += gf.points_deducted
+  1176→
+  1177→    # ── Score calculation ────────────────────────────────────────────
+  1178→    score = max(0, min(100, 100 - deductions))
+  1179→    if not findings:
+  1180→        score = 100
+  1181→    grade = compute_grade(score)
+  1182→    badge_md = badge_markdown(host, grade)
+  1183→
+  1184→    return findings, score, grade, badge_md
+  1185→

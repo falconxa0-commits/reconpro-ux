@@ -1,0 +1,1257 @@
+     1→"""DOCTOR module — Security health check with actionable fixes.
+     2→
+     3→Provides a quick security health check with:
+     4→- Overall security posture score
+     5→- Category breakdown (network, auth, files, deps, env)
+     6→- Actionable fix commands the user can copy-paste
+     7→- Color-coded severity
+     8→- Quick wins section
+     9→- NTP time sync verification
+    10→- Firewall deep audit (rules, default policy)
+    11→- Audit/logging verification
+    12→- UAC/Sudo timeout check
+    13→- SSH key strength analysis
+    14→"""
+    15→
+    16→from __future__ import annotations
+    17→
+    18→import os
+    19→import re
+    20→import subprocess
+    21→import stat
+    22→from pathlib import Path
+    23→from typing import Any, Dict, List, Optional, Tuple
+    24→
+    25→from ..http_layer import Finding
+    26→
+    27→
+    28→def _hostname() -> str:
+    29→    """Cross-platform hostname (works on Linux, macOS, Windows)."""
+    30→    try:
+    31→        return os.uname().nodename
+    32→    except AttributeError:
+    33→        return os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "localhost"))
+    34→
+    35→
+    36→def _run(cmd: str, timeout: int = 8) -> Tuple[int, str]:
+    37→    """Run a shell command, return (exit_code, output)."""
+    38→    try:
+    39→        r = subprocess.run(
+    40→            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+    41→        )
+    42→        return r.returncode, (r.stdout + r.stderr).strip()
+    43→    except Exception:
+    44→        return -1, ""
+    45→
+    46→
+    47→def _is_windows() -> bool:
+    48→    """Check if running on Windows."""
+    49→    return os.name == "nt"
+    50→
+    51→
+    52→def _is_macos() -> bool:
+    53→    """Check if running on macOS."""
+    54→    return os.name == "posix" and hasattr(os, "uname") and os.uname().sysname == "Darwin"
+    55→
+    56→
+    57→def _check_password_policy() -> List[Finding]:
+    58→    """Check password and authentication policies."""
+    59→    findings: List[Finding] = []
+    60→    hostname = _hostname()
+    61→
+    62→    if _is_windows():
+    63→        # Windows: check password policy via net accounts
+    64→        code, out = _run('net accounts 2>NUL')
+    65→        if code == 0 and out:
+    66→            max_age = None
+    67→            min_len = None
+    68→            for line in out.splitlines():
+    69→                line_lower = line.lower().strip()
+    70→                if "maximum password age" in line_lower:
+    71→                    parts = line.split(":")
+    72→                    if len(parts) >= 2:
+    73→                        try:
+    74→                            val = parts[-1].strip()
+    75→                            max_age = int(val) if val.lower() != "unlimited" else 99999
+    76→                        except (ValueError, IndexError):
+    77→                            pass
+    78→                elif "minimum password length" in line_lower:
+    79→                    parts = line.split(":")
+    80→                    if len(parts) >= 2:
+    81→                        try:
+    82→                            min_len = int(parts[-1].strip())
+    83→                        except (ValueError, IndexError):
+    84→                            pass
+    85→            if max_age is not None and max_age > 90:
+    86→                findings.append(Finding(
+    87→                    title=f"Password max age is {max_age} days (too long)",
+    88→                    severity="medium", category="auth_policy",
+    89→                    module="doctor",
+    90→                    description=f"Password expiration is set to {max_age} days. NIST recommends 90 days or less.",
+    91→                    evidence=f"Maximum password age: {max_age}",
+    92→                    asset=hostname, points_deducted=4,
+    93→                    remediation="Set password expiration: net accounts /maxpwage:90",
+    94→                ))
+    95→            if min_len is not None and min_len < 12:
+    96→                findings.append(Finding(
+    97→                    title=f"Minimum password length is {min_len} (too short)",
+    98→                    severity="medium", category="auth_policy",
+    99→                    module="doctor",
+   100→                    description="Minimum password length is less than 12 characters. Longer passwords are more secure.",
+   101→                    evidence=f"Minimum password length: {min_len}",
+   102→                    asset=hostname, points_deducted=5,
+   103→                    remediation="Set minimum password length: net accounts /minpwlen:12",
+   104→                ))
+   105→        return findings
+   106→
+   107→    # Non-Windows: check Linux password policies
+   108→    # Check if password aging is configured
+   109→    code, out = _run("cat /etc/login.defs 2>/dev/null")
+   110→    if code == 0 and out:
+   111→        max_days = 99999
+   112→        for line in out.splitlines():
+   113→            if line.strip().startswith("PASS_MAX_DAYS"):
+   114→                try:
+   115→                    max_days = int(line.split()[1])
+   116→                except (ValueError, IndexError):
+   117→                    pass
+   118→        if max_days > 90:
+   119→            findings.append(Finding(
+   120→                title=f"Password max age is {max_days} days (too long)",
+   121→                severity="medium", category="auth_policy",
+   122→                module="doctor",
+   123→                description=f"Password expiration is set to {max_days} days. NIST recommends 90 days or less.",
+   124→                evidence=f"PASS_MAX_DAYS={max_days}",
+   125→                asset=hostname, points_deducted=4,
+   126→                remediation="Set PASS_MAX_DAYS=90 in /etc/login.defs",
+   127→            ))
+   128→
+   129→    # Check minimum password length
+   130→    code, out = _run("cat /etc/security/pwquality.conf 2>/dev/null || cat /etc/pam.d/common-password 2>/dev/null")
+   131→    if code == 0 and out:
+   132→        if "minlen" not in out.lower() and "pam_pwquality" not in out and "pam_cracklib" not in out:
+   133→            findings.append(Finding(
+   134→                title="No password complexity requirements configured",
+   135→                severity="medium", category="auth_policy",
+   136→                module="doctor",
+   137→                description="No minimum password length or complexity requirements found.",
+   138→                evidence="pwquality.conf not configured",
+   139→                asset=hostname, points_deducted=5,
+   140→                remediation="Configure /etc/security/pwquality.conf: minlen=12 dcredit=-1 ucredit=-1 ocredit=-1 lcredit=-1",
+   141→            ))
+   142→
+   143→    return findings
+   144→
+   145→
+   146→def _check_disk_encryption() -> List[Finding]:
+   147→    """Check if disk encryption is active."""
+   148→    findings: List[Finding] = []
+   149→    hostname = _hostname()
+   150→
+   151→    # Windows: check BitLocker
+   152→    if _is_windows():
+   153→        code, out = _run('manage-bde -status C: 2>NUL')
+   154→        if code == 0 and out and "Percentage Encrypted" in out:
+   155→            pct_match = re.search(r'Percentage Encrypted[:\s]+(\d+)%', out)
+   156→            if pct_match and int(pct_match.group(1)) > 0:
+   157→                return findings  # BitLocker is active
+   158→        findings.append(Finding(
+   159→            title="No disk encryption detected",
+   160→            severity="medium", category="disk_security",
+   161→            module="doctor",
+   162→            description="No BitLocker encryption found on the system drive. Laptop data is at risk if stolen.",
+   163→            evidence="BitLocker not active or not detected",
+   164→            asset=hostname, points_deducted=5,
+   165→            remediation="Enable BitLocker: Settings > System > BitLocker or manage-bde -on C:",
+   166→        ))
+   167→        return findings
+   168→
+   169→    # macOS: check FileVault
+   170→    if _is_macos():
+   171→        code, out = _run("fdesetup status 2>/dev/null")
+   172→        if code == 0 and "On" in (out or ""):
+   173→            return findings  # FileVault is active
+   174→        findings.append(Finding(
+   175→            title="No disk encryption detected",
+   176→            severity="medium", category="disk_security",
+   177→            module="doctor",
+   178→            description="No FileVault encryption found. Laptop data is at risk if stolen.",
+   179→            evidence="FileVault not active",
+   180→            asset=hostname, points_deducted=5,
+   181→            remediation="Enable FileVault: System Preferences > Security & Privacy > FileVault",
+   182→        ))
+   183→        return findings
+   184→
+   185→    # Linux: check LUKS / ecryptfs
+   186→    code, out = _run("lsblk -o NAME,FSTYPE,TYPE -n 2>/dev/null | grep -i crypt")
+   187→    if code != 0 or not out:
+   188→        # Check for ecryptfs
+   189→        code2, out2 = _run("mount | grep -i ecryptfs")
+   190→        if code2 != 0 or not out2:
+   191→            findings.append(Finding(
+   192→                title="No disk encryption detected",
+   193→                severity="medium", category="disk_security",
+   194→                module="doctor",
+   195→                description="No LUKS or ecryptfs encryption found. Laptop data is at risk if stolen.",
+   196→                evidence="No encrypted volumes found",
+   197→                asset=hostname, points_deducted=5,
+   198→                remediation="Enable full disk encryption: cryptsetup luksFormat /dev/sdX",
+   199→            ))
+   200→    return findings
+   201→
+   202→
+   203→def _check_auto_lock() -> List[Finding]:
+   204→    """Check screen lock / auto-lock settings."""
+   205→    findings: List[Finding] = []
+   206→    hostname = _hostname()
+   207→
+   208→    # Windows: check screen saver lock via registry
+   209→    if _is_windows():
+   210→        code, out = _run('reg query "HKCU\\Control Panel\\Desktop" /v ScreenSaveActive 2>NUL')
+   211→        if code == 0 and out:
+   212→            if "REG_SZ" in out and "1" in out.split("REG_SZ")[-1]:
+   213→                return findings  # Screen saver with lock is active
+   214→        findings.append(Finding(
+   215→            title="Screen lock may not be enabled",
+   216→            severity="medium", category="physical_security",
+   217→            module="doctor",
+   218→            description="Windows screen lock does not appear to be active. Your machine can be accessed when unattended.",
+   219→            evidence="ScreenSaveActive not set to 1",
+   220→            asset=hostname, points_deducted=5,
+   221→            remediation="Enable screen lock: Settings > Personalization > Lock screen > Screen timeout",
+   222→        ))
+   223→        return findings
+   224→
+   225→    # macOS: check screen saver idle time
+   226→    if _is_macos():
+   227→        code, out = _run("defaults read com.apple.screensaver idleTime 2>/dev/null")
+   228→        if code == 0 and out.strip():
+   229→            try:
+   230→                seconds = int(out.strip())
+   231→                if seconds > 0 and seconds <= 300:  # 5 minutes or less
+   232→                    return findings  # Auto-lock is configured
+   233→            except ValueError:
+   234→                pass
+   235→        findings.append(Finding(
+   236→            title="Screen lock may not be configured",
+   237→            severity="medium", category="physical_security",
+   238→            module="doctor",
+   239→            description="macOS screen lock idle time is not set or too long. Your machine can be accessed when unattended.",
+   240→            evidence=f"idleTime: {out.strip() if code == 0 else 'not set'}",
+   241→            asset=hostname, points_deducted=5,
+   242→            remediation="Enable screen lock: System Preferences > Desktop & Screen Saver > Start After",
+   243→        ))
+   244→        return findings
+   245→
+   246→    # Linux: check gnome screensaver or xautolock
+   247→    code, out = _run("gsettings get org.gnome.desktop.screensaver lock-enabled 2>/dev/null")
+   248→    if code == 0:
+   249→        if "false" in out.lower():
+   250→            findings.append(Finding(
+   251→                title="Screen lock is disabled",
+   252→                severity="medium", category="physical_security",
+   253→                module="doctor",
+   254→                description="GNOME screen lock is disabled. Your machine can be accessed when unattended.",
+   255→                evidence="lock-enabled: false",
+   256→                asset=hostname, points_deducted=5,
+   257→                remediation="Enable screen lock: gsettings set org.gnome.desktop.screensaver lock-enabled true",
+   258→            ))
+   259→    else:
+   260→        # Check xautolock or xscreensaver
+   261→        code2, out2 = _run("pgrep -x xautolock 2>/dev/null || pgrep -x xscreensaver 2>/dev/null")
+   262→        if code2 != 0 or not out2:
+   263→            findings.append(Finding(
+   264→                title="No auto-lock mechanism detected",
+   265→                severity="low", category="physical_security",
+   266→                module="doctor",
+   267→                description="No screen locker daemon (xautolock/xscreensaver) is running.",
+   268→                evidence="No lock process found",
+   269→                asset=hostname, points_deducted=3,
+   270→                remediation="Install xautolock: sudo apt install xautolock && xautolock -time 5 -locker lock",
+   271→            ))
+   272→
+   273→    return findings
+   274→
+   275→
+   276→def _check_antivirus() -> List[Finding]:
+   277→    """Check for antivirus / malware protection."""
+   278→    findings: List[Finding] = []
+   279→    hostname = _hostname()
+   280→
+   281→    # Windows: check Windows Defender and common third-party AV
+   282→    if _is_windows():
+   283→        found_av = []
+   284→        code, out = _run('sc query WinDefend 2>NUL')
+   285→        if code == 0 and "RUNNING" in out:
+   286→            found_av.append("Windows Defender")
+   287→        # Check for common third-party AV processes
+   288→        third_party_av = [
+   289→            ("Malwarebytes", "where mbamtray 2>NUL"),
+   290→            ("Kaspersky", "where avpui 2>NUL"),
+   291→            ("Norton", "where ccSvcHst 2>NUL"),
+   292→            ("Sophos", "where SophosUI 2>NUL"),
+   293→        ]
+   294→        for name, cmd in third_party_av:
+   295→            c, _ = _run(cmd)
+   296→            if c == 0:
+   297→                found_av.append(name)
+   298→        if found_av:
+   299→            findings.append(Finding(
+   300→                title=f"Security tools installed: {', '.join(found_av)}",
+   301→                severity="info", category="malware_protection",
+   302→                module="doctor",
+   303→                description=f"Found security tools: {', '.join(found_av)}.",
+   304→                evidence=str(found_av),
+   305→                asset=hostname, points_deducted=0,
+   306→                remediation="",
+   307→            ))
+   308→        else:
+   309→            findings.append(Finding(
+   310→                title="No antivirus or security tools detected",
+   311→                severity="medium", category="malware_protection",
+   312→                module="doctor",
+   313→                description="No Windows Defender or third-party antivirus found. Your system has no malware detection.",
+   314→                evidence="No AV tools found",
+   315→                asset=hostname, points_deducted=5,
+   316→                remediation="Enable Windows Defender: Settings > Update & Security > Windows Security",
+   317→            ))
+   318→        return findings
+   319→
+   320→    # Non-Windows: check common Linux AV tools
+   321→    av_tools = [
+   322→        ("clamav", "clamdscan --version"),
+   323→        ("rkhunter", "rkhunter --version"),
+   324→        ("chkrootkit", "chkrootkit -V 2>/dev/null | head -1"),
+   325→        ("lynis", "lynis version 2>/dev/null"),
+   326→        ("fail2ban", "fail2ban-client --version"),
+   327→    ]
+   328→
+   329→    found_av = []
+   330→    for name, cmd in av_tools:
+   331→        code, out = _run(cmd)
+   332→        if code == 0 and out:
+   333→            found_av.append(name)
+   334→
+   335→    if found_av:
+   336→        findings.append(Finding(
+   337→            title=f"Security tools installed: {', '.join(found_av)}",
+   338→            severity="info", category="malware_protection",
+   339→            module="doctor",
+   340→            description=f"Found security tools: {', '.join(found_av)}.",
+   341→            evidence=str(found_av),
+   342→            asset=hostname, points_deducted=0,
+   343→            remediation="",
+   344→        ))
+   345→    else:
+   346→        findings.append(Finding(
+   347→            title="No antivirus or security tools detected",
+   348→            severity="medium", category="malware_protection",
+   349→            module="doctor",
+   350→            description="No ClamAV, rkhunter, chkrootkit, Lynis, or fail2ban found. Your system has no malware detection.",
+   351→            evidence="No AV tools found",
+   352→            asset=hostname, points_deducted=5,
+   353→            remediation="Install security tools: sudo apt install clamav rkhunter lynis fail2ban",
+   354→        ))
+   355→
+   356→    return findings
+   357→
+   358→
+   359→def _check_system_updates() -> List[Finding]:
+   360→    """Check for pending system updates."""
+   361→    findings: List[Finding] = []
+   362→    hostname = _hostname()
+   363→
+   364→    # Windows: check last update date via PowerShell
+   365→    if _is_windows():
+   366→        code, out = _run('powershell -command "(Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1).InstalledOn" 2>NUL')
+   367→        if code == 0 and out.strip():
+   368→            findings.append(Finding(
+   369→                title=f"Last Windows update: {out.strip()[:30]}",
+   370→                severity="info", category="updates",
+   371→                module="doctor",
+   372→                description=f"Last system update was installed on {out.strip()[:30]}. Check Windows Update regularly.",
+   373→                evidence=out.strip()[:50],
+   374→                asset=hostname, points_deducted=0,
+   375→                remediation="Update Windows: Settings > Windows Update",
+   376→            ))
+   377→        else:
+   378→            findings.append(Finding(
+   379→                title="Could not determine last Windows update",
+   380→                severity="low", category="updates",
+   381→                module="doctor",
+   382→                description="Unable to check when Windows was last updated.",
+   383→                evidence="Get-HotFix failed",
+   384→                asset=hostname, points_deducted=2,
+   385→                remediation="Update Windows: Settings > Windows Update",
+   386→            ))
+   387→        return findings
+   388→
+   389→    # macOS: check for pending updates
+   390→    if _is_macos():
+   391→        code, out = _run("softwareupdate -l 2>&1 | grep -c 'restart' 2>/dev/null")
+   392→        if code == 0 and out.strip():
+   393→            try:
+   394→                count = int(out.strip())
+   395→                if count > 0:
+   396→                    findings.append(Finding(
+   397→                        title=f"{count} pending macOS update(s) requiring restart",
+   398→                        severity="medium", category="updates",
+   399→                        module="doctor",
+   400→                        description=f"{count} macOS updates are available and require a restart. Unpatched software is a common attack vector.",
+   401→                        evidence=f"{count} updates pending",
+   402→                        asset=hostname, points_deducted=3 + count,
+   403→                        remediation="Update macOS: System Preferences > Software Update",
+   404→                    ))
+   405→            except ValueError:
+   406→                pass
+   407→        return findings
+   408→
+   409→    # Linux: Ubuntu/Debian
+   410→    code, out = _run("apt list --upgradable 2>/dev/null | grep -c 'upgradable'")
+   411→    if code == 0 and out.strip():
+   412→        try:
+   413→            count = int(out.strip())
+   414→            if count > 0:
+   415→                sev = "high" if count > 20 else ("medium" if count > 5 else "low")
+   416→                findings.append(Finding(
+   417→                    title=f"{count} pending system updates",
+   418→                    severity=sev, category="updates",
+   419→                    module="doctor",
+   420→                    description=f"{count} packages have updates available. Unpatched packages are a common attack vector.",
+   421→                    evidence=f"{count} upgradable packages",
+   422→                    asset=hostname, points_deducted=3 + count,
+   423→                    remediation="Update system: sudo apt update && sudo apt upgrade -y",
+   424→                ))
+   425→        except ValueError:
+   426→            pass
+   427→
+   428→    return findings
+   429→
+   430→
+   431→def _check_shared_memory() -> List[Finding]:
+   432→    """Check /dev/shm is mounted noexec (Linux only)."""
+   433→    findings: List[Finding] = []
+   434→    hostname = _hostname()
+   435→
+   436→    if _is_windows() or _is_macos():
+   437→        return findings  # Not applicable on Windows/macOS
+   438→
+   439→    code, out = _run("mount | grep /dev/shm")
+   440→    if code == 0 and out:
+   441→        if "noexec" not in out:
+   442→            findings.append(Finding(
+   443→                title="/dev/shm is not mounted with noexec",
+   444→                severity="medium", category="hardening",
+   445→                module="doctor",
+   446→                description="/dev/shm allows execution of files. Attackers can use this to run malware from shared memory.",
+   447→                evidence=out.strip()[:200],
+   448→                asset=hostname, points_deducted=5,
+   449→                remediation="Add to /etc/fstab: tmpfs /dev/shm tmpfs defaults,noexec,nosuid 0 0",
+   450→            ))
+   451→
+   452→    return findings
+   453→
+   454→
+   455→def _check_core_dumps() -> List[Finding]:
+   456→    """Check if core dumps are restricted (Linux only)."""
+   457→    findings: List[Finding] = []
+   458→    hostname = _hostname()
+   459→
+   460→    if _is_windows():
+   461→        # Windows: check via WMI (Windows Error Reporting / crash dumps)
+   462→        code, out = _run('reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting" /v Disabled 2>NUL')
+   463→        if code == 0 and "REG_DWORD" in out and "0x1" in out:
+   464→            findings.append(Finding(
+   465→                title="Windows Error Reporting is enabled",
+   466→                severity="info", category="hardening",
+   467→                module="doctor",
+   468→                description="Windows Error Reporting may write crash dumps containing sensitive data.",
+   469→                evidence="WER not disabled",
+   470→                asset=hostname, points_deducted=1,
+   471→                remediation="Disable WER if crash dumps are a concern: Settings > Privacy > Diagnostics & feedback",
+   472→            ))
+   473→        return findings
+   474→
+   475→    if _is_macos():
+   476→        return findings  # macOS core dump handling is internal
+   477→
+   478→    code, out = _run("ulimit -c")
+   479→    if code == 0 and out.strip() not in ("0", "unlimited"):
+   480→        pass  # some limit set
+   481→    elif code == 0 and out.strip() == "unlimited":
+   482→        findings.append(Finding(
+   483→            title="Core dumps are unlimited",
+   484→            severity="low", category="hardening",
+   485→            module="doctor",
+   486→            description="Core dumps can contain sensitive data from memory (keys, passwords, etc.).",
+   487→            evidence="ulimit -c: unlimited",
+   488→            asset=hostname, points_deducted=2,
+   489→            remediation="Set ulimit -c 0 or add 'fs.suid_dumpable=0' to /etc/sysctl.conf",
+   490→        ))
+   491→
+   492→    return findings
+   493→
+   494→
+   495→def _check_browser_security() -> List[Finding]:
+   496→    """Check for browser security extensions/configs."""
+   497→    findings: List[Finding] = []
+   498→    hostname = _hostname()
+   499→
+   500→    # This is informational - we can check if common privacy/security browsers are installed
+   501→    browsers_found = []
+   502→    browser_checks = []
+   503→    if _is_windows():
+   504→        browser_checks = [
+   505→            ("firefox", "where firefox 2>NUL"),
+   506→            ("chrome", "where chrome 2>NUL"),
+   507→            ("brave", "where brave 2>NUL"),
+   508→        ]
+   509→    else:
+   510→        browser_checks = [
+   511→            ("firefox", "which firefox 2>/dev/null"),
+   512→            ("chromium", "which chromium-browser 2>/dev/null || which chromium 2>/dev/null"),
+   513→            ("brave", "which brave-browser 2>/dev/null"),
+   514→        ]
+   515→
+   516→    for name, cmd in browser_checks:
+   517→        code, _ = _run(cmd)
+   518→        if code == 0:
+   519→            browsers_found.append(name)
+   520→
+   521→    if browsers_found:
+   522→        findings.append(Finding(
+   523→            title=f"Browsers installed: {', '.join(browsers_found)}",
+   524→            severity="info", category="browser_security",
+   525→            module="doctor",
+   526→            description="Consider installing privacy extensions: uBlock Origin, HTTPS Everywhere, Privacy Badger.",
+   527→            evidence=str(browsers_found),
+   528→            asset=hostname, points_deducted=0,
+   529→            remediation="Install security extensions: uBlock Origin, Privacy Badger, HTTPS Everywhere",
+   530→        ))
+   531→
+   532→    return findings
+   533→
+   534→
+   535→# ---------------------------------------------------------------------------
+   536→# NEW CHECK 1: NTP Time Sync
+   537→# ---------------------------------------------------------------------------
+   538→
+   539→def _check_ntp_sync() -> List[Finding]:
+   540→    """Check if system clock is synchronized via NTP."""
+   541→    findings: List[Finding] = []
+   542→    hostname = _hostname()
+   543→
+   544→    if _is_windows():
+   545→        # Windows: use w32tm
+   546→        code, out = _run('w32tm /query /status 2>NUL')
+   547→        if code == 0 and out:
+   548→            # Look for "Source" and "Last Successful Sync" lines
+   549→            source = ""
+   550→            synced = False
+   551→            for line in out.splitlines():
+   552→                line_stripped = line.strip()
+   553→                if "Source:" in line_stripped:
+   554→                    source = line_stripped.split("Source:", 1)[1].strip()
+   555→                if "Last Successful Sync Time" in line_stripped:
+   556→                    # Check if sync happened recently (not "(none)" or very old)
+   557→                    sync_val = line_stripped.split(":", 1)[1].strip().lower() if ":" in line_stripped else ""
+   558→                    if sync_val and sync_val not in ("(none)", ""):
+   559→                        synced = True
+   560→            if not source or source.lower() in ("local cmos clock", "free-running system clock"):
+   561→                findings.append(Finding(
+   562→                    title="Windows NTP not configured (using local CMOS clock)",
+   563→                    severity="medium", category="ntp",
+   564→                    module="doctor",
+   565→                    description="System is not synchronizing with an NTP server. Time drift can break certificate validation and log correlation.",
+   566→                    evidence=f"NTP Source: {source or 'not found'}",
+   567→                    asset=hostname, points_deducted=5,
+   568→                    remediation="Configure NTP: w32tm /config /manualpeerlist:pool.ntp.org /syncfromflags:manual /reliable:yes /update && w32tm /resync",
+   569→                ))
+   570→            elif not synced:
+   571→                findings.append(Finding(
+   572→                    title="Windows NTP configured but no recent sync",
+   573→                    severity="low", category="ntp",
+   574→                    module="doctor",
+   575→                    description="NTP source is configured but clock has not synchronized recently.",
+   576→                    evidence=f"Source: {source}",
+   577→                    asset=hostname, points_deducted=3,
+   578→                    remediation="Force NTP sync: w32tm /resync",
+   579→                ))
+   580→            else:
+   581→                findings.append(Finding(
+   582→                    title=f"Windows NTP synchronized (source: {source})",
+   583→                    severity="info", category="ntp",
+   584→                    module="doctor",
+   585→                    description="System clock is synchronized via NTP.",
+   586→                    evidence=f"Source: {source}",
+   587→                    asset=hostname, points_deducted=0,
+   588→                    remediation="",
+   589→                ))
+   590→        else:
+   591→            findings.append(Finding(
+   592→                title="Could not query Windows NTP status",
+   593→                severity="low", category="ntp",
+   594→                module="doctor",
+   595→                description="Unable to query Windows Time service.",
+   596→                evidence="w32tm query failed",
+   597→                asset=hostname, points_deducted=2,
+   598→                remediation="Ensure Windows Time service is running: sc query w32time",
+   599→            ))
+   600→        return findings
+   601→
+   602→    if _is_macos():
+   603→        # macOS: use systemsetup
+   604→        code, out = _run("systemsetup -getusingnetworktime 2>/dev/null")
+   605→        if code == 0:
+   606→            if "on" in out.lower():
+   607→                # Get the NTP server
+   608→                code2, out2 = _run("systemsetup -getnetworktimeserver 2>/dev/null")
+   609→                server = out2.strip().split(":", 1)[1].strip() if code2 == 0 and ":" in out2 else "unknown"
+   610→                findings.append(Finding(
+   611→                    title=f"macOS NTP enabled (server: {server})",
+   612→                    severity="info", category="ntp",
+   613→                    module="doctor",
+   614→                    description="System clock is set to synchronize via network time.",
+   615→                    evidence=f"Server: {server}",
+   616→                    asset=hostname, points_deducted=0,
+   617→                    remediation="",
+   618→                ))
+   619→            else:
+   620→                findings.append(Finding(
+   621→                    title="macOS network time synchronization is OFF",
+   622→                    severity="medium", category="ntp",
+   623→                    module="doctor",
+   624→                    description="macOS is not synchronizing clock via network time. Time drift can break certificate validation.",
+   625→                    evidence=out.strip()[:200],
+   626→                    asset=hostname, points_deducted=5,
+   627→                    remediation="Enable NTP: sudo systemsetup -setusingnetworktime on -setnetworktimeserver time.apple.com",
+   628→                ))
+   629→        return findings
+   630→
+   631→    # Linux: use timedatectl
+   632→    code, out = _run("timedatectl status 2>/dev/null")
+   633→    if code == 0 and out:
+   634→        synced = False
+   635→        ntp_service = ""
+   636→        for line in out.splitlines():
+   637→            line_stripped = line.strip()
+   638→            if "synchronized:" in line_stripped and "yes" in line_stripped.lower():
+   639→                synced = True
+   640→            if "NTP service:" in line_stripped:
+   641→                ntp_service = line_stripped.split(":", 1)[1].strip() if ":" in line_stripped else ""
+   642→        if not synced:
+   643→            findings.append(Finding(
+   644→                title="System clock is NOT synchronized via NTP",
+   645→                severity="medium", category="ntp",
+   646→                module="doctor",
+   647→                description="The system clock is not synchronized. Time drift can break TLS certificate validation and log forensics.",
+   648→                evidence=out.strip()[:200],
+   649→                asset=hostname, points_deducted=5,
+   650→                remediation="Enable NTP: sudo timedatectl set-ntp true",
+   651→            ))
+   652→        else:
+   653→            findings.append(Finding(
+   654→                title=f"System clock is synchronized via NTP (service: {ntp_service})",
+   655→                severity="info", category="ntp",
+   656→                module="doctor",
+   657→                description="System clock is synchronized via NTP.",
+   658→                evidence=f"NTP service: {ntp_service}",
+   659→                asset=hostname, points_deducted=0,
+   660→                remediation="",
+   661→            ))
+   662→    return findings
+   663→
+   664→
+   665→# ---------------------------------------------------------------------------
+   666→# NEW CHECK 2: Firewall Deep Audit
+   667→# ---------------------------------------------------------------------------
+   668→
+   669→def _check_firewall_deep() -> List[Finding]:
+   670→    """Deep audit of firewall rules: default policy, blocked inbound ports."""
+   671→    findings: List[Finding] = []
+   672→    hostname = _hostname()
+   673→
+   674→    if _is_windows():
+   675→        # Check default inbound/outbound action
+   676→        code, out = _run('netsh advfirewall show currentprofile 2>NUL')
+   677→        if code == 0 and out:
+   678→            inbound_action = ""
+   679→            outbound_action = ""
+   680→            for line in out.splitlines():
+   681→                line_l = line.strip().lower()
+   682→                if "inbound" in line_l and ("allow" in line_l or "block" in line_l):
+   683→                    inbound_action = line.strip()
+   684→                if "outbound" in line_l and ("allow" in line_l or "block" in line_l):
+   685→                    outbound_action = line.strip()
+   686→            if "allow" in inbound_action.lower():
+   687→                findings.append(Finding(
+   688→                    title="Windows Firewall default inbound policy: ALLOW",
+   689→                    severity="high", category="firewall_deep",
+   690→                    module="doctor",
+   691→                    description="Default inbound firewall action is Allow. Unconfigured inbound connections are permitted.",
+   692→                    evidence=inbound_action,
+   693→                    asset=hostname, points_deducted=8,
+   694→                    remediation="Set default inbound to Block: netsh advfirewall set currentprofile firewallpolicy blockinbound,allowoutbound",
+   695→                ))
+   696→            else:
+   697→                findings.append(Finding(
+   698→                    title=f"Windows Firewall default inbound policy: BLOCK",
+   699→                    severity="info", category="firewall_deep",
+   700→                    module="doctor",
+   701→                    description="Default inbound firewall action is Block (secure).",
+   702→                    evidence=inbound_action,
+   703→                    asset=hostname, points_deducted=0,
+   704→                    remediation="",
+   705→                ))
+   706→
+   707→        # Check for specific port rules allowing inbound
+   708→        code2, out2 = _run('netsh advfirewall firewall show rule name=all dir=in 2>NUL | findstr /i "Rule Name LocalPort"')
+   709→        if code2 == 0 and out2:
+   710→            lines = out2.splitlines()
+   711→            allowed_inbound_ports = []
+   712→            current_rule = ""
+   713→            for line in lines:
+   714→                if "Rule Name" in line:
+   715→                    current_rule = line.strip()
+   716→                elif "LocalPort" in line:
+   717→                    port = line.strip().split(":", 1)[1].strip() if ":" in line else ""
+   718→                    if port:
+   719→                        allowed_inbound_ports.append(f"{port} ({current_rule})")
+   720→            if len(allowed_inbound_ports) > 10:
+   721→                findings.append(Finding(
+   722→                    title=f"{len(allowed_inbound_ports)} inbound firewall rules with open ports",
+   723→                    severity="medium", category="firewall_deep",
+   724→                    module="doctor",
+   725→                    description=f"A large number of inbound port rules increases attack surface. Review these rules.",
+   726→                    evidence="; ".join(allowed_inbound_ports[:8]),
+   727→                    asset=hostname, points_deducted=5,
+   728→                    remediation="Review and remove unnecessary inbound rules: Windows Defender Firewall > Inbound Rules",
+   729→                ))
+   730→        return findings
+   731→
+   732→    if _is_macos():
+   733→        # macOS: check pf (packet filter) rules
+   734→        code, out = _run("sudo pfctl -sr 2>/dev/null")
+   735→        if code == 0 and out:
+   736→            block_rules = [l for l in out.splitlines() if "block" in l.lower()]
+   737→            if not block_rules:
+   738→                findings.append(Finding(
+   739→                    title="macOS pf has no block rules",
+   740→                    severity="medium", category="firewall_deep",
+   741→                    module="doctor",
+   742→                    description="macOS packet filter (pf) is loaded but has no block rules. All traffic is permitted by default.",
+   743→                    evidence="No block rules in pf",
+   744→                    asset=hostname, points_deducted=5,
+   745→                    remediation="Configure pf with block rules: /etc/pf.conf",
+   746→                ))
+   747→            else:
+   748→                findings.append(Finding(
+   749→                    title=f"macOS pf has {len(block_rules)} block rule(s)",
+   750→                    severity="info", category="firewall_deep",
+   751→                    module="doctor",
+   752→                    description="macOS packet filter has block rules configured.",
+   753→                    evidence=f"{len(block_rules)} block rules",
+   754→                    asset=hostname, points_deducted=0,
+   755→                    remediation="",
+   756→                ))
+   757→        return findings
+   758→
+   759→    # Linux: deep audit
+   760→    # Check UFW default policies
+   761→    code, out = _run("ufw status verbose 2>/dev/null")
+   762→    if code == 0 and "Status: active" in out:
+   763→        has_default_deny_in = "Default: deny (incoming)" in out
+   764→        has_default_deny_out = "Default: deny (outgoing)" in out
+   765→        if not has_default_deny_in:
+   766→            findings.append(Finding(
+   767→                title="UFW default incoming policy is NOT deny",
+   768→                severity="high", category="firewall_deep",
+   769→                module="doctor",
+   770→                description="UFW is active but the default incoming policy is not 'deny'. Unsolicited inbound connections may be allowed.",
+   771→                evidence=out[:200],
+   772→                asset=hostname, points_deducted=8,
+   773→                remediation="Set default deny: sudo ufw default deny incoming",
+   774→            ))
+   775→        else:
+   776→            findings.append(Finding(
+   777→                title="UFW default incoming policy: deny (good)",
+   778→                severity="info", category="firewall_deep",
+   779→                module="doctor",
+   780→                description="UFW default incoming policy is deny.",
+   781→                evidence="Default: deny (incoming)",
+   782→                asset=hostname, points_deducted=0,
+   783→                remediation="",
+   784→            ))
+   785→        return findings
+   786→
+   787→    # iptables deep audit
+   788→    code, out = _run("iptables -L INPUT -n --line-numbers 2>/dev/null")
+   789→    if code == 0 and out:
+   790→        # Check default INPUT policy
+   791→        policy_match = re.search(r'Chain INPUT \(policy (\w+)', out)
+   792→        if policy_match:
+   793→            policy = policy_match.group(1)
+   794→            if policy == "ACCEPT":
+   795→                # Count DROP/REJECT rules
+   796→                drop_count = len([l for l in out.splitlines() if "DROP" in l or "REJECT" in l])
+   797→                if drop_count == 0:
+   798→                    findings.append(Finding(
+   799→                        title="iptables INPUT policy is ACCEPT with no DROP rules",
+   800→                        severity="high", category="firewall_deep",
+   801→                        module="doctor",
+   802→                        description="iptables INPUT chain has a default ACCEPT policy and no DROP/REJECT rules. All inbound traffic is allowed.",
+   803→                        evidence=out[:200],
+   804→                        asset=hostname, points_deducted=10,
+   805→                        remediation="Set default DROP: sudo iptables -P INPUT DROP && add rules for needed traffic",
+   806→                    ))
+   807→                else:
+   808→                    findings.append(Finding(
+   809→                        title=f"iptables INPUT policy ACCEPT but {drop_count} DROP/REJECT rule(s) present",
+   810→                        severity="medium", category="firewall_deep",
+   811→                        module="doctor",
+   812→                        description="Default policy is ACCEPT but some filtering rules exist. Consider changing default to DROP.",
+   813→                        evidence=f"Policy: ACCEPT, {drop_count} drop rules",
+   814→                        asset=hostname, points_deducted=4,
+   815→                        remediation="Set default DROP: sudo iptables -P INPUT DROP",
+   816→                    ))
+   817→            else:
+   818→                findings.append(Finding(
+   819→                    title=f"iptables INPUT policy is {policy} (good)",
+   820→                    severity="info", category="firewall_deep",
+   821→                    module="doctor",
+   822→                    description="iptables INPUT chain has a restrictive default policy.",
+   823→                    evidence=f"Policy: {policy}",
+   824→                    asset=hostname, points_deducted=0,
+   825→                    remediation="",
+   826→                ))
+   827→    return findings
+   828→
+   829→
+   830→# ---------------------------------------------------------------------------
+   831→# NEW CHECK 3: Audit Logging
+   832→# ---------------------------------------------------------------------------
+   833→
+   834→def _check_audit_logging() -> List[Finding]:
+   835→    """Check if audit/logging is enabled."""
+   836→    findings: List[Finding] = []
+   837→    hostname = _hostname()
+   838→
+   839→    if _is_windows():
+   840→        # Check Windows Event Log service
+   841→        code, out = _run('sc query EventLog 2>NUL')
+   842→        if code != 0 or "RUNNING" not in out:
+   843→            findings.append(Finding(
+   844→                title="Windows Event Log service is not running",
+   845→                severity="high", category="audit_logging",
+   846→                module="doctor",
+   847→                description="Windows Event Log service is not running. Security events and audit logs are not being recorded.",
+   848→                evidence="EventLog service not RUNNING",
+   849→                asset=hostname, points_deducted=8,
+   850→                remediation="Start Event Log: sc start EventLog. Set to Automatic: sc config EventLog start= auto",
+   851→            ))
+   852→        else:
+   853→            # Check if Security audit log has events
+   854→            code2, out2 = _run('wevtutil qe Security /c:1 /rd:true /f:text 2>NUL | findstr "Event ID"')
+   855→            if code2 == 0 and out2:
+   856→                findings.append(Finding(
+   857→                    title="Windows Event Log is active (Security log has events)",
+   858→                    severity="info", category="audit_logging",
+   859→                    module="doctor",
+   860→                    description="Windows Event Log is running and recording security events.",
+   861→                    evidence="Security log active",
+   862→                    asset=hostname, points_deducted=0,
+   863→                    remediation="",
+   864→                ))
+   865→            else:
+   866→                findings.append(Finding(
+   867→                    title="Windows Event Log running but Security log may be empty",
+   868→                    severity="medium", category="audit_logging",
+   869→                    module="doctor",
+   870→                    description="Event Log service is running but the Security audit log appears empty. Audit policy may not be configured.",
+   871→                    evidence="No events found in Security log",
+   872→                    asset=hostname, points_deducted=5,
+   873→                    remediation="Configure audit policy: secpol.msc > Local Policies > Audit Policy. Enable: Logon, Privilege Use, Object Access.",
+   874→                ))
+   875→        return findings
+   876→
+   877→    if _is_macos():
+   878→        # macOS: check unified logging / ASL
+   879→        # Check if logging is active by looking at recent log entries
+   880→        code, out = _run("log show --last 1m --style compact 2>/dev/null | wc -l")
+   881→        if code == 0 and out.strip():
+   882→            try:
+   883→                count = int(out.strip())
+   884→                if count > 0:
+   885→                    findings.append(Finding(
+   886→                        title=f"macOS unified logging is active ({count} recent entries)",
+   887→                        severity="info", category="audit_logging",
+   888→                        module="doctor",
+   889→                        description="macOS unified logging is recording events.",
+   890→                        evidence=f"{count} log entries in last minute",
+   891→                        asset=hostname, points_deducted=0,
+   892→                        remediation="",
+   893→                    ))
+   894→                else:
+   895→                    findings.append(Finding(
+   896→                        title="macOS unified logging appears inactive",
+   897→                        severity="medium", category="audit_logging",
+   898→                        module="doctor",
+   899→                        description="No log entries found in the last minute. Unified logging may be disabled or misconfigured.",
+   900→                        evidence="0 log entries in last minute",
+   901→                        asset=hostname, points_deducted=5,
+   902→                        remediation="Check logging configuration: sudo log config --status",
+   903→                    ))
+   904→            except ValueError:
+   905→                pass
+   906→        return findings
+   907→
+   908→    # Linux: check rsyslog / journald / auditd
+   909→    logging_found = []
+   910→
+   911→    # Check rsyslog
+   912→    code, out = _run("systemctl is-active rsyslog 2>/dev/null")
+   913→    if code == 0 and out.strip() == "active":
+   914→        logging_found.append("rsyslog")
+   915→
+   916→    # Check systemd-journald
+   917→    code, out = _run("systemctl is-active systemd-journald 2>/dev/null")
+   918→    if code == 0 and out.strip() == "active":
+   919→        logging_found.append("systemd-journald")
+   920→
+   921→    # Check auditd
+   922→    code, out = _run("systemctl is-active auditd 2>/dev/null")
+   923→    if code == 0 and out.strip() == "active":
+   924→        logging_found.append("auditd")
+   925→
+   926→    if not logging_found:
+   927→        findings.append(Finding(
+   928→            title="No logging services detected (rsyslog/journald/auditd)",
+   929→            severity="high", category="audit_logging",
+   930→            module="doctor",
+   931→            description="No standard logging services are running. Security events are not being recorded.",
+   932→            evidence="No active logging services found",
+   933→            asset=hostname, points_deducted=10,
+   934→            remediation="Install and enable logging: sudo apt install rsyslog auditd && sudo systemctl enable --now rsyslog auditd",
+   935→        ))
+   936→    else:
+   937→        # Check if auditd has rules
+   938→        if "auditd" in logging_found:
+   939→            code, out = _run("sudo auditctl -l 2>/dev/null")
+   940→            if code == 0 and not out.strip():
+   941→                findings.append(Finding(
+   942→                    title="auditd is running but has NO audit rules",
+   943→                    severity="medium", category="audit_logging",
+   944→                    module="doctor",
+   945→                    description="auditd is active but no audit rules are configured. It is not monitoring anything.",
+   946→                    evidence="auditctl -l returned empty",
+   947→                    asset=hostname, points_deducted=5,
+   948→                    remediation="Add audit rules: sudo auditctl -w /etc/passwd -p wa -k identity && sudo apt install auditd-rules",
+   949→                ))
+   950→        findings.append(Finding(
+   951→            title=f"Logging services active: {', '.join(logging_found)}",
+   952→            severity="info", category="audit_logging",
+   953→            module="doctor",
+   954→            description=f"Logging services are running: {', '.join(logging_found)}.",
+   955→            evidence=str(logging_found),
+   956→            asset=hostname, points_deducted=0,
+   957→            remediation="",
+   958→        ))
+   959→
+   960→    return findings
+   961→
+   962→
+   963→# ---------------------------------------------------------------------------
+   964→# NEW CHECK 4: UAC/Sudo Timeout
+   965→# ---------------------------------------------------------------------------
+   966→
+   967→def _check_uac_sudo_timeout() -> List[Finding]:
+   968→    """Check UAC prompt behavior (Windows) and sudo timestamp_timeout (Linux)."""
+   969→    findings: List[Finding] = []
+   970→    hostname = _hostname()
+   971→
+   972→    if _is_windows():
+   973→        # Check UAC Secure Desktop prompt setting
+   974→        code, out = _run('reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v PromptOnSecureDesktop 2>NUL')
+   975→        if code == 0 and out:
+   976→            match = re.search(r'REG_DWORD\s+0x([0-9a-fA-F]+)', out)
+   977→            if match:
+   978→                val = int(match.group(1), 16)
+   979→                if val == 0:
+   980→                    findings.append(Finding(
+   981→                        title="UAC Secure Desktop prompt is DISABLED",
+   982→                        severity="high", category="uac_sudo",
+   983→                        module="doctor",
+   984→                        description="UAC no longer dims the desktop when prompting. Malware can automate UAC prompts more easily.",
+   985→                        evidence=f"PromptOnSecureDesktop = {val}",
+   986→                        asset=hostname, points_deducted=8,
+   987→                        remediation="Enable Secure Desktop: Set PromptOnSecureDesktop to 1 in registry.",
+   988→                    ))
+   989→                else:
+   990→                    findings.append(Finding(
+   991→                        title="UAC Secure Desktop prompt is enabled",
+   992→                        severity="info", category="uac_sudo",
+   993→                        module="doctor",
+   994→                        description="UAC prompts on a secure desktop (dimmed), making automation more difficult.",
+   995→                        evidence="PromptOnSecureDesktop = 1",
+   996→                        asset=hostname, points_deducted=0,
+   997→                        remediation="",
+   998→                    ))
+   999→
+  1000→        # Check if admin approval mode is enabled for built-in admin
+  1001→        code2, out2 = _run('reg query "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System" /v FilterAdministratorToken 2>NUL')
+  1002→        if code2 == 0 and out2:
+  1003→            match2 = re.search(r'REG_DWORD\s+0x([0-9a-fA-F]+)', out2)
+  1004→            if match2 and int(match2.group(1), 16) == 0:
+  1005→                findings.append(Finding(
+  1006→                    title="Built-in Administrator account bypasses UAC",
+  1007→                    severity="medium", category="uac_sudo",
+  1008→                    module="doctor",
+  1009→                    description="The built-in Administrator account does not receive UAC prompts for admin operations.",
+  1010→                    evidence="FilterAdministratorToken = 0",
+  1011→                    asset=hostname, points_deducted=5,
+  1012→                    remediation="Enable FilterAdministratorToken: Set to 1 in registry. Avoid using the built-in admin account.",
+  1013→                ))
+  1014→        return findings
+  1015→
+  1016→    if _is_macos():
+  1017→        # macOS doesn't have a direct equivalent to sudo timestamp_timeout in the same way,
+  1018→        # but check if sudo is configured
+  1019→        code, out = _run("sudo -n true 2>&1")
+  1020→        if code == 0:
+  1021→            findings.append(Finding(
+  1022→                title="macOS: sudo can run without password (NOPASSWD)",
+  1023→                severity="high", category="uac_sudo",
+  1024→                module="doctor",
+  1025→                description="Current user can run sudo without a password. Any process running as this user can gain root access.",
+  1026→                evidence="sudo -n returned 0",
+  1027→                asset=hostname, points_deducted=10,
+  1028→                remediation="Remove NOPASSWD from /etc/sudoers. Use: visudo",
+  1029→            ))
+  1030→        return findings
+  1031→
+  1032→    # Linux: check sudo timestamp_timeout
+  1033→    code, out = _run("sudo cat /etc/sudoers 2>/dev/null | grep -i timestamp_timeout")
+  1034→    if code == 0 and out.strip():
+  1035→        match = re.search(r'timestamp_timeout=(\d+)', out)
+  1036→        if match:
+  1037→            try:
+  1038→                timeout_val = int(match.group(1))
+  1039→                if timeout_val <= 0:
+  1040→                    findings.append(Finding(
+  1041→                        title=f"sudo timestamp_timeout is {timeout_val} (always asks for password)",
+  1042→                        severity="info", category="uac_sudo",
+  1043→                        module="doctor",
+  1044→                        description="sudo always asks for password. This is the most secure setting.",
+  1045→                        evidence=f"timestamp_timeout={timeout_val}",
+  1046→                        asset=hostname, points_deducted=0,
+  1047→                        remediation="",
+  1048→                    ))
+  1049→                elif timeout_val <= 5:
+  1050→                    findings.append(Finding(
+  1051→                        title=f"sudo timestamp_timeout is {timeout_val} minutes (reasonable)",
+  1052→                        severity="info", category="uac_sudo",
+  1053→                        module="doctor",
+  1054→                        description=f"sudo remembers credentials for {timeout_val} minutes. This is a reasonable balance of security and usability.",
+  1055→                        evidence=f"timestamp_timeout={timeout_val}",
+  1056→                        asset=hostname, points_deducted=0,
+  1057→                        remediation="",
+  1058→                    ))
+  1059→                elif timeout_val > 15:
+  1060→                    findings.append(Finding(
+  1061→                        title=f"sudo timestamp_timeout is {timeout_val} minutes (too long)",
+  1062→                        severity="medium", category="uac_sudo",
+  1063→                        module="doctor",
+  1064→                        description=f"sudo remembers credentials for {timeout_val} minutes. An attacker with brief access has a long window for privilege escalation.",
+  1065→                        evidence=f"timestamp_timeout={timeout_val}",
+  1066→                        asset=hostname, points_deducted=5,
+  1067→                        remediation="Reduce timeout in /etc/sudoers: Defaults timestamp_timeout=5",
+  1068→                    ))
+  1069→            except ValueError:
+  1070→                pass
+  1071→    else:
+  1072→        # Default sudo timestamp_timeout is 15 minutes — check for NOPASSWD instead
+  1073→        code2, out2 = _run("sudo -n true 2>&1")
+  1074→        if code2 == 0:
+  1075→            findings.append(Finding(
+  1076→                title="sudo can run without password (NOPASSWD)",
+  1077→                severity="high", category="uac_sudo",
+  1078→                module="doctor",
+  1079→                description="Current user can run sudo without a password. Any process running as this user can gain root access.",
+  1080→                evidence="sudo -n returned 0",
+  1081→                asset=hostname, points_deducted=10,
+  1082→                remediation="Remove NOPASSWD from /etc/sudoers. Use: sudo visudo",
+  1083→            ))
+  1084→        else:
+  1085→            findings.append(Finding(
+  1086→                title="sudo timestamp_timeout using default (15 min)",
+  1087→                severity="low", category="uac_sudo",
+  1088→                module="doctor",
+  1089→                description="sudo uses the default 15-minute credential cache. Consider reducing it for better security.",
+  1090→                evidence="timestamp_timeout not explicitly set (default=15)",
+  1091→                asset=hostname, points_deducted=2,
+  1092→                remediation="Add to /etc/sudoers: Defaults timestamp_timeout=5",
+  1093→            ))
+  1094→
+  1095→    return findings
+  1096→
+  1097→
+  1098→# ---------------------------------------------------------------------------
+  1099→# NEW CHECK 5: SSH Key Strength
+  1100→# ---------------------------------------------------------------------------
+  1101→
+  1102→def _check_ssh_key_strength() -> List[Finding]:
+  1103→    """Check SSH key types and lengths in ~/.ssh/."""
+  1104→    findings: List[Finding] = []
+  1105→    hostname = _hostname()
+  1106→
+  1107→    ssh_dir = os.path.expanduser("~/.ssh")
+  1108→    if not os.path.isdir(ssh_dir):
+  1109→        return findings
+  1110→
+  1111→    # Known key type patterns and minimum bit lengths
+  1112→    # Format: (file_glob_pattern, key_type_regex, recommended_min_bits, severity_if_short, description)
+  1113→    key_files = []
+  1114→    for entry in os.listdir(ssh_dir):
+  1115→        full = os.path.join(ssh_dir, entry)
+  1116→        if not os.path.isfile(full):
+  1117→            continue
+  1118→        # Check for private keys (no .pub extension, and known key file names)
+  1119→        if entry.endswith(".pub"):
+  1120→            continue  # We'll read the .pub to check key type
+  1121→        if entry.startswith("id_") and not entry.endswith(".pub"):
+  1122→            key_files.append((full, entry, os.path.join(ssh_dir, entry + ".pub")))
+  1123→
+  1124→    for priv_path, priv_name, pub_path in key_files:
+  1125→        # Read the public key for key type and bit length
+  1126→        if not os.path.isfile(pub_path):
+  1127→            continue
+  1128→        try:
+  1129→            with open(pub_path, errors="replace") as f:
+  1130→                content = f.read().strip()
+  1131→        except Exception:
+  1132→            continue
+  1133→
+  1134→        # Parse: ssh-rsa AAAA... comment  OR  ssh-ed25519 AAAA... comment
+  1135→        parts = content.split()
+  1136→        if len(parts) < 2:
+  1137→            continue
+  1138→
+  1139→        key_type = parts[0]
+  1140→        key_data_b64 = parts[1]
+  1141→
+  1142→        # Decode base64 key data to get bit length
+  1143→        import base64
+  1144→        try:
+  1145→            key_bytes = base64.b64decode(key_data_b64)
+  1146→            bit_length = len(key_bytes) * 8
+  1147→        except Exception:
+  1148→            bit_length = 0
+  1149→
+  1150→        if key_type == "ssh-rsa":
+  1151→            # RSA keys: minimum 3072 bits recommended, 2048 is bare minimum
+  1152→            if bit_length < 2048:
+  1153→                findings.append(Finding(
+  1154→                    title=f"Weak RSA SSH key: {priv_name} (~{bit_length} bits)",
+  1155→                    severity="high", category="ssh_key_strength",
+  1156→                    module="doctor",
+  1157→                    description=f"RSA key {priv_name} is approximately {bit_length} bits. RSA keys should be at least 3072 bits.",
+  1158→                    evidence=f"Key type: {key_type}, ~{bit_length} bits",
+  1159→                    asset=hostname, points_deducted=8,
+  1160→                    remediation=f"Generate a new key: ssh-keygen -t ed25519 -C 'your@email.com'. Or use RSA 4096: ssh-keygen -t rsa -b 4096",
+  1161→                ))
+  1162→            elif bit_length < 3072:
+  1163→                findings.append(Finding(
+  1164→                    title=f"RSA SSH key could be stronger: {priv_name} (~{bit_length} bits)",
+  1165→                    severity="medium", category="ssh_key_strength",
+  1166→                    module="doctor",
+  1167→                    description=f"RSA key {priv_name} is approximately {bit_length} bits. NIST recommends 3072+ bits for RSA.",
+  1168→                    evidence=f"Key type: {key_type}, ~{bit_length} bits",
+  1169→                    asset=hostname, points_deducted=4,
+  1170→                    remediation=f"Consider regenerating: ssh-keygen -t ed25519 -C 'your@email.com'",
+  1171→                ))
+  1172→            else:
+  1173→                findings.append(Finding(
+  1174→                    title=f"SSH key {priv_name}: RSA {bit_length} bits (good)",
+  1175→                    severity="info", category="ssh_key_strength",
+  1176→                    module="doctor",
+  1177→                    description=f"RSA key {priv_name} has sufficient bit length.",
+  1178→                    evidence=f"{key_type} ~{bit_length} bits",
+  1179→                    asset=hostname, points_deducted=0,
+  1180→                    remediation="",
+  1181→                ))
+  1182→        elif key_type == "ssh-dss":
+  1183→            # DSA keys are deprecated
+  1184→            findings.append(Finding(
+  1185→                title=f"Deprecated DSA SSH key: {priv_name}",
+  1186→                severity="high", category="ssh_key_strength",
+  1187→                module="doctor",
+  1188→                description="DSA (ssh-dss) keys are deprecated and disabled by default in modern OpenSSH. They provide weak security.",
+  1189→                evidence=f"Key type: {key_type}",
+  1190→                asset=hostname, points_deducted=8,
+  1191→                remediation=f"Generate a new key: ssh-keygen -t ed25519 -C 'your@email.com'",
+  1192→            ))
+  1193→        elif key_type == "ecdsa-sha2-nistp256":
+  1194→            findings.append(Finding(
+  1195→                title=f"SSH key {priv_name}: ECDSA P-256 (acceptable)",
+  1196→                severity="info", category="ssh_key_strength",
+  1197→                module="doctor",
+  1198→                description="ECDSA P-256 provides ~128-bit security. Consider Ed25519 for better performance and security.",
+  1199→                evidence=f"Key type: {key_type}",
+  1200→                asset=hostname, points_deducted=0,
+  1201→                remediation="Consider migrating to ed25519: ssh-keygen -t ed25519 -C 'your@email.com'",
+  1202→            ))
+  1203→        elif key_type in ("ssh-ed25519", "sk-ssh-ed25519@openssh.com"):
+  1204→            findings.append(Finding(
+  1205→                title=f"SSH key {priv_name}: Ed25519 (strong)",
+  1206→                severity="info", category="ssh_key_strength",
+  1207→                module="doctor",
+  1208→                description="Ed25519 keys provide excellent security and performance. This is a modern, recommended key type.",
+  1209→                evidence=f"Key type: {key_type}",
+  1210→                asset=hostname, points_deducted=0,
+  1211→                remediation="",
+  1212→            ))
+  1213→        else:
+  1214→            findings.append(Finding(
+  1215→                title=f"Unrecognized SSH key type: {key_type} in {priv_name}",
+  1216→                severity="low", category="ssh_key_strength",
+  1217→                module="doctor",
+  1218→                description=f"SSH key type '{key_type}' is not a standard recognized type. Verify this key is legitimate.",
+  1219→                evidence=f"Key type: {key_type}",
+  1220→                asset=hostname, points_deducted=3,
+  1221→                remediation="Verify the key is legitimate. Consider replacing with ed25519.",
+  1222→            ))
+  1223→
+  1224→    return findings
+  1225→
+  1226→
+  1227→# ---------------------------------------------------------------------------
+  1228→# Main entry point
+  1229→# ---------------------------------------------------------------------------
+  1230→
+  1231→def run_doctor(target: str = "localhost", base_url: str = "", timeout: int = 8,
+  1232→               verify_tls: bool = True) -> List[Finding]:
+  1233→    """Security health check with actionable fixes.
+  1234→
+  1235→    Runs a comprehensive health check and provides
+  1236→    copy-paste fix commands for every issue found.
+  1237→    """
+  1238→    findings: List[Finding] = []
+  1239→
+  1240→    findings.extend(_check_password_policy())
+  1241→    findings.extend(_check_disk_encryption())
+  1242→    findings.extend(_check_auto_lock())
+  1243→    findings.extend(_check_antivirus())
+  1244→    findings.extend(_check_system_updates())
+  1245→    findings.extend(_check_shared_memory())
+  1246→    findings.extend(_check_core_dumps())
+  1247→    findings.extend(_check_browser_security())
+  1248→
+  1249→    # New checks
+  1250→    findings.extend(_check_ntp_sync())
+  1251→    findings.extend(_check_firewall_deep())
+  1252→    findings.extend(_check_audit_logging())
+  1253→    findings.extend(_check_uac_sudo_timeout())
+  1254→    findings.extend(_check_ssh_key_strength())
+  1255→
+  1256→    return findings
+  1257→

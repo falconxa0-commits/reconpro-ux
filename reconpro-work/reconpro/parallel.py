@@ -19,23 +19,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
+from .constants import SEV_COLORS, GRADE_COLORS
 from .scanner import scan, audit_scan
 from .http_layer import Finding, compute_grade
 
 console = Console()
-
-SEV_COLORS = {
-    "critical": "bright_red",
-    "high": "red",
-    "medium": "yellow",
-    "low": "green",
-    "info": "dim",
-}
-
-GRADE_COLORS = {
-    "A+": "bright_green", "A": "green", "B": "yellow",
-    "C": "red", "D": "bright_red", "F": "bold bright_red",
-}
 
 
 def _scan_one_target(

@@ -14,9 +14,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from .constants import PLUGIN_DIR
 from .http_layer import Finding
-
-PLUGIN_DIR = Path.home() / ".reconpro" / "plugins"
 
 
 def _ensure_plugin_dir() -> None:

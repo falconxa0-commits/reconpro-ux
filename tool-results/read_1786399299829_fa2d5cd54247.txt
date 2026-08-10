@@ -1,0 +1,729 @@
+     1→"""Agent Tool Plugin SDK for ReconPro.
+     2→
+     3→Allows users to extend the Nexus Agent with custom tools via:
+     4→  1. Python plugin files in ~/.reconpro/tools/*.py (using the @tool decorator)
+     5→  2. External CLI tool definitions in ~/.reconpro/tools.yaml
+     6→
+     7→This module is intentionally zero-dependency -- pure Python stdlib only.
+     8→No PyYAML, no third-party packages required.
+     9→
+    10→Usage (plugin author):
+    11→    from reconpro.tool_sdk import tool
+    12→
+    13→    @tool(name="dns_lookup", description="Resolve DNS for a domain",
+    14→          parameters={...}, examples=["Look up example.com"])
+    15→    def dns_lookup(target: str) -> str:
+    16→        ...
+    17→"""
+    18→from __future__ import annotations
+    19→
+    20→import importlib.util
+    21→import inspect
+    22→import json
+    23→import re
+    24→import shutil
+    25→import subprocess
+    26→import textwrap
+    27→from dataclasses import dataclass, field
+    28→from pathlib import Path
+    29→from typing import Any, Callable, Dict, List, Optional
+    30→
+    31→
+    32→# ══════════════════════════════════════════════════════════════════════
+    33→#  TOOLS DIRECTORY
+    34→# ══════════════════════════════════════════════════════════════════════
+    35→
+    36→TOOLS_DIR: Path = Path.home() / ".reconpro" / "tools"
+    37→TOOLS_YAML: Path = TOOLS_DIR / "tools.yaml"
+    38→
+    39→
+    40→# ══════════════════════════════════════════════════════════════════════
+    41→#  @tool DECORATOR
+    42→# ══════════════════════════════════════════════════════════════════════
+    43→
+    44→def tool(
+    45→    func: Optional[Callable] = None,
+    46→    *,
+    47→    name: str = "",
+    48→    description: str = "",
+    49→    parameters: Optional[Dict[str, Any]] = None,
+    50→    examples: Optional[List[str]] = None,
+    51→    source: str = "plugin",
+    52→) -> Callable:
+    53→    """Decorator that attaches ToolSpec metadata to a function.
+    54→
+    55→    Supports three call styles::
+    56→
+    57→        @tool
+    58→        def my_tool(...): ...
+    59→
+    60→        @tool()
+    61→        def my_tool(...): ...
+    62→
+    63→        @tool(name="scan", description="Run scan", ...)
+    64→        def my_tool(...): ...
+    65→
+    66→    Parameters
+    67→    ----------
+    68→    func : callable | None
+    69→        When used bare (``@tool``), the function is passed directly.
+    70→    name : str
+    71→        Tool identifier. Defaults to the function name.
+    72→    description : str
+    73→        One-line description for the LLM. Defaults to the function docstring.
+    74→    parameters : dict | None
+    75→        JSON Schema dict describing inputs. If ``None``, inferred from the
+    76→        function signature via ``_infer_schema``.
+    77→    examples : list[str] | None
+    78→        Natural-language example invocations for the LLM.
+    79→    source : str
+    80→        Origin tag: ``"builtin"``, ``"plugin"``, or ``"external"``.
+    81→
+    82→    Returns
+    83→    -------
+    84→    Callable
+    85→        The original function, with ``_reconpro_tool`` attribute set.
+    86→    """
+    87→    # Bare @tool without parentheses: func is the actual function
+    88→    if func is not None:
+    89→        return _attach_spec(
+    90→            func,
+    91→            name=name,
+    92→            description=description,
+    93→            parameters=parameters,
+    94→            examples=examples,
+    95→            source=source,
+    96→        )
+    97→
+    98→    # @tool(...) with arguments: return a decorator closure
+    99→    def decorator(fn: Callable) -> Callable:
+   100→        return _attach_spec(
+   101→            fn,
+   102→            name=name,
+   103→            description=description,
+   104→            parameters=parameters,
+   105→            examples=examples,
+   106→            source=source,
+   107→        )
+   108→    return decorator
+   109→
+   110→
+   111→def _attach_spec(
+   112→    func: Callable,
+   113→    *,
+   114→    name: str = "",
+   115→    description: str = "",
+   116→    parameters: Optional[Dict[str, Any]] = None,
+   117→    examples: Optional[List[str]] = None,
+   118→    source: str = "plugin",
+   119→) -> Callable:
+   120→    """Attach a ToolSpec to *func* and return the function unchanged."""
+   121→    resolved_name = name or func.__name__
+   122→    resolved_desc = description or (func.__doc__ or "").strip().split("\n")[0]
+   123→    resolved_params = parameters if parameters is not None else _infer_schema(func)
+   124→    resolved_examples = examples or []
+   125→
+   126→    spec = ToolSpec(
+   127→        name=resolved_name,
+   128→        description=resolved_desc,
+   129→        parameters=resolved_params,
+   130→        examples=resolved_examples,
+   131→        source=source,
+   132→        handler=func,
+   133→    )
+   134→    func._reconpro_tool = spec  # type: ignore[attr-defined]
+   135→    return func
+   136→
+   137→
+   138→def _infer_schema(func: Callable) -> Dict[str, Any]:
+   139→    """Build a minimal JSON Schema from a function's type annotations.
+   140→
+   141→    Supports ``str``, ``int``, ``float``, ``bool`` and ``list``.  Everything
+   142→    else defaults to ``"string"``.
+   143→    """
+   144→    sig = inspect.signature(func)
+   145→    properties: Dict[str, Any] = {}
+   146→    required: List[str] = []
+   147→
+   148→    for pname, param in sig.parameters.items():
+   149→        if pname in ("self", "cls"):
+   150→            continue
+   151→        ptype = "string"
+   152→        annotation = param.annotation
+   153→        if annotation is not inspect.Parameter.empty:
+   154→            if annotation is int:
+   155→                ptype = "integer"
+   156→            elif annotation is float:
+   157→                ptype = "number"
+   158→            elif annotation is bool:
+   159→                ptype = "boolean"
+   160→            elif annotation is list:
+   161→                ptype = "array"
+   162→            elif hasattr(annotation, "__origin__") and annotation.__origin__ is list:
+   163→                ptype = "array"
+   164→        properties[pname] = {"type": ptype, "description": f"Parameter: {pname}"}
+   165→        if param.default is inspect.Parameter.empty:
+   166→            required.append(pname)
+   167→
+   168→    return {
+   169→        "type": "object",
+   170→        "properties": properties,
+   171→        "required": required,
+   172→    }
+   173→
+   174→
+   175→# ══════════════════════════════════════════════════════════════════════
+   176→#  ToolSpec DATACLASS
+   177→# ══════════════════════════════════════════════════════════════════════
+   178→
+   179→@dataclass
+   180→class ToolSpec:
+   181→    """Metadata describing a tool the Nexus Agent can invoke.
+   182→
+   183→    Attributes:
+   184→        name:        Unique tool identifier (e.g. ``"nmap_scan"``).
+   185→        description: Human-readable one-liner for the LLM.
+   186→        parameters:  JSON Schema dict describing the tool's inputs.
+   187→        examples:    List of natural-language example invocations.
+   188→        source:      Where this tool came from: ``"builtin"``, ``"plugin"``, or ``"external"``.
+   189→        handler:     The actual callable, or ``None`` for unlinked external specs.
+   190→    """
+   191→    name: str
+   192→    description: str
+   193→    parameters: Dict[str, Any]
+   194→    examples: List[str]
+   195→    source: str = "plugin"
+   196→    handler: Optional[Callable[..., str]] = None
+   197→
+   198→    def to_tool_dict(self) -> Dict[str, Any]:
+   199→        """Return a flat ``{param: {type, description}}`` dict."""
+   200→        props = self.parameters.get("properties", {})
+   201→        return {
+   202→            pname: {
+   203→                "type": pval.get("type", "string"),
+   204→                "description": pval.get("description", ""),
+   205→            }
+   206→            for pname, pval in props.items()
+   207→        }
+   208→
+   209→    def to_openai_tool(self) -> Dict[str, Any]:
+   210→        """Return OpenAI function-calling schema."""
+   211→        return {
+   212→            "type": "function",
+   213→            "function": {
+   214→                "name": self.name,
+   215→                "description": self.description,
+   216→                "parameters": self.parameters,
+   217→            },
+   218→        }
+   219→
+   220→    def to_anthropic_tool(self) -> Dict[str, Any]:
+   221→        """Return Anthropic ``input_schema`` dict."""
+   222→        return {
+   223→            "name": self.name,
+   224→            "description": self.description,
+   225→            "input_schema": self.parameters,
+   226→        }
+   227→
+   228→
+   229→# ══════════════════════════════════════════════════════════════════════
+   230→#  EXTERNAL TOOL HANDLER
+   231→# ══════════════════════════════════════════════════════════════════════
+   232→
+   233→class ExternalToolHandler:
+   234→    """Wraps an external CLI command as a callable tool.
+   235→
+   236→    Parameters
+   237→    ----------
+   238→    name : str
+   239→        Tool identifier.
+   240→    command : str
+   241→        Command template with ``{param}`` placeholders that are substituted
+   242→        at call-time from keyword arguments.
+   243→    parser : str
+   244→        One of ``"json"``, ``"regex"``, or ``"raw"``.
+   245→    parse_pattern : str | None
+   246→        Required when ``parser="regex"``.  A Python regex applied to stdout;
+   247→        first capture group (``group(1)``) is returned, or the full match
+   248→        if no groups exist.
+   249→    description : str
+   250→        Human-readable description.
+   251→    timeout : int
+   252→        subprocess timeout in seconds (default 60).
+   253→    """
+   254→
+   255→    def __init__(
+   256→        self,
+   257→        name: str,
+   258→        command: str,
+   259→        parser: str = "raw",
+   260→        parse_pattern: Optional[str] = None,
+   261→        description: str = "",
+   262→        timeout: int = 60,
+   263→    ) -> None:
+   264→        self.name = name
+   265→        self.command = command
+   266→        self.parser = parser
+   267→        self.parse_pattern = parse_pattern
+   268→        self.description = description
+   269→        self.timeout = timeout
+   270→
+   271→    # ── invocation ──────────────────────────────────────────────────
+   272→
+   273→    def __call__(self, **kwargs: Any) -> str:
+   274→        """Execute the CLI command, parse output, return result string."""
+   275→        try:
+   276→            cmd = self._substitute(kwargs)
+   277→            result = subprocess.run(
+   278→                cmd,
+   279→                capture_output=True,
+   280→                text=True,
+   281→                timeout=self.timeout,
+   282→                shell=isinstance(cmd, str),
+   283→            )
+   284→            if result.returncode != 0:
+   285→                err = result.stderr.strip() or f"exit code {result.returncode}"
+   286→                return f"[ERROR] {self.name}: {err}"
+   287→            return self._parse(result.stdout)
+   288→        except subprocess.TimeoutExpired:
+   289→            return f"[ERROR] {self.name}: timed out after {self.timeout}s"
+   290→        except FileNotFoundError:
+   291→            binary = self.command.split()[0] if isinstance(self.command, str) else str(self.command[0])
+   292→            return f"[ERROR] {self.name}: command not found: {binary}"
+   293→        except Exception as exc:
+   294→            return f"[ERROR] {self.name}: {exc}"
+   295→
+   296→    # ── internal helpers ─────────────────────────────────────────────
+   297→
+   298→    def _substitute(self, kwargs: Dict[str, Any]) -> str:
+   299→        """Replace ``{key}`` placeholders in the command template."""
+   300→        cmd = self.command
+   301→        for key, value in kwargs.items():
+   302→            cmd = cmd.replace(f"{{{key}}}", str(value))
+   303→        # Check for remaining unsubstituted placeholders
+   304→        remaining = re.findall(r"\{(\w+)\}", cmd)
+   305→        if remaining:
+   306→            # Silently drop unreplaced placeholders by replacing with empty
+   307→            for key in remaining:
+   308→                cmd = cmd.replace(f"{{{key}}}", "")
+   309→        return cmd
+   310→
+   311→    def _parse(self, stdout: str) -> str:
+   312→        """Parse stdout according to the configured parser mode."""
+   313→        text = stdout.strip()
+   314→        if not text:
+   315→            return f"[EMPTY] {self.name}: no output"
+   316→
+   317→        if self.parser == "json":
+   318→            try:
+   319→                parsed = json.loads(text)
+   320→                if isinstance(parsed, (dict, list)):
+   321→                    return json.dumps(parsed, indent=2, ensure_ascii=False)
+   322→                return str(parsed)
+   323→            except json.JSONDecodeError:
+   324→                # Try extracting JSON from mixed output
+   325→                match = re.search(r"\{.*\}|\[.*\]", text, re.DOTALL)
+   326→                if match:
+   327→                    try:
+   328→                        parsed = json.loads(match.group())
+   329→                        return json.dumps(parsed, indent=2, ensure_ascii=False)
+   330→                    except json.JSONDecodeError:
+   331→                        pass
+   332→                return text
+   333→
+   334→        if self.parser == "regex" and self.parse_pattern:
+   335→            match = re.search(self.parse_pattern, text, re.MULTILINE | re.DOTALL)
+   336→            if match:
+   337→                if match.groups():
+   338→                    return match.group(1)
+   339→                return match.group(0)
+   340→            return f"[NO MATCH] {self.name}: pattern '{self.parse_pattern}' not found in output"
+   341→
+   342→        # raw
+   343→        return text
+   344→
+   345→
+   346→# ══════════════════════════════════════════════════════════════════════
+   347→#  PLUGIN TOOL LOADER
+   348→# ══════════════════════════════════════════════════════════════════════
+   349→
+   350→class PluginToolLoader:
+   351→    """Discovers and loads tools from Python plugins and external CLI configs.
+   352→
+   353→    Plugin files live in ``~/.reconpro/tools/*.py`` and must use the ``@tool``
+   354→    decorator to register functions.  External tools are defined in
+   355→    ``~/.reconpro/tools.yaml``.
+   356→    """
+   357→
+   358→    def __init__(self) -> None:
+   359→        self._plugin_tools: List[ToolSpec] = []
+   360→        self._external_tools: List[ToolSpec] = []
+   361→
+   362→    # ── plugin discovery ─────────────────────────────────────────────
+   363→
+   364→    def discover_plugin_tools(self) -> List[ToolSpec]:
+   365→        """Scan ``~/.reconpro/tools/*.py``, import each, collect ``@tool`` functions.
+   366→
+   367→        Returns a list of :class:`ToolSpec` found across all plugin files.
+   368→        Files that fail to import are silently skipped (errors are not raised).
+   369→        """
+   370→        TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+   371→        tools: List[ToolSpec] = []
+   372→
+   373→        for py_file in sorted(TOOLS_DIR.glob("*.py")):
+   374→            if py_file.name.startswith("_") or py_file.name == "tools.py":
+   375→                continue
+   376→            try:
+   377→                spec = importlib.util.spec_from_file_location(
+   378→                    f"reconpro_tool_{py_file.stem}", py_file
+   379→                )
+   380→                if spec is None or spec.loader is None:
+   381→                    continue
+   382→                mod = importlib.util.module_from_spec(spec)
+   383→                spec.loader.exec_module(mod)
+   384→                # Walk module attributes looking for _reconpro_tool
+   385→                for attr_name in dir(mod):
+   386→                    obj = getattr(mod, attr_name, None)
+   387→                    if callable(obj) and hasattr(obj, "_reconpro_tool"):
+   388→                        tool_spec = getattr(obj, "_reconpro_tool")
+   389→                        if isinstance(tool_spec, ToolSpec):
+   390→                            tools.append(tool_spec)
+   391→            except Exception:
+   392→                continue
+   393→
+   394→        self._plugin_tools = tools
+   395→        return tools
+   396→
+   397→    # ── external tools.yaml discovery ────────────────────────────────
+   398→
+   399→    def discover_external_tools(self) -> List[ToolSpec]:
+   400→        """Read ``~/.reconpro/tools.yaml`` and build :class:`ToolSpec` entries.
+   401→
+   402→        Uses a simple hand-written line parser — **no PyYAML dependency**.
+   403→
+   404→        Expected format (whitespace-insensitive keys, values after colon)::
+   405→
+   406→            # Comment lines and blank lines are ignored.
+   407→            name: nuclei_scan
+   408→            description: Run nuclei vulnerability scanner
+   409→            command: nuclei -u {target} -json
+   410→            parser: json
+   411→            ---
+   412→            name: ffuf_fuzz
+   413→            description: Fuzz directories with ffuf
+   414→            command: ffuf -u {target}/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common.txt -mc all
+   415→            parser: raw
+   416→            ---
+   417→            name: sqlmap_scan
+   418→            description: SQL injection testing with sqlmap
+   419→            command: sqlmap -u {target} --batch --output-dir=/tmp/sqlmap_out/{target}
+   420→            parser: raw
+   421→
+   422→        Entries are separated by ``---``.
+   423→        """
+   424→        tools: List[ToolSpec] = []
+   425→        if not TOOLS_YAML.exists():
+   426→            self._external_tools = tools
+   427→            return tools
+   428→
+   429→        try:
+   430→            raw = TOOLS_YAML.read_text(encoding="utf-8")
+   431→        except OSError:
+   432→            self._external_tools = tools
+   433→            return tools
+   434→
+   435→        # Parse blocks separated by "---"
+   436→        blocks = raw.split("---")
+   437→        for block in blocks:
+   438→            entry = self._parse_yaml_block(block)
+   439→            if entry and "name" in entry:
+   440→                handler = ExternalToolHandler(
+   441→                    name=entry["name"],
+   442→                    command=entry.get("command", ""),
+   443→                    parser=entry.get("parser", "raw"),
+   444→                    parse_pattern=entry.get("parse_pattern"),
+   445→                    description=entry.get("description", ""),
+   446→                )
+   447→                tools.append(ToolSpec(
+   448→                    name=entry["name"],
+   449→                    description=entry.get("description", ""),
+   450→                    parameters=self._external_tool_params(entry.get("command", "")),
+   451→                    examples=entry.get("examples", []),
+   452→                    source="external",
+   453→                    handler=handler,
+   454→                ))
+   455→
+   456→        self._external_tools = tools
+   457→        return tools
+   458→
+   459→    @staticmethod
+   460→    def _parse_yaml_block(block: str) -> Dict[str, Any]:
+   461→        """Parse a single YAML-like block into a flat dict.
+   462→
+   463→        Recognised keys: ``name``, ``description``, ``command``, ``parser``,
+   464→        ``parse_pattern``, ``examples``.  Values are stripped of leading
+   465→        whitespace.  Comment lines (``#``) and blank lines are ignored.
+   466→        """
+   467→        result: Dict[str, Any] = {}
+   468→        for line in block.splitlines():
+   469→            stripped = line.strip()
+   470→            if not stripped or stripped.startswith("#"):
+   471→                continue
+   472→            colon_idx = stripped.find(":")
+   473→            if colon_idx == -1:
+   474→                continue
+   475→            key = stripped[:colon_idx].strip().lower()
+   476→            value = stripped[colon_idx + 1:].strip()
+   477→            if key == "examples":
+   478→                # examples: [ex1, ex2]  or  examples: a single example
+   479→                if value.startswith("[") and value.endswith("]"):
+   480→                    try:
+   481→                        result[key] = json.loads(value)
+   482→                    except json.JSONDecodeError:
+   483→                        result[key] = [value]
+   484→                else:
+   485→                    result[key] = [value]
+   486→            elif key in ("name", "description", "command", "parser", "parse_pattern"):
+   487→                result[key] = value
+   488→        return result
+   489→
+   490→    @staticmethod
+   491→    def _external_tool_params(command: str) -> Dict[str, Any]:
+   492→        """Extract ``{placeholder}`` names from a command template and build
+   493→        a JSON Schema with them as required string parameters."""
+   494→        placeholders = re.findall(r"\{(\w+)\}", command)
+   495→        properties: Dict[str, Any] = {}
+   496→        required: List[str] = []
+   497→        for ph in sorted(set(placeholders)):
+   498→            properties[ph] = {"type": "string", "description": f"Parameter: {ph}"}
+   499→            required.append(ph)
+   500→        return {
+   501→            "type": "object",
+   502→            "properties": properties,
+   503→            "required": required,
+   504→        }
+   505→
+   506→    # ── combined loader ──────────────────────────────────────────────
+   507→
+   508→    def load_all(self) -> List[ToolSpec]:
+   509→        """Discover plugin and external tools, return combined list.
+   510→
+   511→        Plugin tools take priority over external tools with the same name:
+   512→        duplicates from external are silently dropped.
+   513→        """
+   514→        plugin = self.discover_plugin_tools()
+   515→        external = self.discover_external_tools()
+   516→        seen: set = {spec.name for spec in plugin}
+   517→        combined = list(plugin)
+   518→        for spec in external:
+   519→            if spec.name not in seen:
+   520→                combined.append(spec)
+   521→                seen.add(spec.name)
+   522→        return combined
+   523→
+   524→
+   525→# ══════════════════════════════════════════════════════════════════════
+   526→#  TEMPLATE GENERATORS
+   527→# ══════════════════════════════════════════════════════════════════════
+   528→
+   529→def create_tool_template(name: str) -> str:
+   530→    """Write a Python plugin tool template to ``~/.reconpro/tools/{name}.py``.
+   531→
+   532→    Returns the absolute path of the created file.
+   533→    """
+   534→    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+   535→    target_path = TOOLS_DIR / f"{name}.py"
+   536→    if target_path.exists():
+   537→        raise FileExistsError(f"Tool file already exists: {target_path}")
+   538→
+   539→    template = textwrap.dedent(f"""\
+   540→    \"\"\"Custom ReconPro tool: {name}\"\"\"
+   541→    from reconpro.tool_sdk import tool
+   542→
+   543→    @tool(
+   544→        name="{name}",
+   545→        description="Describe what this tool does in one sentence.",
+   546→        parameters={{
+   547→            "type": "object",
+   548→            "properties": {{
+   549→                "target": {{
+   550→                    "type": "string",
+   551→                    "description": "The target domain or IP",
+   552→                }},
+   553→            }},
+   554→            "required": ["target"],
+   555→        }},
+   556→        examples=["Run {name} on example.com"],
+   557→    )
+   558→    def {name}(target: str) -> str:
+   559→        \"\"\"Execute the {name} tool against *target*.\"\"\"
+   560→        # Replace with your tool logic
+   561→        return f"[{name}] Result for {{target}}: not yet implemented"
+   562→    """)
+   563→    target_path.write_text(template, encoding="utf-8")
+   564→    return str(target_path)
+   565→
+   566→
+   567→def create_tools_yaml_template() -> str:
+   568→    """Write an example ``tools.yaml`` to ``~/.reconpro/tools/tools.yaml``.
+   569→
+   570→    Returns the absolute path of the created file.
+   571→    """
+   572→    TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+   573→    if TOOLS_YAML.exists():
+   574→        raise FileExistsError(f"tools.yaml already exists: {TOOLS_YAML}")
+   575→
+   576→    template = textwrap.dedent("""\
+   577→    # ReconPro External Tool Definitions
+   578→    # ====================================
+   579→    # Each block defines one external CLI tool the Nexus Agent can invoke.
+   580→    # Fields: name, description, command (with {param} placeholders), parser
+   581→    # Parser modes: json | regex | raw
+   582→    # Separate tools with "---"
+   583→
+   584→    name: nuclei_scan
+   585→    description: Run nuclei vulnerability scanner against a target
+   586→    command: nuclei -u {target} -json
+   587→    parser: json
+   588→
+   589→    ---
+   590→    name: ffuf_fuzz
+   591→    description: Fuzz web directories with ffuf
+   592→    command: ffuf -u {target}/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common.txt -mc all
+   593→    parser: raw
+   594→
+   595→    ---
+   596→    name: sqlmap_scan
+   597→    description: Automated SQL injection testing with sqlmap
+   598→    command: sqlmap -u {target} --batch --level=3 --risk=2
+   599→    parser: raw
+   600→
+   601→    ---
+   602→    name: subfinder_enum
+   603→    description: Enumerate subdomains using subfinder
+   604→    command: subfinder -d {target} -silent
+   605→    parser: raw
+   606→
+   607→    ---
+   608→    name: httpx_probe
+   609→    description: Probe live HTTP services with httpx
+   610→    command: httpx -u {target} -silent -json
+   611→    parser: json
+   612→    """)
+   613→    TOOLS_YAML.write_text(template, encoding="utf-8")
+   614→    return str(TOOLS_YAML)
+   615→
+   616→
+   617→# ══════════════════════════════════════════════════════════════════════
+   618→#  HELPER FUNCTIONS
+   619→# ══════════════════════════════════════════════════════════════════════
+   620→
+   621→def register_builtin_tools(
+   622→    registry: Dict[str, ToolSpec],
+   623→    tool_specs: Optional[List[ToolSpec]] = None,
+   624→) -> None:
+   625→    """Register built-in tool specs into a name -> ToolSpec registry dict.
+   626→
+   627→    Existing entries are **not** overwritten unless explicitly re-registered.
+   628→    If *tool_specs* is ``None``, the registry is returned unchanged (this
+   629→    allows callers to register builtins from any iterable source).
+   630→    """
+   631→    if tool_specs is None:
+   632→        return
+   633→    for spec in tool_specs:
+   634→        if spec.source == "builtin" or spec.name not in registry:
+   635→            registry[spec.name] = spec
+   636→
+   637→
+   638→def list_available_tools() -> List[ToolSpec]:
+   639→    """Convenience function that loads all tools and returns a flat list.
+   640→
+   641→    This is a one-shot discovery: it instantiates a fresh
+   642→    :class:`PluginToolLoader`, calls :meth:`load_all`, and returns the
+   643→    result.  For repeated use, keep a ``PluginToolLoader`` instance.
+   644→    """
+   645→    loader = PluginToolLoader()
+   646→    return loader.load_all()
+   647→
+   648→
+   649→# ══════════════════════════════════════════════════════════════════════
+   650→#  MODULE-LEVEL EXPORTS
+   651→# ══════════════════════════════════════════════════════════════════════
+   652→
+   653→__all__ = [
+   654→    "tool",
+   655→    "ToolSpec",
+   656→    "PluginToolLoader",
+   657→    "ExternalToolHandler",
+   658→    "create_tool_template",
+   659→    "create_tools_yaml_template",
+   660→    "register_builtin_tools",
+   661→    "list_available_tools",
+   662→    "TOOLS_DIR",
+   663→    "TOOLS_YAML",
+   664→]
+   665→
+   666→
+   667→# ── External Tool Integrations ────────────────────────────────────────────
+   668→
+   669→def detect_nmap() -> Optional[str]:
+   670→    """Detect nmap installation. Returns version string or None."""
+   671→    import shutil, subprocess
+   672→    if not shutil.which("nmap"):
+   673→        return None
+   674→    try:
+   675→        result = subprocess.run(["nmap", "--version"], capture_output=True, text=True, timeout=5)
+   676→        for line in result.stdout.split("\n"):
+   677→            if "Nmap version" in line:
+   678→                return line.strip()
+   679→        return "nmap (version detected)"
+   680→    except Exception:
+   681→        return None
+   682→
+   683→def detect_masscan() -> Optional[str]:
+   684→    """Detect masscan installation."""
+   685→    import shutil
+   686→    return shutil.which("masscan")
+   687→
+   688→def detect_nuclei() -> Optional[str]:
+   689→    """Detect nuclei installation."""
+   690→    import shutil, subprocess
+   691→    if not shutil.which("nuclei"):
+   692→        return None
+   693→    try:
+   694→        result = subprocess.run(["nuclei", "-version"], capture_output=True, text=True, timeout=5)
+   695→        return result.stdout.strip() or "nuclei (detected)"
+   696→    except Exception:
+   697→        return None
+   698→
+   699→def detect_zap() -> Optional[str]:
+   700→    """Detect OWASP ZAP installation."""
+   701→    import shutil
+   702→    for cmd in ["zap-cli", "zap.sh", "owasp-zap"]:
+   703→        if shutil.which(cmd):
+   704→            return cmd
+   705→    return None
+   706→
+   707→def detect_external_tools() -> Dict[str, Optional[str]]:
+   708→    """Detect all supported external security tools."""
+   709→    return {
+   710→        "nmap": detect_nmap(),
+   711→        "masscan": detect_masscan(),
+   712→        "nuclei": detect_nuclei(),
+   713→        "zap": detect_zap(),
+   714→    }
+   715→
+   716→def run_nmap_scan(target: str, ports: str = "1-1000", arguments: str = "-sV -sC") -> Optional[str]:
+   717→    """Run nmap scan and return output."""
+   718→    import subprocess
+   719→    if not detect_nmap():
+   720→        return None
+   721→    try:
+   722→        result = subprocess.run(
+   723→            ["nmap"] + arguments.split() + ["-p", ports, target],
+   724→            capture_output=True, text=True, timeout=300,
+   725→        )
+   726→        return result.stdout
+   727→    except Exception as e:
+   728→        return f"Error: {e}"
+   729→
