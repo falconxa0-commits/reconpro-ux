@@ -147,3 +147,28 @@ def is_local_module(module_id: str) -> bool:
 def is_remote_module(module_id: str) -> bool:
     """Check if a module ID is a remote (network) module."""
     return module_id in MODULE_REGISTRY
+
+
+def get_module_info(module_id: str) -> Optional[Dict[str, Any]]:
+    """Get full module info including metadata."""
+    if module_id in MODULE_REGISTRY:
+        return MODULE_REGISTRY[module_id]
+    if module_id in LOCAL_MODULES:
+        return LOCAL_MODULES[module_id]
+    return None
+
+
+def list_remote_modules() -> List[str]:
+    """List remote module IDs sorted alphabetically."""
+    return sorted(MODULE_REGISTRY.keys())
+
+
+def list_local_modules() -> List[str]:
+    """List local module IDs sorted alphabetically."""
+    return sorted(LOCAL_MODULES.keys())
+
+
+def get_module_color(module_id: str) -> str:
+    """Get display color for a module."""
+    entry = get_module_info(module_id)
+    return entry.get("color", "white") if entry else "white"

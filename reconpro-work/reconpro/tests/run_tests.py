@@ -32,6 +32,16 @@ def main():
     runner = unittest.TextTestRunner(verbosity=2 if verbose else 1)
     result = runner.run(suite)
 
+    # Summary
+    total = result.testsRun
+    failures = len(result.failures)
+    errors = len(result.errors)
+    skipped = len(result.skipped) if hasattr(result, 'skipped') else 0
+    print(f"\n{'='*60}")
+    print(f"TOTAL: {total} tests | PASS: {total - failures - errors - skipped} | "
+          f"FAIL: {failures} | ERROR: {errors} | SKIP: {skipped}")
+    print(f"{'='*60}")
+
     # Exit with non-zero code on failure
     sys.exit(0 if result.wasSuccessful() else 1)
 

@@ -16,12 +16,21 @@ Components
 2. **AdaptiveLimiter** — token-bucket rate limiter with exponential-moving-
    average tracking of response times, error rates, and timeout rates.
    Automatically backs off on 429/503, recovers on fast responses, and
-   maintains per-domain state.
+   maintains per-domain state.  Includes hostname cache to avoid
+   redundant urlparse calls on repeated URLs.
 3. **async_probe()** — async equivalent of ``http_probe()`` returning a
    rich result dict compatible with the existing ``Finding`` dataclass.
 4. **probe_sync()** — synchronous wrapper for backward compatibility.
 5. **batch_probe()** — concurrent URL probing with ``asyncio.gather`` and
    per-domain rate limiting.
+
+Performance notes (v10.1)
+───────────────────────────
+  - DEFAULT_HEADERS.copy() used instead of dict(DEFAULT_HEADERS) for
+    faster C-level copy path.
+  - Hostname cache in AdaptiveLimiter avoids repeated urlparse() on
+    the same URLs during high-throughput scanning.
+  - Header merge short-circuits when no extra headers are provided.
 
 No direct imports from ``.http`` are used to avoid circular dependencies.
 The ``Finding`` dataclass can be imported separately where needed.
@@ -130,12 +139,19 @@ class AdaptiveLimiter:
         self._alpha = 0.3  # EMA smoothing factor
         self._lock = Lock()
         self._domains: Dict[str, _DomainLimiter] = {}
+        # Hostname cache: avoid repeated urlparse() on the same URLs.
+        self._hostname_cache: Dict[str, str] = {}
 
     # ── public helpers ───────────────────────────────────────────────
 
     def _get_domain(self, url: str) -> str:
+        cached = self._hostname_cache.get(url)
+        if cached is not None:
+            return cached
         parsed = urlparse(url)
-        return parsed.hostname or "unknown"
+        hostname = parsed.hostname or "unknown"
+        self._hostname_cache[url] = hostname
+        return hostname
 
     def _get_or_create(self, domain: str) -> _DomainLimiter:
         if domain not in self._domains:
@@ -389,9 +405,12 @@ class AsyncSession:
         reason, headers, body, url, redirect_chain, response_time,
         ssl_info.
         """
-        merged = dict(DEFAULT_HEADERS)
+        # Short-circuit: use DEFAULT_HEADERS directly when no extras.
         if headers:
+            merged = DEFAULT_HEADERS.copy()
             merged.update(headers)
+        else:
+            merged = DEFAULT_HEADERS
 
         if _HAS_AIOHTTP and self._aio_session is not None:
             return await self._aio_request(
@@ -776,15 +795,14 @@ def probe_sync(
     Creates (and closes) a fresh event loop for each call, making it
     safe to use from existing synchronous modules without any async
     boilerplate.
+
+    Optimisation: when not already inside an event loop, calls asyncio.run
+    directly — the ThreadPoolExecutor fallback is only used when an
+    existing loop is detected.
     """
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop is not None and loop.is_running():
-        # We are already inside an async context — use nest_asyncio
-        # pattern or fallback to a new thread.
+        asyncio.get_running_loop()
+        # Already inside a running loop — fall back to a thread.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(
@@ -796,7 +814,8 @@ def probe_sync(
                 ),
             )
             return future.result()
-    else:
+    except RuntimeError:
+        # No running loop — safe to call asyncio.run directly.
         return asyncio.run(
             async_probe(
                 url, method=method, body=body, headers=headers,

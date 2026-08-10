@@ -631,6 +631,24 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("target", help="Domain or URL to scan")
     p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
 
+    # ── info (Diagnostics & Help) ────────────────────────────────
+    p = sub.add_parser("info", help="Module help, diagnostics, and version info")
+    p.add_argument("--module", "-m", type=str, default=None,
+                     help="Show detailed help for a module (e.g. quantum-fingerprint)")
+    p.add_argument("--modules", action="store_true",
+                     help="List all modules with descriptions")
+    p.add_argument("--diagnose", action="store_true",
+                     help="Run full system diagnostics")
+    p.add_argument("--health", action="store_true",
+                     help="Quick health check")
+    p.add_argument("--version", "-v", action="store_true", dest="info_version",
+                     help="Detailed version information")
+    p.add_argument("--examples", action="store_true",
+                     help="Show usage examples")
+    p.add_argument("--quick-start", action="store_true",
+                     help="Show quick-start guide")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
     # ── Parse ─────────────────────────────────────────────────────
     global _cli_args
     args, remaining = parser.parse_known_args(argv)
@@ -1895,6 +1913,96 @@ def main(argv: list[str] | None = None) -> None:
             run_dead_drop, target, base_url,
         )
         _print_findings(findings, args, title="DEAD DROP")
+        return
+
+    # ── info (Diagnostics & Help) ──────────────────────────────
+    if cmd == "info":
+        from .diagnostics import run_diagnostics, health_check, get_version_info, generate_debug_report, module_status, validate_config
+        from .cli_help import render_module_help, render_all_modules, render_quick_start, render_examples, MODULE_HELP, CLI_COMMANDS
+
+        # Show module-specific help
+        if getattr(args, "module", None):
+            text = render_module_help(args.module)
+            console.print(text)
+            return
+
+        # List all modules
+        if getattr(args, "modules", False):
+            text = render_all_modules()
+            console.print(text)
+            return
+
+        # Run full diagnostics
+        if getattr(args, "diagnose", False):
+            if getattr(args, "json_output", False):
+                import json as _json
+                diag = run_diagnostics()
+                console.print(_json.dumps(diag, indent=2, default=str))
+            else:
+                report = generate_debug_report()
+                console.print(report)
+            return
+
+        # Quick health check
+        if getattr(args, "health", False):
+            hc = health_check()
+            if getattr(args, "json_output", False):
+                import json as _json
+                console.print(_json.dumps(hc, indent=2))
+            else:
+                console.print()
+                console.print(Panel(
+                    "[bold]ReconPro v10 — Health Check[/bold]",
+                    border_style="bright_cyan",
+                ))
+                console.print()
+                table = Table(border_style="dim", header_style="bold")
+                table.add_column("Category", style="cyan", min_width=18)
+                table.add_column("Status", min_width=12)
+                for k, v in hc.items():
+                    color = "green" if v == "ok" else "yellow" if "warning" in v else "red"
+                    table.add_row(k, f"[{color}]{v}[/{color}]")
+                console.print(table)
+                console.print()
+            return
+
+        # Detailed version info
+        if getattr(args, "info_version", False):
+            vi = get_version_info()
+            if getattr(args, "json_output", False):
+                import json as _json
+                console.print(_json.dumps(vi, indent=2))
+            else:
+                console.print()
+                console.print(Panel(
+                    "[bold]ReconPro v10 — Version Information[/bold]",
+                    border_style="bright_cyan",
+                ))
+                console.print()
+                table = Table(border_style="dim", header_style="bold", show_header=False)
+                table.add_column("Key", style="cyan", min_width=22)
+                table.add_column("Value")
+                for k, v in vi.items():
+                    table.add_row(k, v)
+                console.print(table)
+                console.print()
+            return
+
+        # Usage examples
+        if getattr(args, "examples", False):
+            text = render_examples()
+            console.print(text)
+            return
+
+        # Quick-start guide
+        if getattr(args, "quick_start", False):
+            text = render_quick_start()
+            console.print(text)
+            return
+
+        # Default: show quick-start
+        text = render_quick_start()
+        console.print(text)
         return
 
     # ── No args ─────────────────────────────────────────────────────
