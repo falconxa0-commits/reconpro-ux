@@ -25,7 +25,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-from ..http import http_probe, Finding, default_limiter
+from ..http_layer import http_probe, Finding, default_limiter
 
 
 # ═══════════════════════════════════════════════════════════════════════════

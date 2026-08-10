@@ -1,4 +1,4 @@
-"""Tests for reconpro.http.RateLimiter."""
+"""Tests for reconpro.http_layer.RateLimiter."""
 
 import sys
 import os
@@ -8,7 +8,7 @@ import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from reconpro.http import RateLimiter
+from reconpro.http_layer import RateLimiter
 
 
 class TestRateLimiterConstructor(unittest.TestCase):

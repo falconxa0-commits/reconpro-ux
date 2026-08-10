@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional, Set
-from ..http import http_probe, Finding
+from ..http_layer import http_probe, Finding
 
 
 def _follow_redirects(base_url: str, max_hops: int = 15, timeout: int = 8,
@@ -184,7 +184,7 @@ def run_chain(target: str, base_url: str, timeout: int = 8,
     # Follow redirect chains
     chain = _follow_redirects(base_url, timeout=timeout, verify_tls=verify_tls)
     if len(chain) > 3:
-        from ..http import Finding as F
+        from ..http_layer import Finding as F
         findings.append(F(
             title=f"Long redirect chain ({len(chain)} hops)",
             severity="medium", category="redirect_chain",

@@ -82,7 +82,7 @@ Dataclass containing the complete scan result.
 ### http_probe()
 
 ```python
-from reconpro.http import http_probe
+from reconpro.http_layer import http_probe
 
 result: dict[str, Any] = http_probe(
     url: str,
@@ -104,7 +104,7 @@ On connection errors, returns `ok=False, status=0`.
 ### Finding
 
 ```python
-from reconpro.http import Finding
+from reconpro.http_layer import Finding
 
 @dataclass
 class Finding:
@@ -125,7 +125,7 @@ class Finding:
 ### RateLimiter
 
 ```python
-from reconpro.http import RateLimiter
+from reconpro.http_layer import RateLimiter
 
 limiter = RateLimiter(max_per_second: float = 10.0)
 limiter.acquire()  # Blocks until a token is available

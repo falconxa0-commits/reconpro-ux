@@ -28,7 +28,7 @@ and local machines to produce scored, graded security assessments.
     │ └────────┘  └────────┘  └────────────┘                         │
     ├─────────────────────────────────────────────────────────────────┤
     │                    Shared Foundation                             │
-    │  http.py    utils.py    constants.py    security.py             │
+    │  http_layer.py    utils.py    constants.py    security.py             │
     ├─────────────────────────────────────────────────────────────────┤
     │                    Observability                                 │
     │  observability.py  │  history.py  │  formats.py                │
@@ -65,7 +65,7 @@ rate limits, disable TLS verification, or run all modules via .
     ├── scanner.py               # Synchronous scan orchestration
     ├── engine.py                # Async/concurrent scan orchestration (ScanEngine)
     ├── registry.py              # Central module registry (single source of truth)
-    ├── http.py                  # http_probe(), Finding, RateLimiter
+    ├── http_layer.py                  # http_probe(), Finding, RateLimiter
     ├── utils.py                 # Pure utility functions, no circular deps
     ├── constants.py             # Severities, grades, paths, defaults
     ├── security.py              # Sanitization, secret detection, safe parsing, audit
@@ -90,7 +90,7 @@ rate limits, disable TLS verification, or run all modules via .
 
 ## Core Components
 
-### HTTP Layer (http.py)
+### HTTP Layer (http_layer.py)
 The single HTTP abstraction used by every module.
 
 - **http_probe(url, method, body, headers, timeout, verify_tls, limiter)** returns
@@ -144,7 +144,7 @@ The vibesec module is special — it returns a 4-tuple:
     def run(target, base_url, timeout=8, verify_tls=True) -> tuple[list[Finding], int, str, str]:
     # returns (findings, score, grade, badge_markdown)
 
-Modules use http_probe() from http.py for all HTTP requests and return
+Modules use http_probe() from http_layer.py for all HTTP requests and return
 Finding dataclasses. Modules must never import from scanner.py or cli.py
 to avoid circular dependencies.
 
@@ -174,7 +174,7 @@ runner (callable), and color (Rich terminal color name).
            ▼
       Module Runner Loop
       ┌──────────────────┐
-      │ http_probe() xN  │ ← http.py (rate-limited)
+      │ http_probe() xN  │ ← http_layer.py (rate-limited)
       │ → Findings[]     │
       └────────┬─────────┘
                │

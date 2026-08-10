@@ -4,7 +4,7 @@ import json
 import os
 import re
 from typing import Any, Dict, List, Optional
-from ..http import http_probe, Finding
+from ..http_layer import http_probe, Finding
 
 
 PEGASUS_C2_DOMAINS = [

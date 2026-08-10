@@ -26,7 +26,7 @@ from reconpro.utils import (
     is_private_ip,
     url_join,
 )
-from reconpro.http import Finding
+from reconpro.http_layer import Finding
 
 
 # ── extract_host ─────────────────────────────────────────────────────────

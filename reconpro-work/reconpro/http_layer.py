@@ -39,7 +39,7 @@ default_limiter = RateLimiter(max_per_second=10.0)
 # ── HTTP Probe ──────────────────────────────────────────────────────────
 
 UA = (
-    "ReconPro/2.0 (Enterprise Security Scanner; "
+    "ReconPro/10.0 (Enterprise Security Scanner; "
     "+https://github.com/reconpro-security/reconpro)"
 )
 

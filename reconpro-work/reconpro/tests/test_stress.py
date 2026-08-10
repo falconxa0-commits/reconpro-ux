@@ -9,7 +9,7 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from reconpro.http import Finding
+from reconpro.http_layer import Finding
 from reconpro.utils import (
     count_severities,
     compute_score,

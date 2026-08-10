@@ -1,0 +1,800 @@
+     1→"""ReconPro v10 — Performance Benchmark Suite.
+     2→
+     3→Micro-benchmarks for critical hot paths: HTTP probe overhead, scan orchestration,
+     4→rate limiter, memory allocation, parallel execution. Uses only time.perf_counter —
+     5→zero external dependencies.
+     6→
+     7→Runnable via:
+     8→    python -m tests.test_performance
+     9→    python -m unittest tests.test_performance -v
+    10→"""
+    11→
+    12→from __future__ import annotations
+    13→
+    14→import concurrent.futures
+    15→import math
+    16→import os
+    17→import statistics
+    18→import subprocess
+    19→import sys
+    20→import threading
+    21→import time
+    22→import unittest
+    23→from dataclasses import dataclass
+    24→from typing import Any, Dict, List, Optional, Tuple
+    25→from unittest.mock import MagicMock, patch
+    26→
+    27→# ── Ensure package is importable ────────────────────────────────────────
+    28→_TEST_DIR = os.path.dirname(os.path.abspath(__file__))
+    29→_PROJECT_ROOT = os.path.join(_TEST_DIR, "..", "..")
+    30→if _PROJECT_ROOT not in sys.path:
+    31→    sys.path.insert(0, _PROJECT_ROOT)
+    32→
+    33→
+    34→# ── Benchmark helpers ───────────────────────────────────────────────────
+    35→
+    36→@dataclass
+    37→class BenchResult:
+    38→    """Statistical summary of a benchmark run."""
+    39→    name: str
+    40→    iterations: int
+    41→    total_ops: int
+    42→    min_us: float
+    43→    max_us: float
+    44→    mean_us: float
+    45→    median_us: float
+    46→    ops_per_sec: float
+    47→
+    48→    def row(self) -> str:
+    49→        return (
+    50→            f"│ {self.name:<40s} │ {self.iterations:>3d} × {self.total_ops:>6d} │"
+    51→            f" {self.min_us:>8.1f} │ {self.max_us:>8.1f} │"
+    52→            f" {self.mean_us:>8.1f} │ {self.median_us:>8.1f} │"
+    53→            f" {self.ops_per_sec:>12.0f} │"
+    54→        )
+    55→
+    56→
+    57→def run_benchmark(
+    58→    name: str,
+    59→    fn,
+    60→    ops_per_iter: int = 1,
+    61→    iterations: int = 5,
+    62→    warmup: int = 1,
+    63→) -> BenchResult:
+    64→    """Run *fn* for *iterations*, return min/max/mean/median per-op timing.
+    65→
+    66→    Parameters
+    67→    ----------
+    68→    name : str
+    69→        Human-readable benchmark name.
+    70→    fn : callable
+    71→        Function to benchmark. May accept no arguments.
+    72→    ops_per_iter : int
+    73→        Number of logical operations performed by one call to *fn*.
+    74→    iterations : int
+    75→        Number of timing iterations (after warmup).
+    76→    warmup : int
+    77→        Number of un-timed warmup iterations.
+    78→    """
+    79→    # Warmup
+    80→    for _ in range(warmup):
+    81→        fn()
+    82→
+    83→    times: List[float] = []
+    84→    for _ in range(iterations):
+    85→        t0 = time.perf_counter()
+    86→        fn()
+    87→        t1 = time.perf_counter()
+    88→        times.append(t1 - t0)
+    89→
+    90→    per_op_us = [t / ops_per_iter * 1_000_000 for t in times]
+    91→    total_ops = iterations * ops_per_iter
+    92→    total_time = sum(times)
+    93→    ops_sec = total_ops / total_time if total_time > 0 else float("inf")
+    94→
+    95→    return BenchResult(
+    96→        name=name,
+    97→        iterations=iterations,
+    98→        total_ops=total_ops,
+    99→        min_us=min(per_op_us),
+   100→        max_us=max(per_op_us),
+   101→        mean_us=statistics.mean(per_op_us),
+   102→        median_us=statistics.median(per_op_us),
+   103→        ops_per_sec=ops_sec,
+   104→    )
+   105→
+   106→
+   107→def _print_table(results: List[BenchResult], title: str) -> None:
+   108→    """Print a formatted benchmark results table."""
+   109→    sep = "├" + "─" * 42 + "┼" + "─" * 16 + "┼" + "─" * 11 + "┼" + "─" * 11 + "┼" + "─" * 11 + "┼" + "─" * 11 + "┼" + "─" * 15 + "┤"
+   110→    top = "┌" + "─" * 42 + "┬" + "─" * 16 + "┬" + "─" * 11 + "┬" + "─" * 11 + "┬" + "─" * 11 + "┬" + "─" * 11 + "┬" + "─" * 15 + "┐"
+   111→    bot = "└" + "─" * 42 + "┴" + "─" * 16 + "┴" + "─" * 11 + "┴" + "─" * 11 + "┴" + "─" * 11 + "┴" + "─" * 11 + "┴" + "─" * 15 + "┘"
+   112→    hdr = "│ {:<40s} │ {:>14s} │ {:>9s} │ {:>9s} │ {:>9s} │ {:>9s} │ {:>13s} │".format(
+   113→        title[:40], "Iterations", "Min (µs)", "Max (µs)", "Mean (µs)", "Med (µs)", "Ops/sec"
+   114→    )
+   115→
+   116→    print()
+   117→    print(top)
+   118→    print(hdr)
+   119→    print(sep)
+   120→    for r in results:
+   121→        print(r.row())
+   122→    print(bot)
+   123→    print()
+   124→
+   125→
+   126→# ══════════════════════════════════════════════════════════════════════════
+   127→# 1. Startup Benchmark
+   128→# ══════════════════════════════════════════════════════════════════════════
+   129→
+   130→class TestStartupBenchmark(unittest.TestCase):
+   131→    """Benchmark: cold import time for the reconpro package."""
+   132→
+   133→    def test_cold_import_time(self):
+   134→        """Measure time to `import reconpro` in a fresh subprocess."""
+   135→        times: List[float] = []
+   136→        iterations = 5
+   137→        for _ in range(iterations):
+   138→            t0 = time.perf_counter()
+   139→            result = subprocess.run(
+   140→                [sys.executable, "-c", "import reconpro; print('ok')"],
+   141→                capture_output=True,
+   142→                text=True,
+   143→                timeout=30,
+   144→                cwd=_PROJECT_ROOT,
+   145→            )
+   146→            t1 = time.perf_counter()
+   147→            self.assertEqual(result.stdout.strip(), "ok",
+   148→                             f"Import failed: {result.stderr.strip()}")
+   149→            times.append(t1 - t0)
+   150→
+   151→        per_call_ms = [t * 1000 for t in times]
+   152→        avg = statistics.mean(per_call_ms)
+   153→        print(f"\n  🚀 Startup Benchmark: cold import")
+   154→        print(f"     Iterations:  {iterations}")
+   155→        print(f"     Min:         {min(per_call_ms):.1f} ms")
+   156→        print(f"     Max:         {max(per_call_ms):.1f} ms")
+   157→        print(f"     Mean:        {avg:.1f} ms")
+   158→        print(f"     Median:      {statistics.median(per_call_ms):.1f} ms")
+   159→
+   160→    def test_module_discovery_time(self):
+   161→        """Time how long module registry discovery takes."""
+   162→        from reconpro.registry import MODULE_REGISTRY, LOCAL_MODULES, ALL_MODULES
+   163→
+   164→        results: List[BenchResult] = []
+   165→
+   166→        def bench_registry_build():
+   167→            """Time the module registry discovery."""
+   168→            from reconpro.registry import build_module_registry, build_local_modules
+   169→            build_module_registry()
+   170→            build_local_modules()
+   171→
+   172→        results.append(run_benchmark(
+   173→            "Registry discovery (remote+local)",
+   174→            bench_registry_build,
+   175→            ops_per_iter=1,
+   176→            iterations=5,
+   177→        ))
+   178→
+   179→        print(f"\n  📦 Module counts: {len(MODULE_REGISTRY)} remote, {len(LOCAL_MODULES)} local, {len(ALL_MODULES)} total")
+   180→        _print_table(results, "Module Discovery")
+   181→
+   182→
+   183→# ══════════════════════════════════════════════════════════════════════════
+   184→# 2. HTTP Probe Benchmark
+   185→# ══════════════════════════════════════════════════════════════════════════
+   186→
+   187→class TestHTTPProbeBenchmark(unittest.TestCase):
+   188→    """Benchmark: http_probe overhead with mocked network I/O."""
+   189→
+   190→    def _make_mock_response(self, status: int = 200):
+   191→        """Create a mock urllib response."""
+   192→        mock_resp = MagicMock()
+   193→        mock_resp.status = status
+   194→        mock_resp.reason = "OK"
+   195→        mock_resp.headers.items.return_value = [
+   196→            ("Content-Type", "text/html"), ("Server", "nginx"),
+   197→        ]
+   198→        mock_resp.read.return_value = b"Hello World" * 100
+   199→        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+   200→        mock_resp.__exit__ = MagicMock(return_value=False)
+   201→        return mock_resp
+   202→
+   203→    def test_probe_overhead(self):
+   204→        """Measure per-probe overhead (serialization, headers, TLS ctx)."""
+   205→        from reconpro.http import http_probe
+   206→
+   207→        mock_resp = self._make_mock_response()
+   208→        results: List[BenchResult] = []
+   209→
+   210→        # Benchmark: probe overhead with no limiter
+   211→        def bench_probe_no_limiter():
+   212→            with patch("reconpro.http.urllib.request.urlopen", return_value=mock_resp):
+   213→                for _ in range(100):
+   214→                    http_probe("https://example.com/", timeout=1)
+   215→
+   216→        results.append(run_benchmark(
+   217→            "http_probe ×100 (no limiter)",
+   218→            bench_probe_no_limiter,
+   219→            ops_per_iter=100,
+   220→            iterations=5,
+   221→        ))
+   222→
+   223→        # Benchmark: probe overhead with limiter (fast)
+   224→        from reconpro.http import RateLimiter
+   225→        fast_limiter = RateLimiter(max_per_second=100000)
+   226→
+   227→        def bench_probe_with_limiter():
+   228→            with patch("reconpro.http.urllib.request.urlopen", return_value=mock_resp):
+   229→                for _ in range(100):
+   230→                    http_probe("https://example.com/", timeout=1, limiter=fast_limiter)
+   231→
+   232→        results.append(run_benchmark(
+   233→            "http_probe ×100 (fast limiter)",
+   234→            bench_probe_with_limiter,
+   235→            ops_per_iter=100,
+   236→            iterations=5,
+   237→        ))
+   238→
+   239→        _print_table(results, "HTTP Probe Overhead")
+   240→
+   241→        # Assert: per-probe overhead should be < 1ms (1000µs)
+   242→        overhead = results[0].median_us
+   243→        self.assertLess(overhead, 1000,
+   244→                        f"http_probe overhead {overhead:.0f}µs exceeds 1ms target")
+   245→
+   246→    def test_header_construction(self):
+   247→        """Benchmark header dict creation overhead."""
+   248→        from reconpro.http import UA
+   249→
+   250→        results: List[BenchResult] = []
+   251→
+   252→        def bench_headers_fresh():
+   253→            """Create headers dict from scratch each call (current approach)."""
+   254→            for _ in range(10000):
+   255→                h = {
+   256→                    "User-Agent": UA,
+   257→                    "Accept": "application/json,text/html,text/plain,*/*",
+   258→                    "Accept-Language": "en-US,en;q=0.9",
+   259→                }
+   260→                h.update({"X-Custom": "value"})
+   261→
+   262→        results.append(run_benchmark(
+   263→            "Headers dict (fresh per call) ×10k",
+   264→            bench_headers_fresh,
+   265→            ops_per_iter=10000,
+   266→            iterations=5,
+   267→        ))
+   268→
+   269→        def bench_headers_pooled():
+   270→            """Pre-build base headers, copy+update."""
+   271→            base = {
+   272→                "User-Agent": UA,
+   273→                "Accept": "application/json,text/html,text/plain,*/*",
+   274→                "Accept-Language": "en-US,en;q=0.9",
+   275→            }
+   276→            for _ in range(10000):
+   277→                h = dict(base)
+   278→                h["X-Custom"] = "value"
+   279→
+   280→        results.append(run_benchmark(
+   281→            "Headers dict (copy+update) ×10k",
+   282→            bench_headers_pooled,
+   283→            ops_per_iter=10000,
+   284→            iterations=5,
+   285→        ))
+   286→
+   287→        _print_table(results, "Header Construction")
+   288→
+   289→    def test_ssl_context_creation(self):
+   290→        """Benchmark SSL context creation overhead."""
+   291→        import ssl
+   292→
+   293→        results: List[BenchResult] = []
+   294→
+   295→        def bench_ssl_create_default():
+   296→            for _ in range(100):
+   297→                ssl.create_default_context()
+   298→
+   299→        results.append(run_benchmark(
+   300→            "ssl.create_default_context() ×100",
+   301→            bench_ssl_create_default,
+   302→            ops_per_iter=100,
+   303→            iterations=5,
+   304→        ))
+   305→
+   306→        def bench_ssl_unverified():
+   307→            for _ in range(100):
+   308→                ssl._create_unverified_context()
+   309→
+   310→        results.append(run_benchmark(
+   311→            "ssl._create_unverified_context() ×100",
+   312→            bench_ssl_unverified,
+   313→            ops_per_iter=100,
+   314→            iterations=5,
+   315→        ))
+   316→
+   317→        _print_table(results, "SSL Context Creation")
+   318→
+   319→
+   320→# ══════════════════════════════════════════════════════════════════════════
+   321→# 3. Scan Orchestration Benchmark
+   322→# ══════════════════════════════════════════════════════════════════════════
+   323→
+   324→class TestScanOrchestrationBenchmark(unittest.TestCase):
+   325→    """Benchmark: scan() loop overhead with mocked module runners."""
+   326→
+   327→    def _mock_findings(self, count: int = 0) -> list:
+   328→        """Create mock Finding objects."""
+   329→        from reconpro.http import Finding
+   330→        findings = []
+   331→        for i in range(count):
+   332→            findings.append(Finding(
+   333→                title=f"Test finding {i}",
+   334→                severity="info",
+   335→                category="test",
+   336→                module="bench",
+   337→                description="Benchmark test finding",
+   338→                evidence="none",
+   339→                asset="example.com",
+   340→                points_deducted=0,
+   341→            ))
+   342→        return findings
+   343→
+   344→    def test_scan_loop_overhead(self):
+   345→        """Benchmark scan loop overhead: mock the full scan pipeline."""
+   346→        results: List[BenchResult] = []
+   347→
+   348→        for n_modules in [0, 5, 10, 20]:
+   349→            mod_list = [f"mod_{i}" for i in range(n_modules)]
+   350→
+   351→            def bench_scan_loop(mods=mod_list):
+   352→                """Time the scan orchestration overhead with N mocked modules.
+   353→
+   354→                We mock get_module_runner to return instant no-op functions
+   355→                and patch the module list that scan() iterates over.
+   356→                """
+   357→                fake_modules = list(mods)
+   358→
+   359→                def fake_runner(mod_id):
+   360→                    return lambda target, base_url, **kwargs: []
+   361→
+   362→                with patch("reconpro.scanner.validate_target", return_value=(True, "")), \
+   363→                     patch("reconpro.scanner.get_module_runner", side_effect=fake_runner), \
+   364→                     patch("reconpro.scanner.DEFAULT_MODULES", fake_modules):
+   365→                    from reconpro.scanner import scan
+   366→                    try:
+   367→                        scan("example.com", timeout=1)
+   368→                    except Exception:
+   369→                        pass
+   370→
+   371→            results.append(run_benchmark(
+   372→                f"Scan loop ({n_modules} modules)",
+   373→                bench_scan_loop,
+   374→                ops_per_iter=1,
+   375→                iterations=5,
+   376→            ))
+   377→
+   378→        _print_table(results, "Scan Orchestration")
+   379→
+   380→    def test_score_computation(self):
+   381→        """Benchmark score computation for various finding counts."""
+   382→        from reconpro.utils import compute_score, count_severities
+   383→        from reconpro.http import Finding
+   384→
+   385→        results: List[BenchResult] = []
+   386→
+   387→        for n_findings in [0, 10, 100, 1000]:
+   388→            findings = self._mock_findings(n_findings)
+   389→
+   390→            def bench_score(f=findings):
+   391→                compute_score(f)
+   392→
+   393→            results.append(run_benchmark(
+   394→                f"compute_score ({n_findings} findings) ×1000",
+   395→                bench_score,
+   396→                ops_per_iter=1000,
+   397→                iterations=5,
+   398→            ))
+   399→
+   400→            def bench_count(f=findings):
+   401→                count_severities(f)
+   402→
+   403→            results.append(run_benchmark(
+   404→                f"count_severities ({n_findings} findings) ×1000",
+   405→                bench_count,
+   406→                ops_per_iter=1000,
+   407→                iterations=5,
+   408→            ))
+   409→
+   410→        _print_table(results, "Score & Severity Computation")
+   411→
+   412→
+   413→# ══════════════════════════════════════════════════════════════════════════
+   414→# 4. Rate Limiter Benchmark
+   415→# ══════════════════════════════════════════════════════════════════════════
+   416→
+   417→class TestRateLimiterBenchmark(unittest.TestCase):
+   418→    """Benchmark: RateLimiter acquire() overhead."""
+   419→
+   420→    def test_acquire_no_delay(self):
+   421→        """Measure acquire() overhead with infinite rate (no delay)."""
+   422→        from reconpro.http import RateLimiter
+   423→
+   424→        results: List[BenchResult] = []
+   425→
+   426→        # Infinite rate — no sleep expected
+   427→        limiter = RateLimiter(max_per_second=1e9)
+   428→
+   429→        def bench_acquire_fast():
+   430→            for _ in range(10000):
+   431→                limiter.acquire()
+   432→
+   433→        results.append(run_benchmark(
+   434→            "RateLimiter.acquire() ×10k (infinite rate)",
+   435→            bench_acquire_fast,
+   436→            ops_per_iter=10000,
+   437→            iterations=5,
+   438→        ))
+   439→
+   440→        _print_table(results, "Rate Limiter — No Delay")
+   441→
+   442→        # Overhead should be minimal
+   443→        overhead_us = results[0].median_us
+   444→        self.assertLess(overhead_us, 10,
+   445→                        f"RateLimiter.acquire() overhead {overhead_us:.1f}µs too high")
+   446→
+   447→    def test_acquire_with_rate(self):
+   448→        """Measure acquire() at 1000/s rate (1ms interval)."""
+   449→        from reconpro.http import RateLimiter
+   450→
+   451→        results: List[BenchResult] = []
+   452→
+   453→        # 1000/s → 1ms minimum interval
+   454→        limiter = RateLimiter(max_per_second=1000)
+   455→
+   456→        def bench_acquire_1000():
+   457→            for _ in range(100):
+   458→                limiter.acquire()
+   459→
+   460→        results.append(run_benchmark(
+   461→            "RateLimiter.acquire() ×100 (1000/s)",
+   462→            bench_acquire_1000,
+   463→            ops_per_iter=100,
+   464→            iterations=5,
+   465→        ))
+   466→
+   467→        _print_table(results, "Rate Limiter — 1000/s Rate")
+   468→
+   469→    def test_thread_contention(self):
+   470→        """10 threads × 1000 acquires each with rate limiting."""
+   471→        from reconpro.http import RateLimiter
+   472→
+   473→        results: List[BenchResult] = []
+   474→
+   475→        for rate in [100, 1000]:
+   476→            limiter = RateLimiter(max_per_second=rate)
+   477→            acquires_per_thread = 100
+   478→
+   479→            def bench_contention():
+   480→                errors = []
+   481→                barrier = threading.Barrier(10)
+   482→
+   483→                def worker():
+   484→                    try:
+   485→                        barrier.wait(timeout=5)
+   486→                    except threading.BrokenBarrierError:
+   487→                        return
+   488→                    for _ in range(acquires_per_thread):
+   489→                        limiter.acquire()
+   490→
+   491→                threads = [threading.Thread(target=worker) for _ in range(10)]
+   492→                for t in threads:
+   493→                    t.start()
+   494→                for t in threads:
+   495→                    t.join(timeout=30)
+   496→
+   497→            total_ops = 10 * acquires_per_thread
+   498→            results.append(run_benchmark(
+   499→                f"10 threads × {acquires_per_thread} acquires ({rate}/s)",
+   500→                bench_contention,
+   501→                ops_per_iter=total_ops,
+   502→                iterations=3,
+   503→            ))
+   504→
+   505→        _print_table(results, "Rate Limiter — Thread Contention")
+   506→
+   507→
+   508→# ══════════════════════════════════════════════════════════════════════════
+   509→# 5. Memory Benchmark
+   510→# ══════════════════════════════════════════════════════════════════════════
+   511→
+   512→class TestMemoryBenchmark(unittest.TestCase):
+   513→    """Benchmark: Finding creation, to_dict(), list operations."""
+   514→
+   515→    def test_finding_creation(self):
+   516→        """Measure Finding object creation throughput."""
+   517→        from reconpro.http import Finding
+   518→
+   519→        results: List[BenchResult] = []
+   520→
+   521→        def bench_create_10k():
+   522→            for _ in range(10000):
+   523→                Finding(
+   524→                    title="Test Finding",
+   525→                    severity="high",
+   526→                    category="web",
+   527→                    module="recon",
+   528→                    description="Benchmark finding",
+   529→                    evidence="test",
+   530→                    asset="example.com",
+   531→                    points_deducted=5,
+   532→                    remediation="Fix it",
+   533→                    dread_score=0.7,
+   534→                )
+   535→
+   536→        results.append(run_benchmark(
+   537→            "Finding() creation ×10k",
+   538→            bench_create_10k,
+   539→            ops_per_iter=10000,
+   540→            iterations=5,
+   541→        ))
+   542→
+   543→        _print_table(results, "Finding Object Creation")
+   544→
+   545→    def test_finding_to_dict(self):
+   546→        """Benchmark Finding.to_dict() serialization."""
+   547→        from reconpro.http import Finding
+   548→
+   549→        # Pre-create findings
+   550→        findings = [
+   551→            Finding(
+   552→                title=f"Finding {i}",
+   553→                severity=["critical", "high", "medium", "low", "info"][i % 5],
+   554→                category="test",
+   555→                module="bench",
+   556→                description="Benchmark test finding " * 5,
+   557→                evidence="evidence data " * 10,
+   558→                asset="example.com",
+   559→                points_deducted=i % 20,
+   560→                remediation="Fix recommendation",
+   561→                dread_score=0.5,
+   562→            )
+   563→            for i in range(1000)
+   564→        ]
+   565→
+   566→        results: List[BenchResult] = []
+   567→
+   568→        def bench_to_dict():
+   569→            for f in findings:
+   570→                f.to_dict()
+   571→
+   572→        results.append(run_benchmark(
+   573→            "Finding.to_dict() ×1000",
+   574→            bench_to_dict,
+   575→            ops_per_iter=1000,
+   576→            iterations=5,
+   577→        ))
+   578→
+   579→        _print_table(results, "Finding Serialization")
+   580→
+   581→    def test_result_to_dict(self):
+   582→        """Benchmark ReconProResult.to_dict() with many findings."""
+   583→        from reconpro.http import Finding
+   584→        from reconpro.scanner import ReconProResult
+   585→
+   586→        findings = [
+   587→            Finding(
+   588→                title=f"Finding {i}",
+   589→                severity="high",
+   590→                category="test",
+   591→                module="bench",
+   592→                description="Test",
+   593→                evidence="test",
+   594→                asset="example.com",
+   595→            ).to_dict()
+   596→            for i in range(1000)
+   597→        ]
+   598→
+   599→        result = ReconProResult(
+   600→            target="example.com",
+   601→            modules_run=["bench"],
+   602→            findings=findings,
+   603→            severity_counts={"high": 1000},
+   604→            total_score=0,
+   605→            grade="F",
+   606→            badge_markdown="!",
+   607→        )
+   608→
+   609→        results: List[BenchResult] = []
+   610→
+   611→        def bench_result_to_dict():
+   612→            result.to_dict()
+   613→
+   614→        results.append(run_benchmark(
+   615→            "ReconProResult.to_dict() (1000 findings) ×1000",
+   616→            bench_result_to_dict,
+   617→            ops_per_iter=1000,
+   618→            iterations=5,
+   619→        ))
+   620→
+   621→        _print_table(results, "ReconProResult Serialization")
+   622→
+   623→    def test_list_operations(self):
+   624→        """Benchmark list operations on findings."""
+   625→        from reconpro.http import Finding
+   626→        from reconpro.utils import sort_findings_by_severity
+   627→
+   628→        findings = [
+   629→            Finding(
+   630→                title=f"Finding {i}",
+   631→                severity=["critical", "high", "medium", "low", "info"][i % 5],
+   632→                category="test",
+   633→                module="bench",
+   634→                description="Test",
+   635→                evidence="test",
+   636→                asset="example.com",
+   637→            )
+   638→            for i in range(5000)
+   639→        ]
+   640→
+   641→        results: List[BenchResult] = []
+   642→
+   643→        def bench_extend():
+   644→            target = []
+   645→            target.extend(findings)
+   646→
+   647→        results.append(run_benchmark(
+   648→            "list.extend(5000 findings) ×100",
+   649→            bench_extend,
+   650→            ops_per_iter=100,
+   651→            iterations=5,
+   652→        ))
+   653→
+   654→        def bench_sort():
+   655→            sort_findings_by_severity(findings)
+   656→
+   657→        results.append(run_benchmark(
+   658→            "sort_findings_by_severity(5000) ×100",
+   659→            bench_sort,
+   660→            ops_per_iter=100,
+   661→            iterations=5,
+   662→        ))
+   663→
+   664→        def bench_filter():
+   665→            [f for f in findings if f.severity == "critical"]
+   666→
+   667→        results.append(run_benchmark(
+   668→            "list comprehension filter(5000) ×100",
+   669→            bench_filter,
+   670→            ops_per_iter=100,
+   671→            iterations=5,
+   672→        ))
+   673→
+   674→        _print_table(results, "List Operations on Findings")
+   675→
+   676→
+   677→# ══════════════════════════════════════════════════════════════════════════
+   678→# 6. Parallel Execution Benchmark
+   679→# ══════════════════════════════════════════════════════════════════════════
+   680→
+   681→class TestParallelExecutionBenchmark(unittest.TestCase):
+   682→    """Benchmark: ThreadPoolExecutor overhead for parallel scanning."""
+   683→
+   684→    def test_threadpool_overhead(self):
+   685→        """Measure thread pool overhead with no-op tasks."""
+   686→        results: List[BenchResult] = []
+   687→
+   688→        for n_workers in [1, 2, 4, 8]:
+   689→            n_tasks = n_workers * 10
+   690→
+   691→            def bench_pool(nw=n_workers, nt=n_tasks):
+   692→                def noop():
+   693→                    pass
+   694→                with concurrent.futures.ThreadPoolExecutor(max_workers=nw) as pool:
+   695→                    futures = [pool.submit(noop) for _ in range(nt)]
+   696→                    concurrent.futures.wait(futures)
+   697→
+   698→            results.append(run_benchmark(
+   699→                f"ThreadPoolExecutor ({n_workers}w, {n_tasks} tasks) ×100",
+   700→                bench_pool,
+   701→                ops_per_iter=n_tasks,
+   702→                iterations=5,
+   703→            ))
+   704→
+   705→        _print_table(results, "ThreadPoolExecutor Overhead")
+   706→
+   707→    def test_threadpool_with_result_collection(self):
+   708→        """Benchmark result collection patterns."""
+   709→        results: List[BenchResult] = []
+   710→
+   711→        # Pattern A: as_completed loop (current parallel.py approach)
+   712→        def bench_as_completed():
+   713→            n = 40
+   714→            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+   715→                futures = {pool.submit(lambda: ("target", {"findings": []}, None)): i
+   716→                           for i in range(n)}
+   717→                collected = []
+   718→                for f in concurrent.futures.as_completed(futures):
+   719→                    collected.append(f.result())
+   720→
+   721→        results.append(run_benchmark(
+   722→            "as_completed collection (40 tasks) ×100",
+   723→            bench_as_completed,
+   724→            ops_per_iter=40,
+   725→            iterations=5,
+   726→        ))
+   727→
+   728→        # Pattern B: callback-based collection
+   729→        def bench_callback():
+   730→            n = 40
+   731→            collected_cb = []
+   732→            lock = threading.Lock()
+   733→
+   734→            def on_done(f):
+   735→                with lock:
+   736→                    collected_cb.append(f.result())
+   737→
+   738→            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+   739→                futures = [pool.submit(lambda: ("target", {"findings": []}, None))
+   740→                           for _ in range(n)]
+   741→                for f in futures:
+   742→                    f.add_done_callback(on_done)
+   743→                concurrent.futures.wait(futures)
+   744→
+   745→        results.append(run_benchmark(
+   746→            "Callback collection (40 tasks) ×100",
+   747→            bench_callback,
+   748→            ops_per_iter=40,
+   749→            iterations=5,
+   750→        ))
+   751→
+   752→        # Pattern C: executor.map (simpler)
+   753→        def bench_map():
+   754→            n = 40
+   755→            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+   756→                list(pool.map(lambda _: ("target", {"findings": []}, None), range(n)))
+   757→
+   758→        results.append(run_benchmark(
+   759→            "executor.map collection (40 tasks) ×100",
+   760→            bench_map,
+   761→            ops_per_iter=40,
+   762→            iterations=5,
+   763→        ))
+   764→
+   765→        _print_table(results, "Result Collection Patterns")
+   766→
+   767→
+   768→# ══════════════════════════════════════════════════════════════════════════
+   769→# Summary
+   770→# ══════════════════════════════════════════════════════════════════════════
+   771→
+   772→def run_all_benchmarks() -> None:
+   773→    """Run all benchmark test classes and print a summary."""
+   774→    loader = unittest.TestLoader()
+   775→    suite = unittest.TestSuite()
+   776→
+   777→    # Add only performance test classes
+   778→    for cls in [
+   779→        TestStartupBenchmark,
+   780→        TestHTTPProbeBenchmark,
+   781→        TestScanOrchestrationBenchmark,
+   782→        TestRateLimiterBenchmark,
+   783→        TestMemoryBenchmark,
+   784→        TestParallelExecutionBenchmark,
+   785→    ]:
+   786→        suite.addTests(loader.loadTestsFromTestCase(cls))
+   787→
+   788→    runner = unittest.TextTestRunner(verbosity=0)
+   789→    result = runner.run(suite)
+   790→
+   791→    print("\n" + "=" * 100)
+   792→    print(f"  ReconPro v10 Performance Benchmark Summary")
+   793→    print(f"  Ran {result.testsRun} benchmarks | "
+   794→          f"{'PASS' if result.wasSuccessful() else 'FAIL'}")
+   795→    print("=" * 100)
+   796→
+   797→
+   798→if __name__ == "__main__":
+   799→    run_all_benchmarks()
+   800→

@@ -149,6 +149,8 @@ class AnalysisReport:
     timestamp: float = field(default_factory=time.time)
     dedup_count: int = 0
     analysis_duration_ms: float = 0.0
+    false_positive_reduction: Dict[str, int] = field(default_factory=lambda: {"before": 0, "after": 0, "removed": 0})
+    asset_criticality: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -163,6 +165,8 @@ class AnalysisReport:
             "timestamp": self.timestamp,
             "dedup_count": self.dedup_count,
             "analysis_duration_ms": self.analysis_duration_ms,
+            "false_positive_reduction": self.false_positive_reduction,
+            "asset_criticality": self.asset_criticality,
             "correlated": self.correlated,
             "attack_paths": self.attack_paths,
             "prioritized": self.prioritized,
@@ -632,6 +636,7 @@ class FindingCorrelator:
 
     def _detect_chains(self, findings: List[Dict[str, Any]]) -> List[CorrelationGroup]:
         """Detect attack chains using templates and category analysis."""
+        MAX_PAIRS = 50000
         # Classify all findings
         classifier = FindingClassifier()
         classified: List[Tuple[Dict[str, Any], ClassificationResult]] = []
@@ -640,10 +645,14 @@ class FindingCorrelator:
             classified.append((f, cr))
 
         chains: List[CorrelationGroup] = []
-        # Check all pairs against chain templates
+        # Check all pairs against chain templates (capped to prevent O(n²) exhaustion)
+        pair_count = 0
         for i, j in combinations(range(len(classified)), 2):
+            if pair_count >= MAX_PAIRS:
+                break
             f_a, cr_a = classified[i]
             f_b, cr_b = classified[j]
+            pair_count += 1
             for cat_a, cat_b, chain_name in _ATTACK_CHAIN_TEMPLATES:
                 if (cr_a.attack_category == cat_a and cr_b.attack_category == cat_b) or \
                    (cr_b.attack_category == cat_a and cr_a.attack_category == cat_b):
@@ -1273,6 +1282,16 @@ class AIAnalystEngine:
             for f, cr in zip(findings, classifications)
         ]
 
+        # Phase 1.5: Reduce false positives
+        findings_before_fp = len(findings)
+        findings = self._reduce_false_positives(findings)
+        findings_after_fp = len(findings)
+        report.false_positive_reduction = {
+            "before": findings_before_fp,
+            "after": findings_after_fp,
+            "removed": findings_before_fp - findings_after_fp,
+        }
+
         # Phase 2: Correlate and deduplicate
         correlation_groups, deduped = self.correlator.correlate(findings)
         report.dedup_count = len(findings) - len(deduped)
@@ -1318,6 +1337,8 @@ class AIAnalystEngine:
 
         # Phase 6: Generate summary
         report.summary = self._generate_summary(deduped, attack_paths, correlation_groups, target)
+
+        report.asset_criticality = self._analyze_asset_criticality(deduped)
 
         report.analysis_duration_ms = round((time.monotonic() - t0) * 1000, 2)
         return report
@@ -1515,3 +1536,104 @@ class AIAnalystEngine:
             )
 
         return " ".join(parts)
+
+    def _reduce_false_positives(self, findings: List[Dict]) -> List[Dict]:
+        """Apply heuristic rules to identify likely false positives.
+        
+        Rules:
+        1. Findings with very low severity and generic descriptions
+        2. Duplicate findings with different titles but same asset+category
+        3. Findings with empty or very short evidence
+        4. Findings whose descriptions match common false-positive patterns
+        """
+        fp_indicators = [
+            "example", "test", "sample", "demo", "placeholder",
+            "localhost", "127.0.0.1", "0.0.0.0", "::1",
+            "staging", "development", "dev-", "test-",
+        ]
+        
+        result = []
+        seen_signatures = set()
+        
+        for f in findings:
+            fp_score = 0  # 0 = definitely real, higher = more likely FP
+            
+            # Rule 1: Check for FP indicator terms in evidence
+            evidence = f.get("evidence", "").lower()
+            asset = f.get("asset", "").lower()
+            title = f.get("title", "").lower()
+            
+            for indicator in fp_indicators:
+                if indicator in evidence or indicator in asset:
+                    fp_score += 2
+                    break
+            
+            # Rule 2: Deduplicate by asset+category signature
+            sig = f"{f.get('asset', '')}:{f.get('category', '')}:{str(f.get('severity', ''))}"
+            if sig in seen_signatures and f.get("severity", "").lower() in ("info", "low"):
+                fp_score += 3
+            seen_signatures.add(sig)
+            
+            # Rule 3: Very short or empty evidence
+            if len(evidence.strip()) < 10:
+                fp_score += 2
+            
+            # Rule 4: Generic description patterns
+            generic_patterns = [
+                r'^a .* (was|is) (found|detected|discovered)$',
+                r'^possible .*$',
+                r'^potential .*$',
+            ]
+            import re
+            desc = f.get("description", "").lower().strip()
+            for pattern in generic_patterns:
+                if re.match(pattern, desc):
+                    fp_score += 1
+                    break
+            
+            # Mark the finding with FP probability
+            f["false_positive_probability"] = min(1.0, fp_score / 10.0)
+            
+            # Only exclude if very high FP score AND low severity
+            if fp_score >= 6 and f.get("severity", "").lower() in ("info",):
+                continue  # Skip likely false positive
+            
+            result.append(f)
+        
+        return result
+
+    def _analyze_asset_criticality(self, findings: List[Dict]) -> Dict[str, float]:
+        """Analyze asset criticality based on finding density and severity.
+        
+        Returns dict mapping asset names to criticality scores (0-100).
+        Assets with more critical/high findings are more critical.
+        """
+        asset_data: Dict[str, Dict] = {}
+        
+        sev_weights = {"critical": 10, "high": 8, "medium": 5, "low": 2, "info": 0.5}
+        
+        for f in findings:
+            asset = f.get("asset", "unknown")
+            if asset not in asset_data:
+                asset_data[asset] = {"findings": 0, "weighted_score": 0.0, "max_sev": 0}
+            
+            asset_data[asset]["findings"] += 1
+            sev = f.get("severity", "info").lower()
+            asset_data[asset]["weighted_score"] += sev_weights.get(sev, 0.5)
+            asset_data[asset]["max_sev"] = max(
+                asset_data[asset]["max_sev"],
+                sev_weights.get(sev, 0.5)
+            )
+        
+        # Normalize to 0-100
+        max_weighted = max((d["weighted_score"] for d in asset_data.values()), default=1)
+        
+        criticality = {}
+        for asset, data in asset_data.items():
+            raw = (data["weighted_score"] / max(max_weighted, 1)) * 100
+            # Boost if has critical findings
+            if data["max_sev"] >= 10:
+                raw = min(100, raw + 10)
+            criticality[asset] = round(raw, 1)
+        
+        return criticality

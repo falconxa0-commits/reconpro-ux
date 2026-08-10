@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from ..http import Finding
+from ..http_layer import Finding
 
 
 VALID_ROLES = ("analyst", "operator", "lead", "admin")

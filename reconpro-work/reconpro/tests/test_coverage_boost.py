@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from reconpro.http import Finding, RateLimiter
+from reconpro.http_layer import Finding, RateLimiter
 from reconpro.utils import (
     count_severities,
     compute_score,
@@ -676,7 +676,7 @@ class TestReconProResultToDict(unittest.TestCase):
             "target", "modules_run", "total_findings",
             "severity_counts", "total_score", "grade",
             "badge_markdown", "vibesec_score", "vibesec_grade",
-            "module_results", "findings",
+            "module_results", "findings", "intelligence",
         }
         self.assertEqual(set(d.keys()), expected_keys)
         self.assertEqual(d["vibesec_score"], 75)

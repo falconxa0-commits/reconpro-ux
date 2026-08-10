@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..http import http_probe, Finding, default_limiter
+from ..http_layer import http_probe, Finding, default_limiter
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Configuration

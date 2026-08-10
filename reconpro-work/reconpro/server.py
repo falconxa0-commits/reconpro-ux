@@ -128,8 +128,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    _MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
+
     def _read_body(self) -> Dict:
         length = int(self.headers.get("Content-Length", 0))
+        if length > self._MAX_BODY_SIZE:
+            self._json_response(413, {"error": "request body too large"})
+            return None  # type: ignore[return-value]
         if length:
             return json.loads(self.rfile.read(length))
         return {}
@@ -172,6 +177,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "GET /passive/<domain>", "GET /cve/<cve_id>",
                     "POST /scan/vibesec",
                     "POST /export/csv", "POST /export/sarif",
+                    "POST /intelligence",
                     "GET /events",
                 ],
             })
@@ -300,6 +306,8 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         body = self._read_body()
+        if body is None:
+            return  # Response already sent by _read_body (413)
 
         try:
             if path == "/auth/token":
@@ -430,6 +438,22 @@ class _Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(raw)
                 return
+
+            if path == "/intelligence":
+                if not self._check_auth():
+                    return self._unauthorized()
+                findings = body.get("findings")
+                if not isinstance(findings, list) or not findings:
+                    return self._json_response(400, {"error": "findings (non-empty list) required"})
+                scan_data = body.get("scan_data")
+                if scan_data is not None and not isinstance(scan_data, dict):
+                    return self._json_response(400, {"error": "scan_data must be an object or null"})
+                try:
+                    from .intelligence_pipeline import run_intelligence_pipeline
+                    intel_result = run_intelligence_pipeline(findings, scan_data=scan_data)
+                    return self._json_response(200, intel_result.to_dict())
+                except Exception:
+                    return self._json_response(500, {"error": "internal intelligence pipeline error"})
 
             if path == "/export/sarif":
                 if not self._check_auth():

@@ -1,0 +1,976 @@
+     1→"""ReconPro v10 — Attack Graph Engine.
+     2→
+     3→Builds internal attack graphs from scan findings, modeling relationships
+     4→between vulnerabilities as directed graphs. Detects attack chains, privilege
+     5→escalation paths, lateral movement, blast radius, choke points, and kill chains.
+     6→
+     7→Pure Python. Zero external dependencies. NetworkX optional for advanced queries.
+     8→
+     9→This is a NEW subsystem that integrates with the existing knowledge_graph.py
+    10→and chain_engine.py infrastructure without modifying them.
+    11→"""
+    12→
+    13→from __future__ import annotations
+    14→
+    15→import hashlib
+    16→import json
+    17→import re
+    18→import time
+    19→from collections import defaultdict, deque
+    20→from dataclasses import dataclass, field
+    21→from typing import Any, Dict, List, Optional, Set, Tuple
+    22→
+    23→
+    24→# ═══════════════════════════════════════════════════════════════════════════
+    25→# Data Models
+    26→# ═══════════════════════════════════════════════════════════════════════════
+    27→
+    28→_SEVERITY_WEIGHTS: Dict[str, float] = {
+    29→    "critical": 10.0, "high": 8.0, "medium": 6.0, "low": 3.0, "info": 1.0,
+    30→}
+    31→
+    32→
+    33→@dataclass
+    34→class GraphNode:
+    35→    """A node in the attack graph."""
+    36→    id: str
+    37→    node_type: str  # "finding", "asset", "entry_point", "objective", "choke_point"
+    38→    label: str
+    39→    severity: str = "info"
+    40→    risk_score: float = 0.0
+    41→    metadata: Dict[str, Any] = field(default_factory=dict)
+    42→
+    43→    def to_dict(self) -> Dict[str, Any]:
+    44→        return {
+    45→            "id": self.id, "node_type": self.node_type, "label": self.label,
+    46→            "severity": self.severity, "risk_score": round(self.risk_score, 2),
+    47→            "metadata": self.metadata,
+    48→        }
+    49→
+    50→
+    51→@dataclass
+    52→class GraphEdge:
+    53→    """A directed edge in the attack graph."""
+    54→    source: str
+    55→    target: str
+    56→    edge_type: str  # "enables", "leads_to", "exposes", "escalates_to", "required_for"
+    57→    weight: float = 1.0
+    58→    confidence: float = 0.5
+    59→    metadata: Dict[str, Any] = field(default_factory=dict)
+    60→
+    61→    def to_dict(self) -> Dict[str, Any]:
+    62→        return {
+    63→            "source": self.source, "target": self.target,
+    64→            "edge_type": self.edge_type, "weight": round(self.weight, 2),
+    65→            "confidence": round(self.confidence, 2), "metadata": self.metadata,
+    66→        }
+    67→
+    68→
+    69→@dataclass
+    70→class AttackChain:
+    71→    """A discovered attack chain through the graph."""
+    72→    chain_id: str
+    73→    steps: List[str]  # Node IDs
+    74→    step_labels: List[str] = field(default_factory=list)
+    75→    step_severities: List[str] = field(default_factory=list)
+    76→    entry_point: str = ""
+    77→    objective: str = ""
+    78→    complexity: str = "medium"
+    79→    likelihood: float = 0.5
+    80→    impact: float = 0.5
+    81→    blast_radius: int = 1
+    82→    confidence: float = 0.5
+    83→    narrative: str = ""
+    84→    mitre_phases: List[str] = field(default_factory=list)
+    85→
+    86→    def to_dict(self) -> Dict[str, Any]:
+    87→        return {
+    88→            "chain_id": self.chain_id, "steps": self.steps,
+    89→            "step_labels": self.step_labels,
+    90→            "step_severities": self.step_severities,
+    91→            "entry_point": self.entry_point, "objective": self.objective,
+    92→            "complexity": self.complexity,
+    93→            "likelihood": round(self.likelihood, 2),
+    94→            "impact": round(self.impact, 2),
+    95→            "blast_radius": self.blast_radius,
+    96→            "confidence": round(self.confidence, 2),
+    97→            "narrative": self.narrative,
+    98→            "mitre_phases": self.mitre_phases,
+    99→            "step_count": len(self.steps),
+   100→        }
+   101→
+   102→
+   103→@dataclass
+   104→class ChokePoint:
+   105→    """A critical node whose removal would break multiple attack paths."""
+   106→    node_id: str
+   107→    label: str
+   108→    paths_through: int = 0
+   109→    risk_concentration: float = 0.0
+   110→    severity: str = "info"
+   111→    recommendation: str = ""
+   112→
+   113→    def to_dict(self) -> Dict[str, Any]:
+   114→        return {
+   115→            "node_id": self.node_id, "label": self.label,
+   116→            "paths_through": self.paths_through,
+   117→            "risk_concentration": round(self.risk_concentration, 2),
+   118→            "severity": self.severity,
+   119→            "recommendation": self.recommendation,
+   120→        }
+   121→
+   122→
+   123→@dataclass
+   124→class BlastRadius:
+   125→    """Assessment of impact spread from a given node."""
+   126→    source_node: str
+   127→    affected_nodes: List[str] = field(default_factory=list)
+   128→    affected_assets: List[str] = field(default_factory=list)
+   129→    max_depth: int = 0
+   130→    severity_spread: Dict[str, int] = field(default_factory=dict)
+   131→    total_risk: float = 0.0
+   132→
+   133→    def to_dict(self) -> Dict[str, Any]:
+   134→        return {
+   135→            "source_node": self.source_node,
+   136→            "affected_count": len(self.affected_nodes),
+   137→            "affected_nodes": self.affected_nodes,
+   138→            "affected_assets": self.affected_assets,
+   139→            "max_depth": self.max_depth,
+   140→            "severity_spread": self.severity_spread,
+   141→            "total_risk": round(self.total_risk, 2),
+   142→        }
+   143→
+   144→
+   145→@dataclass
+   146→class AttackGraphResult:
+   147→    """Complete attack graph analysis result."""
+   148→    target: str = ""
+   149→    nodes: List[Dict[str, Any]] = field(default_factory=list)
+   150→    edges: List[Dict[str, Any]] = field(default_factory=list)
+   151→    attack_chains: List[Dict[str, Any]] = field(default_factory=list)
+   152→    choke_points: List[Dict[str, Any]] = field(default_factory=list)
+   153→    single_point_failures: List[Dict[str, Any]] = field(default_factory=list)
+   154→    high_value_assets: List[Dict[str, Any]] = field(default_factory=list)
+   155→    critical_attack_hubs: List[Dict[str, Any]] = field(default_factory=list)
+   156→    kill_chain_mapping: Dict[str, Any] = field(default_factory=dict)
+   157→    analysis_duration_ms: float = 0.0
+   158→    timestamp: float = field(default_factory=time.time)
+   159→
+   160→    def to_dict(self) -> Dict[str, Any]:
+   161→        return {
+   162→            "target": self.target,
+   163→            "node_count": len(self.nodes),
+   164→            "edge_count": len(self.edges),
+   165→            "attack_chains": self.attack_chains,
+   166→            "choke_points": self.choke_points,
+   167→            "single_point_failures": self.single_point_failures,
+   168→            "high_value_assets": self.high_value_assets,
+   169→            "critical_attack_hubs": self.critical_attack_hubs,
+   170→            "kill_chain_mapping": self.kill_chain_mapping,
+   171→            "analysis_duration_ms": self.analysis_duration_ms,
+   172→            "timestamp": self.timestamp,
+   173→        }
+   174→
+   175→
+   176→# ═══════════════════════════════════════════════════════════════════════════
+   177→# Directed Graph Implementation (pure Python)
+   178→# ═══════════════════════════════════════════════════════════════════════════
+   179→
+   180→
+   181→class DiGraph:
+   182→    """Lightweight directed graph using adjacency lists.
+   183→
+   184→    Thread-safe for single-writer scenarios. Supports standard graph operations
+   185→    needed for attack path analysis.
+   186→    """
+   187→
+   188→    def __init__(self) -> None:
+   189→        self._nodes: Dict[str, GraphNode] = {}
+   190→        self._adj: Dict[str, Dict[str, GraphEdge]] = defaultdict(dict)
+   191→        self._radj: Dict[str, Dict[str, GraphEdge]] = defaultdict(dict)
+   192→
+   193→    # -- Mutation -------------------------------------------------------------
+   194→
+   195→    def add_node(self, node: GraphNode) -> None:
+   196→        self._nodes[node.id] = node
+   197→
+   198→    def add_edge(self, edge: GraphEdge) -> None:
+   199→        self.add_node(GraphNode(id=edge.source, label=edge.source, node_type="implicit"))
+   200→        self.add_node(GraphNode(id=edge.target, label=edge.target, node_type="implicit"))
+   201→        self._adj[edge.source][edge.target] = edge
+   202→        self._radj[edge.target][edge.source] = edge
+   203→
+   204→    # -- Queries --------------------------------------------------------------
+   205→
+   206→    @property
+   207→    def nodes(self) -> Dict[str, GraphNode]:
+   208→        return dict(self._nodes)
+   209→
+   210→    def successors(self, node_id: str) -> List[str]:
+   211→        return list(self._adj.get(node_id, {}).keys())
+   212→
+   213→    def predecessors(self, node_id: str) -> List[str]:
+   214→        return list(self._radj.get(node_id, {}).keys())
+   215→
+   216→    def edges_from(self, node_id: str) -> List[GraphEdge]:
+   217→        return list(self._adj.get(node_id, {}).values())
+   218→
+   219→    def edges_to(self, node_id: str) -> List[GraphEdge]:
+   220→        return list(self._radj.get(node_id, {}).values())
+   221→
+   222→    def get_edge(self, source: str, target: str) -> Optional[GraphEdge]:
+   223→        return self._adj.get(source, {}).get(target)
+   224→
+   225→    def has_node(self, node_id: str) -> bool:
+   226→        return node_id in self._nodes
+   227→
+   228→    def node_count(self) -> int:
+   229→        return len(self._nodes)
+   230→
+   231→    def edge_count(self) -> int:
+   232→        return sum(len(targets) for targets in self._adj.values())
+   233→
+   234→    def all_edges(self) -> List[GraphEdge]:
+   235→        edges = []
+   236→        for targets in self._adj.values():
+   237→            edges.extend(targets.values())
+   238→        return edges
+   239→
+   240→    # -- Traversal ------------------------------------------------------------
+   241→
+   242→    def bfs_paths(self, start: str, end: str, max_depth: int = 10) -> List[List[str]]:
+   243→        """Find all paths from start to end using BFS up to max_depth."""
+   244→        if start not in self._nodes or end not in self._nodes:
+   245→            return []
+   246→        paths: List[List[str]] = []
+   247→        queue: deque = deque()
+   248→        queue.append(([start], 0))
+   249→        while queue:
+   250→            path, depth = queue.popleft()
+   251→            if depth > max_depth:
+   252→                continue
+   253→            current = path[-1]
+   254→            if current == end and len(path) > 1:
+   255→                paths.append(path)
+   256→                continue
+   257→            for nxt in self.successors(current):
+   258→                if nxt not in path:  # Simple cycle prevention
+   259→                    queue.append((path + [nxt], depth + 1))
+   260→        return paths
+   261→
+   262→    def all_paths_between(self, start: str, end: str, max_depth: int = 6) -> List[List[str]]:
+   263→        """Find all simple paths (DFS) between two nodes."""
+   264→        if start not in self._nodes or end not in self._nodes:
+   265→            return []
+   266→        paths: List[List[str]] = []
+   267→        stack: List[Tuple[str, List[str], Set[str]]] = [(start, [start], {start})]
+   268→        while stack:
+   269→            node, path, visited = stack.pop()
+   270→            if len(path) - 1 >= max_depth:
+   271→                continue
+   272→            for nxt in self.successors(node):
+   273→                if nxt == end:
+   274→                    paths.append(path + [nxt])
+   275→                elif nxt not in visited:
+   276→                    stack.append((nxt, path + [nxt], visited | {nxt}))
+   277→        return paths
+   278→
+   279→    def shortest_path(self, start: str, end: str) -> Optional[List[str]]:
+   280→        """Find shortest path using BFS."""
+   281→        paths = self.bfs_paths(start, end, max_depth=20)
+   282→        return min(paths, key=len) if paths else None
+   283→
+   284→    def ancestors(self, node_id: str, max_depth: int = 10) -> Set[str]:
+   285→        """Get all ancestor nodes up to max_depth."""
+   286→        visited: Set[str] = set()
+   287→        queue = deque([(node_id, 0)])
+   288→        while queue:
+   289→            n, d = queue.popleft()
+   290→            if d >= max_depth:
+   291→                continue
+   292→            for p in self.predecessors(n):
+   293→                if p not in visited:
+   294→                    visited.add(p)
+   295→                    queue.append((p, d + 1))
+   296→        return visited
+   297→
+   298→    def descendants(self, node_id: str, max_depth: int = 10) -> Set[str]:
+   299→        """Get all descendant nodes up to max_depth."""
+   300→        visited: Set[str] = set()
+   301→        queue = deque([(node_id, 0)])
+   302→        while queue:
+   303→            n, d = queue.popleft()
+   304→            if d >= max_depth:
+   305→                continue
+   306→            for s in self.successors(n):
+   307→                if s not in visited:
+   308→                    visited.add(s)
+   309→                    queue.append((s, d + 1))
+   310→        return visited
+   311→
+   312→    def in_degree(self, node_id: str) -> int:
+   313→        return len(self.predecessors(node_id))
+   314→
+   315→    def out_degree(self, node_id: str) -> int:
+   316→        return len(self.successors(node_id))
+   317→
+   318→    def betweenness_proxy(self) -> Dict[str, int]:
+   319→        """Approximate betweenness centrality by counting shortest-path traversals.
+   320→
+   321→        For each pair of nodes, count how many shortest paths pass through
+   322→        each intermediate node. This is a simplified proxy for betweenness.
+   323→        """
+   324→        counts: Dict[str, int] = defaultdict(int)
+   325→        node_list = list(self._nodes.keys())
+   326→        for start in node_list:
+   327→            for end in node_list:
+   328→                if start == end:
+   329→                    continue
+   330→                path = self.shortest_path(start, end)
+   331→                if path and len(path) > 2:
+   332→                    for intermediate in path[1:-1]:
+   333→                        counts[intermediate] += 1
+   334→        return dict(counts)
+   335→
+   336→
+   337→# ═══════════════════════════════════════════════════════════════════════════
+   338→# Attack category classification (localized for graph engine)
+   339→# ═══════════════════════════════════════════════════════════════════════════
+   340→
+   341→_CATEGORY_PATTERNS: List[Tuple[str, str, float]] = [
+   342→    (r"\bsql\b|\bsqli\b", "sqli", 0.95),
+   343→    (r"\bxss\b|cross.?site", "xss", 0.95),
+   344→    (r"\bssrf\b", "ssrf", 0.95),
+   345→    (r"\brce\b|remote.?code", "rce", 0.95),
+   346→    (r"auth.*bypass|unauthorized", "auth_bypass", 0.90),
+   347→    (r"privilege.*escal", "privilege_escalation", 0.90),
+   348→    (r"credential.*theft|password.*leak|default.*cred", "credential_theft", 0.90),
+   349→    (r"data.*expos|data.*leak", "data_exposure", 0.85),
+   350→    (r"misconfigur|security.*header", "misconfiguration", 0.85),
+   351→    (r"weak.*encrypt|crypto.*fail|tls.*weak", "crypto_failure", 0.85),
+   352→    (r"denial.*service|\bdos\b", "dos", 0.85),
+   353→    (r"\bxxe\b", "xxe", 0.95),
+   354→    (r"default.*password|default.*cred", "default_credentials", 0.90),
+   355→    (r"open.?redirect", "open_redirect", 0.85),
+   356→    (r"jwt.*expos|token.*leak", "jwt_exposure", 0.85),
+   357→    (r"sensitive.*api|swagger.*expos", "sensitive_api", 0.80),
+   358→    (r"beacon|c2.*channel", "beaconing", 0.85),
+   359→    (r"steganograph|hidden.*data", "steganography", 0.90),
+   360→    (r"supply.?chain|dependency.*vuln", "supply_chain", 0.85),
+   361→    (r"dns.*enum|subdomain", "dns_recon", 0.85),
+   362→    (r"tech.*finger|framework.*detect", "tech_fingerprint", 0.80),
+   363→    (r"honeypot", "honeypot", 0.85),
+   364→    (r"dark.?web|credential.*dump", "dark_web", 0.85),
+   365→    (r"dead.?drop|crypto.*drop", "dead_drop", 0.85),
+   366→    (r"covert.*channel|exfil.*channel", "covert_channel", 0.85),
+   367→    (r"injection", "injection", 0.80),
+   368→    (r"cve-\d{4}-\d+", "cve", 0.90),
+   369→]
+   370→
+   371→
+   372→def _classify_finding(finding: Dict[str, Any]) -> str:
+   373→    """Quick classification of a finding into an attack category."""
+   374→    title = finding.get("title", "").lower()
+   375→    desc = finding.get("description", "").lower()
+   376→    combined = f"{title} {desc}"
+   377→    best_cat = "misc"
+   378→    best_score = 0.0
+   379→    for pattern, cat, weight in _CATEGORY_PATTERNS:
+   380→        if re.search(pattern, combined, re.IGNORECASE):
+   381→            if weight > best_score:
+   382→                best_score = weight
+   383→                best_cat = cat
+   384→    return best_cat
+   385→
+   386→
+   387→# ═══════════════════════════════════════════════════════════════════════════
+   388→# Kill Chain Phase Mapping
+   389→# ═══════════════════════════════════════════════════════════════════════════
+   390→
+   391→KILL_CHAIN_PHASES: List[str] = [
+   392→    "Reconnaissance", "Weaponization", "Delivery", "Exploitation",
+   393→    "Installation", "Command & Control", "Actions on Objectives",
+   394→]
+   395→
+   396→_CATEGORY_TO_PHASE: Dict[str, str] = {
+   397→    "dns_recon": "Reconnaissance",
+   398→    "subdomain": "Reconnaissance",
+   399→    "tech_fingerprint": "Reconnaissance",
+   400→    "info_disclosure": "Reconnaissance",
+   401→    "wayback": "Reconnaissance",
+   402→    "waf_detected": "Reconnaissance",
+   403→    "header_analysis": "Reconnaissance",
+   404→    "certificate": "Reconnaissance",
+   405→    "honeypot": "Reconnaissance",
+   406→    "dark_web": "Reconnaissance",
+   407→    "open_redirect": "Delivery",
+   408→    "xss": "Delivery",
+   409→    "sqli": "Exploitation",
+   410→    "rce": "Exploitation",
+   411→    "xxe": "Exploitation",
+   412→    "auth_bypass": "Exploitation",
+   413→    "default_credentials": "Exploitation",
+   414→    "injection": "Exploitation",
+   415→    "ssrf": "Exploitation",
+   416→    "privilege_escalation": "Installation",
+   417→    "jwt_exposure": "Installation",
+   418→    "credential_theft": "Installation",
+   419→    "data_exposure": "Actions on Objectives",
+   420→    "misconfiguration": "Installation",
+   421→    "crypto_failure": "Command & Control",
+   422→    "beaconing": "Command & Control",
+   423→    "covert_channel": "Command & Control",
+   424→    "dead_drop": "Command & Control",
+   425→    "steganography": "Exfiltration",
+   426→    "supply_chain": "Weaponization",
+   427→    "cve": "Weaponization",
+   428→    "sensitive_api": "Exploitation",
+   429→    "container": "Installation",
+   430→    "cloud_infrastructure": "Reconnaissance",
+   431→    "infrastructure": "Reconnaissance",
+   432→}
+   433→
+   434→
+   435→# ═══════════════════════════════════════════════════════════════════════════
+   436→# Relationship templates: how categories connect
+   437→# ═══════════════════════════════════════════════════════════════════════════
+   438→
+   439→# (source_category, target_category, edge_type, weight)
+   440→_RELATIONSHIP_TEMPLATES: List[Tuple[str, str, str, float]] = [
+   441→    ("dns_recon", "infrastructure", "enables", 0.7),
+   442→    ("dns_recon", "tech_fingerprint", "enables", 0.8),
+   443→    ("subdomain", "tech_fingerprint", "enables", 0.8),
+   444→    ("subdomain", "open_redirect", "enables", 0.6),
+   445→    ("tech_fingerprint", "cve", "leads_to", 0.7),
+   446→    ("tech_fingerprint", "misconfiguration", "leads_to", 0.6),
+   447→    ("open_redirect", "credential_theft", "enables", 0.8),
+   448→    ("open_redirect", "xss", "enables", 0.7),
+   449→    ("xss", "credential_theft", "leads_to", 0.8),
+   450→    ("credential_theft", "auth_bypass", "escalates_to", 0.9),
+   451→    ("auth_bypass", "privilege_escalation", "escalates_to", 0.9),
+   452→    ("default_credentials", "privilege_escalation", "escalates_to", 0.95),
+   453→    ("sqli", "data_exposure", "leads_to", 0.85),
+   454→    ("sqli", "rce", "leads_to", 0.7),
+   455→    ("rce", "privilege_escalation", "escalates_to", 0.9),
+   456→    ("rce", "data_exposure", "leads_to", 0.85),
+   457→    ("ssrf", "data_exposure", "leads_to", 0.8),
+   458→    ("ssrf", "credential_theft", "leads_to", 0.7),
+   459→    ("jwt_exposure", "privilege_escalation", "escalates_to", 0.85),
+   460→    ("sensitive_api", "data_exposure", "leads_to", 0.8),
+   461→    ("misconfiguration", "data_exposure", "leads_to", 0.7),
+   462→    ("misconfiguration", "credential_theft", "leads_to", 0.6),
+   463→    ("info_disclosure", "credential_theft", "leads_to", 0.6),
+   464→    ("info_disclosure", "sqli", "enables", 0.5),
+   465→    ("supply_chain", "rce", "enables", 0.8),
+   466→    ("xxe", "ssrf", "leads_to", 0.8),
+   467→    ("crypto_failure", "credential_theft", "enables", 0.6),
+   468→    ("beaconing", "data_exposure", "leads_to", 0.7),
+   469→    ("beaconing", "credential_theft", "leads_to", 0.6),
+   470→    ("steganography", "data_exposure", "leads_to", 0.6),
+   471→    ("covert_channel", "data_exposure", "leads_to", 0.7),
+   472→    ("container", "rce", "leads_to", 0.7),
+   473→    ("container", "privilege_escalation", "escalates_to", 0.8),
+   474→    ("injection", "rce", "leads_to", 0.75),
+   475→]
+   476→
+   477→
+   478→# ═══════════════════════════════════════════════════════════════════════════
+   479→# AttackGraphEngine
+   480→# ═══════════════════════════════════════════════════════════════════════════
+   481→
+   482→
+   483→class AttackGraphEngine:
+   484→    """Builds and analyzes attack graphs from scan findings.
+   485→
+   486→    Transforms a flat list of findings into a directed graph of
+   487→    relationships, then extracts attack chains, choke points, blast radii,
+   488→    high-value assets, and kill chain mappings.
+   489→    """
+   490→
+   491→    def __init__(self) -> None:
+   492→        self.graph = DiGraph()
+   493→        self._finding_nodes: Dict[str, str] = {}  # finding hash -> node_id
+   494→        self._category_nodes: Dict[str, List[str]] = defaultdict(list)
+   495→
+   496→    def build_graph(self, findings: List[Dict[str, Any]], target: str = "") -> None:
+   497→        """Build the attack graph from scan findings.
+   498→
+   499→        Creates nodes for each finding and edges based on category relationships.
+   500→        """
+   501→        self.graph = DiGraph()
+   502→        self._finding_nodes = {}
+   503→        self._category_nodes = defaultdict(list)
+   504→
+   505→        # Create entry point node
+   506→        entry_id = "entry:recon"
+   507→        self.graph.add_node(GraphNode(
+   508→            id=entry_id, node_type="entry_point",
+   509→            label=f"Recon: {target or 'target'}",
+   510→            severity="info", risk_score=0.0,
+   511→            metadata={"phase": "Reconnaissance"},
+   512→        ))
+   513→
+   514→        # Create finding nodes
+   515→        for i, f in enumerate(findings):
+   516→            cat = _classify_finding(f)
+   517→            node_id = f"finding:{i}"
+   518→            severity = f.get("severity", "info").lower()
+   519→            risk = _SEVERITY_WEIGHTS.get(severity, 1.0)
+   520→
+   521→            self.graph.add_node(GraphNode(
+   522→                id=node_id, node_type="finding",
+   523→                label=f.get("title", f"Finding {i}")[:80],
+   524→                severity=severity, risk_score=risk,
+   525→                metadata={
+   526→                    "category": cat,
+   527→                    "title": f.get("title", ""),
+   528→                    "asset": f.get("asset", ""),
+   529→                    "module": f.get("module", ""),
+   530→                },
+   531→            ))
+   532→
+   533→            self._finding_nodes[self._finding_hash(f)] = node_id
+   534→            self._category_nodes[cat].append(node_id)
+   535→
+   536→            # Edge from entry to finding
+   537→            self.graph.add_edge(GraphEdge(
+   538→                source=entry_id, target=node_id,
+   539→                edge_type="discovers", weight=0.3, confidence=0.9,
+   540→            ))
+   541→
+   542→        # Create edges based on relationship templates
+   543→        self._create_relationship_edges(findings)
+   544→
+   545→        # Create objective node
+   546→        objective_id = "objective:compromise"
+   547→        self.graph.add_node(GraphNode(
+   548→            id=objective_id, node_type="objective",
+   549→            label="Full System Compromise",
+   550→            severity="critical", risk_score=10.0,
+   551→            metadata={"phase": "Actions on Objectives"},
+   552→        ))
+   553→
+   554→        # Connect high-severity findings to objective
+   555→        for node_id in self._category_nodes.get("privilege_escalation", []):
+   556→            self.graph.add_edge(GraphEdge(
+   557→                source=node_id, target=objective_id,
+   558→                edge_type="leads_to", weight=0.9, confidence=0.8,
+   559→            ))
+   560→        for node_id in self._category_nodes.get("data_exposure", []):
+   561→            self.graph.add_edge(GraphEdge(
+   562→                source=node_id, target=objective_id,
+   563→                edge_type="leads_to", weight=0.7, confidence=0.7,
+   564→            ))
+   565→
+   566→    def analyze(self, findings: List[Dict[str, Any]], target: str = "") -> AttackGraphResult:
+   567→        """Full attack graph analysis.
+   568→
+   569→        Builds the graph, extracts chains, identifies choke points,
+   570→        and produces a comprehensive result.
+   571→        """
+   572→        t0 = time.monotonic()
+   573→
+   574→        self.build_graph(findings, target)
+   575→        result = AttackGraphResult(target=target)
+   576→
+   577→        # Serialize graph
+   578→        result.nodes = [n.to_dict() for n in self.graph.nodes.values()]
+   579→        result.edges = [e.to_dict() for e in self.graph.all_edges()]
+   580→
+   581→        # Extract attack chains
+   582→        chains = self._extract_attack_chains()
+   583→        result.attack_chains = [c.to_dict() for c in chains]
+   584→
+   585→        # Identify choke points
+   586→        choke_points = self._identify_choke_points()
+   587→        result.choke_points = [cp.to_dict() for cp in choke_points]
+   588→
+   589→        # Identify single points of failure
+   590→        spofs = self._identify_single_point_failures()
+   591→        result.single_point_failures = spofs
+   592→
+   593→        # Identify high-value assets
+   594→        hvas = self._identify_high_value_assets()
+   595→        result.high_value_assets = hvas
+   596→
+   597→        # Identify critical attack hubs
+   598→        hubs = self._identify_attack_hubs()
+   599→        result.critical_attack_hubs = hubs
+   600→
+   601→        # Kill chain mapping
+   602→        result.kill_chain_mapping = self._map_kill_chain()
+   603→
+   604→        result.analysis_duration_ms = round((time.monotonic() - t0) * 1000, 2)
+   605→        return result
+   606→
+   607→    def compute_blast_radius(self, node_id: str) -> BlastRadius:
+   608→        """Compute the blast radius from a given node."""
+   609→        descendants = self.graph.descendants(node_id, max_depth=10)
+   610→
+   611→        affected_nodes = list(descendants)
+   612→        affected_assets: List[str] = []
+   613→        sev_spread: Dict[str, int] = defaultdict(int)
+   614→        total_risk = 0.0
+   615→
+   616→        for nid in affected_nodes:
+   617→            node = self.graph.nodes.get(nid)
+   618→            if node:
+   619→                sev_spread[node.severity] = sev_spread.get(node.severity, 0) + 1
+   620→                total_risk += node.risk_score
+   621→                if node.metadata.get("asset"):
+   622→                    affected_assets.append(node.metadata["asset"])
+   623→
+   624→        return BlastRadius(
+   625→            source_node=node_id,
+   626→            affected_nodes=affected_nodes,
+   627→            affected_assets=list(set(affected_assets)),
+   628→            max_depth=max((len(self.graph.shortest_path(node_id, d) or []) - 1) for d in affected_nodes) if affected_nodes else 0,
+   629→            severity_spread=dict(sev_spread),
+   630→            total_risk=total_risk,
+   631→        )
+   632→
+   633→    # -- Internal methods ---------------------------------------------------
+   634→
+   635→    def _create_relationship_edges(self, findings: List[Dict[str, Any]]) -> None:
+   636→        """Create edges between finding nodes based on category relationships."""
+   637→        node_list = list(self.graph.nodes.keys())
+   638→        finding_nodes = [n for n in node_list if n.startswith("finding:")]
+   639→
+   640→        # Build category index
+   641→        cat_index: Dict[str, List[str]] = defaultdict(list)
+   642→        for nid in finding_nodes:
+   643→            node = self.graph.nodes.get(nid)
+   644→            if node:
+   645→                cat = node.metadata.get("category", "misc")
+   646→                cat_index[cat].append(nid)
+   647→
+   648→        # Apply relationship templates
+   649→        for src_cat, tgt_cat, edge_type, weight in _RELATIONSHIP_TEMPLATES:
+   650→            src_nodes = cat_index.get(src_cat, [])
+   651→            tgt_nodes = cat_index.get(tgt_cat, [])
+   652→            for sn in src_nodes:
+   653→                for tn in tgt_nodes:
+   654→                    if sn != tn:
+   655→                        self.graph.add_edge(GraphEdge(
+   656→                            source=sn, target=tn,
+   657→                            edge_type=edge_type, weight=weight,
+   658→                            confidence=min(weight, 0.9),
+   659→                        ))
+   660→
+   661→        # Asset-based edges: findings sharing the same asset
+   662→        asset_index: Dict[str, List[str]] = defaultdict(list)
+   663→        for nid in finding_nodes:
+   664→            node = self.graph.nodes.get(nid)
+   665→            if node:
+   666→                asset = node.metadata.get("asset", "")
+   667→                if asset:
+   668→                    asset_index[asset].append(nid)
+   669→
+   670→        for asset, nodes in asset_index.items():
+   671→            for i, j in combinations(range(len(nodes)), 2):
+   672→                self.graph.add_edge(GraphEdge(
+   673→                    source=nodes[i], target=nodes[j],
+   674→                    edge_type="shared_asset", weight=0.4, confidence=0.7,
+   675→                ))
+   676→                self.graph.add_edge(GraphEdge(
+   677→                    source=nodes[j], target=nodes[i],
+   678→                    edge_type="shared_asset", weight=0.4, confidence=0.7,
+   679→                ))
+   680→
+   681→    def _extract_attack_chains(self) -> List[AttackChain]:
+   682→        """Extract attack chains from the graph."""
+   683→        chains: List[AttackChain] = []
+   684→        entry_id = "entry:recon"
+   685→        objective_id = "objective:compromise"
+   686→
+   687→        if not self.graph.has_node(entry_id) or not self.graph.has_node(objective_id):
+   688→            return chains
+   689→
+   690→        # Find all paths from entry to objective
+   691→        paths = self.graph.all_paths_between(entry_id, objective_id, max_depth=8)
+   692→
+   693→        for i, path in enumerate(paths):
+   694→            if len(path) < 3:
+   695→                continue  # Skip trivial paths
+   696→
+   697→            # Build chain metadata
+   698→            steps = []
+   699→            labels = []
+   700→            severities = []
+   701→            phases = []
+   702→            total_risk = 0.0
+   703→
+   704→            for nid in path:
+   705→                node = self.graph.nodes.get(nid, GraphNode(id=nid, label=nid, node_type="unknown"))
+   706→                steps.append(nid)
+   707→                labels.append(node.label)
+   708→                severities.append(node.severity)
+   709→                total_risk += node.risk_score
+   710→                cat = node.metadata.get("category", "")
+   711→                phase = _CATEGORY_TO_PHASE.get(cat, "")
+   712→                if phase:
+   713→                    phases.append(phase)
+   714→
+   715→            # Compute chain metrics
+   716→            avg_risk = total_risk / max(len(steps), 1)
+   717→            impact = min(1.0, avg_risk / 10.0)
+   718→            likelihood = min(1.0, 1.0 / (len(steps) * 0.5))
+   719→            confidence = min(1.0, likelihood * impact)
+   720→
+   721→            if len(steps) >= 6:
+   722→                complexity = "very_high"
+   723→            elif len(steps) >= 4:
+   724→                complexity = "high"
+   725→            elif len(steps) >= 3:
+   726→                complexity = "medium"
+   727→            else:
+   728→                complexity = "low"
+   729→
+   730→            chain_id = hashlib.sha256(
+   731→                f"chain:{i}:{','.join(path)}".encode()
+   732→            ).hexdigest()[:12]
+   733→
+   734→            narrative = (
+   735→                f"Attack chain with {len(steps)} steps from '{labels[1]}' "
+   736→                f"through {len(steps) - 2} intermediate vulnerabilities "
+   737→                f"to '{labels[-1]}'. Complexity: {complexity}, "
+   738→                f"Estimated impact: {impact:.0%}."
+   739→            )
+   740→
+   741→            chains.append(AttackChain(
+   742→                chain_id=chain_id,
+   743→                steps=steps,
+   744→                step_labels=labels,
+   745→                step_severities=severities,
+   746→                entry_point=steps[1] if len(steps) > 1 else steps[0],
+   747→                objective=labels[-1] if labels else "",
+   748→                complexity=complexity,
+   749→                likelihood=round(likelihood, 2),
+   750→                impact=round(impact, 2),
+   751→                blast_radius=len(steps),
+   752→                confidence=round(confidence, 2),
+   753→                narrative=narrative,
+   754→                mitre_phases=list(dict.fromkeys(phases)),  # Deduplicated, ordered
+   755→            ))
+   756→
+   757→        # Sort by confidence
+   758→        chains.sort(key=lambda c: c.confidence, reverse=True)
+   759→        return chains[:20]  # Cap at 20 chains
+   760→
+   761→    def _identify_choke_points(self) -> List[ChokePoint]:
+   762→        """Identify nodes that appear in many attack paths."""
+   763→        entry_id = "entry:recon"
+   764→        objective_id = "objective:compromise"
+   765→
+   766→        if not self.graph.has_node(entry_id) or not self.graph.has_node(objective_id):
+   767→            return []
+   768→
+   769→        # Find all paths and count node traversals
+   770→        all_paths = self.graph.all_paths_between(entry_id, objective_id, max_depth=6)
+   771→        traversal_counts: Dict[str, int] = defaultdict(int)
+   772→        for path in all_paths:
+   773→            for nid in path[1:-1]:  # Exclude entry and objective
+   774→                traversal_counts[nid] += 1
+   775→
+   776→        if not traversal_counts:
+   777→            return []
+   778→
+   779→        max_traversals = max(traversal_counts.values())
+   780→        choke_points: List[ChokePoint] = []
+   781→
+   782→        for nid, count in traversal_counts.items():
+   783→            if count < 2:
+   784→                continue
+   785→            node = self.graph.nodes.get(nid)
+   786→            if not node or node.node_type != "finding":
+   787→                continue
+   788→
+   789→            concentration = count / max_traversals
+   790→            if concentration >= 0.3:  # Appears in >30% of paths
+   791→                choke_points.append(ChokePoint(
+   792→                    node_id=nid,
+   793→                    label=node.label,
+   794→                    paths_through=count,
+   795→                    risk_concentration=concentration,
+   796→                    severity=node.severity,
+   797→                    recommendation=(
+   798→                        f"Remediating '{node.label}' would break {count} attack paths. "
+   799→                        f"This is a critical choke point with {concentration:.0%} "
+   800→                        f"risk concentration. Prioritize this vulnerability."
+   801→                    ),
+   802→                ))
+   803→
+   804→        choke_points.sort(key=lambda cp: cp.risk_concentration, reverse=True)
+   805→        return choke_points[:10]
+   806→
+   807→    def _identify_single_point_failures(self) -> List[Dict[str, Any]]:
+   808→        """Identify nodes whose removal would disconnect entry from objective."""
+   809→        entry_id = "entry:recon"
+   810→        objective_id = "objective:compromise"
+   811→
+   812→        if not self.graph.has_node(entry_id) or not self.graph.has_node(objective_id):
+   813→            return []
+   814→
+   815→        baseline_paths = self.graph.all_paths_between(entry_id, objective_id, max_depth=6)
+   816→        spofs: List[Dict[str, Any]] = []
+   817→
+   818→        for nid in list(self.graph.nodes.keys()):
+   819→            if nid.startswith("entry:") or nid.startswith("objective:"):
+   820→                continue
+   821→
+   822→            # Temporarily check if removing this node breaks all paths
+   823→            remaining_paths = [p for p in baseline_paths if nid not in p]
+   824→            if not remaining_paths and baseline_paths:
+   825→                node = self.graph.nodes.get(nid)
+   826→                if node:
+   827→                    spofs.append({
+   828→                        "node_id": nid,
+   829→                        "label": node.label,
+   830→                        "severity": node.severity,
+   831→                        "category": node.metadata.get("category", "unknown"),
+   832→                        "paths_blocked": len(baseline_paths),
+   833→                        "description": (
+   834→                            f"Removing '{node.label}' would block ALL {len(baseline_paths)} "
+   835→                            f"attack paths. This is a single point of failure — "
+   836→                            f"both a critical dependency and a high-value remediation target."
+   837→                        ),
+   838→                    })
+   839→
+   840→        return spofs[:10]
+   841→
+   842→    def _identify_high_value_assets(self) -> List[Dict[str, Any]]:
+   843→        """Identify assets with the most critical/high findings."""
+   844→        asset_findings: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+   845→
+   846→        for nid, node in self.graph.nodes.items():
+   847→            if node.node_type == "finding":
+   848→                asset = node.metadata.get("asset", "unknown")
+   849→                if asset:
+   850→                    asset_findings[asset].append({
+   851→                        "node_id": nid,
+   852→                        "title": node.label,
+   853→                        "severity": node.severity,
+   854→                        "risk_score": node.risk_score,
+   855→                    })
+   856→
+   857→        hvas: List[Dict[str, Any]] = []
+   858→        for asset, items in asset_findings.items():
+   859→            if len(items) < 2:
+   860→                continue
+   861→            total_risk = sum(i["risk_score"] for i in items)
+   862→            critical_count = sum(1 for i in items if i["severity"] == "critical")
+   863→            high_count = sum(1 for i in items if i["severity"] == "high")
+   864→
+   865→            if critical_count > 0 or high_count >= 2:
+   866→                hvas.append({
+   867→                    "asset": asset,
+   868→                    "finding_count": len(items),
+   869→                    "total_risk": round(total_risk, 2),
+   870→                    "critical_count": critical_count,
+   871→                    "high_count": high_count,
+   872→                    "risk_level": "critical" if total_risk >= 15 else "high" if total_risk >= 8 else "medium",
+   873→                })
+   874→
+   875→        hvas.sort(key=lambda x: x["total_risk"], reverse=True)
+   876→        return hvas[:10]
+   877→
+   878→    def _identify_attack_hubs(self) -> List[Dict[str, Any]]:
+   879→        """Identify nodes with highest connectivity (potential attack hubs)."""
+   880→        betweenness = self.graph.betweenness_proxy()
+   881→        if not betweenness:
+   882→            return []
+   883→
+   884→        max_b = max(betweenness.values())
+   885→        hubs: List[Dict[str, Any]] = []
+   886→
+   887→        for nid, score in sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:10]:
+   888→            if score == 0:
+   889→                continue
+   890→            node = self.graph.nodes.get(nid)
+   891→            if not node or node.node_type != "finding":
+   892→                continue
+   893→
+   894→            hubs.append({
+   895→                "node_id": nid,
+   896→                "label": node.label,
+   897→                "severity": node.severity,
+   898→                "betweenness": score,
+   899→                "betweenness_ratio": round(score / max_b, 2) if max_b > 0 else 0.0,
+   900→                "in_degree": self.graph.in_degree(nid),
+   901→                "out_degree": self.graph.out_degree(nid),
+   902→                "description": (
+   903→                    f"Attack hub with betweenness {score} "
+   904→                    f"(top {(score/max_b)*100:.0f}% of all nodes). "
+   905→                    f"Connects to {self.graph.out_degree(nid)} downstream targets "
+   906→                    f"and receives from {self.graph.in_degree(nid)} sources."
+   907→                ),
+   908→            })
+   909→
+   910→        return hubs
+   911→
+   912→    def _map_kill_chain(self) -> Dict[str, Any]:
+   913→        """Map findings to Lockheed Martin Kill Chain phases."""
+   914→        phase_findings: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+   915→
+   916→        for nid, node in self.graph.nodes.items():
+   917→            if node.node_type != "finding":
+   918→                continue
+   919→            cat = node.metadata.get("category", "")
+   920→            phase = _CATEGORY_TO_PHASE.get(cat)
+   921→            if phase:
+   922→                phase_findings[phase].append({
+   923→                    "node_id": nid,
+   924→                    "title": node.label,
+   925→                    "severity": node.severity,
+   926→                    "category": cat,
+   927→                })
+   928→
+   929→        phase_coverage = {}
+   930→        for phase in KILL_CHAIN_PHASES:
+   931→            items = phase_findings.get(phase, [])
+   932→            phase_coverage[phase] = {
+   933→                "finding_count": len(items),
+   934→                "findings": items[:10],  # Cap for readability
+   935→                "has_findings": len(items) > 0,
+   936→            }
+   937→
+   938→        # Detect phase gaps
+   939→        covered_phases = {p for p, data in phase_coverage.items() if data["has_findings"]}
+   940→        gap_phases = [p for p in KILL_CHAIN_PHASES if p not in covered_phases]
+   941→
+   942→        return {
+   943→            "phases": phase_coverage,
+   944→            "coverage_percentage": round(len(covered_phases) / len(KILL_CHAIN_PHASES) * 100, 1),
+   945→            "covered_phases": sorted(covered_phases),
+   946→            "gap_phases": gap_phases,
+   947→            "phase_progression": self._assess_phase_progression(phase_findings),
+   948→        }
+   949→
+   950→    def _assess_phase_progression(self, phase_findings: Dict[str, List[Dict[str, Any]]]) -> str:
+   951→        """Assess how far an attacker could progress through the kill chain."""
+   952→        progression = []
+   953→        for phase in KILL_CHAIN_PHASES:
+   954→            if phase in phase_findings and phase_findings[phase]:
+   955→                progression.append(phase)
+   956→
+   957→        if not progression:
+   958→            return "No kill chain progression detected."
+   959→
+   960→        if progression == KILL_CHAIN_PHASES:
+   961→            return f"FULL CHAIN: Attacker can progress through all {len(progression)} phases."
+   962→
+   963→        last = progression[-1]
+   964→        idx = KILL_CHAIN_PHASES.index(last)
+   965→        return (
+   966→            f"Attacker can progress from {progression[0]} to {last} "
+   967→            f"(phase {idx + 1} of {len(KILL_CHAIN_PHASES)}). "
+   968→            f"{len(KILL_CHAIN_PHASES) - idx - 1} phases remain uncovered."
+   969→        )
+   970→
+   971→    @staticmethod
+   972→    def _finding_hash(f: Dict[str, Any]) -> str:
+   973→        """Deterministic hash for a finding."""
+   974→        raw = f"{f.get('title', '')}:{f.get('asset', '')}:{f.get('category', '')}".lower()
+   975→        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+   976→

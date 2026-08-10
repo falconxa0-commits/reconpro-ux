@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
-from ..http import http_probe, Finding
+from ..http_layer import http_probe, Finding
 
 
 SENSITIVE_PATHS = [
@@ -200,7 +200,7 @@ def run_vibesec(target: str, base_url: str, timeout: int = 8,
     score = max(0, min(100, 100 - deductions))
     if not findings:
         score = 100
-    from ..http import compute_grade, badge_markdown
+    from ..http_layer import compute_grade, badge_markdown
     grade = compute_grade(score)
     badge_md = badge_markdown(host, grade)
     return findings, score, grade, badge_md

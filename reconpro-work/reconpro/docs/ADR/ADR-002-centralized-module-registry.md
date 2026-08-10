@@ -16,7 +16,7 @@ Before the registry pattern, modules were imported directly in `scanner.py`, cre
 
 ### Problems Solved
 
-1. **Circular imports**: `scanner.py` imported all modules directly. Modules imported `http.py` and `utils.py`. Any cross-module import would create a cycle.
+1. **Circular imports**: `scanner.py` imported all modules directly. Modules imported `http_layer.py` and `utils.py`. Any cross-module import would create a cycle.
 2. **Single source of truth**: Module names, IDs, and default sets were scattered across `scanner.py`, the CLI (`__main__.py`), and the engine.
 3. **Discovery**: No way to list available modules, query module metadata, or filter by category.
 4. **Testing**: Module-level imports in `scanner.py` meant all modules loaded on every import, slowing test startup.

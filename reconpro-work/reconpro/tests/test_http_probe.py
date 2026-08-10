@@ -1,4 +1,4 @@
-"""Tests for reconpro.http.http_probe with mocked connections."""
+"""Tests for reconpro.http_layer.http_probe with mocked connections."""
 
 import sys
 import os
@@ -7,10 +7,10 @@ from unittest.mock import patch, MagicMock, PropertyMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from reconpro.http import http_probe, RateLimiter
+from reconpro.http_layer import http_probe, RateLimiter
 
 
-@patch('reconpro.http.urllib.request.urlopen')
+@patch('reconpro.http_layer.urllib.request.urlopen')
 class TestHttpProbeStructure(unittest.TestCase):
     """Test http_probe returns correct dict structure."""
 
@@ -59,7 +59,7 @@ class TestHttpProbeStructure(unittest.TestCase):
         self.assertIsInstance(result["body"], str)
 
 
-@patch('reconpro.http.urllib.request.urlopen')
+@patch('reconpro.http_layer.urllib.request.urlopen')
 class TestHttpProbeSuccess(unittest.TestCase):
     """Test http_probe with mocked success response."""
 
@@ -94,7 +94,7 @@ class TestHttpProbeSuccess(unittest.TestCase):
         self.assertLessEqual(len(result["body"]), 16384)
 
 
-@patch('reconpro.http.urllib.request.urlopen')
+@patch('reconpro.http_layer.urllib.request.urlopen')
 class TestHttpProbeHTTPError(unittest.TestCase):
     """Test http_probe with mocked HTTPError."""
 
@@ -129,7 +129,7 @@ class TestHttpProbeHTTPError(unittest.TestCase):
         self.assertEqual(result["status"], 500)
 
 
-@patch('reconpro.http.urllib.request.urlopen')
+@patch('reconpro.http_layer.urllib.request.urlopen')
 class TestHttpProbeNetworkError(unittest.TestCase):
     """Test http_probe with mocked timeout/network error."""
 
@@ -164,7 +164,7 @@ class TestHttpProbeNetworkError(unittest.TestCase):
 class TestHttpProbeLimiter(unittest.TestCase):
     """Test that limiter is called when provided."""
 
-    @patch('reconpro.http.urllib.request.urlopen')
+    @patch('reconpro.http_layer.urllib.request.urlopen')
     def test_limiter_acquire_called(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -179,7 +179,7 @@ class TestHttpProbeLimiter(unittest.TestCase):
         http_probe("https://example.com", limiter=limiter)
         limiter.acquire.assert_called_once()
 
-    @patch('reconpro.http.urllib.request.urlopen')
+    @patch('reconpro.http_layer.urllib.request.urlopen')
     def test_no_limiter_no_call(self, mock_urlopen):
         mock_resp = MagicMock()
         mock_resp.status = 200

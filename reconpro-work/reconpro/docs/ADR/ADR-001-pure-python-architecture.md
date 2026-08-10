@@ -41,7 +41,7 @@ All ReconPro modules MUST use only Python standard library imports. The approved
 - `pathlib` — File system operations
 - `email.utils` — Date header parsing
 
-The `http.py` module serves as the centralized HTTP layer. All modules delegate through `http_probe()` to ensure consistent behavior (rate limiting, TLS verification, User-Agent, body truncation).
+The `http_layer.py` module serves as the centralized HTTP layer. All modules delegate through `http_probe()` to ensure consistent behavior (rate limiting, TLS verification, User-Agent, body truncation).
 
 ## Consequences
 

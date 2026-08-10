@@ -3,7 +3,7 @@
 Architecture
 ────────────
 This module provides a fully async HTTP layer that replaces the synchronous
-urllib-based approach in ``http.py`` for high-throughput scanning.  It is
+urllib-based approach in ``http_layer.py`` for high-throughput scanning.  It is
 designed as a **drop-in enhancement** — callers that prefer the old sync
 API can use :func:`probe_sync` which transparently runs the async path
 inside a fresh event loop.

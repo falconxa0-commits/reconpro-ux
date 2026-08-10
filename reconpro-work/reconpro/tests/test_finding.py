@@ -1,4 +1,4 @@
-"""Tests for reconpro.http.Finding dataclass."""
+"""Tests for reconpro.http_layer.Finding dataclass."""
 
 import sys
 import os
@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from reconpro.http import Finding
+from reconpro.http_layer import Finding
 
 
 class TestFindingCreation(unittest.TestCase):

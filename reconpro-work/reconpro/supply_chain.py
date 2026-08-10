@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
-from .http import Finding
+from .http_layer import Finding
 
 
 # ── Encoding Detection ─────────────────────────────────────────────────

@@ -13,7 +13,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
-from reconpro.http import http_probe, RateLimiter
+from reconpro.http_layer import http_probe, RateLimiter
 
 
 # ── NVD API ────────────────────────────────────────────────────────────

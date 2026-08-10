@@ -29,7 +29,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..http import Finding
+from ..http_layer import Finding
 
 
 def _scan_dir(base_dir: str = ".") -> str:

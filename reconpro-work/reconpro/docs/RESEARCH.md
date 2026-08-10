@@ -32,7 +32,7 @@ ReconPro v10 is a pure-Python security reconnaissance platform with 27 scanning 
 
 This analysis was conducted by:
 
-1. **Source code review** of ReconPro v10 core architecture: `__init__.py`, `registry.py`, `constants.py`, `http.py`, `scanner.py`, `utils.py`, and six advanced modules (first 100+ lines each).
+1. **Source code review** of ReconPro v10 core architecture: `__init__.py`, `registry.py`, `constants.py`, `http_layer.py`, `scanner.py`, `utils.py`, and six advanced modules (first 100+ lines each).
 2. **Feature comparison** against 11 industry-standard security tools based on publicly available documentation, source code, and community knowledge.
 3. **Honest assessment** — capabilities are evaluated based on actual code implementation, not marketing claims. Where ReconPro lacks a feature, it is stated plainly.
 4. **MITRE ATT&CK mapping** based on module source code analysis and documented technique references within the codebase.

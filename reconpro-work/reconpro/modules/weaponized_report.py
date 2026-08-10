@@ -22,7 +22,7 @@ import struct
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
-from ..http import http_probe, Finding, default_limiter
+from ..http_layer import http_probe, Finding, default_limiter
 
 
 # ═══════════════════════════════════════════════════════════════════════════

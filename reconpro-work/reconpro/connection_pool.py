@@ -54,7 +54,7 @@ _HEADER_TEMPLATES = {
     },
 }
 
-_BODY_LIMIT = 16384  # 16 KB — same as http.py
+_BODY_LIMIT = 16384  # 16 KB — same as http_layer.py
 
 
 # ── Connection Pool ──────────────────────────────────────────────────────

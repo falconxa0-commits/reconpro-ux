@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
-from ..http import http_probe, Finding
+from ..http_layer import http_probe, Finding
 
 
 BOT_SIGNATURES = [

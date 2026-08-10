@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import List, Tuple
 
-from reconpro.http import Finding
+from ..http_layer import Finding
 
 
 # ── Supported extensions ─────────────────────────────────────────────

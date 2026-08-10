@@ -20,7 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .scanner import scan, audit_scan
-from .http import Finding, compute_grade
+from .http_layer import Finding, compute_grade
 
 console = Console()
 

@@ -34,7 +34,7 @@ import stat
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..http import Finding
+from ..http_layer import Finding
 
 
 def _hostname() -> str:

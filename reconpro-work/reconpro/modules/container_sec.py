@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..http import Finding, compute_grade, badge_markdown
+from ..http_layer import Finding, compute_grade, badge_markdown
 
 
 # ── Severity / score helpers ─────────────────────────────────────────

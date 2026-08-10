@@ -18,6 +18,7 @@ import re
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
@@ -488,6 +489,9 @@ class AttackGraphEngine:
     high-value assets, and kill chain mappings.
     """
 
+    MAX_GRAPH_NODES = 5000
+    MAX_GRAPH_EDGES = 20000
+
     def __init__(self) -> None:
         self.graph = DiGraph()
         self._finding_nodes: Dict[str, str] = {}  # finding hash -> node_id
@@ -497,7 +501,11 @@ class AttackGraphEngine:
         """Build the attack graph from scan findings.
 
         Creates nodes for each finding and edges based on category relationships.
+        Enforces MAX_GRAPH_NODES and MAX_GRAPH_EDGES to prevent memory exhaustion.
         """
+        if len(findings) > self.MAX_GRAPH_NODES:
+            findings = findings[:self.MAX_GRAPH_NODES]
+
         self.graph = DiGraph()
         self._finding_nodes = {}
         self._category_nodes = defaultdict(list)
@@ -645,6 +653,11 @@ class AttackGraphEngine:
                 cat = node.metadata.get("category", "misc")
                 cat_index[cat].append(nid)
 
+        def _add_edge_safe(edge: GraphEdge) -> None:
+            """Add edge only if under the global edge limit."""
+            if self.graph.edge_count() < self.MAX_GRAPH_EDGES:
+                self.graph.add_edge(edge)
+
         # Apply relationship templates
         for src_cat, tgt_cat, edge_type, weight in _RELATIONSHIP_TEMPLATES:
             src_nodes = cat_index.get(src_cat, [])
@@ -652,7 +665,7 @@ class AttackGraphEngine:
             for sn in src_nodes:
                 for tn in tgt_nodes:
                     if sn != tn:
-                        self.graph.add_edge(GraphEdge(
+                        _add_edge_safe(GraphEdge(
                             source=sn, target=tn,
                             edge_type=edge_type, weight=weight,
                             confidence=min(weight, 0.9),
@@ -669,11 +682,11 @@ class AttackGraphEngine:
 
         for asset, nodes in asset_index.items():
             for i, j in combinations(range(len(nodes)), 2):
-                self.graph.add_edge(GraphEdge(
+                _add_edge_safe(GraphEdge(
                     source=nodes[i], target=nodes[j],
                     edge_type="shared_asset", weight=0.4, confidence=0.7,
                 ))
-                self.graph.add_edge(GraphEdge(
+                _add_edge_safe(GraphEdge(
                     source=nodes[j], target=nodes[i],
                     edge_type="shared_asset", weight=0.4, confidence=0.7,
                 ))

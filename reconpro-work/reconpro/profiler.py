@@ -12,7 +12,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from reconpro.http import http_probe, Finding
+from reconpro.http_layer import http_probe, Finding
 
 
 # ── TechProfile ──────────────────────────────────────────────────────────

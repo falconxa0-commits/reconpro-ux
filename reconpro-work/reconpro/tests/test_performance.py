@@ -202,14 +202,14 @@ class TestHTTPProbeBenchmark(unittest.TestCase):
 
     def test_probe_overhead(self):
         """Measure per-probe overhead (serialization, headers, TLS ctx)."""
-        from reconpro.http import http_probe
+        from reconpro.http_layer import http_probe
 
         mock_resp = self._make_mock_response()
         results: List[BenchResult] = []
 
         # Benchmark: probe overhead with no limiter
         def bench_probe_no_limiter():
-            with patch("reconpro.http.urllib.request.urlopen", return_value=mock_resp):
+            with patch("reconpro.http_layer.urllib.request.urlopen", return_value=mock_resp):
                 for _ in range(100):
                     http_probe("https://example.com/", timeout=1)
 
@@ -221,11 +221,11 @@ class TestHTTPProbeBenchmark(unittest.TestCase):
         ))
 
         # Benchmark: probe overhead with limiter (fast)
-        from reconpro.http import RateLimiter
+        from reconpro.http_layer import RateLimiter
         fast_limiter = RateLimiter(max_per_second=100000)
 
         def bench_probe_with_limiter():
-            with patch("reconpro.http.urllib.request.urlopen", return_value=mock_resp):
+            with patch("reconpro.http_layer.urllib.request.urlopen", return_value=mock_resp):
                 for _ in range(100):
                     http_probe("https://example.com/", timeout=1, limiter=fast_limiter)
 
@@ -245,7 +245,7 @@ class TestHTTPProbeBenchmark(unittest.TestCase):
 
     def test_header_construction(self):
         """Benchmark header dict creation overhead."""
-        from reconpro.http import UA
+        from reconpro.http_layer import UA
 
         results: List[BenchResult] = []
 
@@ -326,7 +326,7 @@ class TestScanOrchestrationBenchmark(unittest.TestCase):
 
     def _mock_findings(self, count: int = 0) -> list:
         """Create mock Finding objects."""
-        from reconpro.http import Finding
+        from reconpro.http_layer import Finding
         findings = []
         for i in range(count):
             findings.append(Finding(
@@ -380,7 +380,7 @@ class TestScanOrchestrationBenchmark(unittest.TestCase):
     def test_score_computation(self):
         """Benchmark score computation for various finding counts."""
         from reconpro.utils import compute_score, count_severities
-        from reconpro.http import Finding
+        from reconpro.http_layer import Finding
 
         results: List[BenchResult] = []
 
@@ -419,7 +419,7 @@ class TestRateLimiterBenchmark(unittest.TestCase):
 
     def test_acquire_no_delay(self):
         """Measure acquire() overhead with infinite rate (no delay)."""
-        from reconpro.http import RateLimiter
+        from reconpro.http_layer import RateLimiter
 
         results: List[BenchResult] = []
 
@@ -446,7 +446,7 @@ class TestRateLimiterBenchmark(unittest.TestCase):
 
     def test_acquire_with_rate(self):
         """Measure acquire() at 1000/s rate (1ms interval)."""
-        from reconpro.http import RateLimiter
+        from reconpro.http_layer import RateLimiter
 
         results: List[BenchResult] = []
 
@@ -468,7 +468,7 @@ class TestRateLimiterBenchmark(unittest.TestCase):
 
     def test_thread_contention(self):
         """10 threads × 1000 acquires each with rate limiting."""
-        from reconpro.http import RateLimiter
+        from reconpro.http_layer import RateLimiter
 
         results: List[BenchResult] = []
 
@@ -514,7 +514,7 @@ class TestMemoryBenchmark(unittest.TestCase):
 
     def test_finding_creation(self):
         """Measure Finding object creation throughput."""
-        from reconpro.http import Finding
+        from reconpro.http_layer import Finding
 
         results: List[BenchResult] = []
 
@@ -544,7 +544,7 @@ class TestMemoryBenchmark(unittest.TestCase):
 
     def test_finding_to_dict(self):
         """Benchmark Finding.to_dict() serialization."""
-        from reconpro.http import Finding
+        from reconpro.http_layer import Finding
 
         # Pre-create findings
         findings = [
@@ -580,7 +580,7 @@ class TestMemoryBenchmark(unittest.TestCase):
 
     def test_result_to_dict(self):
         """Benchmark ReconProResult.to_dict() with many findings."""
-        from reconpro.http import Finding
+        from reconpro.http_layer import Finding
         from reconpro.scanner import ReconProResult
 
         findings = [
@@ -622,7 +622,7 @@ class TestMemoryBenchmark(unittest.TestCase):
 
     def test_list_operations(self):
         """Benchmark list operations on findings."""
-        from reconpro.http import Finding
+        from reconpro.http_layer import Finding
         from reconpro.utils import sort_findings_by_severity
 
         findings = [

@@ -1,0 +1,915 @@
+     1→"""ReconPro v10 — Threat Intelligence Center.
+     2→
+     3→Centralized threat intelligence engine for enriching scan findings with
+     4→threat data from public standards (CVE, CWE, CAPEC, MITRE ATT&CK, CISA KEV,
+     5→EPSS, CVSS, OWASP). Supports offline operation with built-in mappings and
+     6→optional online enrichment via stdlib HTTP.
+     7→
+     8→Pure Python. Zero external dependencies. All mappings are embedded.
+     9→"""
+    10→
+    11→from __future__ import annotations
+    12→
+    13→import hashlib
+    14→import json
+    15→import re
+    16→import time
+    17→import urllib.request
+    18→import urllib.error
+    19→import ssl
+    20→from collections import defaultdict
+    21→from dataclasses import dataclass, field
+    22→from typing import Any, Dict, List, Optional, Tuple
+    23→from threading import Lock
+    24→
+    25→
+    26→# ═══════════════════════════════════════════════════════════════════════════
+    27→# Data Models
+    28→# ═══════════════════════════════════════════════════════════════════════════
+    29→
+    30→
+    31→@dataclass
+    32→class ThreatRecord:
+    33→    """A single threat intelligence record."""
+    34→    source: str       # "CVE", "CWE", "CAPEC", "MITRE", "CISA_KEV", "EPSS", "OWASP"
+    35→    source_id: str
+    36→    name: str
+    37→    description: str = ""
+    38→    severity: str = "info"
+    39→    confidence: float = 0.5
+    40→    metadata: Dict[str, Any] = field(default_factory=dict)
+    41→    last_updated: float = 0.0
+    42→    evidence_chain: List[str] = field(default_factory=list)
+    43→
+    44→    def to_dict(self) -> Dict[str, Any]:
+    45→        return {
+    46→            "source": self.source, "source_id": self.source_id,
+    47→            "name": self.name, "description": self.description,
+    48→            "severity": self.severity, "confidence": round(self.confidence, 2),
+    49→            "metadata": self.metadata, "last_updated": self.last_updated,
+    50→            "evidence_chain": self.evidence_chain,
+    51→        }
+    52→
+    53→
+    54→@dataclass
+    55→class EnrichedFinding:
+    56→    """A finding enriched with threat intelligence."""
+    57→    original: Dict[str, Any]
+    58→    threat_records: List[Dict[str, Any]] = field(default_factory=list)
+    59→    cve_matches: List[str] = field(default_factory=list)
+    60→    cwe_matches: List[str] = field(default_factory=list)
+    61→    capec_matches: List[str] = field(default_factory=list)
+    62→    mitre_techniques: List[Dict[str, str]] = field(default_factory=list)
+    63→    known_exploitation: bool = False
+    64→    active_exploitation: bool = False
+    65→    severity_evolution: str = "stable"  # "increasing", "stable", "decreasing"
+    66→    affected_technologies: List[str] = field(default_factory=list)
+    67→    threat_summary: str = ""
+    68→    enrichment_confidence: float = 0.0
+    69→
+    70→    def to_dict(self) -> Dict[str, Any]:
+    71→        return {
+    72→            "title": self.original.get("title", ""),
+    73→            "severity": self.original.get("severity", "info"),
+    74→            "cve_matches": self.cve_matches,
+    75→            "cwe_matches": self.cwe_matches,
+    76→            "capec_matches": self.capec_matches,
+    77→            "mitre_techniques": self.mitre_techniques,
+    78→            "known_exploitation": self.known_exploitation,
+    79→            "active_exploitation": self.active_exploitation,
+    80→            "severity_evolution": self.severity_evolution,
+    81→            "affected_technologies": self.affected_technologies,
+    82→            "threat_summary": self.threat_summary,
+    83→            "enrichment_confidence": round(self.enrichment_confidence, 2),
+    84→            "threat_records": self.threat_records,
+    85→            "record_count": len(self.threat_records),
+    86→        }
+    87→
+    88→
+    89→@dataclass
+    90→class ThreatIntelReport:
+    91→    """Complete threat intelligence report for a scan."""
+    92→    target: str = ""
+    93→    enriched_findings: List[Dict[str, Any]] = field(default_factory=list)
+    94→    unique_cves: List[str] = field(default_factory=list)
+    95→    unique_cwes: List[str] = field(default_factory=list)
+    96→    unique_capecs: List[str] = field(default_factory=list)
+    97→    unique_mitre: List[Dict[str, str]] = field(default_factory=list)
+    98→    known_exploited_count: int = 0
+    99→    active_exploitation_count: int = 0
+   100→    technology_profile: Dict[str, int] = field(default_factory=dict)
+   101→    severity_trends: Dict[str, str] = field(default_factory=dict)
+   102→    threat_summary: str = ""
+   103→    cache_hits: int = 0
+   104→    cache_misses: int = 0
+   105→    online_queries: int = 0
+   106→    analysis_duration_ms: float = 0.0
+   107→    timestamp: float = field(default_factory=time.time)
+   108→
+   109→    def to_dict(self) -> Dict[str, Any]:
+   110→        return {
+   111→            "target": self.target,
+   112→            "enriched_count": len(self.enriched_findings),
+   113→            "unique_cves": self.unique_cves,
+   114→            "unique_cwes": self.unique_cwes,
+   115→            "unique_capecs": self.unique_capecs,
+   116→            "unique_mitre": self.unique_mitre,
+   117→            "known_exploited_count": self.known_exploited_count,
+   118→            "active_exploitation_count": self.active_exploitation_count,
+   119→            "technology_profile": self.technology_profile,
+   120→            "severity_trends": self.severity_trends,
+   121→            "threat_summary": self.threat_summary,
+   122→            "cache_stats": {"hits": self.cache_hits, "misses": self.cache_misses},
+   123→            "online_queries": self.online_queries,
+   124→            "analysis_duration_ms": self.analysis_duration_ms,
+   125→            "timestamp": self.timestamp,
+   126→            "enriched_findings": self.enriched_findings,
+   127→        }
+   128→
+   129→
+   130→# ═══════════════════════════════════════════════════════════════════════════
+   131→# Built-in Threat Intelligence Database
+   132→# ═══════════════════════════════════════════════════════════════════════════
+   133→
+   134→# CVE pattern → severity + description
+   135→_CVE_KNOWN_PATTERNS: Dict[str, Dict[str, Any]] = {
+   136→    "CVE-2021-44228": {"severity": "critical", "name": "Log4Shell",
+   137→                      "description": "Apache Log4j2 JNDI features do not protect against attacker-controlled LDAP and other JNDI-related endpoints",
+   138→                      "affected": ["Apache Log4j 2.x"], "known_exploited": True},
+   139→    "CVE-2023-44487": {"severity": "high", "name": "HTTP/2 Rapid Reset",
+   140→                      "description": "HTTP/2 Rapid Reset attack can cause denial of service",
+   141→                      "affected": ["HTTP/2 servers"], "known_exploited": True},
+   142→    "CVE-2024-3094": {"severity": "critical", "name": "XZ Utils Backdoor",
+   143→                      "description": "Malicious code injection in xz-utils liblzma",
+   144→                      "affected": ["xz-utils", "liblzma", "OpenSSH"], "known_exploited": True},
+   145→    "CVE-2021-41773": {"severity": "high", "name": "Apache Path Traversal",
+   146→                      "description": "Path traversal and file disclosure vulnerability in Apache 2.4.49",
+   147→                      "affected": ["Apache HTTPD 2.4.49"], "known_exploited": True},
+   148→    "CVE-2023-38545": {"severity": "high", "name": "curl SOCKS5 Heap Buffer Overflow",
+   149→                      "description": "SOCKS5 heap buffer overflow in curl",
+   150→                      "affected": ["curl"], "known_exploited": True},
+   151→    "CVE-2023-36884": {"severity": "critical", "name": "Microsoft Office RCE",
+   152→                      "description": "RCE in Microsoft Office and Windows HTML",
+   153→                      "affected": ["Microsoft Office", "HTML"], "known_exploited": True},
+   154→    "CVE-2021-3449": {"severity": "high", "name": "OpenSSL ASN.1 Parsing",
+   155→                      "description": "Null pointer dereference in signature verification",
+   156→                      "affected": ["OpenSSL"], "known_exploited": False},
+   157→    "CVE-2023-22515": {"severity": "critical", "name": "Atlassian Confluence RCE",
+   158→                      "description": "Broken access control in Confluence Data Center and Server",
+   159→                      "affected": ["Atlassian Confluence"], "known_exploited": True},
+   160→    "CVE-2023-46604": {"severity": "critical", "name": "Apache ActiveMQ RCE",
+   161→                      "description": "Remote code execution in OpenWire protocol marshaller",
+   162→                      "affected": ["Apache ActiveMQ"], "known_exploited": True},
+   163→    "CVE-2024-0001": {"severity": "critical", "name": "Generic Critical CVE placeholder",
+   164→                      "description": "Critical vulnerability requiring immediate patching",
+   165→                      "affected": ["Unknown"], "known_exploited": False},
+   166→}
+   167→
+   168→# CISA Known Exploited Vulnerabilities (KEV) catalog — subset
+   169→_CISA_KEV_CVE_LIST: set = {
+   170→    "CVE-2021-44228", "CVE-2023-44487", "CVE-2024-3094",
+   171→    "CVE-2021-41773", "CVE-2023-38545", "CVE-2023-36884",
+   172→    "CVE-2023-22515", "CVE-2023-46604",
+   173→}
+   174→
+   175→# CWE detailed descriptions
+   176→_CWE_DATABASE: Dict[str, Dict[str, Any]] = {
+   177→    "CWE-89": {"name": "SQL Injection", "description": "Improper Neutralization of Special Elements used in an SQL Command", "risk": "high"},
+   178→    "CWE-79": {"name": "Cross-site Scripting (XSS)", "description": "Improper Neutralization of Input During Web Page Generation", "risk": "high"},
+   179→    "CWE-918": {"name": "Server-Side Request Forgery (SSRF)", "description": "Server-Side Request Forgery", "risk": "high"},
+   180→    "CWE-78": {"name": "OS Command Injection", "description": "Improper Neutralization of Special Elements used in an OS Command", "risk": "critical"},
+   181→    "CWE-287": {"name": "Improper Authentication", "description": "When an actor claims to have a given identity, the software does not prove or insufficiently proves the claim", "risk": "high"},
+   182→    "CWE-306": {"name": "Missing Authentication for Critical Function", "description": "The software does not perform authentication for functionality that requires a proven user identity", "risk": "critical"},
+   183→    "CWE-862": {"name": "Missing Authorization", "description": "The software does not perform an authorization check when an actor attempts to access a resource", "risk": "high"},
+   184→    "CWE-269": {"name": "Improper Privilege Management", "description": "The software does not assign or maintains privileges incorrectly", "risk": "high"},
+   185→    "CWE-522": {"name": "Insufficiently Protected Credentials", "description": "Credentials are stored in cleartext or inadequately protected", "risk": "high"},
+   186→    "CWE-798": {"name": "Use of Hard-coded Credentials", "description": "The software contains hard-coded credentials for authentication", "risk": "high"},
+   187→    "CWE-200": {"name": "Information Exposure", "description": "Exposure of sensitive information to an actor that is not explicitly authorized", "risk": "medium"},
+   188→    "CWE-327": {"name": "Use of a Broken or Risky Cryptographic Algorithm", "description": "Use of a broken or risky cryptographic algorithm", "risk": "high"},
+   189→    "CWE-328": {"name": "Use of Weak Hash", "description": "Use of a weak hash algorithm for critical security decisions", "risk": "medium"},
+   190→    "CWE-400": {"name": "Uncontrolled Resource Consumption", "description": "The software does not properly control the allocation of resources", "risk": "medium"},
+   191→    "CWE-611": {"name": "XXE - XML External Entity", "description": "Processing of an XML document can cause the software to expose information or consume resources", "risk": "high"},
+   192→    "CWE-601": {"name": "URL Redirection to Untrusted Site", "description": "Open redirect vulnerability", "risk": "medium"},
+   193→    "CWE-94": {"name": "Code Injection", "description": "The software allows user input to be used as code", "risk": "critical"},
+   194→    "CWE-74": {"name": "Injection", "description": "The software constructs a command using externally-influenced input", "risk": "high"},
+   195→    "CWE-226": {"name": "Sensitive Information in Resource Not Removed Before Reuse", "description": "Sensitive data is not cleared before a resource is reused", "risk": "medium"},
+   196→    "CWE-218": {"name": "Sensitive Information in Resource Names", "description": "Resource names contain sensitive information", "risk": "medium"},
+   197→    "CWE-16": {"name": "Configuration", "description": "The software's configuration is insecure by default", "risk": "medium"},
+   198→    "CWE-2": {"name": "Environment", "description": "The software operates in an environment that is not properly secured", "risk": "medium"},
+   199→    "CWE-614": {"name": "Sensitive Cookie in HTTPS Session Without 'Secure' Attribute", "description": "Cookie used in HTTPS session lacks Secure flag", "risk": "low"},
+   200→    "CWE-1357": {"name": "Reliance on Uncontrolled Component", "description": "The software relies on a third-party component without validating its integrity", "risk": "high"},
+   201→    "CWE-829": {"name": "Inclusion of Functionality from Untrusted Control Sphere", "description": "The software imports functionality from an untrusted control sphere", "risk": "high"},
+   202→    "CWE-494": {"name": "Download of Code Without Integrity Check", "description": "The software downloads code without verifying its integrity", "risk": "high"},
+   203→    "CWE-326": {"name": "Inadequate Encryption Strength", "description": "The algorithm uses insufficient encryption strength", "risk": "high"},
+   204→    "CWE-1004": {"name": "Sensitive Cookie Without 'HttpOnly' Flag", "description": "Cookie does not have HttpOnly flag set", "risk": "low"},
+   205→    "CWE-404": {"name": "Improper Resource Shutdown", "description": "The software does not release a resource properly", "risk": "low"},
+   206→    "CWE-350": {"name": "Reliance on Reverse DNS Resolution for Security", "description": "The software uses reverse DNS for security decisions", "risk": "medium"},
+   207→    "CWE-613": {"name": "Insufficient Session Expiration", "description": "Session tokens do not expire after a reasonable period", "risk": "medium"},
+   208→    "CWE-77": {"name": "Command Injection", "description": "The software constructs commands using user-controlled input", "risk": "critical"},
+   209→    "CWE-87": {"name": "Improper Neutralization of Alternate XSS Syntax", "description": "XSS via alternate encoding methods", "risk": "high"},
+   210→    "CWE-564": {"name": "SQL Injection: Hibernate", "description": "HQL/HQL injection in Hibernate ORM", "risk": "high"},
+   211→    "CWE-258": {"name": "Empty Password", "description": "Password field is empty", "risk": "high"},
+   212→    "CWE-259": {"name": "Use of Hard-coded Password", "description": "Hard-coded password in the software", "risk": "high"},
+   213→    "CWE-427": {"name": "Uncontrolled Search Path Element", "description": "Path traversal via uncontrolled search path", "risk": "high"},
+   214→}
+   215→
+   216→# CAPEC detailed descriptions
+   217→_CAPEC_DATABASE: Dict[str, Dict[str, Any]] = {
+   218→    "CAPEC-66": {"name": "SQL Injection", "description": "Attacker injects SQL commands via input fields", "risk": "high"},
+   219→    "CAPEC-86": {"name": "Cross Site Scripting", "description": "Inject client-side scripts into web pages", "risk": "high"},
+   220→    "CAPEC-664": {"name": "Server Side Request Forgery", "description": "Force server to make requests to unintended locations", "risk": "high"},
+   221→    "CAPEC-131": {"name": "Resource Injection", "description": "Attacker injects resources that modify application behavior", "risk": "critical"},
+   222→    "CAPEC-165": {"name": "Flooding", "description": "Overwhelm target with excessive traffic or data", "risk": "medium"},
+   223→    "CAPEC-114": {"name": "Authentication Abuse", "description": "Exploit authentication mechanisms for unauthorized access", "risk": "high"},
+   224→    "CAPEC-600": {"name": "Unauthorized Active API Session", "description": "Reuse of authorized session tokens", "risk": "high"},
+   225→    "CAPEC-122": {"name": "Buffer Overflow", "description": "Write data past the end of allocated buffer", "risk": "critical"},
+   226→    "CAPEC-233": {"name": "Privilege Abuse", "description": "Abuse existing privileges to gain additional access", "risk": "high"},
+   227→    "CAPEC-16": {"name": "Dictionary Attack", "description": "Attempt to guess passwords from a dictionary", "risk": "medium"},
+   228→    "CAPEC-547": {"name": "Use of Known Default Credentials", "description": "Exploit default credentials on deployed systems", "risk": "high"},
+   229→    "CAPEC-201": {"name": "Data Filtration", "description": "Extract data through manipulation of query sequences", "risk": "medium"},
+   230→    "CAPEC-352": {"name": "Cross-Site Request Forgery", "description": "Force victim to execute unwanted actions on authenticated site", "risk": "medium"},
+   231→    "CAPEC-213": {"name": "Exploitation of Trust", "description": "Exploit implicit trust relationships between components", "risk": "high"},
+   232→    "CAPEC-97": {"name": "Data Interception", "description": "Intercept data transmitted between components", "risk": "high"},
+   233→    "CAPEC-18": {"name": "Cross-Site Scripting (XSS)", "description": "Inject malicious scripts via web application", "risk": "high"},
+   234→    "CAPEC-100": {"name": "OWASP Top Ten Manipulation", "description": "Exploit vulnerabilities from OWASP Top 10", "risk": "high"},
+   235→    "CAPEC-242": {"name": "Code Injection", "description": "Inject arbitrary code that is executed by the application", "risk": "critical"},
+   236→    "CAPEC-219": {"name": "XML External Entity Blowup", "description": "XXE attack causing resource exhaustion", "risk": "high"},
+   237→    "CAPEC-601": {"name": "URL Redirection to Malicious Site", "description": "Redirect victim to attacker-controlled URL", "risk": "medium"},
+   238→    "CAPEC-652": {"name": "Traffic Tunneling", "description": "Tunnel traffic through an allowed protocol", "risk": "high"},
+   239→    "CAPEC-600": {"name": "Session Sidejacking", "description": "Hijack an authenticated session", "risk": "high"},
+   240→    "CAPEC-166": {"name": "DOM-based Injection", "description": "Manipulate DOM environment from untrusted input", "risk": "high"},
+   241→    "CAPEC-441": {"name": "Malicious Dependency", "description": "Supply chain attack via malicious dependency", "risk": "critical"},
+   242→    "CAPEC-660": {"name": "Software Integrity Attack", "description": "Modify software supply chain to inject vulnerabilities", "risk": "critical"},
+   243→    "CAPEC-157": {"name": "Shared Data Manipulation", "description": "Modify shared data to exploit race conditions", "risk": "medium"},
+   244→    "CAPEC-604": {"name": "HTTP Request Splitting", "description": "Inject extra HTTP requests via malformed input", "risk": "medium"},
+   245→    "CAPEC-463": {"name": "HTTP Splitting", "description": "Manipulate HTTP request/response splitting", "risk": "medium"},
+   246→}
+   247→
+   248→# MITRE ATT&CK Enterprise techniques (expanded)
+   249→_MITRE_TECHNIQUES: Dict[str, Dict[str, Any]] = {
+   250→    "T1190": {"name": "Exploit Public-Facing Application", "tactic": "TA0001", "risk": "critical"},
+   251→    "T1059": {"name": "Command and Scripting Interpreter", "tactic": "TA0002", "risk": "high"},
+   252→    "T1059.007": {"name": "JavaScript", "tactic": "TA0002", "risk": "high"},
+   253→    "T1189": {"name": "Drive-by Compromise", "tactic": "TA0001", "risk": "high"},
+   254→    "T1078": {"name": "Valid Accounts", "tactic": "TA0001", "risk": "high"},
+   255→    "T1078.001": {"name": "Default Accounts", "tactic": "TA0001", "risk": "high"},
+   256→    "T1548": {"name": "Abuse Elevation Control Mechanism", "tactic": "TA0004", "risk": "high"},
+   257→    "T1068": {"name": "Exploitation for Privilege Escalation", "tactic": "TA0004", "risk": "critical"},
+   258→    "T1110": {"name": "Brute Force", "tactic": "TA0006", "risk": "high"},
+   259→    "T1110.001": {"name": "Password Spraying", "tactic": "TA0006", "risk": "high"},
+   260→    "T1552": {"name": "Unsecured Credentials", "tactic": "TA0006", "risk": "high"},
+   261→    "T1552.001": {"name": "Credentials in Files", "tactic": "TA0006", "risk": "high"},
+   262→    "T1566": {"name": "Phishing", "tactic": "TA0001", "risk": "high"},
+   263→    "T1566.002": {"name": "Spearphishing Link", "tactic": "TA0001", "risk": "high"},
+   264→    "T1046": {"name": "Network Service Discovery", "tactic": "TA0007", "risk": "medium"},
+   265→    "T1083": {"name": "File and Directory Discovery", "tactic": "TA0007", "risk": "low"},
+   266→    "T1082": {"name": "System Information Discovery", "tactic": "TA0007", "risk": "medium"},
+   267→    "T1562": {"name": "Impair Defenses", "tactic": "TA0005", "risk": "high"},
+   268→    "T1573": {"name": "Encrypted Channel", "tactic": "TA0011", "risk": "medium"},
+   269→    "T1571": {"name": "Non-Standard Port", "tactic": "TA0011", "risk": "medium"},
+   270→    "T1071": {"name": "Application Layer Protocol", "tactic": "TA0011", "risk": "medium"},
+   271→    "T1498": {"name": "Network Denial of Service", "tactic": "TA0040", "risk": "high"},
+   272→    "T1486": {"name": "Data Encrypted for Impact", "tactic": "TA0040", "risk": "critical"},
+   273→    "T1001": {"name": "Data Obfuscation", "tactic": "TA0005", "risk": "medium"},
+   274→    "T1048": {"name": "Exfiltration Over Alternative Protocol", "tactic": "TA0010", "risk": "high"},
+   275→    "T1041": {"name": "Exfiltration Over C2 Channel", "tactic": "TA0010", "risk": "high"},
+   276→    "T1560": {"name": "Archive Collected Data", "tactic": "TA0009", "risk": "medium"},
+   277→    "T1213": {"name": "Data from Information Repositories", "tactic": "TA0009", "risk": "medium"},
+   278→    "T1595": {"name": "Active Scanning", "tactic": "TA0043", "risk": "low"},
+   279→    "T1592": {"name": "Gather Victim Host Information", "tactic": "TA0043", "risk": "low"},
+   280→    "T1590": {"name": "Gather Victim Org Information", "tactic": "TA0043", "risk": "low"},
+   281→    "T1590.002": {"name": "DNS", "tactic": "TA0043", "risk": "low"},
+   282→    "T1593": {"name": "Search Open Websites/Domains", "tactic": "TA0043", "risk": "low"},
+   283→    "T1589": {"name": "Gather Victim Identity Information", "tactic": "TA0043", "risk": "medium"},
+   284→    "T1583": {"name": "Acquire Infrastructure", "tactic": "TA0042", "risk": "medium"},
+   285→    "T1585": {"name": "Establish Accounts", "tactic": "TA0042", "risk": "medium"},
+   286→    "T1588.004": {"name": "Exploits", "tactic": "TA0042", "risk": "high"},
+   287→    "T1610": {"name": "Deploy Container", "tactic": "TA0002", "risk": "high"},
+   288→    "T1195.002": {"name": "Compromise Software Supply Chain", "tactic": "TA0042", "risk": "critical"},
+   289→    "T1580": {"name": "Cloud Infrastructure Discovery", "tactic": "TA0043", "risk": "medium"},
+   290→    "T1553": {"name": "Subvert Trust Controls", "tactic": "TA0003", "risk": "high"},
+   291→    "T1553.002": {"name": "Code Signing", "tactic": "TA0003", "risk": "high"},
+   292→    "T1070": {"name": "Indicator Removal", "tactic": "TA0005", "risk": "medium"},
+   293→    "T1070.005": {"name": "Network Traffic Capture", "tactic": "TA0005", "risk": "medium"},
+   294→}
+   295→
+   296→# OWASP Top 10 (2021) mappings
+   297→_OWASP_TOP10: List[Dict[str, Any]] = [
+   298→    {"id": "A01", "name": "Broken Access Control", "categories": ["auth_bypass", "privilege_escalation", "jwt_exposure"], "cwe": ["CWE-287", "CWE-862", "CWE-306"]},
+   299→    {"id": "A02", "name": "Cryptographic Failures", "categories": ["crypto_failure"], "cwe": ["CWE-327", "CWE-328", "CWE-326"]},
+   300→    {"id": "A03", "name": "Injection", "categories": ["sqli", "xss", "injection", "xxe", "rce"], "cwe": ["CWE-89", "CWE-79", "CWE-78", "CWE-611"]},
+   301→    {"id": "A04", "name": "Insecure Design", "categories": ["misconfiguration", "info_disclosure"], "cwe": ["CWE-16", "CWE-200"]},
+   302→    {"id": "A05", "name": "Security Misconfiguration", "categories": ["misconfiguration", "default_credentials", "header_analysis"], "cwe": ["CWE-16", "CWE-2", "CWE-798"]},
+   303→    {"id": "A06", "name": "Vulnerable and Outdated Components", "categories": ["cve", "supply_chain"], "cwe": ["CWE-1357", "CWE-829", "CWE-494"]},
+   304→    {"id": "A07", "name": "Identification and Authentication Failures", "categories": ["auth_bypass", "credential_theft", "default_credentials"], "cwe": ["CWE-287", "CWE-522", "CWE-798"]},
+   305→    {"id": "A08", "name": "Software and Data Integrity Failures", "categories": ["supply_chain", "injection"], "cwe": ["CWE-1357", "CWE-494", "CWE-94"]},
+   306→    {"id": "A09", "name": "Security Logging and Monitoring Failures", "categories": ["info_disclosure"], "cwe": ["CWE-778"]},
+   307→    {"id": "A10", "name": "Server-Side Request Forgery", "categories": ["ssrf"], "cwe": ["CWE-918"]},
+   308→]
+   309→
+   310→
+   311→# ═══════════════════════════════════════════════════════════════════════════
+   312→# Category → Mapping Index (for quick lookup)
+   313→# ═══════════════════════════════════════════════════════════════════════════
+   314→
+   315→_CATEGORY_TO_CWE: Dict[str, List[str]] = {
+   316→    "sqli": ["CWE-89", "CWE-564"],
+   317→    "xss": ["CWE-79", "CWE-87"],
+   318→    "ssrf": ["CWE-918"],
+   319→    "rce": ["CWE-78", "CWE-94"],
+   320→    "auth_bypass": ["CWE-287", "CWE-306", "CWE-862"],
+   321→    "privilege_escalation": ["CWE-269", "CWE-427"],
+   322→    "credential_theft": ["CWE-522", "CWE-798", "CWE-259"],
+   323→    "info_disclosure": ["CWE-200", "CWE-215"],
+   324→    "data_exposure": ["CWE-200", "CWE-359"],
+   325→    "misconfiguration": ["CWE-16", "CWE-2", "CWE-614"],
+   326→    "crypto_failure": ["CWE-327", "CWE-328", "CWE-326"],
+   327→    "dos": ["CWE-400", "CWE-770"],
+   328→    "injection": ["CWE-74", "CWE-78", "CWE-917"],
+   329→    "xxe": ["CWE-611", "CWE-827"],
+   330→    "default_credentials": ["CWE-798", "CWE-258"],
+   331→    "open_redirect": ["CWE-601"],
+   332→    "jwt_exposure": ["CWE-522", "CWE-613"],
+   333→    "beaconing": ["CWE-918", "CWE-862"],
+   334→    "steganography": ["CWE-218", "CWE-1004"],
+   335→    "supply_chain": ["CWE-1357", "CWE-829", "CWE-494"],
+   336→    "covert_channel": ["CWE-226", "CWE-311"],
+   337→    "cve": ["CWE-1357"],
+   338→}
+   339→
+   340→_CATEGORY_TO_CAPEC: Dict[str, List[str]] = {
+   341→    "sqli": ["CAPEC-66"],
+   342→    "xss": ["CAPEC-86", "CAPEC-18"],
+   343→    "ssrf": ["CAPEC-664"],
+   344→    "rce": ["CAPEC-131", "CAPEC-242"],
+   345→    "auth_bypass": ["CAPEC-114", "CAPEC-600"],
+   346→    "privilege_escalation": ["CAPEC-122", "CAPEC-233"],
+   347→    "credential_theft": ["CAPEC-16", "CAPEC-547"],
+   348→    "info_disclosure": ["CAPEC-201"],
+   349→    "data_exposure": ["CAPEC-201", "CAPEC-601"],
+   350→    "misconfiguration": ["CAPEC-213"],
+   351→    "crypto_failure": ["CAPEC-97"],
+   352→    "dos": ["CAPEC-125", "CAPEC-463"],
+   353→    "injection": ["CAPEC-100", "CAPEC-242"],
+   354→    "xxe": ["CAPEC-219"],
+   355→    "default_credentials": ["CAPEC-16", "CAPEC-547"],
+   356→    "open_redirect": ["CAPEC-601"],
+   357→    "jwt_exposure": ["CAPEC-16"],
+   358→    "beaconing": ["CAPEC-664", "CAPEC-652"],
+   359→    "supply_chain": ["CAPEC-441", "CAPEC-660"],
+   360→}
+   361→
+   362→_CATEGORY_TO_MITRE: Dict[str, List[str]] = {
+   363→    "sqli": ["T1190"],
+   364→    "xss": ["T1059.007", "T1189"],
+   365→    "ssrf": ["T1190", "T1046"],
+   366→    "rce": ["T1059", "T1548"],
+   367→    "auth_bypass": ["T1078", "T1110"],
+   368→    "privilege_escalation": ["T1548", "T1068"],
+   369→    "credential_theft": ["T1110.001", "T1552"],
+   370→    "info_disclosure": ["T1566", "T1083"],
+   371→    "data_exposure": ["T1560", "T1048"],
+   372→    "misconfiguration": ["T1082", "T1562"],
+   373→    "crypto_failure": ["T1573", "T1571"],
+   374→    "dos": ["T1498", "T1486"],
+   375→    "injection": ["T1059", "T1190"],
+   376→    "xxe": ["T1059.009", "T1190"],
+   377→    "default_credentials": ["T1110.001", "T1078.001"],
+   378→    "open_redirect": ["T1566.002"],
+   379→    "jwt_exposure": ["T1552.001", "T1553.002"],
+   380→    "beaconing": ["T1071", "T1573"],
+   381→    "steganography": ["T1001", "T1041"],
+   382→    "supply_chain": ["T1585", "T1195.002"],
+   383→    "cve": ["T1588.004"],
+   384→}
+   385→
+   386→_CATEGORY_PATTERNS: List[Tuple[str, str, float]] = [
+   387→    (r"\bsql\b|\bsqli\b", "sqli", 0.95),
+   388→    (r"\bxss\b|cross.?site", "xss", 0.95),
+   389→    (r"\bssrf\b", "ssrf", 0.95),
+   390→    (r"\brce\b|remote.?code", "rce", 0.95),
+   391→    (r"auth.*bypass|unauthorized", "auth_bypass", 0.90),
+   392→    (r"privilege.*escal", "privilege_escalation", 0.90),
+   393→    (r"credential.*theft|password.*leak|default.*cred", "credential_theft", 0.90),
+   394→    (r"data.*expos|data.*leak", "data_exposure", 0.85),
+   395→    (r"misconfigur|security.*header", "misconfiguration", 0.85),
+   396→    (r"weak.*encrypt|crypto.*fail", "crypto_failure", 0.85),
+   397→    (r"denial.*service|\bdos\b", "dos", 0.85),
+   398→    (r"\bxxe\b", "xxe", 0.95),
+   399→    (r"default.*password|default.*cred", "default_credentials", 0.90),
+   400→    (r"open.?redirect", "open_redirect", 0.85),
+   401→    (r"jwt.*expos|token.*leak", "jwt_exposure", 0.85),
+   402→    (r"beacon|c2.*channel", "beaconing", 0.85),
+   403→    (r"steganograph|hidden.*data", "steganography", 0.90),
+   404→    (r"supply.?chain|dependency.*vuln", "supply_chain", 0.85),
+   405→    (r"injection", "injection", 0.80),
+   406→    (r"cve-\d{4}-\d+", "cve", 0.90),
+   407→]
+   408→
+   409→
+   410→def _quick_classify(finding: Dict[str, Any]) -> str:
+   411→    """Quick classification of a finding."""
+   412→    title = finding.get("title", "").lower()
+   413→    desc = finding.get("description", "").lower()
+   414→    evidence = finding.get("evidence", "").lower()
+   415→    combined = f"{title} {desc} {evidence}"
+   416→    best = "misc"
+   417→    best_score = 0.0
+   418→    for pattern, cat, weight in _CATEGORY_PATTERNS:
+   419→        if re.search(pattern, combined, re.IGNORECASE):
+   420→            if weight > best_score:
+   421→                best_score = weight
+   422→                best = cat
+   423→    return best
+   424→
+   425→
+   426→# ═══════════════════════════════════════════════════════════════════════════
+   427→# ThreatIntelEngine
+   428→# ═══════════════════════════════════════════════════════════════════════════
+   429→
+   430→
+   431→class ThreatIntelEngine:
+   432→    """Centralized threat intelligence engine.
+   433→
+   434→    Enriches findings with threat intelligence from built-in databases
+   435→    and optional online sources. Supports caching and deduplication.
+   436→    """
+   437→
+   438→    def __init__(self, enable_online: bool = False, cache_ttl: int = 3600) -> None:
+   439→        self._cache: Dict[str, Tuple[float, Any]] = {}
+   440→        self._cache_ttl = cache_ttl
+   441→        self._cache_lock = Lock()
+   442→        self._enable_online = enable_online
+   443→        self._online_queries = 0
+   444→        self._cache_hits = 0
+   445→        self._cache_misses = 0
+   446→
+   447→    def enrich_scan(self, findings: List[Dict[str, Any]], target: str = "") -> ThreatIntelReport:
+   448→        """Enrich all findings from a scan with threat intelligence.
+   449→
+   450→        Parameters:
+   451→            findings: List of finding dicts from ReconProResult
+   452→            target: Target hostname
+   453→
+   454→        Returns:
+   455→            ThreatIntelReport with enriched findings and summary.
+   456→        """
+   457→        t0 = time.monotonic()
+   458→        report = ThreatIntelReport(target=target)
+   459→
+   460→        if not findings:
+   461→            report.threat_summary = f"No findings to enrich for {target}."
+   462→            report.analysis_duration_ms = round((time.monotonic() - t0) * 1000, 2)
+   463→            return report
+   464→
+   465→        all_cves: set = set()
+   466→        all_cwes: set = set()
+   467→        all_capecs: set = set()
+   468→        all_mitre: Dict[str, str] = {}
+   469→        tech_counts: Dict[str, int] = defaultdict(int)
+   470→        known_exploited = 0
+   471→        active_exploited = 0
+   472→        severity_trends: Dict[str, str] = {}
+   473→
+   474→        for f in findings:
+   475→            enriched = self._enrich_finding(f)
+   476→            report.enriched_findings.append(enriched.to_dict())
+   477→
+   478→            all_cves.update(enriched.cve_matches)
+   479→            all_cwes.update(enriched.cwe_matches)
+   480→            all_capecs.update(enriched.capec_matches)
+   481→            for t in enriched.mitre_techniques:
+   482→                all_mitre[t.get("technique", "")] = t.get("name", "")
+   483→
+   484→            for tech in enriched.affected_technologies:
+   485→                tech_counts[tech] += 1
+   486→
+   487→            if enriched.known_exploitation:
+   488→                known_exploited += 1
+   489→            if enriched.active_exploitation:
+   490→                active_exploited += 1
+   491→
+   492→            severity = f.get("severity", "info").lower()
+   493→            severity_trends[f.get("title", "")[:50]] = enriched.severity_evolution
+   494→
+   495→        report.unique_cves = sorted(all_cves)
+   496→        report.unique_cwes = sorted(all_cwes)
+   497→        report.unique_capecs = sorted(all_capecs)
+   498→        report.unique_mitre = [{"technique": k, "name": v} for k, v in sorted(all_mitre.items())]
+   499→        report.known_exploited_count = known_exploited
+   500→        report.active_exploitation_count = active_exploited
+   501→        report.technology_profile = dict(tech_counts)
+   502→        report.severity_trends = severity_trends
+   503→        report.cache_hits = self._cache_hits
+   504→        report.cache_misses = self._cache_misses
+   505→        report.online_queries = self._online_queries
+   506→
+   507→        # Generate summary
+   508→        report.threat_summary = self._generate_summary(
+   509→            findings, all_cves, all_cwes, all_capecs,
+   510→            known_exploited, active_exploited, target,
+   511→        )
+   512→
+   513→        report.analysis_duration_ms = round((time.monotonic() - t0) * 1000, 2)
+   514→        return report
+   515→
+   516→    def lookup_cve(self, cve_id: str) -> Optional[Dict[str, Any]]:
+   517→        """Look up a CVE in the built-in database."""
+   518→        cve_upper = cve_id.upper()
+   519→        cached = self._cache_get(f"cve:{cve_upper}")
+   520→        if cached is not None:
+   521→            self._cache_hits += 1
+   522→            return cached
+   523→
+   524→        self._cache_misses += 1
+   525→        record = _CVE_KNOWN_PATTERNS.get(cve_upper)
+   526→
+   527→        if record:
+   528→            result = {
+   529→                "cve_id": cve_upper,
+   530→                "name": record["name"],
+   531→                "description": record["description"],
+   532→                "severity": record["severity"],
+   533→                "affected": record.get("affected", []),
+   534→                "known_exploited": record.get("known_exploited", False),
+   535→                "in_cisa_kev": cve_upper in _CISA_KEV_CVE_LIST,
+   536→            }
+   537→            self._cache_set(f"cve:{cve_upper}", result)
+   538→            return result
+   539→
+   540→        # Try online lookup if enabled
+   541→        if self._enable_online:
+   542→            result = self._online_cve_lookup(cve_upper)
+   543→            if result:
+   544→                self._cache_set(f"cve:{cve_upper}", result)
+   545→                return result
+   546→
+   547→        self._cache_set(f"cve:{cve_upper}", None)
+   548→        return None
+   549→
+   550→    def lookup_cwe(self, cwe_id: str) -> Optional[Dict[str, Any]]:
+   551→        """Look up a CWE in the built-in database."""
+   552→        cwe_upper = cwe_id.upper()
+   553→        cached = self._cache_get(f"cwe:{cwe_upper}")
+   554→        if cached is not None:
+   555→            self._cache_hits += 1
+   556→            return cached
+   557→
+   558→        self._cache_misses += 1
+   559→        record = _CWE_DATABASE.get(cwe_upper)
+   560→
+   561→        if record:
+   562→            result = {
+   563→                "cwe_id": cwe_upper,
+   564→                "name": record["name"],
+   565→                "description": record["description"],
+   566→                "risk": record["risk"],
+   567→            }
+   568→            self._cache_set(f"cwe:{cwe_upper}", result)
+   569→            return result
+   570→
+   571→        self._cache_set(f"cwe:{cwe_upper}", None)
+   572→        return None
+   573→
+   574→    def lookup_capec(self, capec_id: str) -> Optional[Dict[str, Any]]:
+   575→        """Look up a CAPEC in the built-in database."""
+   576→        capec_upper = capec_id.upper()
+   577→        cached = self._cache_get(f"capec:{capec_upper}")
+   578→        if cached is not None:
+   579→            self._cache_hits += 1
+   580→            return cached
+   581→
+   582→        self._cache_misses += 1
+   583→        record = _CAPEC_DATABASE.get(capec_upper)
+   584→
+   585→        if record:
+   586→            result = {
+   587→                "capec_id": capec_upper,
+   588→                "name": record["name"],
+   589→                "description": record["description"],
+   590→                "risk": record["risk"],
+   591→            }
+   592→            self._cache_set(f"capec:{capec_upper}", result)
+   593→            return result
+   594→
+   595→        self._cache_set(f"capec:{capec_upper}", None)
+   596→        return None
+   597→
+   598→    def lookup_mitre(self, technique_id: str) -> Optional[Dict[str, Any]]:
+   599→        """Look up a MITRE ATT&CK technique."""
+   600→        tech_upper = technique_id.upper()
+   601→        cached = self._cache_get(f"mitre:{tech_upper}")
+   602→        if cached is not None:
+   603→            self._cache_hits += 1
+   604→            return cached
+   605→
+   606→        self._cache_misses += 1
+   607→        record = _MITRE_TECHNIQUES.get(tech_upper)
+   608→
+   609→        if record:
+   610→            result = {
+   611→                "technique_id": tech_upper,
+   612→                "name": record["name"],
+   613→                "tactic": record["tactic"],
+   614→                "risk": record["risk"],
+   615→            }
+   616→            self._cache_set(f"mitre:{tech_upper}", result)
+   617→            return result
+   618→
+   619→        self._cache_set(f"mitre:{tech_upper}", None)
+   620→        return None
+   621→
+   622→    def get_owasp_mapping(self, category: str) -> List[Dict[str, Any]]:
+   623→        """Get OWASP Top 10 mapping for a vulnerability category."""
+   624→        mapped = []
+   625→        for item in _OWASP_TOP10:
+   626→            if category in item.get("categories", []):
+   627→                mapped.append({
+   628→                    "owasp_id": item["id"],
+   629→                    "name": item["name"],
+   630→                    "related_cwe": item.get("cwe", []),
+   631→                })
+   632→        return mapped
+   633→
+   634→    # -- Internal methods ---------------------------------------------------
+   635→
+   636→    def _enrich_finding(self, finding: Dict[str, Any]) -> EnrichedFinding:
+   637→        """Enrich a single finding with threat intelligence."""
+   638→        cat = _quick_classify(finding)
+   639→        enriched = EnrichedFinding(original=finding)
+   640→
+   641→        # Extract CVE references from evidence/title
+   642→        cve_refs = self._extract_cve_refs(finding)
+   643→        for cve in cve_refs:
+   644→            enriched.cve_matches.append(cve)
+   645→            record = self.lookup_cve(cve)
+   646→            if record:
+   647→                enriched.threat_records.append(ThreatRecord(
+   648→                    source="CVE", source_id=cve,
+   649→                    name=record.get("name", cve),
+   650→                    description=record.get("description", ""),
+   651→                    severity=record.get("severity", "info"),
+   652→                    confidence=0.9,
+   653→                    metadata=record,
+   654→                    evidence_chain=[f"CVE reference found in finding: {cve}"],
+   655→                ).to_dict())
+   656→                if record.get("known_exploited"):
+   657→                    enriched.known_exploitation = True
+   658→                if record.get("in_cisa_kev"):
+   659→                    enriched.active_exploitation = True
+   660→                    enriched.severity_evolution = "increasing"
+   661→
+   662→        # CWE mapping
+   663→        cwe_ids = _CATEGORY_TO_CWE.get(cat, [])
+   664→        for cwe in cwe_ids:
+   665→            enriched.cwe_matches.append(cwe)
+   666→            record = self.lookup_cwe(cwe)
+   667→            if record:
+   668→                enriched.threat_records.append(ThreatRecord(
+   669→                    source="CWE", source_id=cwe,
+   670→                    name=record.get("name", cwe),
+   671→                    description=record.get("description", ""),
+   672→                    severity=record.get("risk", "info"),
+   673→                    confidence=0.8,
+   674→                    metadata=record,
+   675→                    evidence_chain=[f"Category '{cat}' maps to {cwe}"],
+   676→                ).to_dict())
+   677→
+   678→        # CAPEC mapping
+   679→        capec_ids = _CATEGORY_TO_CAPEC.get(cat, [])
+   680→        for capec in capec_ids:
+   681→            enriched.capec_matches.append(capec)
+   682→            record = self.lookup_capec(capec)
+   683→            if record:
+   684→                enriched.threat_records.append(ThreatRecord(
+   685→                    source="CAPEC", source_id=capec,
+   686→                    name=record.get("name", capec),
+   687→                    description=record.get("description", ""),
+   688→                    severity=record.get("risk", "info"),
+   689→                    confidence=0.75,
+   690→                    metadata=record,
+   691→                    evidence_chain=[f"Category '{cat}' maps to {capec}"],
+   692→                ).to_dict())
+   693→
+   694→        # MITRE mapping
+   695→        mitre_ids = _CATEGORY_TO_MITRE.get(cat, [])
+   696→        for tid in mitre_ids:
+   697→            record = self.lookup_mitre(tid)
+   698→            if record:
+   699→                enriched.mitre_techniques.append({
+   700→                    "technique": tid,
+   701→                    "name": record.get("name", ""),
+   702→                    "tactic": record.get("tactic", ""),
+   703→                })
+   704→                enriched.threat_records.append(ThreatRecord(
+   705→                    source="MITRE", source_id=tid,
+   706→                    name=record.get("name", ""),
+   707→                    description=f"ATT&CK technique {tid}",
+   708→                    severity=record.get("risk", "info"),
+   709→                    confidence=0.8,
+   710→                    metadata=record,
+   711→                    evidence_chain=[f"Category '{cat}' maps to technique {tid}"],
+   712→                ).to_dict())
+   713→
+   714→        # OWASP mapping
+   715→        owasp_items = self.get_owasp_mapping(cat)
+   716→        for item in owasp_items:
+   717→            enriched.threat_records.append(ThreatRecord(
+   718→                source="OWASP", source_id=item["owasp_id"],
+   719→                name=item["name"],
+   720→                description=f"OWASP Top 10 - {item['owasp_id']}: {item['name']}",
+   721→                severity="medium",
+   722→                confidence=0.7,
+   723→                metadata=item,
+   724→                evidence_chain=[f"Category '{cat}' maps to {item['owasp_id']}"],
+   725→            ).to_dict())
+   726→
+   727→        # Determine affected technologies
+   728→        enriched.affected_technologies = self._detect_technologies(finding)
+   729→
+   730→        # Severity evolution
+   731→        if not enriched.severity_evolution:
+   732→            sev = finding.get("severity", "info").lower()
+   733→            if sev in ("critical", "high"):
+   734→                enriched.severity_evolution = "stable"  # Already severe
+   735→            else:
+   736→                enriched.severity_evolution = "stable"
+   737→
+   738→        # Enrichment confidence
+   739→        total_records = len(enriched.threat_records)
+   740→        evidence_len = len(finding.get("evidence", ""))
+   741→        enriched.enrichment_confidence = min(1.0,
+   742→            (0.3 if total_records > 0 else 0.0) +
+   743→            (0.3 if evidence_len > 50 else 0.1) +
+   744→            (0.2 if enriched.cve_matches else 0.0) +
+   745→            (0.2 if enriched.mitre_techniques else 0.0)
+   746→        )
+   747→
+   748→        # Threat summary
+   749→        enriched.threat_summary = self._finding_threat_summary(enriched, cat)
+   750→
+   751→        return enriched
+   752→
+   753→    def _extract_cve_refs(self, finding: Dict[str, Any]) -> List[str]:
+   754→        """Extract CVE identifiers from finding text."""
+   755→        text = f"{finding.get('title', '')} {finding.get('description', '')} {finding.get('evidence', '')}"
+   756→        return list(set(re.findall(r'CVE-\d{4}-\d{4,}', text, re.IGNORECASE)))
+   757→
+   758→    def _detect_technologies(self, finding: Dict[str, Any]) -> List[str]:
+   759→        """Detect affected technologies from finding metadata."""
+   760→        text = f"{finding.get('title', '')} {finding.get('description', '')} {finding.get('evidence', '')}".lower()
+   761→        techs: List[str] = []
+   762→        tech_patterns = [
+   763→            (r'\bapache\b', "Apache"),
+   764→            (r'\bnginx\b', "Nginx"),
+   765→            (r'\biis\b', "IIS"),
+   766→            (r'\bmysql\b', "MySQL"),
+   767→            (r'\bpostgresql\b', "PostgreSQL"),
+   768→            (r'\bmongodb\b', "MongoDB"),
+   769→            (r'\bredis\b', "Redis"),
+   770→            (r'\bnode\.?js\b', "Node.js"),
+   771→            (r'\bpython\b', "Python"),
+   772→            (r'\bjava\b', "Java"),
+   773→            (r'\bphp\b', "PHP"),
+   774→            (r'\bruby\b', "Ruby"),
+   775→            (r'\bdocker\b', "Docker"),
+   776→            (r'\bkubernetes\b', "Kubernetes"),
+   777→            (r'\baws\b', "AWS"),
+   778→            (r'\bazure\b', "Azure"),
+   779→            (r'\bgcp\b', "GCP"),
+   780→            (r'\blinux\b', "Linux"),
+   781→            (r'\bwindows\b', "Windows"),
+   782→            (r'\btomcat\b', "Tomcat"),
+   783→            (r'\bjenkins\b', "Jenkins"),
+   784→            (r'\bkafka\b', "Kafka"),
+   785→            (r'\bopenssl\b', "OpenSSL"),
+   786→            (r'\blog4j\b', "Log4j"),
+   787→            (r'\bspring\b', "Spring"),
+   788→            (r'\bdjango\b', "Django"),
+   789→            (r'\bflask\b', "Flask"),
+   790→            (r'\bexpress\b', "Express.js"),
+   791→            (r'\breact\b', "React"),
+   792→            (r'\bangular\b', "Angular"),
+   793→            (r'\bjoomla\b', "Joomla"),
+   794→            (r'\bwordpress\b', "WordPress"),
+   795→            (r'\bdrupal\b', "Drupal"),
+   796→            (r'\bcloudflare\b', "Cloudflare"),
+   797→        ]
+   798→        import re as _re
+   799→        for pattern, tech in tech_patterns:
+   800→            if _re.search(pattern, text):
+   801→                techs.append(tech)
+   802→        return list(set(techs))
+   803→
+   804→    def _finding_threat_summary(self, enriched: EnrichedFinding, cat: str) -> str:
+   805→        """Generate a threat summary for a single finding."""
+   806→        parts = [f"Finding maps to category '{cat}'."]
+   807→        if enriched.cve_matches:
+   808→            parts.append(f"References {len(enriched.cve_matches)} CVE(s): {', '.join(enriched.cve_matches[:3])}")
+   809→        if enriched.known_exploitation:
+   810→            parts.append("Known exploitation detected — CRITICAL")
+   811→        if enriched.active_exploitation:
+   812→            parts.append("Active exploitation reported in CISA KEV")
+   813→        if enriched.mitre_techniques:
+   814→            techniques = [t.get("name", "") for t in enriched.mitre_techniques[:3]]
+   815→            parts.append(f"MITRE ATT&CK: {', '.join(techniques)}")
+   816→        if enriched.cwe_matches:
+   817→            parts.append(f"{len(enriched.cwe_matches)} CWE(s) mapped")
+   818→        if enriched.affected_technologies:
+   819→            parts.append(f"Affects: {', '.join(enriched.affected_technologies[:5])}")
+   820→        return ". ".join(parts) + "."
+   821→
+   822→    def _generate_summary(self, findings: List[Dict[str, Any]],
+   823→                           cves: set, cwes: set, capecs: set,
+   824→                           known_exploited: int, active_exploited: int,
+   825→                           target: str) -> str:
+   826→        """Generate overall threat intelligence summary."""
+   827→        parts = [
+   828→            f"Threat intelligence analysis for {target} covered {len(findings)} findings.",
+   829→        ]
+   830→
+   831→        if cves:
+   832→            parts.append(f"Identified {len(cves)} unique CVE references: {', '.join(sorted(cves)[:5])}")
+   833→        if cwes:
+   834→            parts.append(f"Mapped to {len(cwes)} CWE categories")
+   835→        if capecs:
+   836→            parts.append(f"Covered {len(capecs)} CAPEC attack patterns")
+   837→
+   838→        if known_exploited > 0:
+   839→            parts.append(f"WARNING: {known_exploited} findings reference known exploited vulnerabilities")
+   840→        if active_exploited > 0:
+   841→            parts.append(f"CRITICAL: {active_exploited} findings are in CISA Known Exploited Vulnerabilities catalog")
+   842→
+   843→        if not known_exploited and not active_exploited:
+   844→            parts.append("No known exploited vulnerabilities detected")
+   845→
+   846→        return ". ".join(parts) + "."
+   847→
+   848→    # -- Cache methods -------------------------------------------------------
+   849→
+   850→    def _cache_get(self, key: str) -> Optional[Any]:
+   851→        """Get cached value if not expired."""
+   852→        with self._cache_lock:
+   853→            if key in self._cache:
+   854→                ts, val = self._cache[key]
+   855→                if time.time() - ts < self._cache_ttl:
+   856→                    return val
+   857→                del self._cache[key]
+   858→        return None
+   859→
+   860→    def _cache_set(self, key: str, value: Any) -> None:
+   861→        """Set cache value with timestamp."""
+   862→        with self._cache_lock:
+   863→            self._cache[key] = (time.time(), value)
+   864→
+   865→    def clear_cache(self) -> None:
+   866→        """Clear all cached entries."""
+   867→        with self._cache_lock:
+   868→            self._cache.clear()
+   869→
+   870→    # -- Online lookup (optional) --------------------------------------------
+   871→
+   872→    def _online_cve_lookup(self, cve_id: str) -> Optional[Dict[str, Any]]:
+   873→        """Attempt online CVE lookup via NVD API (stdlib HTTP only)."""
+   874→        try:
+   875→            url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
+   876→            ctx = ssl.create_default_context()
+   877→            req = urllib.request.Request(url, headers={
+   878→                "User-Agent": "ReconPro/10.0 (Threat Intel Engine)",
+   879→                "Accept": "application/json",
+   880→            })
+   881→            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+   882→                data = json.loads(resp.read(16384).decode("utf-8", errors="replace"))
+   883→                self._online_queries += 1
+   884→                vulns = data.get("vulnerabilities", [])
+   885→                if vulns:
+   886→                    cve_item = vulns[0].get("cve", {})
+   887→                    desc = cve_item.get("descriptions", [{}])[0].get("value", "")
+   888→                    metrics = cve_item.get("metrics", {})
+   889→                    cvss = metrics.get("cvssMetricV31", [{}])
+   890→                    if cvss:
+   891→                        score = cvss[0].get("cvssData", {}).get("baseScore", 0)
+   892→                        severity = cvss[0].get("cvssData", {}).get("baseSeverity", "UNKNOWN")
+   893→                    else:
+   894→                        score, severity = 0, "UNKNOWN"
+   895→                    return {
+   896→                        "cve_id": cve_id,
+   897→                        "name": desc[:200],
+   898→                        "description": desc[:500],
+   899→                        "severity": str(severity).lower(),
+   900→                        "cvss_score": float(score) if score else 0.0,
+   901→                        "affected": [],
+   902→                        "known_exploited": cve_id in _CISA_KEV_CVE_LIST,
+   903→                        "in_cisa_kev": cve_id in _CISA_KEV_CVE_LIST,
+   904→                        "source": "NVD_API",
+   905→                    }
+   906→        except Exception:
+   907→            pass
+   908→        return None
+   909→
+   910→    @property
+   911→    def cache_stats(self) -> Dict[str, int]:
+   912→        """Return cache hit/miss statistics."""
+   913→        return {"hits": self._cache_hits, "misses": self._cache_misses,
+   914→                "size": len(self._cache), "online_queries": self._online_queries}
+   915→

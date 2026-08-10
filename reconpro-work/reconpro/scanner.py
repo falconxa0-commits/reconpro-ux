@@ -17,7 +17,7 @@ from .registry import (
     MODULE_REGISTRY, LOCAL_MODULES, ALL_MODULES,
     DEFAULT_MODULES, DEFAULT_LOCAL_MODULES, get_module_runner,
 )
-from .http import Finding, RateLimiter
+from .http_layer import Finding, RateLimiter
 from .utils import (
     extract_host, normalize_base_url, validate_target,
     count_severities, compute_score, compute_grade, badge_markdown,
@@ -37,6 +37,7 @@ class ReconProResult:
     vibesec_score: Optional[int] = None
     vibesec_grade: Optional[str] = None
     module_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    intelligence: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -51,6 +52,7 @@ class ReconProResult:
             "vibesec_grade": self.vibesec_grade,
             "module_results": self.module_results,
             "findings": self.findings,
+            "intelligence": self.intelligence,
         }
 
 

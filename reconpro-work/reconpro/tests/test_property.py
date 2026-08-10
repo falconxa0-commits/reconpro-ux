@@ -30,7 +30,7 @@ from reconpro.utils import (
     safe_int,
     safe_float,
 )
-from reconpro.http import Finding
+from reconpro.http_layer import Finding
 from reconpro.constants import (
     VALID_SEVERITIES,
     VALID_GRADES,

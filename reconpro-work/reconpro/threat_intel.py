@@ -14,8 +14,9 @@ import hashlib
 import json
 import re
 import time
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
 import ssl
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -438,6 +439,7 @@ class ThreatIntelEngine:
     def __init__(self, enable_online: bool = False, cache_ttl: int = 3600) -> None:
         self._cache: Dict[str, Tuple[float, Any]] = {}
         self._cache_ttl = cache_ttl
+        self._cache_max_size = 10000  # Prevent cache memory exhaustion
         self._cache_lock = Lock()
         self._enable_online = enable_online
         self._online_queries = 0
@@ -858,8 +860,14 @@ class ThreatIntelEngine:
         return None
 
     def _cache_set(self, key: str, value: Any) -> None:
-        """Set cache value with timestamp."""
+        """Set cache value with timestamp. Enforces max cache size."""
         with self._cache_lock:
+            if len(self._cache) >= self._cache_max_size:
+                # Evict oldest entries
+                sorted_keys = sorted(self._cache, key=lambda k: self._cache[k][0])
+                evict_count = len(self._cache) // 4
+                for k in sorted_keys[:evict_count]:
+                    del self._cache[k]
             self._cache[key] = (time.time(), value)
 
     def clear_cache(self) -> None:
@@ -869,17 +877,35 @@ class ThreatIntelEngine:
 
     # -- Online lookup (optional) --------------------------------------------
 
+    _NVD_ALLOWED_HOSTS = ("services.nvd.nist.gov",)
+    _MAX_RESPONSE_BYTES = 65536
+
     def _online_cve_lookup(self, cve_id: str) -> Optional[Dict[str, Any]]:
-        """Attempt online CVE lookup via NVD API (stdlib HTTP only)."""
+        """Attempt online CVE lookup via NVD API (stdlib HTTP only).
+
+        Validates the URL to prevent SSRF before making the request.
+        """
         try:
+            # Validate CVE ID format to prevent injection
+            if not re.match(r'^CVE-\d{4}-\d{4,}$', cve_id, re.IGNORECASE):
+                return None
+
             url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
+            # SSRF protection: verify URL host
+            parsed = urllib.parse.urlparse(url)
+            if parsed.hostname not in self._NVD_ALLOWED_HOSTS:
+                return None
+            if parsed.scheme not in ("https",):
+                return None
+
             ctx = ssl.create_default_context()
             req = urllib.request.Request(url, headers={
                 "User-Agent": "ReconPro/10.0 (Threat Intel Engine)",
                 "Accept": "application/json",
             })
             with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-                data = json.loads(resp.read(16384).decode("utf-8", errors="replace"))
+                raw = resp.read(self._MAX_RESPONSE_BYTES)
+                data = json.loads(raw.decode("utf-8", errors="replace"))
                 self._online_queries += 1
                 vulns = data.get("vulnerabilities", [])
                 if vulns:

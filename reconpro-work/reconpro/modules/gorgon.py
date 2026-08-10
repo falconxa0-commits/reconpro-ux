@@ -5,7 +5,7 @@ import re
 import time
 import urllib.parse
 from typing import Any, Dict, List, Generator
-from ..http import http_probe, Finding
+from ..http_layer import http_probe, Finding
 
 
 GORGON_PAYLOADS = {

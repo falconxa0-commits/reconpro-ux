@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from reconpro.http import Finding
+from ..http_layer import Finding
 
 
 # ── Severity / score helpers ─────────────────────────────────────────

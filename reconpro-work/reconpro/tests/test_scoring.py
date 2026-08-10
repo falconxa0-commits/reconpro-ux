@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from reconpro.utils import compute_score, compute_grade, count_severities
-from reconpro.http import Finding
+from reconpro.http_layer import Finding
 
 
 class TestScoreCalculation(unittest.TestCase):

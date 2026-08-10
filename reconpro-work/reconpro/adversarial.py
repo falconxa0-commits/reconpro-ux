@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from .scanner import scan, audit_scan
-from .http import Finding, compute_grade
+from .http_layer import Finding, compute_grade
 
 
 # -- ANSI helpers --------------------------------------------------------------

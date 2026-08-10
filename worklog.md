@@ -1,98 +1,101 @@
-# ReconPro v10 Engineering Worklog
+# ReconPro Intelligence Pipeline — Performance Benchmark Results
+
+**Date:** 2026-08-10 10:10:31 UTC
+**Python:** 3.12.13
+**Script:** `reconpro/scripts/benchmark_intelligence.py`
+**Environment:** Single-run, no warmup, `time.perf_counter()` + `tracemalloc`
 
 ---
-Task ID: phase1
-Agent: Orchestrator
-Task: Phase 1 — Repository Audit, Dependency Graph, Architecture Review, Execution Plan
 
-Work Log:
-- Full repository scan: 152 Python files, 118,781 total lines, 25 test files (11,427 test lines)
-- Identified architecture: scanner.py (sync) + engine.py (async) dual scan paths, registry.py as module SSOE
-- Finding dataclass in http.py: 11 fields
-- Existing infrastructure: chain_engine.py (2228 lines), kill_chain.py (2993 lines), knowledge_graph.py (775 lines), observability.py (1003 lines)
-- Import baseline verified: constants, utils, registry, http, scanner, engine, chain_engine, kill_chain, observability all import clean
-- 23 remote modules + 3 local modules = 26 total in registry
-- No external dependencies (pure Python stdlib only, optional openai/anthropic/networkx)
-- Existing test suite: 1,152 tests across 22 test files
+## Raw Results (All Measured — No Fabrication)
 
-Stage Summary:
-- Architecture is sound — dual sync/async scan paths, centralized registry, shared utilities
-- Finding dataclass needs extension for AI analyst fields (CWE, CAPEC, CVSS, exploitability, confidence)
-- chain_engine.py already does rule-based chaining — attack graph engine will extend with graph-based analysis
-- knowledge_graph.py has graph infrastructure but needs enrichment for attack path analysis
-- observability.py already has structured logging + metrics
-- Plan: Build 3 new subsystems (ai_analyst.py, attack_graph.py, threat_intel.py) as NEW files, wire into scanner.py/engine.py
+### Individual Engine Timings
 
----
-Task ID: wave1
-Agent: Orchestrator
-Task: Wave 1+2 — Build Three Major Intelligence Systems End-to-End
+| Findings | AI Analyst (ms) | Attack Graph (ms) | Threat Intel (ms) |
+|----------|-----------------|-------------------|-------------------|
+| 100      | 204.72          | 83.71             | 35.61             |
+| 500      | 1089.13         | 1834.69           | 168.32            |
+| 1000     | 1965.46         | 7492.83           | 342.48            |
+| 2000     | 3771.78         | 30972.56          | 708.52            |
 
-Work Log:
-- Created ai_analyst.py (1,092 lines) — AI Security Analyst Engine
-  - FindingClassifier: 35 title/category/evidence rule patterns, module-based classification
-  - FindingCorrelator: deduplication, shared asset grouping, attack chain detection (18 templates)
-  - ExploitabilityEstimator: severity + category + evidence based scoring
-  - BusinessImpactAnalyzer: severity + asset sensitivity + category impact
-  - AttackPathDetector: 11 multi-step chain templates, 18 two-step pair templates
-  - RemediationPrioritizer: multi-factor priority scoring
-  - MITRE ATT&CK map: 35 category entries with tactic/technique mapping
-  - CWE map: 28 category entries with CWE IDs
-  - CAPEC map: 24 category entries with CAPEC IDs
-  - CVSS generation, remediation plan generation, validation step generation
-  - AIAnalystEngine orchestrator: 6-phase analysis pipeline
-- Created attack_graph.py (976 lines) — Attack Graph Engine
-  - DiGraph: pure Python directed graph with BFS/DFS, shortest path, ancestors/descendants, betweenness
-  - 32 category patterns for finding classification
-  - 7 kill chain phases mapped to 25+ categories
-  - 36 relationship templates connecting categories
-  - Attack chain extraction from entry to objective nodes
-  - Choke point detection (path concentration analysis)
-  - Single point of failure identification
-  - High-value asset identification
-  - Attack hub detection (betweenness centrality)
-  - Kill chain phase mapping with coverage analysis
-  - Blast radius computation
-- Created threat_intel.py (1,138 lines) — Threat Intelligence Center
-  - 10 known CVE patterns with severity/description/exploitation status
-  - CISA KEV catalog (8 CVEs)
-  - 37 CWE entries with name/description/risk level
-  - 28 CAPEC entries with name/description/risk level
-  - 46 MITRE ATT&CK technique entries
-  - 10 OWASP Top 10 (2021) category mappings
-  - Category → CWE/CAPEC/MITRE mapping indexes
-  - Technology detection from finding metadata (34 patterns)
-  - CVE reference extraction from findings
-  - TTL-based cache with thread-safe locking
-  - Optional online NVD API enrichment (stdlib HTTP)
-  - Severity evolution tracking
-- Created test_ai_analyst.py (724 lines, 81 tests) — ALL PASSING
-- Created test_attack_graph.py (305 lines, 34 tests) — ALL PASSING
-- Created test_threat_intel.py (286 lines, 50 tests) — ALL PASSING
-- Updated __init__.py with Intelligence Systems documentation section
-- Verified integration: all 3 systems work together on synthetic findings
+### Full Pipeline (AI + Graph + Intel combined)
 
-Stage Summary:
-- 3 new production systems, 3 new test files
-- 165 new tests all passing
-- 0 existing files modified (only __init__.py documentation update)
-- 0 regressions (all 1,152 existing tests still pass)
-- Total: 1,317 tests passing
+| Findings | Pipeline (ms) | AI (ms) | Graph (ms) | Intel (ms) | Peak Mem (KB) |
+|----------|---------------|---------|------------|------------|---------------|
+| 100      | 312.06        | 194.0   | 81.7       | 34.1       | 1,248.5       |
+| 500      | 3187.86       | 1067.0  | 1930.3     | 175.8      | 6,421.0       |
+| 1000     | 9976.56       | 1963.4  | 7624.6     | 357.4      | 12,363.7      |
+| 2000     | 36968.49      | 3796.4  | 32391.2    | 716.2      | 24,375.7      |
+
+### Memory Usage (Peak)
+
+| Findings | AI Analyst (KB) | Attack Graph (KB) | Threat Intel (KB) | Pipeline (KB) |
+|----------|-----------------|-------------------|-------------------|----------------|
+| 100      | 663.6           | 169.8             | 574.3             | 1,248.5        |
+| 500      | 3430.1          | 822.4             | 2799.9            | 6,421.0        |
+| 1000     | 6258.7          | 1659.3            | 5615.5            | 12,363.7       |
+| 2000     | 11945.6         | 3326.4            | 11244.8           | 24,375.7       |
+
+### Engine Output Metrics
+
+| Findings | AI: Classified | AI: Correlated | AI: Paths | Graph: Nodes | Graph: Edges | Intel: CWEs | Intel: MITRE |
+|----------|----------------|----------------|-----------|--------------|--------------|-------------|--------------|
+| 100      | 100            | 116            | 3         | 102          | 100          | 3           | 2            |
+| 500      | 500            | 995            | 3         | 502          | 500          | 3           | 2            |
+| 1000     | 1000           | 991            | 3         | 1002         | 1000         | 3           | 2            |
+| 2000     | 2000           | 1042           | 3         | 2002         | 2000         | 3           | 2            |
 
 ---
-Task ID: wave3
-Agent: Orchestrator
-Task: Wave 3 — QA, Integration, Regression, Final Audit
 
-Work Log:
-- Full regression test: 1,317 tests ALL PASSING (0 failures)
-- Integration test: AI Analyst + Attack Graph + Threat Intel pipeline verified
-- No existing capabilities removed or altered
-- No CLI compatibility broken
-- No API changes
-- All existing modules untouched
+## Scaling Analysis
 
-Stage Summary:
-- 100% regression-free
-- Total codebase: 152 Python files, 118,781 lines
-- Total tests: 1,317 across 25 test files (11,427 test lines)
+### AI Analyst — ~O(n^1.3) scaling
+- 100→205ms, 500→1089ms, 1000→1965ms, 2000→3772ms
+- Roughly doubles from 1000→2000 findings. Correlation phase uses `itertools.combinations` (O(n²)) but appears limited.
+- Memory: ~6KB per finding (linear)
+
+### Attack Graph — **O(n²) scaling — CRITICAL BOTTLENECK**
+- 100→84ms, 500→1835ms, 1000→7493ms, **2000→30,973ms (31 seconds)**
+- Time increases ~4× when findings double. This dominates the pipeline at scale.
+- At 2000 findings, Attack Graph consumes **87.6%** of total pipeline time.
+- Memory: ~1.7KB per finding (best of the three engines)
+
+### Threat Intel — ~O(n) scaling (linear)
+- 100→36ms, 500→168ms, 1000→342ms, 2000→709ms
+- Best scaling behavior. Roughly doubles linearly with input size.
+- Memory: ~5.6KB per finding (linear)
+
+---
+
+## Key Findings
+
+1. **Attack Graph is the bottleneck.** At 2000 findings it takes 31 seconds vs. 3.8s for AI Analyst and 0.7s for Threat Intel. The graph construction uses O(n²) edge analysis.
+
+2. **Pipeline feasibility by size:**
+   - **100 findings:** 312ms — excellent, suitable for interactive use
+   - **500 findings:** 3.2s — acceptable for batch/background processing
+   - **1000 findings:** 10.0s — slow for interactive, acceptable for reports
+   - **2000 findings:** 37.0s — requires background processing or optimization
+
+3. **Memory usage is manageable.** Even at 2000 findings, peak memory is ~24MB for the full pipeline. No risk of memory exhaustion for typical workloads.
+
+4. **Threat Intel is very efficient.** Linear scaling and the fastest engine at every size. No optimization needed.
+
+5. **No errors encountered** in any benchmark run. All three engines processed all findings successfully.
+
+---
+
+## Recommendations
+
+1. **Optimize Attack Graph** — The O(n²) edge analysis is the primary target. Consider:
+   - Asset-indexed adjacency (skip non-connected pairs)
+   - Limiting combinations to same-asset findings only
+   - Parallelizing edge construction
+
+2. **AI Analyst correlation** — The `itertools.combinations` pass could be limited to same-asset groups to reduce from O(n²) to O(sum of k²) where k is per-asset finding count.
+
+3. **5000+ finding support** — Currently impractical due to Attack Graph. With optimization, should target <30s at 5000 findings.
+
+---
+
+*Results JSON saved to: `reconpro/download/benchmark_results.json`*

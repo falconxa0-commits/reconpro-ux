@@ -31,7 +31,7 @@ This created problems for the scan engine (`scanner.py`), which needed to:
 
 ## Decision
 
-Define a single `Finding` dataclass in `http.py` (the shared layer) that ALL modules use:
+Define a single `Finding` dataclass in `http_layer.py` (the shared layer) that ALL modules use:
 
 ```python
 @dataclass

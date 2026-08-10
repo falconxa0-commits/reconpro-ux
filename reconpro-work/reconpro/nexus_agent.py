@@ -580,9 +580,9 @@ def _tool_shell_command(command: str = "") -> ToolResult:
         return ToolResult(f"Command error: {e}", success=False)
 
 
-def _tool_geoip_enrich(self, **kwargs):
+def _tool_geoip_enrich(**kwargs):
     """GeoIP enrichment for IP addresses"""
-    from ..geoip import GeoIPLookup
+    from .geoip import GeoIPLookup
     ips = kwargs.get("ips", [])
     geo = GeoIPLookup()
     results = {}
@@ -591,18 +591,18 @@ def _tool_geoip_enrich(self, **kwargs):
     return ToolResult(output=json.dumps(results, indent=2, default=str))
 
 
-def _tool_threat_feed_check(self, **kwargs):
+def _tool_threat_feed_check(**kwargs):
     """Check IPs against threat feeds and DNSBLs"""
-    from ..threat_feeds import check_ip_reputation
+    from .threat_feeds import check_ip_reputation
     ip = kwargs.get("ip", "")
     result = check_ip_reputation(ip) if ip else {"error": "No IP provided"}
     return ToolResult(output=json.dumps(result, indent=2, default=str))
 
 
-def _tool_ai_red_team(self, **kwargs):
+def _tool_ai_red_team(**kwargs):
     """AI endpoint discovery, vendor fingerprinting, and CVE matching"""
-    from ..ai_red_team import AIEndpointDiscovery, AIVendorFingerprinter, SecretExtractor
-    from ..ai_cve_db import AICVEDatabase
+    from .ai_red_team import AIEndpointDiscovery, AIVendorFingerprinter, SecretExtractor
+    from .ai_cve_db import AICVEDatabase
     base_url = kwargs.get("base_url", kwargs.get("url", ""))
     if not base_url:
         return ToolResult(output="Error: No URL provided")
@@ -615,9 +615,9 @@ def _tool_ai_red_team(self, **kwargs):
     return ToolResult(output=json.dumps({"endpoints": len(endpoints), "vendors": vendors, "ai_threat_landscape": summary}, indent=2, default=str))
 
 
-def _tool_ai_model_audit(self, **kwargs):
+def _tool_ai_model_audit(**kwargs):
     """AI model analysis: watermarks, collapse, trauma imprints"""
-    from ..ai_red_team import WatermarkAnalyzer, ModelCollapseDetector, TraumaImprintDetector
+    from .ai_red_team import WatermarkAnalyzer, ModelCollapseDetector, TraumaImprintDetector
     url = kwargs.get("url", "")
     if not url:
         return ToolResult(output="Error: No URL provided")
@@ -633,9 +633,9 @@ def _tool_ai_model_audit(self, **kwargs):
     return ToolResult(output=json.dumps({"watermark": wm, "collapse": mc, "trauma_imprint": ti}, indent=2, default=str))
 
 
-def _tool_wishes_ritual(self, **kwargs):
+def _tool_wishes_ritual(**kwargs):
     """Execute 22-Wish orchestration ritual"""
-    from ..wishes import WishesOrchestrator
+    from .wishes import WishesOrchestrator
     target = kwargs.get("target", "")
     if not target:
         return ToolResult(output="Error: No target provided")
@@ -644,9 +644,9 @@ def _tool_wishes_ritual(self, **kwargs):
     return ToolResult(output=json.dumps(manifest, indent=2, default=str))
 
 
-def _tool_cross_validate(self, **kwargs):
+def _tool_cross_validate(**kwargs):
     """Cross-validate scan findings independently"""
-    from ..cross_validator import CrossValidator
+    from .cross_validator import CrossValidator
     target = kwargs.get("target", "")
     findings = kwargs.get("findings", [])
     if not target:

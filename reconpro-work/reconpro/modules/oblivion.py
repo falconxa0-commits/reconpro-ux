@@ -4,7 +4,7 @@ import re
 import time
 import json
 from typing import Any, Dict, List, Optional
-from ..http import http_probe, Finding
+from ..http_layer import http_probe, Finding
 
 
 DREAD_SCALE = {
@@ -580,7 +580,7 @@ def _stage_21_ai_model_analysis(base_url: str, timeout: int = 8,
     findings: List[Finding] = []
     try:
         from ..ai_red_team import WatermarkAnalyzer, ModelCollapseDetector, TraumaImprintDetector
-        from ..http import http_probe
+        from ..http_layer import http_probe
         host = _h(base_url)
         resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
         body = resp.get("body", "") or ""

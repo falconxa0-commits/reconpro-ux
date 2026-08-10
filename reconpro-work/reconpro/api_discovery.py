@@ -23,7 +23,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
-from .http import Finding, http_probe, compute_grade, badge_markdown, default_limiter
+from .http_layer import Finding, http_probe, compute_grade, badge_markdown, default_limiter
 
 
 # ── JS Endpoint Extractor ────────────────────────────────────────────────

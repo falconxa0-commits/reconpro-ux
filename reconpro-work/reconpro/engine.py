@@ -18,9 +18,12 @@ Components
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from .registry import (
     ALL_MODULES,
@@ -30,8 +33,8 @@ from .registry import (
     MODULE_REGISTRY,
 )
 from .scanner import ReconProResult
-from .http import Finding, RateLimiter
-from .utils import compute_grade, badge_markdown
+from .http_layer import Finding, RateLimiter
+from .utils import compute_grade, badge_markdown, compute_score
 
 
 # ── Scan Event ──────────────────────────────────────────────────────────
@@ -185,7 +188,7 @@ class ScanEngine:
             try:
                 self._callback(event)
             except Exception:
-                pass  # callbacks must never break the scan
+                logger.debug("Event callback error", exc_info=True)
 
     @staticmethod
     def _resolve_remote_modules(
@@ -221,10 +224,7 @@ class ScanEngine:
         vibesec_grade: Optional[str],
     ) -> ReconProResult:
         """Aggregate findings into a ``ReconProResult`` identical to scanner.py."""
-        total_deductions = sum(f.points_deducted for f in all_findings)
-        total_score = max(0, min(100, 100 - total_deductions))
-        if not all_findings:
-            total_score = 100
+        total_score = compute_score(all_findings)
         grade = compute_grade(total_score)
         host = target.replace("https://", "").replace("http://", "").split("/")[0]
         badge = badge_markdown(host, grade)
@@ -308,6 +308,11 @@ class ScanEngine:
                             self._emit(
                                 ScanEvent(type="FINDING", module_id=mod_id, finding=f)
                             )
+                            try:
+                                from .plugins import HookManager
+                                HookManager.fire("post_finding", finding=f)
+                            except Exception:
+                                pass
                     module_results[mod_id] = {
                         "findings": [f.to_dict() for f in mod_findings],
                         "count": len(mod_findings),
@@ -406,6 +411,11 @@ class ScanEngine:
         host = target.replace("https://", "").replace("http://", "").split("/")[0]
 
         self._emit(ScanEvent(type="SCAN_START", target=target, modules=list(mods)))
+        try:
+            from .plugins import HookManager
+            HookManager.fire("pre_scan", target=target, modules=mods)
+        except Exception:
+            pass
         scan_t0 = time.monotonic()
 
         semaphore = asyncio.Semaphore(self._concurrency)
@@ -470,6 +480,21 @@ class ScanEngine:
             vibesec_grade=vibesec_grade,
         )
 
+        # ── Post-scan Intelligence Pipeline ──────────────────────
+        intelligence_data = None
+        if all_findings:
+            try:
+                from .intelligence_pipeline import IntelligencePipeline
+                intel_pipeline = IntelligencePipeline(
+                    enable_online=False,
+                )
+                intel_result = intel_pipeline.analyze(all_findings, result.to_dict())
+                intelligence_data = intel_result.to_dict()
+                # Inject intelligence into result
+                result.intelligence = intelligence_data
+            except Exception as e:
+                logger.debug("Intelligence pipeline error: %s", e, exc_info=True)
+
         self._emit(
             ScanEvent(
                 type="SCAN_COMPLETE",
@@ -478,6 +503,11 @@ class ScanEngine:
                 duration=scan_duration,
             )
         )
+        try:
+            from .plugins import HookManager
+            HookManager.fire("post_scan", target=target, result=result, duration=scan_duration)
+        except Exception:
+            pass
 
         return result
 

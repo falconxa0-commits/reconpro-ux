@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from .http import Finding
+from .http_layer import Finding
 
 PLUGIN_DIR = Path.home() / ".reconpro" / "plugins"
 
@@ -110,7 +110,7 @@ def create_plugin_template(name: str) -> str:
 NAME = "{name.upper()}"
 DESCRIPTION = "Custom scanning module"
 
-from reconpro.http import Finding
+from reconpro.http_layer import Finding
 
 
 def run(target: str, base_url: str = "", timeout: int = 8, verify_tls: bool = True):

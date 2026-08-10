@@ -76,7 +76,7 @@ class TestScanWithMockedModules(unittest.TestCase):
 
     @patch('reconpro.scanner.get_module_runner')
     def test_scan_with_finding_module(self, mock_get_runner):
-        from reconpro.http import Finding
+        from reconpro.http_layer import Finding
 
         def fake_runner(target, base_url, **kwargs):
             return [Finding(
@@ -141,7 +141,7 @@ class TestReconProResultToDict(unittest.TestCase):
             "target", "modules_run", "total_findings",
             "severity_counts", "total_score", "grade",
             "badge_markdown", "vibesec_score", "vibesec_grade",
-            "module_results", "findings",
+            "module_results", "findings", "intelligence",
         }
         self.assertEqual(set(d.keys()), expected_keys)
 

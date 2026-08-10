@@ -57,7 +57,7 @@ Every remote scanning module must export a `run` function with this exact
 signature (defined in `modules/__init__.py`)::
 
     from __future__ import annotations
-    from ..http import http_probe, Finding
+    from ..http_layer import http_probe, Finding
 
     def run(target: str, base_url: str, timeout: int = 8, verify_tls: bool = True) -> list[Finding]:
         """Your module description.
@@ -115,7 +115,7 @@ signature (defined in `modules/__init__.py`)::
   category of vulnerabilities.
 - **Handle errors gracefully**. Wrap HTTP calls in try/except and return an empty
   list on failure. Never let a module crash the overall scan.
-- **Import only from http.py and constants.py** in your module. Importing from
+- **Import only from http_layer.py and constants.py** in your module. Importing from
   scanner.py, cli.py, or other modules creates circular dependencies.
 - **Use severity constants** from `constants.py`: import `SEVERITY_LEVELS, VALID_SEVERITIES`.
 
@@ -125,7 +125,7 @@ Write tests in `tests/test_my_module.py`::
 
     import unittest
     from reconpro.modules.my_module import run
-    from reconpro.http import Finding
+    from reconpro.http_layer import Finding
 
     class TestMyModule(unittest.TestCase):
         def test_returns_findings(self):
@@ -153,7 +153,7 @@ and are auto-discovered at scan time. A plugin is any `.py` file that exports
 a `run` function::
 
     # ~/.reconpro/plugins/custom_check.py
-    from reconpro.http import Finding
+    from reconpro.http_layer import Finding
 
     NAME = "CUSTOM CHECK"
     DESCRIPTION = "My custom security check"
@@ -178,7 +178,7 @@ Create `~/.reconpro/plugins/_hooks.json` to register lifecycle hooks::
 
 A minimal plugin::
 
-    from reconpro.http import Finding, http_probe
+    from reconpro.http_layer import Finding, http_probe
 
     NAME = "YOUR PLUGIN"
     DESCRIPTION = "Description of what this plugin checks"
