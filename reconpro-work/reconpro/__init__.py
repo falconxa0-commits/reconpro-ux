@@ -50,6 +50,11 @@ Powers:
     swarm      Multi-agent attack swarm
     adversarial Self-play hacker vs coder
 
+Intelligence Systems:
+    ai_analyst         AI Security Analyst — classification, correlation, attack paths
+    attack_graph        Attack Graph Engine — graph-based attack chain analysis
+    threat_intel        Threat Intelligence Center — CVE/CWE/CAPEC/MITRE enrichment
+
 Usage:
     reconpro example.com                    # Remote scan
     reconpro chat                          # Talk to it
