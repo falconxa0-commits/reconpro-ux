@@ -1,0 +1,789 @@
+     1→     1→"""Module: DARK WEB MONITOR — Credential Leak & Exposure Scanner.
+     2→     2→
+     3→     3→Monitors paste sites, leak directories, breach databases, and threat intelligence
+     4→     4→sources for target credentials/infrastructure mentions — all without Tor, all via stdlib.
+     5→     5→
+     6→     6→7 Detection Categories:
+     7→     7→  1. Paste Site Monitoring (PasteBin, GitHub gists, Rentry, Ghostbin)
+     8→     8→  2. Credential Leak Detection (email:password, API keys, JWT tokens)
+     9→     9→  3. Infrastructure Exposure (abuse DBs, malware reports, breach dumps)
+    10→    10→  4. Leak Temporal Analysis (ongoing vs historical breach patterns)
+    11→    11→  5. Dark Web Intelligence Sources (ThreatFox, URLhaus, MalBazaar, OTX)
+    12→    12→  6. Breach Database Correlation (cross-reference known breaches)
+    13→    13→  7. Secret Exposure Scanning (GitHub code search for hardcoded secrets)
+    14→    14→"""
+    15→    15→from __future__ import annotations
+    16→    16→
+    17→    17→import base64
+    18→    18→import hashlib
+    19→    19→import json
+    20→    20→import re
+    21→    21→import ssl
+    22→    22→import time
+    23→    23→import urllib.error
+    24→    24→import urllib.parse
+    25→    25→import urllib.request
+    26→    26→from datetime import datetime, timedelta
+    27→    27→from typing import Any, Dict, List, Optional
+    28→    28→from ..http_layer import http_probe, Finding, default_limiter
+    29→    29→
+    30→    30→
+    31→    31→# ═══════════════════════════════════════════════════════════════════════════
+    32→    32→# Paste Sites & Threat Intelligence Sources Database
+    33→    33→# ═══════════════════════════════════════════════════════════════════════════
+    34→    34→
+    35→    35→PASTE_SITES: Dict[str, Dict[str, Any]] = {
+    36→    36→    "pastebin": {
+    37→    37→        "name": "PasteBin",
+    38→    38→        "search_url": "https://pastebin.com/search?q={query}",
+    39→    39→        "api_url": "https://pastebin.com/api/api_post.php",
+    40→    40→        "type": "html",
+    41→    41→        "rate_limit": 1.0,
+    42→    42→        "severity": "high",
+    43→    43→    },
+    44→    44→    "github_gist": {
+    45→    45→        "name": "GitHub Gists",
+    46→    46→        "search_url": "https://gist.github.com/search?q={query}",
+    47→    47→        "type": "html",
+    48→    48→        "rate_limit": 3.0,
+    49→    49→        "severity": "high",
+    50→    50→    },
+    51→    51→    "github_code": {
+    52→    52→        "name": "GitHub Code",
+    53→    53→        "search_url": "https://github.com/search?q={query}&type=code",
+    54→    54→        "type": "html",
+    55→    55→        "rate_limit": 3.0,
+    56→    56→        "severity": "critical",
+    57→    57→    },
+    58→    58→    "rentry": {
+    59→    59→        "name": "Rentry.co",
+    60→    60→        "search_url": "https://rentry.co/search?q={query}",
+    61→    61→        "type": "html",
+    62→    62→        "rate_limit": 2.0,
+    63→    63→        "severity": "medium",
+    64→    64→    },
+    65→    65→    "ghostbin": {
+    66→    66→        "name": "Ghostbin",
+    67→    67→        "search_url": "https://ghostbin.com/search?q={query}",
+    68→    68→        "type": "html",
+    69→    69→        "rate_limit": 2.0,
+    70→    70→        "severity": "medium",
+    71→    71→    },
+    72→    72→    "paste_site": {
+    73→    73→        "name": "PasteSite.org",
+    74→    74→        "search_url": "https://www.pastesite.com/search?q={query}",
+    75→    75→        "type": "html",
+    76→    76→        "rate_limit": 2.0,
+    77→    77→        "severity": "medium",
+    78→    78→    },
+    79→    79→    "justpaste": {
+    80→    80→        "name": "JustPaste.it",
+    81→    81→        "search_url": "https://justpaste.it/search?q={query}",
+    82→    82→        "type": "html",
+    83→    83→        "rate_limit": 2.0,
+    84→    84→        "severity": "medium",
+    85→    85→    },
+    86→    86→}
+    87→    87→
+    88→    88→THREAT_INTEL_SOURCES: Dict[str, Dict[str, Any]] = {
+    89→    89→    "threatfox": {
+    90→    90→        "name": "abuse.ch ThreatFox",
+    91→    91→        "api_url": "https://threatfox-api.abuse.ch/v1/",
+    92→    92→        "search_param": "query",
+    93→    93→        "type": "json_api",
+    94→    94→        "severity": "critical",
+    95→    95→        "query_types": ["domain", "ip", "url", "hash"],
+    96→    96→    },
+    97→    97→    "urlhaus": {
+    98→    98→        "name": "abuse.ch URLhaus",
+    99→    99→        "search_url": "https://urlhaus-api.abuse.ch/v1/host/{query}",
+   100→   100→        "type": "json_api",
+   101→   101→        "severity": "critical",
+   102→   102→    },
+   103→   103→    "malbazaar": {
+   104→   104→        "name": "abuse.ch MalBazaar",
+   105→   105→        "search_url": "https://bazaar.abuse.ch/export/csv/recent/",
+   106→   106→        "type": "csv",
+   107→   107→        "severity": "high",
+   108→   108→    },
+   109→   109→    "alienvault_otx": {
+   110→   110→        "name": "AlienVault OTX",
+   111→   111→        "search_url": "https://otx.alienvault.com/api/v1/indicators/domain/{query}/general",
+   112→   112→        "type": "json_api",
+   113→   113→        "severity": "high",
+   114→   114→    },
+   115→   115→    "crtsh": {
+   116→   116→        "name": "crt.sh Certificate Transparency",
+   117→   117→        "search_url": "https://crt.sh/?q=%.{query}&output=json",
+   118→   118→        "type": "json_api",
+   119→   119→        "severity": "medium",
+   120→   120→    },
+   121→   121→    "virustotal": {
+   122→   122→        "name": "VirusTotal",
+   123→   123→        "search_url": "https://www.virustotal.com/vtapi/v2/domain/report?domain={query}",
+   124→   124→        "type": "json_api",
+   125→   125→        "severity": "high",
+   126→   126→    },
+   127→   127→}
+   128→   128→
+   129→   129→# Known breach databases (public APIs that don't require auth)
+   130→   130→BREACH_SOURCES: Dict[str, Dict[str, Any]] = {
+   131→   131→    "haveibeenpwned": {
+   132→   132→        "name": "HaveIBeenPwned",
+   133→   133→        "api_url": "https://haveibeenpwned.com/api/v3/breachedaccount/{query}",
+   134→   134→        "type": "json_api",
+   135→   135→        "severity": "critical",
+   136→   136→    },
+   137→   137→    "hibp_password": {
+   138→   138→        "name": "HIBP Password Check",
+   139→   139→        "api_url": "https://api.pwnedpasswords.com/range/{prefix}",
+   140→   140→        "type": "k-anonymity",
+   141→   141→        "severity": "critical",
+   142→   142→    },
+   143→   143→}
+   144→   144→
+   145→   145→# Credential patterns
+   146→   146→CREDENTIAL_PATTERNS: Dict[str, Dict[str, Any]] = {
+   147→   147→    "email_password": {
+   148→   148→        "pattern": re.compile(
+   149→   149→            r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'
+   150→   150→            r'[\s:;\|,\'"\x60]+'
+   151→   151→            r'[^\s\x00-\x1f]{4,64}',
+   152→   152→            re.IGNORECASE,
+   153→   153→        ),
+   154→   154→        "severity": "critical",
+   155→   155→        "description": "Email:password combination found in paste content",
+   156→   156→    },
+   157→   157→    "api_key_generic": {
+   158→   158→        "pattern": re.compile(
+   159→   159→            r'(?:api[_\-]?key|apikey|key[_\-]?id|access[_\-]?key|secret[_\-]?key)'
+   160→   160→            r'[\s]*[=:]\s*["\']?([a-zA-Z0-9_\-]{16,})["\']?',
+   161→   161→            re.IGNORECASE,
+   162→   162→        ),
+   163→   163→        "severity": "critical",
+   164→   164→        "description": "Generic API key exposed",
+   165→   165→    },
+   166→   166→    "aws_key": {
+   167→   167→        "pattern": re.compile(
+   168→   168→            r'(?:AKIA|ABIA|ACCA|ASIA)[A-Z0-9]{16}',
+   169→   169→        ),
+   170→   170→        "severity": "critical",
+   171→   171→        "description": "AWS access key ID detected",
+   172→   172→    },
+   173→   173→    "aws_secret": {
+   174→   174→        "pattern": re.compile(
+   175→   175→            r'(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)'
+   176→   176→            r'[\s]*[=:]\s*["\']?([A-Za-z0-9/+=]{40})["\']?',
+   177→   177→            re.IGNORECASE,
+   178→   178→        ),
+   179→   179→        "severity": "critical",
+   180→   180→        "description": "AWS secret access key exposed",
+   181→   181→    },
+   182→   182→    "github_token": {
+   183→   183→        "pattern": re.compile(
+   184→   184→            r'(?:gh[ps]_[a-zA-Z0-9]{36,}|github_pat_[a-zA-Z0-9_]{22,})',
+   185→   185→        ),
+   186→   186→        "severity": "critical",
+   187→   187→        "description": "GitHub personal access token or fine-grained PAT",
+   188→   188→    },
+   189→   189→    "jwt_token": {
+   190→   190→        "pattern": re.compile(
+   191→   191→            r'eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+',
+   192→   192→        ),
+   193→   193→        "severity": "high",
+   194→   194→        "description": "JWT token detected (decoded header reveals algorithm and issuer)",
+   195→   195→    },
+   196→   196→    "private_key": {
+   197→   197→        "pattern": re.compile(
+   198→   198→            r'-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----',
+   199→   199→        ),
+   200→   200→        "severity": "critical",
+   201→   201→        "description": "Private key (RSA/EC/DSA/OpenSSH) exposed",
+   202→   202→    },
+   203→   203→    "db_connection_string": {
+   204→   204→        "pattern": re.compile(
+   205→   205→            r'(?:mongodb\+srv|mysql|postgres|redis|amqp)://[^\s\'"<>]{10,}',
+   206→   206→            re.IGNORECASE,
+   207→   207→        ),
+   208→   208→        "severity": "high",
+   209→   209→        "description": "Database connection string exposed",
+   210→   210→    },
+   211→   211→    "bearer_token": {
+   212→   212→        "pattern": re.compile(
+   213→   213→            r'(?:Bearer|Token|Authorization)[\s:]+([a-zA-Z0-9_\-\.]{20,})',
+   214→   214→            re.IGNORECASE,
+   215→   215→        ),
+   216→   216→        "severity": "high",
+   217→   217→        "description": "Bearer / authorization token exposed",
+   218→   218→    },
+   219→   219→    "slack_webhook": {
+   220→   220→        "pattern": re.compile(
+   221→   221→            r'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[a-zA-Z0-9]+',
+   222→   222→        ),
+   223→   223→        "severity": "high",
+   224→   224→        "description": "Slack webhook URL exposed",
+   225→   225→    },
+   226→   226→    "stripe_key": {
+   227→   227→        "pattern": re.compile(
+   228→   228→            r'(?:sk|pk)_(?:live|test)_[a-zA-Z0-9]{24,}',
+   229→   229→        ),
+   230→   230→        "severity": "critical",
+   231→   231→        "description": "Stripe secret/publishable key exposed",
+   232→   232→    },
+   233→   233→    "google_api_key": {
+   234→   234→        "pattern": re.compile(
+   235→   235→            r'AIza[0-9A-Za-z_\-]{35}',
+   236→   236→        ),
+   237→   237→        "severity": "high",
+   238→   238→        "description": "Google API key detected",
+   239→   239→    },
+   240→   240→    "sendgrid_key": {
+   241→   241→        "pattern": re.compile(
+   242→   242→            r'SG\.[a-zA-Z0-9_\-]{22}\.[a-zA-Z0-9_\-]{43}',
+   243→   243→        ),
+   244→   244→        "severity": "high",
+   245→   245→        "description": "SendGrid API key detected",
+   246→   246→    },
+   247→   247→    "twilio_key": {
+   248→   248→        "pattern": re.compile(
+   249→   249→            r'SK[0-9a-fA-F]{32}',
+   250→   250→        ),
+   251→   251→        "severity": "high",
+   252→   252→        "description": "Twilio API key detected",
+   253→   253→    },
+   254→   254→}
+   255→   255→
+   256→   256→
+   257→   257→# ═══════════════════════════════════════════════════════════════════════════
+   258→   258→# Utility helpers
+   259→   259→# ═══════════════════════════════════════════════════════════════════════════
+   260→   260→
+   261→   261→def _make(
+   262→   262→    title: str, sev: str, cat: str, desc: str,
+   263→   263→    evidence: str, asset: str, pts: int = 0,
+   264→   264→    remediation: str = "", dread: float = 0.0,
+   265→   265→) -> Finding:
+   266→   266→    return Finding(
+   267→   267→        title=title, severity=sev, category=cat,
+   268→   268→        module="dark_web_monitor", description=desc,
+   269→   269→        evidence=evidence, asset=asset, points_deducted=pts,
+   270→   270→        remediation=remediation, dread_score=dread,
+   271→   271→    )
+   272→   272→
+   273→   273→
+   274→   274→def _extract_domain(target: str) -> str:
+   275→   275→    """Extract the root domain from a target."""
+   276→   276→    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+   277→   277→    host = host.split(":")[0]
+   278→   278→    parts = host.rsplit(".", 1)
+   279→   279→    if len(parts) >= 2:
+   280→   280→        # Check for common TLDs with two-part SLDs
+   281→   281→        tld = parts[-1]
+   282→   282→        if tld in ("co.uk", "com.au", "org.uk", "ac.uk", "gov.uk", "co.jp"):
+   283→   283→            sub_parts = host.rsplit(".", 2)
+   284→   284→            return ".".join(sub_parts[-2:]) if len(sub_parts) >= 2 else host
+   285→   285→    return host
+   286→   286→
+   287→   287→
+   288→   288→def _extract_email_domains(target: str) -> List[str]:
+   289→   289→    """Generate likely email domains for the target."""
+   290→   290→    domain = _extract_domain(target)
+   291→   291→    domains = [domain]
+   292→   292→    # Common email domain patterns
+   293→   293→    domains.append(f"mail.{domain}")
+   294→   294→    # Strip www
+   295→   295→    if domain.startswith("www."):
+   296→   296→        domains.append(domain[4:])
+   297→   297→    return list(set(domains))
+   298→   298→
+   299→   299→
+   300→   300→def _safe_probe(url: str, timeout: int = 5, verify_tls: bool = True) -> Dict[str, Any]:
+   301→   301→    """Safe HTTP probe with error handling."""
+   302→   302→    try:
+   303→   303→        return http_probe(
+   304→   304→            url, timeout=timeout, verify_tls=verify_tls,
+   305→   305→            limiter=default_limiter,
+   306→   306→        )
+   307→   307→    except Exception:
+   308→   308→        return {"ok": False, "status": 0, "reason": "error", "headers": {}, "body": ""}
+   309→   309→
+   310→   310→
+   311→   311→def _parse_json(body: str) -> Optional[Any]:
+   312→   312→    try:
+   313→   313→        return json.loads(body)
+   314→   314→    except Exception:
+   315→   315→        return None
+   316→   316→
+   317→   317→
+   318→   318→def _count_pattern(body: str, pattern: re.Pattern) -> int:
+   319→   319→    """Count non-overlapping pattern matches."""
+   320→   320→    return len(pattern.findall(body))
+   321→   321→
+   322→   322→
+   323→   323→def _extract_emails_from_domain(domain: str) -> List[str]:
+   324→   324→    """Extract likely email addresses from a domain name."""
+   325→   325→    prefixes = ["admin", "info", "support", "contact", "root", "test",
+   326→   326→                "webmaster", "noreply", "security", "dev", "staging"]
+   327→   327→    return [f"{p}@{domain}" for p in prefixes]
+   328→   328→
+   329→   329→
+   330→   330→def _decode_jwt(token: str) -> Optional[Dict[str, Any]]:
+   331→   331→    """Decode JWT header and payload without verification."""
+   332→   332→    parts = token.split(".")
+   333→   333→    if len(parts) != 3:
+   334→   334→        return None
+   335→   335→    result = {}
+   336→   336→    for i, label in enumerate(("header", "payload")):
+   337→   337→        try:
+   338→   338→            padded = parts[i] + "=" * (-len(parts[i]) % 4)
+   339→   339→            decoded = base64.urlsafe_b64decode(padded)
+   340→   340→            parsed = json.loads(decoded)
+   341→   341→            result[label] = parsed
+   342→   342→        except Exception:
+   343→   343→            result[label] = None
+   344→   344→    return result
+   345→   345→
+   346→   346→
+   347→   347→# ═══════════════════════════════════════════════════════════════════════════
+   348→   348→# Cat 1: Paste Site Monitoring
+   349→   349→# ═══════════════════════════════════════════════════════════════════════════
+   350→   350→
+   351→   351→def _check_paste_sites(
+   352→   352→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   353→   353→) -> List[Finding]:
+   354→   354→    findings: List[Finding] = []
+   355→   355→    host = _extract_domain(target)
+   356→   356→    queries = [host]
+   357→   357→
+   358→   358→    for site_id, site in PASTE_SITES.items():
+   359→   359→        for query in queries:
+   360→   360→            url = site["search_url"].format(query=urllib.parse.quote(query))
+   361→   361→            resp = _safe_probe(url, timeout=min(timeout, 5), verify_tls=verify_tls)
+   362→   362→
+   363→   363→            if resp.get("ok") and resp.get("status") == 200:
+   364→   364→                body = resp.get("body", "")
+   365→   365→
+   366→   366→                # Check for result indicators
+   367→   367→                result_indicators = 0
+   368→   368→                # Common patterns indicating search results
+   369→   369→                if "result" in body.lower():
+   370→   370→                    result_indicators += 1
+   371→   371→                if "paste" in body.lower():
+   372→   372→                    result_indicators += 1
+   373→   373→                if host.lower() in body.lower():
+   374→   374→                    result_indicators += 3  # Domain mention is strongest signal
+   375→   375→                if re.search(rf'{re.escape(host)}[\s/<]', body, re.IGNORECASE):
+   376→   376→                    result_indicators += 2
+   377→   377→
+   378→   378→                # Count occurrences
+   379→   379→                domain_count = body.lower().count(host.lower())
+   380→   380→
+   381→   381→                if result_indicators >= 3:
+   382→   382→                    sev = site.get("severity", "high")
+   383→   383→                    pts = 18 if sev == "critical" else 12
+   384→   384→                    findings.append(_make(
+   385→   385→                        f"Paste Site Exposure — {site['name']}: domain found",
+   386→   386→                        sev, "paste_exposure",
+   387→   387→                        f"Target domain '{host}' found on {site['name']}. "
+   388→   388→                        f"Indicators: {result_indicators}, domain mentions: {domain_count}. "
+   389→   389→                        f"This may indicate leaked credentials, configuration data, or source code.",
+   390→   390→                        f"Source: {site['name']}; Mentions: {domain_count}; URL: {url}",
+   391→   391→                        host, pts,
+   392→   392→                        "Review the paste content. Request removal if credentials/secrets are exposed.",
+   393→   393→                        0.7,
+   394→   394→                    ))
+   395→   395→
+   396→   396→    return findings
+   397→   397→
+   398→   398→
+   399→   399→# ═══════════════════════════════════════════════════════════════════════════
+   400→   400→# Cat 2: Credential Pattern Detection
+   401→   401→# ═══════════════════════════════════════════════════════════════════════════
+   402→   402→
+   403→   403→def _check_credential_patterns(
+   404→   404→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   405→   405→) -> List[Finding]:
+   406→   406→    """Check the target's own responses for leaked credentials."""
+   407→   407→    findings: List[Finding] = []
+   408→   408→    host = _extract_domain(target)
+   409→   409→
+   410→   410→    # Fetch the target's own pages for credential leakage
+   411→   411→    paths_to_check = ["/", "/robots.txt", "/sitemap.xml", "/config.js",
+   412→   412→                       "/.env", "/package.json", "/webpack.config.js"]
+   413→   413→    for path in paths_to_check:
+   414→   414→        url = base_url.rstrip("/") + path
+   415→   415→        resp = _safe_probe(url, timeout=min(timeout, 5), verify_tls=verify_tls)
+   416→   416→        if not resp.get("ok") or resp.get("status") in (404, 403):
+   417→   417→            continue
+   418→   418→
+   419→   419→        body = resp.get("body", "")
+   420→   420→        if len(body) < 50:
+   421→   421→            continue
+   422→   422→
+   423→   423→        for cred_id, cred_info in CREDENTIAL_PATTERNS.items():
+   424→   424→            matches = cred_info["pattern"].findall(body)
+   425→   425→            if matches:
+   426→   426→                count = len(matches)
+   427→   427→                sev = cred_info.get("severity", "high")
+   428→   428→                pts = 20 if sev == "critical" else 12
+   429→   429→
+   430→   430→                # Decode JWT tokens for extra evidence
+   431→   431→                extra = ""
+   432→   432→                if cred_id == "jwt_token" and matches:
+   433→   433→                    jwt_data = _decode_jwt(matches[0])
+   434→   434→                    if jwt_data and jwt_data.get("header"):
+   435→   435→                        extra = f" JWT header: {json.dumps(jwt_data['header'])}"
+   436→   436→
+   437→   437→                evidence_str = (
+   438→   438→                    f"Path: {path}; Pattern: {cred_id}; "
+   439→   439→                    f"Matches: {count}; Sample: {str(matches[0])[:80]}{extra}"
+   440→   440→                )
+   441→   441→                findings.append(_make(
+   442→   442→                    f"Credential Leak — {cred_info['description']} on {path}",
+   443→   443→                    sev, "credential_leak",
+   444→   444→                    f"{cred_info['description']} detected {count} time(s) at {path}. "
+   445→   445→                    f"Immediate credential rotation recommended.{extra}",
+   446→   446→                    evidence_str, host, pts,
+   447→   447→                    "Rotate any exposed credentials immediately. Remove sensitive data from source code.",
+   448→   448→                    0.9 if sev == "critical" else 0.6,
+   449→   449→                ))
+   450→   450→
+   451→   451→    return findings
+   452→   452→
+   453→   453→
+   454→   454→# ═══════════════════════════════════════════════════════════════════════════
+   455→   455→# Cat 3: Infrastructure Exposure Check
+   456→   456→# ═══════════════════════════════════════════════════════════════════════════
+   457→   457→
+   458→   458→def _check_infrastructure_exposure(
+   459→   459→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   460→   460→) -> List[Finding]:
+   461→   461→    findings: List[Finding] = []
+   462→   462→    host = _extract_domain(target)
+   463→   463→
+   464→   464→    # Resolve IPs for the target
+   465→   465→    try:
+   466→   466→        ips = socket.getaddrinfo(host, None)
+   467→   467→        ip_list = list(set(addr[4][0] for addr in ips))
+   468→   468→    except Exception:
+   469→   469→        ip_list = []
+   470→   470→
+   471→   471→    # Check threat intel sources for each IP
+   472→   472→    for source_id, source in THREAT_INTEL_SOURCES.items():
+   473→   473→        if source.get("type") != "json_api":
+   474→   474→            continue
+   475→   475→
+   476→   476→        for ip in ip_list[:3]:
+   477→   477→            url = source["search_url"].format(query=ip)
+   478→   478→            resp = _safe_probe(url, timeout=min(timeout, 5), verify_tls=verify_tls)
+   479→   479→
+   480→   480→            if resp.get("ok") and resp.get("status") == 200:
+   481→   481→                body = resp.get("body", "")
+   482→   482→                data = _parse_json(body)
+   483→   483→                if data and isinstance(data, dict):
+   484→   484→                    # Check for malicious indicators
+   485→   485→                    if data.get("query_status") == "ok":
+   486→   486→                        count = len(data.get("data", []))
+   487→   487→                        if count > 0:
+   488→   488→                            findings.append(_make(
+   489→   489→                                f"Infrastructure Exposure — {ip} on {source['name']}",
+   490→   490→                                "critical", "infrastructure_exposure",
+   491→   491→                                f"IP {ip} has {count} malicious indicators on {source['name']}. "
+   492→   492→                                f"Target infrastructure may be compromised or hosting malware.",
+   493→   493→                                f"IP: {ip}; Source: {source['name']}; Indicators: {count}",
+   494→   494→                                host, 20,
+   495→   495→                                "Investigate server for compromise. Check for malware, unauthorized access.",
+   496→   496→                                0.9,
+   497→   497→                            ))
+   498→   498→                    elif data.get("response_code") == 1:
+   499→   499→                        # VirusTotal-style positive detection
+   500→   500→                        positives = data.get("positives", 0)
+   501→   501→                        total = data.get("total", 0)
+   502→   502→                        if positives > 0:
+   503→   503→                            findings.append(_make(
+   504→   504→                                f"Infrastructure Exposure — {ip}: {positives}/{total} vendors flag",
+   505→   505→                                "critical", "infrastructure_exposure",
+   506→   506→                                f"IP {ip} flagged by {positives}/{total} security vendors on "
+   507→   507→                                f"{source['name']}. Infrastructure may be malicious.",
+   508→   508→                                f"IP: {ip}; Positives: {positives}/{total}; Source: {source['name']}",
+   509→   509→                                host, 20,
+   510→   510→                                "Immediate investigation required. Check all services on this IP.",
+   511→   511→                                0.9,
+   512→   512→                            ))
+   513→   513→
+   514→   514→    return findings
+   515→   515→
+   516→   516→
+   517→   517→# ═══════════════════════════════════════════════════════════════════════════
+   518→   518→# Cat 4: Certificate Transparency Log Analysis
+   519→   519→# ═══════════════════════════════════════════════════════════════════════════
+   520→   520→
+   521→   521→def _check_ct_logs(
+   522→   522→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   523→   523→) -> List[Finding]:
+   524→   524→    findings: List[Finding] = []
+   525→   525→    host = _extract_domain(target)
+   526→   526→
+   527→   527→    resp = _safe_probe(
+   528→   528→        "https://crt.sh/?q=%.{}&output=json".format(
+   529→   529→            urllib.parse.quote(host)),
+   530→   530→        timeout=min(timeout, 10), verify_tls=verify_tls,
+   531→   531→    )
+   532→   532→
+   533→   533→    if resp.get("ok") and resp.get("status") == 200:
+   534→   534→        data = _parse_json(resp.get("body", ""))
+   535→   535→        if data and isinstance(data, list):
+   536→   536→            cert_count = len(data)
+   537→   537→            # Extract unique subdomains
+   538→   538→            subdomains = set()
+   539→   539→            issuers = set()
+   540→   540→            for cert in data:
+   541→   541→                name = cert.get("name_value", "")
+   542→   542→                for n in name.split("\n"):
+   543→   543→                    n = n.strip().lstrip("*.")
+   544→   544→                    if n.endswith(host):
+   545→   545→                        subdomains.add(n)
+   546→   546→                issuer = cert.get("issuer_name", "")
+   547→   547→                if issuer:
+   548→   548→                    issuers.add(issuer)
+   549→   549→
+   550→   550→            if cert_count > 50:
+   551→   551→                findings.append(_make(
+   552→   552→                    f"CT Log Alert — {cert_count} certificates for *.{host}",
+   553→   553→                    "medium", "ct_analysis",
+   554→   554→                    f"Found {cert_count} certificates for *.{host} in CT logs. "
+   555→   555→                    f"{len(subdomains)} unique subdomains, {len(issuers)} unique issuers. "
+   556→   556→                    f"High cert count may indicate phishing or subdomain takeover risk.",
+   557→   557→                    f"Subdomains: {len(subdomains)}; Issuers: {len(issuers)}; Total certs: {cert_count}",
+   558→   558→                    host, 8,
+   559→   559→                    "Review CT log entries for unauthorized certificates. Consider CT monitoring.",
+   560→   560→                    0.5,
+   561→   561→                ))
+   562→   562→            elif cert_count > 10:
+   563→   563→                findings.append(_make(
+   564→   564→                    f"CT Log — {cert_count} certificates for *.{host}",
+   565→   565→                    "low", "ct_analysis",
+   566→   566→                    f"Found {cert_count} certificates for *.{host}. "
+   567→   567→                    f"{len(subdomains)} subdomains tracked.",
+   568→   568→                    f"Subdomains: {len(subdomains)}; Certs: {cert_count}",
+   569→   569→                    host, 3,
+   570→   570→                    "Monitor CT logs for unauthorized certificates.",
+   571→   571→                    0.2,
+   572→   572→                ))
+   573→   573→
+   574→   574→            # Check for suspicious issuer patterns (self-signed, unknown CAs)
+   575→   575→            suspicious_issuers = [i for i in issuers if "Let's Encrypt" not in i
+   576→   576→                                 and "DigiCert" not in i and "Sectigo" not in i
+   577→   577→                                 and "Cloudflare" not in i and "Amazon" not in i
+   578→   578→                                 and "GlobalSign" not in i and "Sectigo" not in i]
+   579→   579→            if suspicious_issuers:
+   580→   580→                findings.append(_make(
+   581→   581→                    f"CT Log — Unusual Certificate Issuers Detected",
+   582→   582→                    "high", "ct_analysis",
+   583→   583→                    f"Found certificates issued by non-standard CAs: "
+   584→   584→                    f"{', '.join(suspicious_issuers[:3])}. "
+   585→   585→                    f"May indicate self-signed certs for phishing infrastructure.",
+   586→   586→                    f"Suspected issuers: {suspicious_issuers[:5]}",
+   587→   587→                    host, 15,
+   588→   588→                    "Investigate who issued these certificates. Verify all subdomains.",
+   589→   589→                    0.7,
+   590→   590→                ))
+   591→   591→
+   592→   592→    return findings
+   593→   593→
+   594→   594→
+   595→   595→# ═══════════════════════════════════════════════════════════════════════════
+   596→   596→# Cat 5: Domain-Level Threat Intelligence
+   597→   597→# ═══════════════════════════════════════════════════════════════════════════
+   598→   598→
+   599→   599→def _check_threat_intel(
+   600→   600→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   601→   601→) -> List[Finding]:
+   602→   602→    findings: List[Finding] = []
+   603→   603→    host = _extract_domain(target)
+   604→   604→
+   605→   605→    # Check URLhaus
+   606→   606→    resp = _safe_probe(
+   607→   607→        f"https://urlhaus-api.abuse.ch/v1/host/{urllib.parse.quote(host)}",
+   608→   608→        timeout=min(timeout, 8), verify_tls=verify_tls,
+   609→   609→    )
+   610→   610→    if resp.get("ok") and resp.get("status") == 200:
+   611→   611→        data = _parse_json(resp.get("body", ""))
+   612→   612→        if data and isinstance(data, dict):
+   613→   613→            total_urls = data.get("total_urls", 0)
+   614→   614→            if total_urls > 0:
+   615→   615→                findings.append(_make(
+   616→   616→                    f"Threat Intel — {total_urls} malicious URLs on URLhaus for {host}",
+   617→   617→                    "critical", "threat_intelligence",
+   618→   618→                    f"abuse.ch URLhaus lists {total_urls} malicious URLs associated with "
+   619→   619→                    f"{host}. Infrastructure may be compromised or used for malware distribution.",
+   620→   620→                    f"Host: {host}; Malicious URLs: {total_urls}",
+   621→   621→                    host, 20,
+   622→   622→                    "URGENT: Check all URLs. Infrastructure may be hosting malware.",
+   623→   623→                    0.9,
+   624→   624→                ))
+   625→   625→
+   626→   626→    # Check AlienVault OTX
+   627→   627→    resp = _safe_probe(
+   628→   628→        f"https://otx.alienvault.com/api/v1/indicators/domain/{urllib.parse.quote(host)}/general",
+   629→   629→        timeout=min(timeout, 8), verify_tls=verify_tls,
+   630→   630→    )
+   631→   631→    if resp.get("ok") and resp.get("status") == 200:
+   632→   632→        data = _parse_json(resp.get("body", ""))
+   633→   633→        if data and isinstance(data, dict):
+   634→   634→            pulses = len(data.get("pulse_info", {}).get("pulses", []))
+   635→   635→            if pulses > 5:
+   636→   636→                findings.append(_make(
+   637→   637→                    f"Threat Intel — {pulses} threat pulses on OTX for {host}",
+   638→   638→                    "high", "threat_intelligence",
+   639→   639→                    f"AlienVault OTX shows {pulses} threat intelligence pulses mentioning "
+   640→   640→                    f"{host}. Multiple pulses suggest active targeting.",
+   641→   641→                    f"Host: {host}; OTX Pulses: {pulses}",
+   642→   642→                    host, 15,
+   643→   643→                    "Review OTX pulse details for specific threats and attacker TTPs.",
+   644→   644→                    0.7,
+   645→   645→                ))
+   646→   646→
+   647→   647→    return findings
+   648→   648→
+   649→   649→
+   650→   650→# ═══════════════════════════════════════════════════════════════════════════
+   651→   651→# Cat 6: Breach Database Cross-Reference
+   652→   652→# ═══════════════════════════════════════════════════════════════════════════
+   653→   653→
+   654→   654→def _check_breach_dbs(
+   655→   655→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   656→   656→) -> List[Finding]:
+   657→   657→    findings: List[Finding] = []
+   658→   658→    host = _extract_domain(target)
+   659→   659→    email_domains = _extract_email_domains(target)
+   660→   660→
+   661→   661→    for email_domain in email_domains:
+   662→   662→        # Construct a test email (not a real user — just tests the domain)
+   663→   663→        test_email = f"test@{email_domain}"
+   664→   664→
+   665→   665→        resp = _safe_probe(
+   666→   666→            "https://haveibeenpwned.com/api/v3/breachedaccount/{}".format(
+   667→   667→                urllib.parse.quote(test_email)),
+   668→   668→            timeout=min(timeout, 5), verify_tls=verify_tls,
+   669→   669→        )
+   670→   670→
+   671→   671→        if resp.get("ok") and resp.get("status") == 200:
+   672→   672→            breaches = _parse_json(resp.get("body", ""))
+   673→   673→            if breaches and isinstance(breaches, list):
+   674→   674→                breach_count = len(breaches)
+   675→   675→                breach_names = [b.get("name", "?") for b in breaches[:5]]
+   676→   676→                findings.append(_make(
+   677→   677→                    f"Breach Database — {breach_count} breaches for @{email_domain}",
+   678→   678→                    "critical", "breach_database",
+   679→   679→                    f"HIBP reports {breach_count} breaches affecting emails at "
+   680→   680→                    f"@{email_domain}. Breaches: {', '.join(breach_names)}. "
+   681→   681→                    f"Domain emails may be compromised.",
+   682→   682→                    f"Breaches: {breach_names}; Domain: {email_domain}",
+   683→   683→                    host, 18,
+   684→   684→                    "Force password reset for all users. Enable MFA. Review breach data for exposed credentials.",
+   685→   685→                    0.8,
+   686→   686→                ))
+   687→   687→        elif resp.get("status") == 404:
+   688→   688→            # No breaches found (good)
+   689→   689→            pass
+   690→   690→        elif resp.get("status") == 403:
+   691→   691→            # Rate limited
+   692→   692→            pass
+   693→   693→        elif resp.get("status") == 429:
+   694→   694→            # Rate limited
+   695→   695→            pass
+   696→   696→
+   697→   697→    return findings
+   698→   698→
+   699→   699→
+   700→   700→# ═══════════════════════════════════════════════════════════════════════════
+   701→   701→# Cat 7: GitHub Code Search for Secrets
+   702→   702→# ═══════════════════════════════════════════════════════════════════════════
+   703→   703→
+   704→   704→def _check_github_secrets(
+   705→   705→    target: str, base_url: str, timeout: int, verify_tls: bool,
+   706→   706→) -> List[Finding]:
+   707→   707→    findings: List[Finding] = []
+   708→   708→    host = _extract_domain(target)
+   709→   709→
+   710→   710→    search_queries = [
+   711→   711→        f'"{host}" password',
+   712→   712→        f'"{host}" api_key',
+   713→   713→        f'"{host}" secret',
+   714→   714→        f'"{host}" token',
+   715→   715→        f'"{host}" private_key',
+   716→   716→        f'"{host}" credential',
+   717→   717→    ]
+   718→   718→
+   719→   719→    for query in search_queries:
+   720→   720→        url = f"https://github.com/search?q={urllib.parse.quote(query)}&type=code"
+   721→   721→        resp = _safe_probe(url, timeout=min(timeout, 5), verify_tls=verify_tls)
+   722→   722→
+   723→   723→        if resp.get("ok") and resp.get("status") == 200:
+   724→   724→            body = resp.get("body", "")
+   725→   725→
+   726→   726→            # Look for code result indicators
+   727→   727→            code_result_count = body.count('data-hydro-click')
+   728→   728→            repo_count = len(re.findall(r'href="/[^"]+[^"]+?"', body))
+   729→   729→
+   730→   730→            if code_result_count > 5:
+   731→   731→                findings.append(_make(
+   732→   732→                    f"GitHub Code Exposure — Secrets found for '{host}'",
+   733→   733→                    "critical", "github_exposure",
+   734→   734→                    f"GitHub code search for '{query}' returned {code_result_count} results. "
+   735→   735→                    f"Sensitive code (passwords, keys, tokens) associated with '{host}' "
+   736→   736→                    f"may be publicly exposed.",
+   737→   737→                    f"Query: {query}; Results: {code_result_count}",
+   738→   738→                    host, 20,
+   739→   739→                    "Remove exposed secrets from GitHub history. Use git-filter-repo or BFG Repo-Cleaner. "
+   740→   740→                    "Rotate all exposed credentials immediately.",
+   741→   741→                    0.9,
+   742→   742→                ))
+   743→   743→                break  # Don't flood with multiple findings
+   744→   744→
+   745→   745→    return findings
+   746→   746→
+   747→   747→
+   748→   748→# ═══════════════════════════════════════════════════════════════════════════
+   749→   749→# Main Entry Point
+   750→   750→# ═══════════════════════════════════════════════════════════════════════════
+   751→   751→
+   752→   752→def run_dark_web_monitor(
+   753→   753→    target: str,
+   754→   754→    base_url: str,
+   755→   755→    timeout: int = 8,
+   756→   756→    verify_tls: bool = True,
+   757→   757→) -> List[Finding]:
+   758→   758→    """Run all dark web monitoring and credential leak checks.
+   759→   759→
+   760→   760→    Returns a list of Finding objects for any detected exposures,
+   761→   761→    leaked credentials, or threat intelligence matches.
+   762→   762→    """
+   763→   763→    import socket
+   764→   764→    findings: List[Finding] = []
+   765→   765→    host = _extract_domain(target)
+   766→   766→
+   767→   767→    # Phase 1: Paste site monitoring
+   768→   768→    findings.extend(_check_paste_sites(target, base_url, timeout, verify_tls))
+   769→   769→
+   770→   770→    # Phase 2: Credential pattern detection on target
+   771→   771→    findings.extend(_check_credential_patterns(target, base_url, timeout, verify_tls))
+   772→   772→
+   773→   773→    # Phase 3: Infrastructure exposure (threat intel)
+   774→   774→    findings.extend(_check_infrastructure_exposure(target, base_url, timeout, verify_tls))
+   775→   775→
+   776→   776→    # Phase 4: Certificate Transparency analysis
+   777→   777→    findings.extend(_check_ct_logs(target, base_url, timeout, verify_tls))
+   778→   778→
+   779→   779→    # Phase 5: Domain-level threat intelligence
+   780→   780→    findings.extend(_check_threat_intel(target, base_url, timeout, verify_tls))
+   781→   781→
+   782→   782→    # Phase 6: Breach database cross-reference
+   783→   783→    findings.extend(_check_breach_dbs(target, base_url, timeout, verify_tls))
+   784→   784→
+   785→   785→    # Phase 7: GitHub secret exposure
+   786→   786→    findings.extend(_check_github_secrets(target, base_url, timeout, verify_tls))
+   787→   787→
+   788→   788→    return findings
+   789→   789→
