@@ -1,0 +1,2939 @@
+========== attack_graph.py ==========
+"""ReconPro v10 — Attack Graph Engine.
+
+Builds internal attack graphs from scan findings, modeling relationships
+between vulnerabilities as directed graphs. Detects attack chains, privilege
+escalation paths, lateral movement, blast radius, choke points, and kill chains.
+
+Pure Python. Zero external dependencies. NetworkX optional for advanced queries.
+
+This is a NEW subsystem that integrates with the existing knowledge_graph.py
+and chain_engine.py infrastructure without modifying them.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import time
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from itertools import combinations
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Data Models
+# ═══════════════════════════════════════════════════════════════════════════
+
+_SEVERITY_WEIGHTS: Dict[str, float] = {
+    "critical": 10.0, "high": 8.0, "medium": 6.0, "low": 3.0, "info": 1.0,
+}
+
+
+@dataclass
+class GraphNode:
+    """A node in the attack graph."""
+    id: str
+    node_type: str  # "finding", "asset", "entry_point", "objective", "choke_point"
+    label: str
+    severity: str = "info"
+    risk_score: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id, "node_type": self.node_type, "label": self.label,
+            "severity": self.severity, "risk_score": round(self.risk_score, 2),
+            "metadata": self.metadata,
+        }
+
+
+@dataclass
+class GraphEdge:
+    """A directed edge in the attack graph."""
+    source: str
+    target: str
+    edge_type: str  # "enables", "leads_to", "exposes", "escalates_to", "required_for"
+    weight: float = 1.0
+    confidence: float = 0.5
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source": self.source, "target": self.target,
+            "edge_type": self.edge_type, "weight": round(self.weight, 2),
+            "confidence": round(self.confidence, 2), "metadata": self.metadata,
+        }
+
+
+@dataclass
+class AttackChain:
+    """A discovered attack chain through the graph."""
+    chain_id: str
+    steps: List[str]  # Node IDs
+    step_labels: List[str] = field(default_factory=list)
+    step_severities: List[str] = field(default_factory=list)
+    entry_point: str = ""
+    objective: str = ""
+    complexity: str = "medium"
+    likelihood: float = 0.5
+    impact: float = 0.5
+    blast_radius: int = 1
+    confidence: float = 0.5
+    narrative: str = ""
+    mitre_phases: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "chain_id": self.chain_id, "steps": self.steps,
+            "step_labels": self.step_labels,
+            "step_severities": self.step_severities,
+            "entry_point": self.entry_point, "objective": self.objective,
+            "complexity": self.complexity,
+            "likelihood": round(self.likelihood, 2),
+            "impact": round(self.impact, 2),
+            "blast_radius": self.blast_radius,
+            "confidence": round(self.confidence, 2),
+            "narrative": self.narrative,
+            "mitre_phases": self.mitre_phases,
+            "step_count": len(self.steps),
+        }
+
+
+@dataclass
+class ChokePoint:
+    """A critical node whose removal would break multiple attack paths."""
+    node_id: str
+    label: str
+    paths_through: int = 0
+    risk_concentration: float = 0.0
+    severity: str = "info"
+    recommendation: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "node_id": self.node_id, "label": self.label,
+            "paths_through": self.paths_through,
+            "risk_concentration": round(self.risk_concentration, 2),
+            "severity": self.severity,
+            "recommendation": self.recommendation,
+        }
+
+
+@dataclass
+class BlastRadius:
+    """Assessment of impact spread from a given node."""
+    source_node: str
+    affected_nodes: List[str] = field(default_factory=list)
+    affected_assets: List[str] = field(default_factory=list)
+    max_depth: int = 0
+    severity_spread: Dict[str, int] = field(default_factory=dict)
+    total_risk: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source_node": self.source_node,
+            "affected_count": len(self.affected_nodes),
+            "affected_nodes": self.affected_nodes,
+            "affected_assets": self.affected_assets,
+            "max_depth": self.max_depth,
+            "severity_spread": self.severity_spread,
+            "total_risk": round(self.total_risk, 2),
+        }
+
+
+@dataclass
+class AttackGraphResult:
+    """Complete attack graph analysis result."""
+    target: str = ""
+    nodes: List[Dict[str, Any]] = field(default_factory=list)
+    edges: List[Dict[str, Any]] = field(default_factory=list)
+    attack_chains: List[Dict[str, Any]] = field(default_factory=list)
+    choke_points: List[Dict[str, Any]] = field(default_factory=list)
+    single_point_failures: List[Dict[str, Any]] = field(default_factory=list)
+    high_value_assets: List[Dict[str, Any]] = field(default_factory=list)
+    critical_attack_hubs: List[Dict[str, Any]] = field(default_factory=list)
+    kill_chain_mapping: Dict[str, Any] = field(default_factory=dict)
+    analysis_duration_ms: float = 0.0
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "target": self.target,
+            "node_count": len(self.nodes),
+            "edge_count": len(self.edges),
+            "attack_chains": self.attack_chains,
+            "choke_points": self.choke_points,
+            "single_point_failures": self.single_point_failures,
+            "high_value_assets": self.high_value_assets,
+            "critical_attack_hubs": self.critical_attack_hubs,
+            "kill_chain_mapping": self.kill_chain_mapping,
+            "analysis_duration_ms": self.analysis_duration_ms,
+            "timestamp": self.timestamp,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Directed Graph Implementation (pure Python)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class DiGraph:
+    """Lightweight directed graph using adjacency lists.
+
+    Thread-safe for single-writer scenarios. Supports standard graph operations
+    needed for attack path analysis.
+    """
+
+    def __init__(self) -> None:
+        self._nodes: Dict[str, GraphNode] = {}
+        self._adj: Dict[str, Dict[str, GraphEdge]] = defaultdict(dict)
+        self._radj: Dict[str, Dict[str, GraphEdge]] = defaultdict(dict)
+
+    # -- Mutation -------------------------------------------------------------
+
+    def add_node(self, node: GraphNode) -> None:
+        self._nodes[node.id] = node
+
+    def add_edge(self, edge: GraphEdge) -> None:
+        self.add_node(GraphNode(id=edge.source, label=edge.source, node_type="implicit"))
+        self.add_node(GraphNode(id=edge.target, label=edge.target, node_type="implicit"))
+        self._adj[edge.source][edge.target] = edge
+        self._radj[edge.target][edge.source] = edge
+
+    # -- Queries --------------------------------------------------------------
+
+    @property
+    def nodes(self) -> Dict[str, GraphNode]:
+        return dict(self._nodes)
+
+    def successors(self, node_id: str) -> List[str]:
+        return list(self._adj.get(node_id, {}).keys())
+
+    def predecessors(self, node_id: str) -> List[str]:
+        return list(self._radj.get(node_id, {}).keys())
+
+    def edges_from(self, node_id: str) -> List[GraphEdge]:
+        return list(self._adj.get(node_id, {}).values())
+
+    def edges_to(self, node_id: str) -> List[GraphEdge]:
+        return list(self._radj.get(node_id, {}).values())
+
+    def get_edge(self, source: str, target: str) -> Optional[GraphEdge]:
+        return self._adj.get(source, {}).get(target)
+
+    def has_node(self, node_id: str) -> bool:
+        return node_id in self._nodes
+
+    def node_count(self) -> int:
+        return len(self._nodes)
+
+    def edge_count(self) -> int:
+        return sum(len(targets) for targets in self._adj.values())
+
+    def all_edges(self) -> List[GraphEdge]:
+        edges = []
+        for targets in self._adj.values():
+            edges.extend(targets.values())
+        return edges
+
+    # -- Traversal ------------------------------------------------------------
+
+    def bfs_paths(self, start: str, end: str, max_depth: int = 10) -> List[List[str]]:
+        """Find all paths from start to end using BFS up to max_depth."""
+        if start not in self._nodes or end not in self._nodes:
+            return []
+        paths: List[List[str]] = []
+        queue: deque = deque()
+        queue.append(([start], 0))
+        while queue:
+            path, depth = queue.popleft()
+            if depth > max_depth:
+                continue
+            current = path[-1]
+            if current == end and len(path) > 1:
+                paths.append(path)
+                continue
+            for nxt in self.successors(current):
+                if nxt not in path:  # Simple cycle prevention
+                    queue.append((path + [nxt], depth + 1))
+        return paths
+
+    def all_paths_between(self, start: str, end: str, max_depth: int = 6) -> List[List[str]]:
+        """Find all simple paths (DFS) between two nodes."""
+        if start not in self._nodes or end not in self._nodes:
+            return []
+        paths: List[List[str]] = []
+        stack: List[Tuple[str, List[str], Set[str]]] = [(start, [start], {start})]
+        while stack:
+            node, path, visited = stack.pop()
+            if len(path) - 1 >= max_depth:
+                continue
+            for nxt in self.successors(node):
+                if nxt == end:
+                    paths.append(path + [nxt])
+                elif nxt not in visited:
+                    stack.append((nxt, path + [nxt], visited | {nxt}))
+        return paths
+
+    def shortest_path(self, start: str, end: str) -> Optional[List[str]]:
+        """Find shortest path using BFS."""
+        paths = self.bfs_paths(start, end, max_depth=20)
+        return min(paths, key=len) if paths else None
+
+    def ancestors(self, node_id: str, max_depth: int = 10) -> Set[str]:
+        """Get all ancestor nodes up to max_depth."""
+        visited: Set[str] = set()
+        queue = deque([(node_id, 0)])
+        while queue:
+            n, d = queue.popleft()
+            if d >= max_depth:
+                continue
+            for p in self.predecessors(n):
+                if p not in visited:
+                    visited.add(p)
+                    queue.append((p, d + 1))
+        return visited
+
+    def descendants(self, node_id: str, max_depth: int = 10) -> Set[str]:
+        """Get all descendant nodes up to max_depth."""
+        visited: Set[str] = set()
+        queue = deque([(node_id, 0)])
+        while queue:
+            n, d = queue.popleft()
+            if d >= max_depth:
+                continue
+            for s in self.successors(n):
+                if s not in visited:
+                    visited.add(s)
+                    queue.append((s, d + 1))
+        return visited
+
+    def in_degree(self, node_id: str) -> int:
+        return len(self.predecessors(node_id))
+
+    def out_degree(self, node_id: str) -> int:
+        return len(self.successors(node_id))
+
+    def betweenness_proxy(self) -> Dict[str, int]:
+        """Approximate betweenness centrality by counting shortest-path traversals.
+
+        For each pair of nodes, count how many shortest paths pass through
+        each intermediate node. This is a simplified proxy for betweenness.
+        """
+        counts: Dict[str, int] = defaultdict(int)
+        node_list = list(self._nodes.keys())
+        for start in node_list:
+            for end in node_list:
+                if start == end:
+                    continue
+                path = self.shortest_path(start, end)
+                if path and len(path) > 2:
+                    for intermediate in path[1:-1]:
+                        counts[intermediate] += 1
+        return dict(counts)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Attack category classification (localized for graph engine)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_CATEGORY_PATTERNS: List[Tuple[str, str, float]] = [
+    (r"\bsql\b|\bsqli\b", "sqli", 0.95),
+    (r"\bxss\b|cross.?site", "xss", 0.95),
+    (r"\bssrf\b", "ssrf", 0.95),
+    (r"\brce\b|remote.?code", "rce", 0.95),
+    (r"auth.*bypass|unauthorized", "auth_bypass", 0.90),
+    (r"privilege.*escal", "privilege_escalation", 0.90),
+    (r"credential.*theft|password.*leak|default.*cred", "credential_theft", 0.90),
+    (r"data.*expos|data.*leak", "data_exposure", 0.85),
+    (r"misconfigur|security.*header", "misconfiguration", 0.85),
+    (r"weak.*encrypt|crypto.*fail|tls.*weak", "crypto_failure", 0.85),
+    (r"denial.*service|\bdos\b", "dos", 0.85),
+    (r"\bxxe\b", "xxe", 0.95),
+    (r"default.*password|default.*cred", "default_credentials", 0.90),
+    (r"open.?redirect", "open_redirect", 0.85),
+    (r"jwt.*expos|token.*leak", "jwt_exposure", 0.85),
+    (r"sensitive.*api|swagger.*expos", "sensitive_api", 0.80),
+    (r"beacon|c2.*channel", "beaconing", 0.85),
+    (r"steganograph|hidden.*data", "steganography", 0.90),
+    (r"supply.?chain|dependency.*vuln", "supply_chain", 0.85),
+    (r"dns.*enum|subdomain", "dns_recon", 0.85),
+    (r"tech.*finger|framework.*detect", "tech_fingerprint", 0.80),
+    (r"honeypot", "honeypot", 0.85),
+    (r"dark.?web|credential.*dump", "dark_web", 0.85),
+    (r"dead.?drop|crypto.*drop", "dead_drop", 0.85),
+    (r"covert.*channel|exfil.*channel", "covert_channel", 0.85),
+    (r"injection", "injection", 0.80),
+    (r"cve-\d{4}-\d+", "cve", 0.90),
+]
+
+
+def _classify_finding(finding: Dict[str, Any]) -> str:
+    """Quick classification of a finding into an attack category."""
+    title = finding.get("title", "").lower()
+    desc = finding.get("description", "").lower()
+    combined = f"{title} {desc}"
+    best_cat = "misc"
+    best_score = 0.0
+    for pattern, cat, weight in _CATEGORY_PATTERNS:
+        if re.search(pattern, combined, re.IGNORECASE):
+            if weight > best_score:
+                best_score = weight
+                best_cat = cat
+    return best_cat
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Kill Chain Phase Mapping
+# ═══════════════════════════════════════════════════════════════════════════
+
+KILL_CHAIN_PHASES: List[str] = [
+    "Reconnaissance", "Weaponization", "Delivery", "Exploitation",
+    "Installation", "Command & Control", "Actions on Objectives",
+]
+
+_CATEGORY_TO_PHASE: Dict[str, str] = {
+    "dns_recon": "Reconnaissance",
+    "subdomain": "Reconnaissance",
+    "tech_fingerprint": "Reconnaissance",
+    "info_disclosure": "Reconnaissance",
+    "wayback": "Reconnaissance",
+    "waf_detected": "Reconnaissance",
+    "header_analysis": "Reconnaissance",
+    "certificate": "Reconnaissance",
+    "honeypot": "Reconnaissance",
+    "dark_web": "Reconnaissance",
+    "open_redirect": "Delivery",
+    "xss": "Delivery",
+    "sqli": "Exploitation",
+    "rce": "Exploitation",
+    "xxe": "Exploitation",
+    "auth_bypass": "Exploitation",
+    "default_credentials": "Exploitation",
+    "injection": "Exploitation",
+    "ssrf": "Exploitation",
+    "privilege_escalation": "Installation",
+    "jwt_exposure": "Installation",
+    "credential_theft": "Installation",
+    "data_exposure": "Actions on Objectives",
+    "misconfiguration": "Installation",
+    "crypto_failure": "Command & Control",
+    "beaconing": "Command & Control",
+    "covert_channel": "Command & Control",
+    "dead_drop": "Command & Control",
+    "steganography": "Exfiltration",
+    "supply_chain": "Weaponization",
+    "cve": "Weaponization",
+    "sensitive_api": "Exploitation",
+    "container": "Installation",
+    "cloud_infrastructure": "Reconnaissance",
+    "infrastructure": "Reconnaissance",
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Relationship templates: how categories connect
+# ═══════════════════════════════════════════════════════════════════════════
+
+# (source_category, target_category, edge_type, weight)
+_RELATIONSHIP_TEMPLATES: List[Tuple[str, str, str, float]] = [
+    ("dns_recon", "infrastructure", "enables", 0.7),
+    ("dns_recon", "tech_fingerprint", "enables", 0.8),
+    ("subdomain", "tech_fingerprint", "enables", 0.8),
+    ("subdomain", "open_redirect", "enables", 0.6),
+    ("tech_fingerprint", "cve", "leads_to", 0.7),
+    ("tech_fingerprint", "misconfiguration", "leads_to", 0.6),
+    ("open_redirect", "credential_theft", "enables", 0.8),
+    ("open_redirect", "xss", "enables", 0.7),
+    ("xss", "credential_theft", "leads_to", 0.8),
+    ("credential_theft", "auth_bypass", "escalates_to", 0.9),
+    ("auth_bypass", "privilege_escalation", "escalates_to", 0.9),
+    ("default_credentials", "privilege_escalation", "escalates_to", 0.95),
+    ("sqli", "data_exposure", "leads_to", 0.85),
+    ("sqli", "rce", "leads_to", 0.7),
+    ("rce", "privilege_escalation", "escalates_to", 0.9),
+    ("rce", "data_exposure", "leads_to", 0.85),
+    ("ssrf", "data_exposure", "leads_to", 0.8),
+    ("ssrf", "credential_theft", "leads_to", 0.7),
+    ("jwt_exposure", "privilege_escalation", "escalates_to", 0.85),
+    ("sensitive_api", "data_exposure", "leads_to", 0.8),
+    ("misconfiguration", "data_exposure", "leads_to", 0.7),
+    ("misconfiguration", "credential_theft", "leads_to", 0.6),
+    ("info_disclosure", "credential_theft", "leads_to", 0.6),
+    ("info_disclosure", "sqli", "enables", 0.5),
+    ("supply_chain", "rce", "enables", 0.8),
+    ("xxe", "ssrf", "leads_to", 0.8),
+    ("crypto_failure", "credential_theft", "enables", 0.6),
+    ("beaconing", "data_exposure", "leads_to", 0.7),
+    ("beaconing", "credential_theft", "leads_to", 0.6),
+    ("steganography", "data_exposure", "leads_to", 0.6),
+    ("covert_channel", "data_exposure", "leads_to", 0.7),
+    ("container", "rce", "leads_to", 0.7),
+    ("container", "privilege_escalation", "escalates_to", 0.8),
+    ("injection", "rce", "leads_to", 0.75),
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AttackGraphEngine
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class AttackGraphEngine:
+    """Builds and analyzes attack graphs from scan findings.
+
+    Transforms a flat list of findings into a directed graph of
+    relationships, then extracts attack chains, choke points, blast radii,
+    high-value assets, and kill chain mappings.
+    """
+
+    MAX_GRAPH_NODES = 5000
+    MAX_GRAPH_EDGES = 20000
+
+    def __init__(self) -> None:
+        self.graph = DiGraph()
+        self._finding_nodes: Dict[str, str] = {}  # finding hash -> node_id
+        self._category_nodes: Dict[str, List[str]] = defaultdict(list)
+
+    def build_graph(self, findings: List[Dict[str, Any]], target: str = "") -> None:
+        """Build the attack graph from scan findings.
+
+        Creates nodes for each finding and edges based on category relationships.
+        Enforces MAX_GRAPH_NODES and MAX_GRAPH_EDGES to prevent memory exhaustion.
+        """
+        if len(findings) > self.MAX_GRAPH_NODES:
+            findings = findings[:self.MAX_GRAPH_NODES]
+
+        self.graph = DiGraph()
+        self._finding_nodes = {}
+        self._category_nodes = defaultdict(list)
+
+        # Create entry point node
+        entry_id = "entry:recon"
+        self.graph.add_node(GraphNode(
+            id=entry_id, node_type="entry_point",
+            label=f"Recon: {target or 'target'}",
+            severity="info", risk_score=0.0,
+            metadata={"phase": "Reconnaissance"},
+        ))
+
+        # Create finding nodes
+        for i, f in enumerate(findings):
+            cat = _classify_finding(f)
+            node_id = f"finding:{i}"
+            severity = f.get("severity", "info").lower()
+            risk = _SEVERITY_WEIGHTS.get(severity, 1.0)
+
+            self.graph.add_node(GraphNode(
+                id=node_id, node_type="finding",
+                label=f.get("title", f"Finding {i}")[:80],
+                severity=severity, risk_score=risk,
+                metadata={
+                    "category": cat,
+                    "title": f.get("title", ""),
+                    "asset": f.get("asset", ""),
+                    "module": f.get("module", ""),
+                },
+            ))
+
+            self._finding_nodes[self._finding_hash(f)] = node_id
+            self._category_nodes[cat].append(node_id)
+
+            # Edge from entry to finding
+            self.graph.add_edge(GraphEdge(
+                source=entry_id, target=node_id,
+                edge_type="discovers", weight=0.3, confidence=0.9,
+            ))
+
+        # Create edges based on relationship templates
+        self._create_relationship_edges(findings)
+
+        # Create objective node
+        objective_id = "objective:compromise"
+        self.graph.add_node(GraphNode(
+            id=objective_id, node_type="objective",
+            label="Full System Compromise",
+            severity="critical", risk_score=10.0,
+            metadata={"phase": "Actions on Objectives"},
+        ))
+
+        # Connect high-severity findings to objective
+        for node_id in self._category_nodes.get("privilege_escalation", []):
+            self.graph.add_edge(GraphEdge(
+                source=node_id, target=objective_id,
+                edge_type="leads_to", weight=0.9, confidence=0.8,
+            ))
+        for node_id in self._category_nodes.get("data_exposure", []):
+            self.graph.add_edge(GraphEdge(
+                source=node_id, target=objective_id,
+                edge_type="leads_to", weight=0.7, confidence=0.7,
+            ))
+
+    def analyze(self, findings: List[Dict[str, Any]], target: str = "") -> AttackGraphResult:
+        """Full attack graph analysis.
+
+        Builds the graph, extracts chains, identifies choke points,
+        and produces a comprehensive result.
+        """
+        t0 = time.monotonic()
+
+        self.build_graph(findings, target)
+        result = AttackGraphResult(target=target)
+
+        # Serialize graph
+        result.nodes = [n.to_dict() for n in self.graph.nodes.values()]
+        result.edges = [e.to_dict() for e in self.graph.all_edges()]
+
+        # Extract attack chains
+        chains = self._extract_attack_chains()
+        result.attack_chains = [c.to_dict() for c in chains]
+
+        # Identify choke points
+        choke_points = self._identify_choke_points()
+        result.choke_points = [cp.to_dict() for cp in choke_points]
+
+        # Identify single points of failure
+        spofs = self._identify_single_point_failures()
+        result.single_point_failures = spofs
+
+        # Identify high-value assets
+        hvas = self._identify_high_value_assets()
+        result.high_value_assets = hvas
+
+        # Identify critical attack hubs
+        hubs = self._identify_attack_hubs()
+        result.critical_attack_hubs = hubs
+
+        # Kill chain mapping
+        result.kill_chain_mapping = self._map_kill_chain()
+
+        result.analysis_duration_ms = round((time.monotonic() - t0) * 1000, 2)
+        return result
+
+    def compute_blast_radius(self, node_id: str) -> BlastRadius:
+        """Compute the blast radius from a given node."""
+        descendants = self.graph.descendants(node_id, max_depth=10)
+
+        affected_nodes = list(descendants)
+        affected_assets: List[str] = []
+        sev_spread: Dict[str, int] = defaultdict(int)
+        total_risk = 0.0
+
+        for nid in affected_nodes:
+            node = self.graph.nodes.get(nid)
+            if node:
+                sev_spread[node.severity] = sev_spread.get(node.severity, 0) + 1
+                total_risk += node.risk_score
+                if node.metadata.get("asset"):
+                    affected_assets.append(node.metadata["asset"])
+
+        return BlastRadius(
+            source_node=node_id,
+            affected_nodes=affected_nodes,
+            affected_assets=list(set(affected_assets)),
+            max_depth=max((len(self.graph.shortest_path(node_id, d) or []) - 1) for d in affected_nodes) if affected_nodes else 0,
+            severity_spread=dict(sev_spread),
+            total_risk=total_risk,
+        )
+
+    # -- Internal methods ---------------------------------------------------
+
+    def _create_relationship_edges(self, findings: List[Dict[str, Any]]) -> None:
+        """Create edges between finding nodes based on category relationships."""
+        node_list = list(self.graph.nodes.keys())
+        finding_nodes = [n for n in node_list if n.startswith("finding:")]
+
+        # Build category index
+        cat_index: Dict[str, List[str]] = defaultdict(list)
+        for nid in finding_nodes:
+            node = self.graph.nodes.get(nid)
+            if node:
+                cat = node.metadata.get("category", "misc")
+                cat_index[cat].append(nid)
+
+        def _add_edge_safe(edge: GraphEdge) -> None:
+            """Add edge only if under the global edge limit."""
+            if self.graph.edge_count() < self.MAX_GRAPH_EDGES:
+                self.graph.add_edge(edge)
+
+        # Apply relationship templates
+        for src_cat, tgt_cat, edge_type, weight in _RELATIONSHIP_TEMPLATES:
+            src_nodes = cat_index.get(src_cat, [])
+            tgt_nodes = cat_index.get(tgt_cat, [])
+            for sn in src_nodes:
+                for tn in tgt_nodes:
+                    if sn != tn:
+                        _add_edge_safe(GraphEdge(
+                            source=sn, target=tn,
+                            edge_type=edge_type, weight=weight,
+                            confidence=min(weight, 0.9),
+                        ))
+
+        # Asset-based edges: findings sharing the same asset
+        asset_index: Dict[str, List[str]] = defaultdict(list)
+        for nid in finding_nodes:
+            node = self.graph.nodes.get(nid)
+            if node:
+                asset = node.metadata.get("asset", "")
+                if asset:
+                    asset_index[asset].append(nid)
+
+        for asset, nodes in asset_index.items():
+            for i, j in combinations(range(len(nodes)), 2):
+                _add_edge_safe(GraphEdge(
+                    source=nodes[i], target=nodes[j],
+                    edge_type="shared_asset", weight=0.4, confidence=0.7,
+                ))
+                _add_edge_safe(GraphEdge(
+                    source=nodes[j], target=nodes[i],
+                    edge_type="shared_asset", weight=0.4, confidence=0.7,
+                ))
+
+    def _extract_attack_chains(self) -> List[AttackChain]:
+        """Extract attack chains from the graph."""
+        chains: List[AttackChain] = []
+        entry_id = "entry:recon"
+        objective_id = "objective:compromise"
+
+        if not self.graph.has_node(entry_id) or not self.graph.has_node(objective_id):
+            return chains
+
+        # Find all paths from entry to objective
+        paths = self.graph.all_paths_between(entry_id, objective_id, max_depth=8)
+
+        for i, path in enumerate(paths):
+            if len(path) < 3:
+                continue  # Skip trivial paths
+
+            # Build chain metadata
+            steps = []
+            labels = []
+            severities = []
+            phases = []
+            total_risk = 0.0
+
+            for nid in path:
+                node = self.graph.nodes.get(nid, GraphNode(id=nid, label=nid, node_type="unknown"))
+                steps.append(nid)
+                labels.append(node.label)
+                severities.append(node.severity)
+                total_risk += node.risk_score
+                cat = node.metadata.get("category", "")
+                phase = _CATEGORY_TO_PHASE.get(cat, "")
+                if phase:
+                    phases.append(phase)
+
+            # Compute chain metrics
+            avg_risk = total_risk / max(len(steps), 1)
+            impact = min(1.0, avg_risk / 10.0)
+            likelihood = min(1.0, 1.0 / (len(steps) * 0.5))
+            confidence = min(1.0, likelihood * impact)
+
+            if len(steps) >= 6:
+                complexity = "very_high"
+            elif len(steps) >= 4:
+                complexity = "high"
+            elif len(steps) >= 3:
+                complexity = "medium"
+            else:
+                complexity = "low"
+
+            chain_id = hashlib.sha256(
+                f"chain:{i}:{','.join(path)}".encode()
+            ).hexdigest()[:12]
+
+            narrative = (
+                f"Attack chain with {len(steps)} steps from '{labels[1]}' "
+                f"through {len(steps) - 2} intermediate vulnerabilities "
+                f"to '{labels[-1]}'. Complexity: {complexity}, "
+                f"Estimated impact: {impact:.0%}."
+            )
+
+            chains.append(AttackChain(
+                chain_id=chain_id,
+                steps=steps,
+                step_labels=labels,
+                step_severities=severities,
+                entry_point=steps[1] if len(steps) > 1 else steps[0],
+                objective=labels[-1] if labels else "",
+                complexity=complexity,
+                likelihood=round(likelihood, 2),
+                impact=round(impact, 2),
+                blast_radius=len(steps),
+                confidence=round(confidence, 2),
+                narrative=narrative,
+                mitre_phases=list(dict.fromkeys(phases)),  # Deduplicated, ordered
+            ))
+
+        # Sort by confidence
+        chains.sort(key=lambda c: c.confidence, reverse=True)
+        return chains[:20]  # Cap at 20 chains
+
+    def _identify_choke_points(self) -> List[ChokePoint]:
+        """Identify nodes that appear in many attack paths."""
+        entry_id = "entry:recon"
+        objective_id = "objective:compromise"
+
+        if not self.graph.has_node(entry_id) or not self.graph.has_node(objective_id):
+            return []
+
+        # Find all paths and count node traversals
+        all_paths = self.graph.all_paths_between(entry_id, objective_id, max_depth=6)
+        traversal_counts: Dict[str, int] = defaultdict(int)
+        for path in all_paths:
+            for nid in path[1:-1]:  # Exclude entry and objective
+                traversal_counts[nid] += 1
+
+        if not traversal_counts:
+            return []
+
+        max_traversals = max(traversal_counts.values())
+        choke_points: List[ChokePoint] = []
+
+        for nid, count in traversal_counts.items():
+            if count < 2:
+                continue
+            node = self.graph.nodes.get(nid)
+            if not node or node.node_type != "finding":
+                continue
+
+            concentration = count / max_traversals
+            if concentration >= 0.3:  # Appears in >30% of paths
+                choke_points.append(ChokePoint(
+                    node_id=nid,
+                    label=node.label,
+                    paths_through=count,
+                    risk_concentration=concentration,
+                    severity=node.severity,
+                    recommendation=(
+                        f"Remediating '{node.label}' would break {count} attack paths. "
+                        f"This is a critical choke point with {concentration:.0%} "
+                        f"risk concentration. Prioritize this vulnerability."
+                    ),
+                ))
+
+        choke_points.sort(key=lambda cp: cp.risk_concentration, reverse=True)
+        return choke_points[:10]
+
+    def _identify_single_point_failures(self) -> List[Dict[str, Any]]:
+        """Identify nodes whose removal would disconnect entry from objective."""
+        entry_id = "entry:recon"
+        objective_id = "objective:compromise"
+
+        if not self.graph.has_node(entry_id) or not self.graph.has_node(objective_id):
+            return []
+
+        baseline_paths = self.graph.all_paths_between(entry_id, objective_id, max_depth=6)
+        spofs: List[Dict[str, Any]] = []
+
+        for nid in list(self.graph.nodes.keys()):
+            if nid.startswith("entry:") or nid.startswith("objective:"):
+                continue
+
+            # Temporarily check if removing this node breaks all paths
+            remaining_paths = [p for p in baseline_paths if nid not in p]
+            if not remaining_paths and baseline_paths:
+                node = self.graph.nodes.get(nid)
+                if node:
+                    spofs.append({
+                        "node_id": nid,
+                        "label": node.label,
+                        "severity": node.severity,
+                        "category": node.metadata.get("category", "unknown"),
+                        "paths_blocked": len(baseline_paths),
+                        "description": (
+                            f"Removing '{node.label}' would block ALL {len(baseline_paths)} "
+                            f"attack paths. This is a single point of failure — "
+                            f"both a critical dependency and a high-value remediation target."
+                        ),
+                    })
+
+        return spofs[:10]
+
+    def _identify_high_value_assets(self) -> List[Dict[str, Any]]:
+        """Identify assets with the most critical/high findings."""
+        asset_findings: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+        for nid, node in self.graph.nodes.items():
+            if node.node_type == "finding":
+                asset = node.metadata.get("asset", "unknown")
+                if asset:
+                    asset_findings[asset].append({
+                        "node_id": nid,
+                        "title": node.label,
+                        "severity": node.severity,
+                        "risk_score": node.risk_score,
+                    })
+
+        hvas: List[Dict[str, Any]] = []
+        for asset, items in asset_findings.items():
+            if len(items) < 2:
+                continue
+            total_risk = sum(i["risk_score"] for i in items)
+            critical_count = sum(1 for i in items if i["severity"] == "critical")
+            high_count = sum(1 for i in items if i["severity"] == "high")
+
+            if critical_count > 0 or high_count >= 2:
+                hvas.append({
+                    "asset": asset,
+                    "finding_count": len(items),
+                    "total_risk": round(total_risk, 2),
+                    "critical_count": critical_count,
+                    "high_count": high_count,
+                    "risk_level": "critical" if total_risk >= 15 else "high" if total_risk >= 8 else "medium",
+                })
+
+        hvas.sort(key=lambda x: x["total_risk"], reverse=True)
+        return hvas[:10]
+
+    def _identify_attack_hubs(self) -> List[Dict[str, Any]]:
+        """Identify nodes with highest connectivity (potential attack hubs)."""
+        betweenness = self.graph.betweenness_proxy()
+        if not betweenness:
+            return []
+
+        max_b = max(betweenness.values())
+        hubs: List[Dict[str, Any]] = []
+
+        for nid, score in sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:10]:
+            if score == 0:
+                continue
+            node = self.graph.nodes.get(nid)
+            if not node or node.node_type != "finding":
+                continue
+
+            hubs.append({
+                "node_id": nid,
+                "label": node.label,
+                "severity": node.severity,
+                "betweenness": score,
+                "betweenness_ratio": round(score / max_b, 2) if max_b > 0 else 0.0,
+                "in_degree": self.graph.in_degree(nid),
+                "out_degree": self.graph.out_degree(nid),
+                "description": (
+                    f"Attack hub with betweenness {score} "
+                    f"(top {(score/max_b)*100:.0f}% of all nodes). "
+                    f"Connects to {self.graph.out_degree(nid)} downstream targets "
+                    f"and receives from {self.graph.in_degree(nid)} sources."
+                ),
+            })
+
+        return hubs
+
+    def _map_kill_chain(self) -> Dict[str, Any]:
+        """Map findings to Lockheed Martin Kill Chain phases."""
+        phase_findings: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+
+        for nid, node in self.graph.nodes.items():
+            if node.node_type != "finding":
+                continue
+            cat = node.metadata.get("category", "")
+            phase = _CATEGORY_TO_PHASE.get(cat)
+            if phase:
+                phase_findings[phase].append({
+                    "node_id": nid,
+                    "title": node.label,
+                    "severity": node.severity,
+                    "category": cat,
+                })
+
+        phase_coverage = {}
+        for phase in KILL_CHAIN_PHASES:
+            items = phase_findings.get(phase, [])
+            phase_coverage[phase] = {
+                "finding_count": len(items),
+                "findings": items[:10],  # Cap for readability
+                "has_findings": len(items) > 0,
+            }
+
+        # Detect phase gaps
+        covered_phases = {p for p, data in phase_coverage.items() if data["has_findings"]}
+        gap_phases = [p for p in KILL_CHAIN_PHASES if p not in covered_phases]
+
+        return {
+            "phases": phase_coverage,
+            "coverage_percentage": round(len(covered_phases) / len(KILL_CHAIN_PHASES) * 100, 1),
+            "covered_phases": sorted(covered_phases),
+            "gap_phases": gap_phases,
+            "phase_progression": self._assess_phase_progression(phase_findings),
+        }
+
+    def _assess_phase_progression(self, phase_findings: Dict[str, List[Dict[str, Any]]]) -> str:
+        """Assess how far an attacker could progress through the kill chain."""
+        progression = []
+        for phase in KILL_CHAIN_PHASES:
+            if phase in phase_findings and phase_findings[phase]:
+                progression.append(phase)
+
+        if not progression:
+            return "No kill chain progression detected."
+
+        if progression == KILL_CHAIN_PHASES:
+            return f"FULL CHAIN: Attacker can progress through all {len(progression)} phases."
+
+        last = progression[-1]
+        idx = KILL_CHAIN_PHASES.index(last)
+        return (
+            f"Attacker can progress from {progression[0]} to {last} "
+            f"(phase {idx + 1} of {len(KILL_CHAIN_PHASES)}). "
+            f"{len(KILL_CHAIN_PHASES) - idx - 1} phases remain uncovered."
+        )
+
+    @staticmethod
+    def _finding_hash(f: Dict[str, Any]) -> str:
+        """Deterministic hash for a finding."""
+        raw = f"{f.get('title', '')}:{f.get('asset', '')}:{f.get('category', '')}".lower()
+        return hashlib.sha256(raw.encode()).hexdigest()[:16]
+========== threat_intel.py ==========
+"""ReconPro v10 — Threat Intelligence Center.
+
+Centralized threat intelligence engine for enriching scan findings with
+threat data from public standards (CVE, CWE, CAPEC, MITRE ATT&CK, CISA KEV,
+EPSS, CVSS, OWASP). Supports offline operation with built-in mappings and
+optional online enrichment via stdlib HTTP.
+
+Pure Python. Zero external dependencies. All mappings are embedded.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import ssl
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+from threading import Lock
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Data Models
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class ThreatRecord:
+    """A single threat intelligence record."""
+    source: str       # "CVE", "CWE", "CAPEC", "MITRE", "CISA_KEV", "EPSS", "OWASP"
+    source_id: str
+    name: str
+    description: str = ""
+    severity: str = "info"
+    confidence: float = 0.5
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    last_updated: float = 0.0
+    evidence_chain: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source": self.source, "source_id": self.source_id,
+            "name": self.name, "description": self.description,
+            "severity": self.severity, "confidence": round(self.confidence, 2),
+            "metadata": self.metadata, "last_updated": self.last_updated,
+            "evidence_chain": self.evidence_chain,
+        }
+
+
+@dataclass
+class EnrichedFinding:
+    """A finding enriched with threat intelligence."""
+    original: Dict[str, Any]
+    threat_records: List[Dict[str, Any]] = field(default_factory=list)
+    cve_matches: List[str] = field(default_factory=list)
+    cwe_matches: List[str] = field(default_factory=list)
+    capec_matches: List[str] = field(default_factory=list)
+    mitre_techniques: List[Dict[str, str]] = field(default_factory=list)
+    known_exploitation: bool = False
+    active_exploitation: bool = False
+    severity_evolution: str = "stable"  # "increasing", "stable", "decreasing"
+    affected_technologies: List[str] = field(default_factory=list)
+    threat_summary: str = ""
+    enrichment_confidence: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "title": self.original.get("title", ""),
+            "severity": self.original.get("severity", "info"),
+            "cve_matches": self.cve_matches,
+            "cwe_matches": self.cwe_matches,
+            "capec_matches": self.capec_matches,
+            "mitre_techniques": self.mitre_techniques,
+            "known_exploitation": self.known_exploitation,
+            "active_exploitation": self.active_exploitation,
+            "severity_evolution": self.severity_evolution,
+            "affected_technologies": self.affected_technologies,
+            "threat_summary": self.threat_summary,
+            "enrichment_confidence": round(self.enrichment_confidence, 2),
+            "threat_records": self.threat_records,
+            "record_count": len(self.threat_records),
+        }
+
+
+@dataclass
+class ThreatIntelReport:
+    """Complete threat intelligence report for a scan."""
+    target: str = ""
+    enriched_findings: List[Dict[str, Any]] = field(default_factory=list)
+    unique_cves: List[str] = field(default_factory=list)
+    unique_cwes: List[str] = field(default_factory=list)
+    unique_capecs: List[str] = field(default_factory=list)
+    unique_mitre: List[Dict[str, str]] = field(default_factory=list)
+    known_exploited_count: int = 0
+    active_exploitation_count: int = 0
+    technology_profile: Dict[str, int] = field(default_factory=dict)
+    severity_trends: Dict[str, str] = field(default_factory=dict)
+    threat_summary: str = ""
+    cache_hits: int = 0
+    cache_misses: int = 0
+    online_queries: int = 0
+    analysis_duration_ms: float = 0.0
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "target": self.target,
+            "enriched_count": len(self.enriched_findings),
+            "unique_cves": self.unique_cves,
+            "unique_cwes": self.unique_cwes,
+            "unique_capecs": self.unique_capecs,
+            "unique_mitre": self.unique_mitre,
+            "known_exploited_count": self.known_exploited_count,
+            "active_exploitation_count": self.active_exploitation_count,
+            "technology_profile": self.technology_profile,
+            "severity_trends": self.severity_trends,
+            "threat_summary": self.threat_summary,
+            "cache_stats": {"hits": self.cache_hits, "misses": self.cache_misses},
+            "online_queries": self.online_queries,
+            "analysis_duration_ms": self.analysis_duration_ms,
+            "timestamp": self.timestamp,
+            "enriched_findings": self.enriched_findings,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Built-in Threat Intelligence Database
+# ═══════════════════════════════════════════════════════════════════════════
+
+# CVE pattern → severity + description
+_CVE_KNOWN_PATTERNS: Dict[str, Dict[str, Any]] = {
+    "CVE-2021-44228": {"severity": "critical", "name": "Log4Shell",
+                      "description": "Apache Log4j2 JNDI features do not protect against attacker-controlled LDAP and other JNDI-related endpoints",
+                      "affected": ["Apache Log4j 2.x"], "known_exploited": True},
+    "CVE-2023-44487": {"severity": "high", "name": "HTTP/2 Rapid Reset",
+                      "description": "HTTP/2 Rapid Reset attack can cause denial of service",
+                      "affected": ["HTTP/2 servers"], "known_exploited": True},
+    "CVE-2024-3094": {"severity": "critical", "name": "XZ Utils Backdoor",
+                      "description": "Malicious code injection in xz-utils liblzma",
+                      "affected": ["xz-utils", "liblzma", "OpenSSH"], "known_exploited": True},
+    "CVE-2021-41773": {"severity": "high", "name": "Apache Path Traversal",
+                      "description": "Path traversal and file disclosure vulnerability in Apache 2.4.49",
+                      "affected": ["Apache HTTPD 2.4.49"], "known_exploited": True},
+    "CVE-2023-38545": {"severity": "high", "name": "curl SOCKS5 Heap Buffer Overflow",
+                      "description": "SOCKS5 heap buffer overflow in curl",
+                      "affected": ["curl"], "known_exploited": True},
+    "CVE-2023-36884": {"severity": "critical", "name": "Microsoft Office RCE",
+                      "description": "RCE in Microsoft Office and Windows HTML",
+                      "affected": ["Microsoft Office", "HTML"], "known_exploited": True},
+    "CVE-2021-3449": {"severity": "high", "name": "OpenSSL ASN.1 Parsing",
+                      "description": "Null pointer dereference in signature verification",
+                      "affected": ["OpenSSL"], "known_exploited": False},
+    "CVE-2023-22515": {"severity": "critical", "name": "Atlassian Confluence RCE",
+                      "description": "Broken access control in Confluence Data Center and Server",
+                      "affected": ["Atlassian Confluence"], "known_exploited": True},
+    "CVE-2023-46604": {"severity": "critical", "name": "Apache ActiveMQ RCE",
+                      "description": "Remote code execution in OpenWire protocol marshaller",
+                      "affected": ["Apache ActiveMQ"], "known_exploited": True},
+    "CVE-2024-0001": {"severity": "critical", "name": "Generic Critical CVE placeholder",
+                      "description": "Critical vulnerability requiring immediate patching",
+                      "affected": ["Unknown"], "known_exploited": False},
+}
+
+# CISA Known Exploited Vulnerabilities (KEV) catalog — subset
+_CISA_KEV_CVE_LIST: set = {
+    "CVE-2021-44228", "CVE-2023-44487", "CVE-2024-3094",
+    "CVE-2021-41773", "CVE-2023-38545", "CVE-2023-36884",
+    "CVE-2023-22515", "CVE-2023-46604",
+}
+
+# CWE detailed descriptions
+_CWE_DATABASE: Dict[str, Dict[str, Any]] = {
+    "CWE-89": {"name": "SQL Injection", "description": "Improper Neutralization of Special Elements used in an SQL Command", "risk": "high"},
+    "CWE-79": {"name": "Cross-site Scripting (XSS)", "description": "Improper Neutralization of Input During Web Page Generation", "risk": "high"},
+    "CWE-918": {"name": "Server-Side Request Forgery (SSRF)", "description": "Server-Side Request Forgery", "risk": "high"},
+    "CWE-78": {"name": "OS Command Injection", "description": "Improper Neutralization of Special Elements used in an OS Command", "risk": "critical"},
+    "CWE-287": {"name": "Improper Authentication", "description": "When an actor claims to have a given identity, the software does not prove or insufficiently proves the claim", "risk": "high"},
+    "CWE-306": {"name": "Missing Authentication for Critical Function", "description": "The software does not perform authentication for functionality that requires a proven user identity", "risk": "critical"},
+    "CWE-862": {"name": "Missing Authorization", "description": "The software does not perform an authorization check when an actor attempts to access a resource", "risk": "high"},
+    "CWE-269": {"name": "Improper Privilege Management", "description": "The software does not assign or maintains privileges incorrectly", "risk": "high"},
+    "CWE-522": {"name": "Insufficiently Protected Credentials", "description": "Credentials are stored in cleartext or inadequately protected", "risk": "high"},
+    "CWE-798": {"name": "Use of Hard-coded Credentials", "description": "The software contains hard-coded credentials for authentication", "risk": "high"},
+    "CWE-200": {"name": "Information Exposure", "description": "Exposure of sensitive information to an actor that is not explicitly authorized", "risk": "medium"},
+    "CWE-327": {"name": "Use of a Broken or Risky Cryptographic Algorithm", "description": "Use of a broken or risky cryptographic algorithm", "risk": "high"},
+    "CWE-328": {"name": "Use of Weak Hash", "description": "Use of a weak hash algorithm for critical security decisions", "risk": "medium"},
+    "CWE-400": {"name": "Uncontrolled Resource Consumption", "description": "The software does not properly control the allocation of resources", "risk": "medium"},
+    "CWE-611": {"name": "XXE - XML External Entity", "description": "Processing of an XML document can cause the software to expose information or consume resources", "risk": "high"},
+    "CWE-601": {"name": "URL Redirection to Untrusted Site", "description": "Open redirect vulnerability", "risk": "medium"},
+    "CWE-94": {"name": "Code Injection", "description": "The software allows user input to be used as code", "risk": "critical"},
+    "CWE-74": {"name": "Injection", "description": "The software constructs a command using externally-influenced input", "risk": "high"},
+    "CWE-226": {"name": "Sensitive Information in Resource Not Removed Before Reuse", "description": "Sensitive data is not cleared before a resource is reused", "risk": "medium"},
+    "CWE-218": {"name": "Sensitive Information in Resource Names", "description": "Resource names contain sensitive information", "risk": "medium"},
+    "CWE-16": {"name": "Configuration", "description": "The software's configuration is insecure by default", "risk": "medium"},
+    "CWE-2": {"name": "Environment", "description": "The software operates in an environment that is not properly secured", "risk": "medium"},
+    "CWE-614": {"name": "Sensitive Cookie in HTTPS Session Without 'Secure' Attribute", "description": "Cookie used in HTTPS session lacks Secure flag", "risk": "low"},
+    "CWE-1357": {"name": "Reliance on Uncontrolled Component", "description": "The software relies on a third-party component without validating its integrity", "risk": "high"},
+    "CWE-829": {"name": "Inclusion of Functionality from Untrusted Control Sphere", "description": "The software imports functionality from an untrusted control sphere", "risk": "high"},
+    "CWE-494": {"name": "Download of Code Without Integrity Check", "description": "The software downloads code without verifying its integrity", "risk": "high"},
+    "CWE-326": {"name": "Inadequate Encryption Strength", "description": "The algorithm uses insufficient encryption strength", "risk": "high"},
+    "CWE-1004": {"name": "Sensitive Cookie Without 'HttpOnly' Flag", "description": "Cookie does not have HttpOnly flag set", "risk": "low"},
+    "CWE-404": {"name": "Improper Resource Shutdown", "description": "The software does not release a resource properly", "risk": "low"},
+    "CWE-350": {"name": "Reliance on Reverse DNS Resolution for Security", "description": "The software uses reverse DNS for security decisions", "risk": "medium"},
+    "CWE-613": {"name": "Insufficient Session Expiration", "description": "Session tokens do not expire after a reasonable period", "risk": "medium"},
+    "CWE-77": {"name": "Command Injection", "description": "The software constructs commands using user-controlled input", "risk": "critical"},
+    "CWE-87": {"name": "Improper Neutralization of Alternate XSS Syntax", "description": "XSS via alternate encoding methods", "risk": "high"},
+    "CWE-564": {"name": "SQL Injection: Hibernate", "description": "HQL/HQL injection in Hibernate ORM", "risk": "high"},
+    "CWE-258": {"name": "Empty Password", "description": "Password field is empty", "risk": "high"},
+    "CWE-259": {"name": "Use of Hard-coded Password", "description": "Hard-coded password in the software", "risk": "high"},
+    "CWE-427": {"name": "Uncontrolled Search Path Element", "description": "Path traversal via uncontrolled search path", "risk": "high"},
+}
+
+# CAPEC detailed descriptions
+_CAPEC_DATABASE: Dict[str, Dict[str, Any]] = {
+    "CAPEC-66": {"name": "SQL Injection", "description": "Attacker injects SQL commands via input fields", "risk": "high"},
+    "CAPEC-86": {"name": "Cross Site Scripting", "description": "Inject client-side scripts into web pages", "risk": "high"},
+    "CAPEC-664": {"name": "Server Side Request Forgery", "description": "Force server to make requests to unintended locations", "risk": "high"},
+    "CAPEC-131": {"name": "Resource Injection", "description": "Attacker injects resources that modify application behavior", "risk": "critical"},
+    "CAPEC-165": {"name": "Flooding", "description": "Overwhelm target with excessive traffic or data", "risk": "medium"},
+    "CAPEC-114": {"name": "Authentication Abuse", "description": "Exploit authentication mechanisms for unauthorized access", "risk": "high"},
+    "CAPEC-600": {"name": "Unauthorized Active API Session", "description": "Reuse of authorized session tokens", "risk": "high"},
+    "CAPEC-122": {"name": "Buffer Overflow", "description": "Write data past the end of allocated buffer", "risk": "critical"},
+    "CAPEC-233": {"name": "Privilege Abuse", "description": "Abuse existing privileges to gain additional access", "risk": "high"},
+    "CAPEC-16": {"name": "Dictionary Attack", "description": "Attempt to guess passwords from a dictionary", "risk": "medium"},
+    "CAPEC-547": {"name": "Use of Known Default Credentials", "description": "Exploit default credentials on deployed systems", "risk": "high"},
+    "CAPEC-201": {"name": "Data Filtration", "description": "Extract data through manipulation of query sequences", "risk": "medium"},
+    "CAPEC-352": {"name": "Cross-Site Request Forgery", "description": "Force victim to execute unwanted actions on authenticated site", "risk": "medium"},
+    "CAPEC-213": {"name": "Exploitation of Trust", "description": "Exploit implicit trust relationships between components", "risk": "high"},
+    "CAPEC-97": {"name": "Data Interception", "description": "Intercept data transmitted between components", "risk": "high"},
+    "CAPEC-18": {"name": "Cross-Site Scripting (XSS)", "description": "Inject malicious scripts via web application", "risk": "high"},
+    "CAPEC-100": {"name": "OWASP Top Ten Manipulation", "description": "Exploit vulnerabilities from OWASP Top 10", "risk": "high"},
+    "CAPEC-242": {"name": "Code Injection", "description": "Inject arbitrary code that is executed by the application", "risk": "critical"},
+    "CAPEC-219": {"name": "XML External Entity Blowup", "description": "XXE attack causing resource exhaustion", "risk": "high"},
+    "CAPEC-601": {"name": "URL Redirection to Malicious Site", "description": "Redirect victim to attacker-controlled URL", "risk": "medium"},
+    "CAPEC-652": {"name": "Traffic Tunneling", "description": "Tunnel traffic through an allowed protocol", "risk": "high"},
+    "CAPEC-600": {"name": "Session Sidejacking", "description": "Hijack an authenticated session", "risk": "high"},
+    "CAPEC-166": {"name": "DOM-based Injection", "description": "Manipulate DOM environment from untrusted input", "risk": "high"},
+    "CAPEC-441": {"name": "Malicious Dependency", "description": "Supply chain attack via malicious dependency", "risk": "critical"},
+    "CAPEC-660": {"name": "Software Integrity Attack", "description": "Modify software supply chain to inject vulnerabilities", "risk": "critical"},
+    "CAPEC-157": {"name": "Shared Data Manipulation", "description": "Modify shared data to exploit race conditions", "risk": "medium"},
+    "CAPEC-604": {"name": "HTTP Request Splitting", "description": "Inject extra HTTP requests via malformed input", "risk": "medium"},
+    "CAPEC-463": {"name": "HTTP Splitting", "description": "Manipulate HTTP request/response splitting", "risk": "medium"},
+}
+
+# MITRE ATT&CK Enterprise techniques (expanded)
+_MITRE_TECHNIQUES: Dict[str, Dict[str, Any]] = {
+    "T1190": {"name": "Exploit Public-Facing Application", "tactic": "TA0001", "risk": "critical"},
+    "T1059": {"name": "Command and Scripting Interpreter", "tactic": "TA0002", "risk": "high"},
+    "T1059.007": {"name": "JavaScript", "tactic": "TA0002", "risk": "high"},
+    "T1189": {"name": "Drive-by Compromise", "tactic": "TA0001", "risk": "high"},
+    "T1078": {"name": "Valid Accounts", "tactic": "TA0001", "risk": "high"},
+    "T1078.001": {"name": "Default Accounts", "tactic": "TA0001", "risk": "high"},
+    "T1548": {"name": "Abuse Elevation Control Mechanism", "tactic": "TA0004", "risk": "high"},
+    "T1068": {"name": "Exploitation for Privilege Escalation", "tactic": "TA0004", "risk": "critical"},
+    "T1110": {"name": "Brute Force", "tactic": "TA0006", "risk": "high"},
+    "T1110.001": {"name": "Password Spraying", "tactic": "TA0006", "risk": "high"},
+    "T1552": {"name": "Unsecured Credentials", "tactic": "TA0006", "risk": "high"},
+    "T1552.001": {"name": "Credentials in Files", "tactic": "TA0006", "risk": "high"},
+    "T1566": {"name": "Phishing", "tactic": "TA0001", "risk": "high"},
+    "T1566.002": {"name": "Spearphishing Link", "tactic": "TA0001", "risk": "high"},
+    "T1046": {"name": "Network Service Discovery", "tactic": "TA0007", "risk": "medium"},
+    "T1083": {"name": "File and Directory Discovery", "tactic": "TA0007", "risk": "low"},
+    "T1082": {"name": "System Information Discovery", "tactic": "TA0007", "risk": "medium"},
+    "T1562": {"name": "Impair Defenses", "tactic": "TA0005", "risk": "high"},
+    "T1573": {"name": "Encrypted Channel", "tactic": "TA0011", "risk": "medium"},
+    "T1571": {"name": "Non-Standard Port", "tactic": "TA0011", "risk": "medium"},
+    "T1071": {"name": "Application Layer Protocol", "tactic": "TA0011", "risk": "medium"},
+    "T1498": {"name": "Network Denial of Service", "tactic": "TA0040", "risk": "high"},
+    "T1486": {"name": "Data Encrypted for Impact", "tactic": "TA0040", "risk": "critical"},
+    "T1001": {"name": "Data Obfuscation", "tactic": "TA0005", "risk": "medium"},
+    "T1048": {"name": "Exfiltration Over Alternative Protocol", "tactic": "TA0010", "risk": "high"},
+    "T1041": {"name": "Exfiltration Over C2 Channel", "tactic": "TA0010", "risk": "high"},
+    "T1560": {"name": "Archive Collected Data", "tactic": "TA0009", "risk": "medium"},
+    "T1213": {"name": "Data from Information Repositories", "tactic": "TA0009", "risk": "medium"},
+    "T1595": {"name": "Active Scanning", "tactic": "TA0043", "risk": "low"},
+    "T1592": {"name": "Gather Victim Host Information", "tactic": "TA0043", "risk": "low"},
+    "T1590": {"name": "Gather Victim Org Information", "tactic": "TA0043", "risk": "low"},
+    "T1590.002": {"name": "DNS", "tactic": "TA0043", "risk": "low"},
+    "T1593": {"name": "Search Open Websites/Domains", "tactic": "TA0043", "risk": "low"},
+    "T1589": {"name": "Gather Victim Identity Information", "tactic": "TA0043", "risk": "medium"},
+    "T1583": {"name": "Acquire Infrastructure", "tactic": "TA0042", "risk": "medium"},
+    "T1585": {"name": "Establish Accounts", "tactic": "TA0042", "risk": "medium"},
+    "T1588.004": {"name": "Exploits", "tactic": "TA0042", "risk": "high"},
+    "T1610": {"name": "Deploy Container", "tactic": "TA0002", "risk": "high"},
+    "T1195.002": {"name": "Compromise Software Supply Chain", "tactic": "TA0042", "risk": "critical"},
+    "T1580": {"name": "Cloud Infrastructure Discovery", "tactic": "TA0043", "risk": "medium"},
+    "T1553": {"name": "Subvert Trust Controls", "tactic": "TA0003", "risk": "high"},
+    "T1553.002": {"name": "Code Signing", "tactic": "TA0003", "risk": "high"},
+    "T1070": {"name": "Indicator Removal", "tactic": "TA0005", "risk": "medium"},
+    "T1070.005": {"name": "Network Traffic Capture", "tactic": "TA0005", "risk": "medium"},
+}
+
+# OWASP Top 10 (2021) mappings
+_OWASP_TOP10: List[Dict[str, Any]] = [
+    {"id": "A01", "name": "Broken Access Control", "categories": ["auth_bypass", "privilege_escalation", "jwt_exposure"], "cwe": ["CWE-287", "CWE-862", "CWE-306"]},
+    {"id": "A02", "name": "Cryptographic Failures", "categories": ["crypto_failure"], "cwe": ["CWE-327", "CWE-328", "CWE-326"]},
+    {"id": "A03", "name": "Injection", "categories": ["sqli", "xss", "injection", "xxe", "rce"], "cwe": ["CWE-89", "CWE-79", "CWE-78", "CWE-611"]},
+    {"id": "A04", "name": "Insecure Design", "categories": ["misconfiguration", "info_disclosure"], "cwe": ["CWE-16", "CWE-200"]},
+    {"id": "A05", "name": "Security Misconfiguration", "categories": ["misconfiguration", "default_credentials", "header_analysis"], "cwe": ["CWE-16", "CWE-2", "CWE-798"]},
+    {"id": "A06", "name": "Vulnerable and Outdated Components", "categories": ["cve", "supply_chain"], "cwe": ["CWE-1357", "CWE-829", "CWE-494"]},
+    {"id": "A07", "name": "Identification and Authentication Failures", "categories": ["auth_bypass", "credential_theft", "default_credentials"], "cwe": ["CWE-287", "CWE-522", "CWE-798"]},
+    {"id": "A08", "name": "Software and Data Integrity Failures", "categories": ["supply_chain", "injection"], "cwe": ["CWE-1357", "CWE-494", "CWE-94"]},
+    {"id": "A09", "name": "Security Logging and Monitoring Failures", "categories": ["info_disclosure"], "cwe": ["CWE-778"]},
+    {"id": "A10", "name": "Server-Side Request Forgery", "categories": ["ssrf"], "cwe": ["CWE-918"]},
+]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Category → Mapping Index (for quick lookup)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_CATEGORY_TO_CWE: Dict[str, List[str]] = {
+    "sqli": ["CWE-89", "CWE-564"],
+    "xss": ["CWE-79", "CWE-87"],
+    "ssrf": ["CWE-918"],
+    "rce": ["CWE-78", "CWE-94"],
+    "auth_bypass": ["CWE-287", "CWE-306", "CWE-862"],
+    "privilege_escalation": ["CWE-269", "CWE-427"],
+    "credential_theft": ["CWE-522", "CWE-798", "CWE-259"],
+    "info_disclosure": ["CWE-200", "CWE-215"],
+    "data_exposure": ["CWE-200", "CWE-359"],
+    "misconfiguration": ["CWE-16", "CWE-2", "CWE-614"],
+    "crypto_failure": ["CWE-327", "CWE-328", "CWE-326"],
+    "dos": ["CWE-400", "CWE-770"],
+    "injection": ["CWE-74", "CWE-78", "CWE-917"],
+    "xxe": ["CWE-611", "CWE-827"],
+    "default_credentials": ["CWE-798", "CWE-258"],
+    "open_redirect": ["CWE-601"],
+    "jwt_exposure": ["CWE-522", "CWE-613"],
+    "beaconing": ["CWE-918", "CWE-862"],
+    "steganography": ["CWE-218", "CWE-1004"],
+    "supply_chain": ["CWE-1357", "CWE-829", "CWE-494"],
+    "covert_channel": ["CWE-226", "CWE-311"],
+    "cve": ["CWE-1357"],
+}
+
+_CATEGORY_TO_CAPEC: Dict[str, List[str]] = {
+    "sqli": ["CAPEC-66"],
+    "xss": ["CAPEC-86", "CAPEC-18"],
+    "ssrf": ["CAPEC-664"],
+    "rce": ["CAPEC-131", "CAPEC-242"],
+    "auth_bypass": ["CAPEC-114", "CAPEC-600"],
+    "privilege_escalation": ["CAPEC-122", "CAPEC-233"],
+    "credential_theft": ["CAPEC-16", "CAPEC-547"],
+    "info_disclosure": ["CAPEC-201"],
+    "data_exposure": ["CAPEC-201", "CAPEC-601"],
+    "misconfiguration": ["CAPEC-213"],
+    "crypto_failure": ["CAPEC-97"],
+    "dos": ["CAPEC-125", "CAPEC-463"],
+    "injection": ["CAPEC-100", "CAPEC-242"],
+    "xxe": ["CAPEC-219"],
+    "default_credentials": ["CAPEC-16", "CAPEC-547"],
+    "open_redirect": ["CAPEC-601"],
+    "jwt_exposure": ["CAPEC-16"],
+    "beaconing": ["CAPEC-664", "CAPEC-652"],
+    "supply_chain": ["CAPEC-441", "CAPEC-660"],
+}
+
+_CATEGORY_TO_MITRE: Dict[str, List[str]] = {
+    "sqli": ["T1190"],
+    "xss": ["T1059.007", "T1189"],
+    "ssrf": ["T1190", "T1046"],
+    "rce": ["T1059", "T1548"],
+    "auth_bypass": ["T1078", "T1110"],
+    "privilege_escalation": ["T1548", "T1068"],
+    "credential_theft": ["T1110.001", "T1552"],
+    "info_disclosure": ["T1566", "T1083"],
+    "data_exposure": ["T1560", "T1048"],
+    "misconfiguration": ["T1082", "T1562"],
+    "crypto_failure": ["T1573", "T1571"],
+    "dos": ["T1498", "T1486"],
+    "injection": ["T1059", "T1190"],
+    "xxe": ["T1059.009", "T1190"],
+    "default_credentials": ["T1110.001", "T1078.001"],
+    "open_redirect": ["T1566.002"],
+    "jwt_exposure": ["T1552.001", "T1553.002"],
+    "beaconing": ["T1071", "T1573"],
+    "steganography": ["T1001", "T1041"],
+    "supply_chain": ["T1585", "T1195.002"],
+    "cve": ["T1588.004"],
+}
+
+_CATEGORY_PATTERNS: List[Tuple[str, str, float]] = [
+    (r"\bsql\b|\bsqli\b", "sqli", 0.95),
+    (r"\bxss\b|cross.?site", "xss", 0.95),
+    (r"\bssrf\b", "ssrf", 0.95),
+    (r"\brce\b|remote.?code", "rce", 0.95),
+    (r"auth.*bypass|unauthorized", "auth_bypass", 0.90),
+    (r"privilege.*escal", "privilege_escalation", 0.90),
+    (r"credential.*theft|password.*leak|default.*cred", "credential_theft", 0.90),
+    (r"data.*expos|data.*leak", "data_exposure", 0.85),
+    (r"misconfigur|security.*header", "misconfiguration", 0.85),
+    (r"weak.*encrypt|crypto.*fail", "crypto_failure", 0.85),
+    (r"denial.*service|\bdos\b", "dos", 0.85),
+    (r"\bxxe\b", "xxe", 0.95),
+    (r"default.*password|default.*cred", "default_credentials", 0.90),
+    (r"open.?redirect", "open_redirect", 0.85),
+    (r"jwt.*expos|token.*leak", "jwt_exposure", 0.85),
+    (r"beacon|c2.*channel", "beaconing", 0.85),
+    (r"steganograph|hidden.*data", "steganography", 0.90),
+    (r"supply.?chain|dependency.*vuln", "supply_chain", 0.85),
+    (r"injection", "injection", 0.80),
+    (r"cve-\d{4}-\d+", "cve", 0.90),
+]
+
+
+def _quick_classify(finding: Dict[str, Any]) -> str:
+    """Quick classification of a finding."""
+    title = finding.get("title", "").lower()
+    desc = finding.get("description", "").lower()
+    evidence = finding.get("evidence", "").lower()
+    combined = f"{title} {desc} {evidence}"
+    best = "misc"
+    best_score = 0.0
+    for pattern, cat, weight in _CATEGORY_PATTERNS:
+        if re.search(pattern, combined, re.IGNORECASE):
+            if weight > best_score:
+                best_score = weight
+                best = cat
+    return best
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ThreatIntelEngine
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class ThreatIntelEngine:
+    """Centralized threat intelligence engine.
+
+    Enriches findings with threat intelligence from built-in databases
+    and optional online sources. Supports caching and deduplication.
+    """
+
+    def __init__(self, enable_online: bool = False, cache_ttl: int = 3600) -> None:
+        self._cache: Dict[str, Tuple[float, Any]] = {}
+        self._cache_ttl = cache_ttl
+        self._cache_max_size = 10000  # Prevent cache memory exhaustion
+        self._cache_lock = Lock()
+        self._enable_online = enable_online
+        self._online_queries = 0
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    def enrich_scan(self, findings: List[Dict[str, Any]], target: str = "") -> ThreatIntelReport:
+        """Enrich all findings from a scan with threat intelligence.
+
+        Parameters:
+            findings: List of finding dicts from ReconProResult
+            target: Target hostname
+
+        Returns:
+            ThreatIntelReport with enriched findings and summary.
+        """
+        t0 = time.monotonic()
+        report = ThreatIntelReport(target=target)
+
+        if not findings:
+            report.threat_summary = f"No findings to enrich for {target}."
+            report.analysis_duration_ms = round((time.monotonic() - t0) * 1000, 2)
+            return report
+
+        all_cves: set = set()
+        all_cwes: set = set()
+        all_capecs: set = set()
+        all_mitre: Dict[str, str] = {}
+        tech_counts: Dict[str, int] = defaultdict(int)
+        known_exploited = 0
+        active_exploited = 0
+        severity_trends: Dict[str, str] = {}
+
+        for f in findings:
+            enriched = self._enrich_finding(f)
+            report.enriched_findings.append(enriched.to_dict())
+
+            all_cves.update(enriched.cve_matches)
+            all_cwes.update(enriched.cwe_matches)
+            all_capecs.update(enriched.capec_matches)
+            for t in enriched.mitre_techniques:
+                all_mitre[t.get("technique", "")] = t.get("name", "")
+
+            for tech in enriched.affected_technologies:
+                tech_counts[tech] += 1
+
+            if enriched.known_exploitation:
+                known_exploited += 1
+            if enriched.active_exploitation:
+                active_exploited += 1
+
+            severity = f.get("severity", "info").lower()
+            severity_trends[f.get("title", "")[:50]] = enriched.severity_evolution
+
+        report.unique_cves = sorted(all_cves)
+        report.unique_cwes = sorted(all_cwes)
+        report.unique_capecs = sorted(all_capecs)
+        report.unique_mitre = [{"technique": k, "name": v} for k, v in sorted(all_mitre.items())]
+        report.known_exploited_count = known_exploited
+        report.active_exploitation_count = active_exploited
+        report.technology_profile = dict(tech_counts)
+        report.severity_trends = severity_trends
+        report.cache_hits = self._cache_hits
+        report.cache_misses = self._cache_misses
+        report.online_queries = self._online_queries
+
+        # Generate summary
+        report.threat_summary = self._generate_summary(
+            findings, all_cves, all_cwes, all_capecs,
+            known_exploited, active_exploited, target,
+        )
+
+        report.analysis_duration_ms = round((time.monotonic() - t0) * 1000, 2)
+        return report
+
+    def lookup_cve(self, cve_id: str) -> Optional[Dict[str, Any]]:
+        """Look up a CVE in the built-in database."""
+        cve_upper = cve_id.upper()
+        cached = self._cache_get(f"cve:{cve_upper}")
+        if cached is not None:
+            self._cache_hits += 1
+            return cached
+
+        self._cache_misses += 1
+        record = _CVE_KNOWN_PATTERNS.get(cve_upper)
+
+        if record:
+            result = {
+                "cve_id": cve_upper,
+                "name": record["name"],
+                "description": record["description"],
+                "severity": record["severity"],
+                "affected": record.get("affected", []),
+                "known_exploited": record.get("known_exploited", False),
+                "in_cisa_kev": cve_upper in _CISA_KEV_CVE_LIST,
+            }
+            self._cache_set(f"cve:{cve_upper}", result)
+            return result
+
+        # Try online lookup if enabled
+        if self._enable_online:
+            result = self._online_cve_lookup(cve_upper)
+            if result:
+                self._cache_set(f"cve:{cve_upper}", result)
+                return result
+
+        self._cache_set(f"cve:{cve_upper}", None)
+        return None
+
+    def lookup_cwe(self, cwe_id: str) -> Optional[Dict[str, Any]]:
+        """Look up a CWE in the built-in database."""
+        cwe_upper = cwe_id.upper()
+        cached = self._cache_get(f"cwe:{cwe_upper}")
+        if cached is not None:
+            self._cache_hits += 1
+            return cached
+
+        self._cache_misses += 1
+        record = _CWE_DATABASE.get(cwe_upper)
+
+        if record:
+            result = {
+                "cwe_id": cwe_upper,
+                "name": record["name"],
+                "description": record["description"],
+                "risk": record["risk"],
+            }
+            self._cache_set(f"cwe:{cwe_upper}", result)
+            return result
+
+        self._cache_set(f"cwe:{cwe_upper}", None)
+        return None
+
+    def lookup_capec(self, capec_id: str) -> Optional[Dict[str, Any]]:
+        """Look up a CAPEC in the built-in database."""
+        capec_upper = capec_id.upper()
+        cached = self._cache_get(f"capec:{capec_upper}")
+        if cached is not None:
+            self._cache_hits += 1
+            return cached
+
+        self._cache_misses += 1
+        record = _CAPEC_DATABASE.get(capec_upper)
+
+        if record:
+            result = {
+                "capec_id": capec_upper,
+                "name": record["name"],
+                "description": record["description"],
+                "risk": record["risk"],
+            }
+            self._cache_set(f"capec:{capec_upper}", result)
+            return result
+
+        self._cache_set(f"capec:{capec_upper}", None)
+        return None
+
+    def lookup_mitre(self, technique_id: str) -> Optional[Dict[str, Any]]:
+        """Look up a MITRE ATT&CK technique."""
+        tech_upper = technique_id.upper()
+        cached = self._cache_get(f"mitre:{tech_upper}")
+        if cached is not None:
+            self._cache_hits += 1
+            return cached
+
+        self._cache_misses += 1
+        record = _MITRE_TECHNIQUES.get(tech_upper)
+
+        if record:
+            result = {
+                "technique_id": tech_upper,
+                "name": record["name"],
+                "tactic": record["tactic"],
+                "risk": record["risk"],
+            }
+            self._cache_set(f"mitre:{tech_upper}", result)
+            return result
+
+        self._cache_set(f"mitre:{tech_upper}", None)
+        return None
+
+    def get_owasp_mapping(self, category: str) -> List[Dict[str, Any]]:
+        """Get OWASP Top 10 mapping for a vulnerability category."""
+        mapped = []
+        for item in _OWASP_TOP10:
+            if category in item.get("categories", []):
+                mapped.append({
+                    "owasp_id": item["id"],
+                    "name": item["name"],
+                    "related_cwe": item.get("cwe", []),
+                })
+        return mapped
+
+    # -- Internal methods ---------------------------------------------------
+
+    def _enrich_finding(self, finding: Dict[str, Any]) -> EnrichedFinding:
+        """Enrich a single finding with threat intelligence."""
+        cat = _quick_classify(finding)
+        enriched = EnrichedFinding(original=finding)
+
+        # Extract CVE references from evidence/title
+        cve_refs = self._extract_cve_refs(finding)
+        for cve in cve_refs:
+            enriched.cve_matches.append(cve)
+            record = self.lookup_cve(cve)
+            if record:
+                enriched.threat_records.append(ThreatRecord(
+                    source="CVE", source_id=cve,
+                    name=record.get("name", cve),
+                    description=record.get("description", ""),
+                    severity=record.get("severity", "info"),
+                    confidence=0.9,
+                    metadata=record,
+                    evidence_chain=[f"CVE reference found in finding: {cve}"],
+                ).to_dict())
+                if record.get("known_exploited"):
+                    enriched.known_exploitation = True
+                if record.get("in_cisa_kev"):
+                    enriched.active_exploitation = True
+                    enriched.severity_evolution = "increasing"
+
+        # CWE mapping
+        cwe_ids = _CATEGORY_TO_CWE.get(cat, [])
+        for cwe in cwe_ids:
+            enriched.cwe_matches.append(cwe)
+            record = self.lookup_cwe(cwe)
+            if record:
+                enriched.threat_records.append(ThreatRecord(
+                    source="CWE", source_id=cwe,
+                    name=record.get("name", cwe),
+                    description=record.get("description", ""),
+                    severity=record.get("risk", "info"),
+                    confidence=0.8,
+                    metadata=record,
+                    evidence_chain=[f"Category '{cat}' maps to {cwe}"],
+                ).to_dict())
+
+        # CAPEC mapping
+        capec_ids = _CATEGORY_TO_CAPEC.get(cat, [])
+        for capec in capec_ids:
+            enriched.capec_matches.append(capec)
+            record = self.lookup_capec(capec)
+            if record:
+                enriched.threat_records.append(ThreatRecord(
+                    source="CAPEC", source_id=capec,
+                    name=record.get("name", capec),
+                    description=record.get("description", ""),
+                    severity=record.get("risk", "info"),
+                    confidence=0.75,
+                    metadata=record,
+                    evidence_chain=[f"Category '{cat}' maps to {capec}"],
+                ).to_dict())
+
+        # MITRE mapping
+        mitre_ids = _CATEGORY_TO_MITRE.get(cat, [])
+        for tid in mitre_ids:
+            record = self.lookup_mitre(tid)
+            if record:
+                enriched.mitre_techniques.append({
+                    "technique": tid,
+                    "name": record.get("name", ""),
+                    "tactic": record.get("tactic", ""),
+                })
+                enriched.threat_records.append(ThreatRecord(
+                    source="MITRE", source_id=tid,
+                    name=record.get("name", ""),
+                    description=f"ATT&CK technique {tid}",
+                    severity=record.get("risk", "info"),
+                    confidence=0.8,
+                    metadata=record,
+                    evidence_chain=[f"Category '{cat}' maps to technique {tid}"],
+                ).to_dict())
+
+        # OWASP mapping
+        owasp_items = self.get_owasp_mapping(cat)
+        for item in owasp_items:
+            enriched.threat_records.append(ThreatRecord(
+                source="OWASP", source_id=item["owasp_id"],
+                name=item["name"],
+                description=f"OWASP Top 10 - {item['owasp_id']}: {item['name']}",
+                severity="medium",
+                confidence=0.7,
+                metadata=item,
+                evidence_chain=[f"Category '{cat}' maps to {item['owasp_id']}"],
+            ).to_dict())
+
+        # Determine affected technologies
+        enriched.affected_technologies = self._detect_technologies(finding)
+
+        # Severity evolution
+        if not enriched.severity_evolution:
+            sev = finding.get("severity", "info").lower()
+            if sev in ("critical", "high"):
+                enriched.severity_evolution = "stable"  # Already severe
+            else:
+                enriched.severity_evolution = "stable"
+
+        # Enrichment confidence
+        total_records = len(enriched.threat_records)
+        evidence_len = len(finding.get("evidence", ""))
+        enriched.enrichment_confidence = min(1.0,
+            (0.3 if total_records > 0 else 0.0) +
+            (0.3 if evidence_len > 50 else 0.1) +
+            (0.2 if enriched.cve_matches else 0.0) +
+            (0.2 if enriched.mitre_techniques else 0.0)
+        )
+
+        # Threat summary
+        enriched.threat_summary = self._finding_threat_summary(enriched, cat)
+
+        return enriched
+
+    def _extract_cve_refs(self, finding: Dict[str, Any]) -> List[str]:
+        """Extract CVE identifiers from finding text."""
+        text = f"{finding.get('title', '')} {finding.get('description', '')} {finding.get('evidence', '')}"
+        return list(set(re.findall(r'CVE-\d{4}-\d{4,}', text, re.IGNORECASE)))
+
+    def _detect_technologies(self, finding: Dict[str, Any]) -> List[str]:
+        """Detect affected technologies from finding metadata."""
+        text = f"{finding.get('title', '')} {finding.get('description', '')} {finding.get('evidence', '')}".lower()
+        techs: List[str] = []
+        tech_patterns = [
+            (r'\bapache\b', "Apache"),
+            (r'\bnginx\b', "Nginx"),
+            (r'\biis\b', "IIS"),
+            (r'\bmysql\b', "MySQL"),
+            (r'\bpostgresql\b', "PostgreSQL"),
+            (r'\bmongodb\b', "MongoDB"),
+            (r'\bredis\b', "Redis"),
+            (r'\bnode\.?js\b', "Node.js"),
+            (r'\bpython\b', "Python"),
+            (r'\bjava\b', "Java"),
+            (r'\bphp\b', "PHP"),
+            (r'\bruby\b', "Ruby"),
+            (r'\bdocker\b', "Docker"),
+            (r'\bkubernetes\b', "Kubernetes"),
+            (r'\baws\b', "AWS"),
+            (r'\bazure\b', "Azure"),
+            (r'\bgcp\b', "GCP"),
+            (r'\blinux\b', "Linux"),
+            (r'\bwindows\b', "Windows"),
+            (r'\btomcat\b', "Tomcat"),
+            (r'\bjenkins\b', "Jenkins"),
+            (r'\bkafka\b', "Kafka"),
+            (r'\bopenssl\b', "OpenSSL"),
+            (r'\blog4j\b', "Log4j"),
+            (r'\bspring\b', "Spring"),
+            (r'\bdjango\b', "Django"),
+            (r'\bflask\b', "Flask"),
+            (r'\bexpress\b', "Express.js"),
+            (r'\breact\b', "React"),
+            (r'\bangular\b', "Angular"),
+            (r'\bjoomla\b', "Joomla"),
+            (r'\bwordpress\b', "WordPress"),
+            (r'\bdrupal\b', "Drupal"),
+            (r'\bcloudflare\b', "Cloudflare"),
+        ]
+        import re as _re
+        for pattern, tech in tech_patterns:
+            if _re.search(pattern, text):
+                techs.append(tech)
+        return list(set(techs))
+
+    def _finding_threat_summary(self, enriched: EnrichedFinding, cat: str) -> str:
+        """Generate a threat summary for a single finding."""
+        parts = [f"Finding maps to category '{cat}'."]
+        if enriched.cve_matches:
+            parts.append(f"References {len(enriched.cve_matches)} CVE(s): {', '.join(enriched.cve_matches[:3])}")
+        if enriched.known_exploitation:
+            parts.append("Known exploitation detected — CRITICAL")
+        if enriched.active_exploitation:
+            parts.append("Active exploitation reported in CISA KEV")
+        if enriched.mitre_techniques:
+            techniques = [t.get("name", "") for t in enriched.mitre_techniques[:3]]
+            parts.append(f"MITRE ATT&CK: {', '.join(techniques)}")
+        if enriched.cwe_matches:
+            parts.append(f"{len(enriched.cwe_matches)} CWE(s) mapped")
+        if enriched.affected_technologies:
+            parts.append(f"Affects: {', '.join(enriched.affected_technologies[:5])}")
+        return ". ".join(parts) + "."
+
+    def _generate_summary(self, findings: List[Dict[str, Any]],
+                           cves: set, cwes: set, capecs: set,
+                           known_exploited: int, active_exploited: int,
+                           target: str) -> str:
+        """Generate overall threat intelligence summary."""
+        parts = [
+            f"Threat intelligence analysis for {target} covered {len(findings)} findings.",
+        ]
+
+        if cves:
+            parts.append(f"Identified {len(cves)} unique CVE references: {', '.join(sorted(cves)[:5])}")
+        if cwes:
+            parts.append(f"Mapped to {len(cwes)} CWE categories")
+        if capecs:
+            parts.append(f"Covered {len(capecs)} CAPEC attack patterns")
+
+        if known_exploited > 0:
+            parts.append(f"WARNING: {known_exploited} findings reference known exploited vulnerabilities")
+        if active_exploited > 0:
+            parts.append(f"CRITICAL: {active_exploited} findings are in CISA Known Exploited Vulnerabilities catalog")
+
+        if not known_exploited and not active_exploited:
+            parts.append("No known exploited vulnerabilities detected")
+
+        return ". ".join(parts) + "."
+
+    # -- Cache methods -------------------------------------------------------
+
+    def _cache_get(self, key: str) -> Optional[Any]:
+        """Get cached value if not expired."""
+        with self._cache_lock:
+            if key in self._cache:
+                ts, val = self._cache[key]
+                if time.time() - ts < self._cache_ttl:
+                    return val
+                del self._cache[key]
+        return None
+
+    def _cache_set(self, key: str, value: Any) -> None:
+        """Set cache value with timestamp. Enforces max cache size."""
+        with self._cache_lock:
+            if len(self._cache) >= self._cache_max_size:
+                # Evict oldest entries
+                sorted_keys = sorted(self._cache, key=lambda k: self._cache[k][0])
+                evict_count = len(self._cache) // 4
+                for k in sorted_keys[:evict_count]:
+                    del self._cache[k]
+            self._cache[key] = (time.time(), value)
+
+    def clear_cache(self) -> None:
+        """Clear all cached entries."""
+        with self._cache_lock:
+            self._cache.clear()
+
+    # -- Online lookup (optional) --------------------------------------------
+
+    _NVD_ALLOWED_HOSTS = ("services.nvd.nist.gov",)
+    _MAX_RESPONSE_BYTES = 65536
+
+    def _online_cve_lookup(self, cve_id: str) -> Optional[Dict[str, Any]]:
+        """Attempt online CVE lookup via NVD API (stdlib HTTP only).
+
+        Validates the URL to prevent SSRF before making the request.
+        """
+        try:
+            # Validate CVE ID format to prevent injection
+            if not re.match(r'^CVE-\d{4}-\d{4,}$', cve_id, re.IGNORECASE):
+                return None
+
+            url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
+            # SSRF protection: verify URL host
+            parsed = urllib.parse.urlparse(url)
+            if parsed.hostname not in self._NVD_ALLOWED_HOSTS:
+                return None
+            if parsed.scheme not in ("https",):
+                return None
+
+            ctx = ssl.create_default_context()
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "ReconPro/10.0 (Threat Intel Engine)",
+                "Accept": "application/json",
+            })
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                raw = resp.read(self._MAX_RESPONSE_BYTES)
+                data = json.loads(raw.decode("utf-8", errors="replace"))
+                self._online_queries += 1
+                vulns = data.get("vulnerabilities", [])
+                if vulns:
+                    cve_item = vulns[0].get("cve", {})
+                    desc = cve_item.get("descriptions", [{}])[0].get("value", "")
+                    metrics = cve_item.get("metrics", {})
+                    cvss = metrics.get("cvssMetricV31", [{}])
+                    if cvss:
+                        score = cvss[0].get("cvssData", {}).get("baseScore", 0)
+                        severity = cvss[0].get("cvssData", {}).get("baseSeverity", "UNKNOWN")
+                    else:
+                        score, severity = 0, "UNKNOWN"
+                    return {
+                        "cve_id": cve_id,
+                        "name": desc[:200],
+                        "description": desc[:500],
+                        "severity": str(severity).lower(),
+                        "cvss_score": float(score) if score else 0.0,
+                        "affected": [],
+                        "known_exploited": cve_id in _CISA_KEV_CVE_LIST,
+                        "in_cisa_kev": cve_id in _CISA_KEV_CVE_LIST,
+                        "source": "NVD_API",
+                    }
+        except Exception:
+            pass
+        return None
+
+    @property
+    def cache_stats(self) -> Dict[str, int]:
+        """Return cache hit/miss statistics."""
+        return {"hits": self._cache_hits, "misses": self._cache_misses,
+                "size": len(self._cache), "online_queries": self._online_queries}
+========== intelligence_pipeline.py ==========
+"""ReconPro v10 — Intelligence Pipeline.
+
+Post-scan orchestration layer that composites the AI Analyst,
+Attack Graph, and Threat Intelligence engines into a single unified
+analysis pass.  Produces an IntelligenceResult with composite risk
+scores, attack paths, CVE/CWE/MITRE enrichment, and executive-ready
+summaries.
+
+Pure Python.  Zero external dependencies.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# IntelligenceResult
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class IntelligenceResult:
+    """Aggregated result from the intelligence pipeline.
+
+    Contains composite risk scores, enriched findings, attack paths,
+    threat intelligence matches, and timing metadata.
+    """
+
+    # -- Composite scores --------------------------------------------------
+    executive_risk_score: float = 0.0
+    exposure_score: float = 0.0
+    mission_impact_score: float = 0.0
+    infrastructure_health_score: float = 0.0
+    threat_confidence_index: float = 0.0
+
+    # -- Timing --------------------------------------------------------------
+    pipeline_duration: float = 0.0
+    ai_duration: float = 0.0
+    graph_duration: float = 0.0
+    intel_duration: float = 0.0
+
+    # -- Engine metadata -----------------------------------------------------
+    enabled_engines: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    # -- AI Analyst outputs --------------------------------------------------
+    ai_analysis: Dict[str, Any] = field(default_factory=dict)
+    classification_summary: Dict[str, Any] = field(default_factory=dict)
+    extended_findings: List[Dict[str, Any]] = field(default_factory=list)
+    attack_paths: List[Dict[str, Any]] = field(default_factory=list)
+
+    # -- Attack Graph outputs -------------------------------------------------
+    attack_graph: Dict[str, Any] = field(default_factory=dict)
+    attack_chains: List[Dict[str, Any]] = field(default_factory=list)
+    kill_chain_mapping: Dict[str, Any] = field(default_factory=dict)
+
+    # -- Threat Intel outputs -------------------------------------------------
+    cve_matches: List[str] = field(default_factory=list)
+    cwe_matches: List[str] = field(default_factory=list)
+    mitre_techniques: List[Dict[str, Any]] = field(default_factory=list)
+
+    # ------------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------------
+
+    @property
+    def has_intelligence(self) -> bool:
+        """Return True if the result contains any actionable intelligence."""
+        return bool(
+            self.attack_paths
+            or self.cve_matches
+            or self.mitre_techniques
+            or self.attack_chains
+            or self.extended_findings
+            or self.classification_summary
+        )
+
+    @property
+    def risk_level(self) -> str:
+        """Map executive_risk_score to a human-readable risk level."""
+        s = self.executive_risk_score
+        if s >= 75:
+            return "CRITICAL"
+        if s >= 55:
+            return "HIGH"
+        if s >= 35:
+            return "MEDIUM"
+        if s >= 15:
+            return "LOW"
+        return "MINIMAL"
+
+    # ------------------------------------------------------------------------
+    # Serialisation
+    # ------------------------------------------------------------------------
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise to a plain dict suitable for JSON output."""
+        return {
+            "executive_risk_score": round(self.executive_risk_score, 1),
+            "exposure_score": round(self.exposure_score, 1),
+            "mission_impact_score": round(self.mission_impact_score, 1),
+            "infrastructure_health_score": round(self.infrastructure_health_score, 1),
+            "threat_confidence_index": round(self.threat_confidence_index, 1),
+            "pipeline_duration_ms": round(self.pipeline_duration * 1000, 1),
+            "ai_duration_ms": round(self.ai_duration * 1000, 1),
+            "graph_duration_ms": round(self.graph_duration * 1000, 1),
+            "intel_duration_ms": round(self.intel_duration * 1000, 1),
+            "enabled_engines": list(self.enabled_engines),
+            "errors": list(self.errors),
+            "risk_level": self.risk_level,
+            "has_intelligence": self.has_intelligence,
+            "ai_analysis": self.ai_analysis,
+            "classification_summary": self.classification_summary,
+            "extended_findings": self.extended_findings,
+            "attack_paths": self.attack_paths,
+            "attack_graph": self.attack_graph,
+            "attack_chains": self.attack_chains,
+            "kill_chain_mapping": self.kill_chain_mapping,
+            "cve_matches": self.cve_matches,
+            "cwe_matches": self.cwe_matches,
+            "mitre_techniques": self.mitre_techniques,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# IntelligencePipeline
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# Severity weight table (canonical)
+_SEVERITY_WEIGHTS: Dict[str, float] = {
+    "critical": 10.0, "high": 8.0, "medium": 6.0, "low": 3.0, "info": 1.0,
+}
+
+
+def _sev_val(severity: str) -> float:
+    return _SEVERITY_WEIGHTS.get(severity.lower(), 1.0)
+
+
+def _finding_to_dict(f: Any) -> Dict[str, Any]:
+    """Normalise a Finding object or dict into a plain dict."""
+    if hasattr(f, "to_dict"):
+        return f.to_dict()
+    if isinstance(f, dict):
+        return dict(f)
+    return {}
+
+
+class IntelligencePipeline:
+    """Post-scan orchestration layer.
+
+    Composites AIAnalystEngine, AttackGraphEngine, and ThreatIntelEngine
+    into a single ``analyze()`` call that returns an ``IntelligenceResult``.
+    """
+
+    def __init__(
+        self,
+        *,
+        enable_ai_analyst: bool = True,
+        enable_attack_graph: bool = True,
+        enable_threat_intel: bool = True,
+    ) -> None:
+        self.enable_ai_analyst = enable_ai_analyst
+        self.enable_attack_graph = enable_attack_graph
+        self.enable_threat_intel = enable_threat_intel
+
+    def analyze(
+        self,
+        findings: List[Any],
+        scan_data: Optional[Dict[str, Any]] = None,
+    ) -> IntelligenceResult:
+        """Run all enabled intelligence engines on *findings*.
+
+        Parameters
+        ----------
+        findings:
+            Iterable of Finding objects or dicts.
+        scan_data:
+            Optional auxiliary scan metadata (unused by current engines
+            but reserved for future enrichment).
+
+        Returns
+        -------
+        IntelligenceResult
+        """
+        t_start = time.monotonic()
+        result = IntelligenceResult()
+
+        # Input validation
+        MAX_FINDINGS = 10000  # Prevent memory exhaustion
+        if len(findings) > MAX_FINDINGS:
+            logger.warning(
+                "Intelligence pipeline: truncating %d findings to %d",
+                len(findings), MAX_FINDINGS,
+            )
+            findings = findings[:MAX_FINDINGS]
+            result.errors.append(
+                f"input_truncated: {MAX_FINDINGS} finding limit applied"
+            )
+
+        # Track which engines are active
+        if self.enable_ai_analyst:
+            result.enabled_engines.append("ai_analyst")
+        if self.enable_attack_graph:
+            result.enabled_engines.append("attack_graph")
+        if self.enable_threat_intel:
+            result.enabled_engines.append("threat_intel")
+
+        logger.info("Intelligence pipeline starting", extra={"engines": result.enabled_engines, "finding_count": len(findings)})
+
+        # Normalise findings to plain dicts, skipping invalid items
+        valid: List[Dict[str, Any]] = []
+        for f in findings:
+            try:
+                d = _finding_to_dict(f)
+                if d and "title" in d:
+                    valid.append(d)
+            except Exception:
+                pass
+
+        if not valid:
+            # No valid findings — return zeroed result immediately
+            return result
+
+        # ----------------------------------------------------------------
+        # 1. AI Analyst
+        # ----------------------------------------------------------------
+        if self.enable_ai_analyst:
+            try:
+                from reconpro.ai_analyst import AIAnalystEngine
+
+                engine = AIAnalystEngine()
+                t_ai = time.monotonic()
+                report = engine.analyze_scan(valid)
+                result.ai_duration = time.monotonic() - t_ai
+
+                # Classification summary
+                classified_categories: Dict[str, int] = {}
+                for item in report.classified:
+                    cls = item.get("classification", {})
+                    cat = cls.get("attack_category", "unknown")
+                    classified_categories[cat] = classified_categories.get(cat, 0) + 1
+                result.classification_summary = classified_categories
+
+                # Extended findings
+                result.extended_findings = report.extended_findings
+
+                # Attack paths (from AI analyst)
+                result.attack_paths = report.attack_paths
+
+                # AI analysis summary dict
+                result.ai_analysis = report.to_dict()
+
+                duration_ms = result.ai_duration * 1000
+                logger.info("Engine '%s' completed in %.1fms", "ai_analyst", duration_ms)
+
+            except Exception as exc:
+                logger.exception("ai_analyst engine failed")
+                result.errors.append("ai_analyst: internal error")
+
+        # ----------------------------------------------------------------
+        # 2. Attack Graph
+        # ----------------------------------------------------------------
+        if self.enable_attack_graph:
+            try:
+                from reconpro.attack_graph import AttackGraphEngine
+
+                engine = AttackGraphEngine()
+                t_graph = time.monotonic()
+                graph_result = engine.analyze(valid)
+                result.graph_duration = time.monotonic() - t_graph
+
+                result.attack_graph = graph_result.to_dict()
+                result.attack_chains = graph_result.attack_chains
+                result.kill_chain_mapping = graph_result.kill_chain_mapping
+
+                duration_ms = result.graph_duration * 1000
+                logger.info("Engine '%s' completed in %.1fms", "attack_graph", duration_ms)
+
+            except Exception as exc:
+                logger.exception("attack_graph engine failed")
+                result.errors.append("attack_graph: internal error")
+
+        # ----------------------------------------------------------------
+        # 3. Threat Intelligence
+        # ----------------------------------------------------------------
+        if self.enable_threat_intel:
+            try:
+                from reconpro.threat_intel import ThreatIntelEngine
+
+                engine = ThreatIntelEngine()
+                t_intel = time.monotonic()
+                intel_report = engine.enrich_scan(valid)
+                result.intel_duration = time.monotonic() - t_intel
+
+                result.cve_matches = intel_report.unique_cves
+                result.cwe_matches = intel_report.unique_cwes
+                result.mitre_techniques = intel_report.unique_mitre
+
+                duration_ms = result.intel_duration * 1000
+                logger.info("Engine '%s' completed in %.1fms", "threat_intel", duration_ms)
+
+            except Exception as exc:
+                logger.exception("threat_intel engine failed")
+                result.errors.append("threat_intel: internal error")
+
+        # ----------------------------------------------------------------
+        # 4. Composite score computation (only when engines are enabled)
+        # ----------------------------------------------------------------
+        if result.enabled_engines:
+            self._compute_composite_scores(result, valid)
+
+        result.pipeline_duration = time.monotonic() - t_start
+        logger.info(
+            "Intelligence pipeline complete",
+            extra={
+                "duration_ms": round(result.pipeline_duration * 1000),
+                "scores": {
+                    "executive_risk": result.executive_risk_score,
+                    "exposure": result.exposure_score,
+                    "mission_impact": result.mission_impact_score,
+                    "infra_health": result.infrastructure_health_score,
+                    "threat_confidence": result.threat_confidence_index,
+                },
+            },
+        )
+        return result
+
+    # --------------------------------------------------------------------
+    # Composite scoring
+    # --------------------------------------------------------------------
+
+    def _compute_composite_scores(
+        self, result: IntelligenceResult, findings: List[Dict[str, Any]]
+    ) -> None:
+        """Derive executive-level composite scores from raw findings + engine outputs."""
+        if not findings:
+            return
+
+        n = len(findings)
+
+        # --- executive_risk_score ---
+        # Weighted average of severity, boosted by count and attack chains
+        total_weight = 0.0
+        for f in findings:
+            total_weight += _sev_val(f.get("severity", "info"))
+        avg_sev = total_weight / n
+        count_factor = min(n / 10.0, 2.0)  # caps at 2× for 10+ findings
+        chain_boost = min(len(result.attack_chains) * 3.0, 15.0)
+        raw = avg_sev * 5.0 * count_factor + chain_boost
+        result.executive_risk_score = round(min(100.0, raw), 1)
+
+        # --- exposure_score ---
+        unique_assets = len({f.get("asset", "") for f in findings})
+        asset_factor = min(unique_assets / 3.0, 2.0)
+        critical_count = sum(1 for f in findings if f.get("severity", "").lower() == "critical")
+        high_count = sum(1 for f in findings if f.get("severity", "").lower() == "high")
+        raw_exp = (critical_count * 15.0 + high_count * 8.0) * asset_factor
+        result.exposure_score = round(min(100.0, raw_exp), 1)
+
+        # --- mission_impact_score ---
+        # Based on critical + high findings with exploitability data from AI analyst
+        mi = 0.0
+        for ef in result.extended_findings:
+            sev = _sev_val(ef.get("severity", "info"))
+            expl = ef.get("exploitability", 0.5)
+            impact = ef.get("business_impact_score", 0.5)
+            mi += sev * expl * impact
+        if mi > 0:
+            result.mission_impact_score = round(min(100.0, mi * 1.5), 1)
+        else:
+            # Fallback: simple severity-based estimate
+            medium_count = sum(1 for f in findings if f.get("severity", "").lower() == "medium")
+            result.mission_impact_score = round(
+                min(100.0, critical_count * 20.0 + high_count * 10.0 + medium_count * 3.0),
+                1,
+            )
+
+        # --- infrastructure_health_score ---
+        # Inverse of risk — higher is better. 100 = perfectly healthy.
+        result.infrastructure_health_score = round(
+            max(0.0, 100.0 - result.executive_risk_score), 1
+        )
+
+        # --- threat_confidence_index ---
+        intel_signals = 0
+        total_signals = 0
+        if result.cve_matches:
+            intel_signals += len(result.cve_matches)
+        if result.mitre_techniques:
+            intel_signals += len(result.mitre_techniques)
+        if result.attack_chains:
+            intel_signals += len(result.attack_chains) * 2
+        total_signals = intel_signals + 1  # avoid div-by-zero
+        result.threat_confidence_index = round(
+            min(1.0, intel_signals / max(n, 1) * 2.0), 2
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Module-level convenience API
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+_global_pipeline: Optional[IntelligencePipeline] = None
+
+
+def run_intelligence_pipeline(
+    findings: List[Any],
+    *,
+    enable_ai_analyst: Optional[bool] = None,
+    enable_attack_graph: Optional[bool] = None,
+    enable_threat_intel: Optional[bool] = None,
+    scan_data: Optional[Dict[str, Any]] = None,
+) -> IntelligenceResult:
+    """Run the global intelligence pipeline (creates one if needed).
+
+    Parameters passed here override the global instance's settings for
+    this single call.
+    """
+    global _global_pipeline
+
+    if _global_pipeline is None:
+        _global_pipeline = IntelligencePipeline()
+
+    # Build keyword overrides — only pass flags that the caller specified
+    kwargs: Dict[str, Any] = {"scan_data": scan_data}
+    if enable_ai_analyst is not None:
+        kwargs["enable_ai_analyst"] = enable_ai_analyst
+    if enable_attack_graph is not None:
+        kwargs["enable_attack_graph"] = enable_attack_graph
+    if enable_threat_intel is not None:
+        kwargs["enable_threat_intel"] = enable_threat_intel
+
+    # If any override was given we need a temporary instance
+    if len(kwargs) > 1:  # more than just scan_data
+        tmp = IntelligencePipeline(
+            enable_ai_analyst=kwargs.get("enable_ai_analyst", _global_pipeline.enable_ai_analyst),
+            enable_attack_graph=kwargs.get("enable_attack_graph", _global_pipeline.enable_attack_graph),
+            enable_threat_intel=kwargs.get("enable_threat_intel", _global_pipeline.enable_threat_intel),
+        )
+        return tmp.analyze(findings, scan_data=scan_data)
+
+    return _global_pipeline.analyze(findings, scan_data=scan_data)
+
+
+def reset_pipeline() -> None:
+    """Reset the global pipeline instance so the next call creates a fresh one."""
+    global _global_pipeline
+    _global_pipeline = None
+========== report_writer.py ==========
+"""AI-Powered Report Writer for ReconPro v10.0.
+
+Generates audience-specific markdown reports from scan data.
+LLM integration is optional -- templates work standalone.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+try:
+    import openai
+    _HAS_OPENAI = True
+except ImportError:
+    _HAS_OPENAI = False
+
+
+# ── Audience Modes ──────────────────────────────────────────────────────
+
+AUDIENCE_MODES: Dict[str, Dict[str, Any]] = {
+    "executive": {
+        "label": "Executive",
+        "description": "1-page, business risk, no jargon, focus on dollar impact",
+        "max_findings": 5,
+    },
+    "technical": {
+        "label": "Technical",
+        "description": "Full findings, code refs, CVE links, PoC",
+        "max_findings": 999,
+    },
+    "compliance": {
+        "label": "Compliance",
+        "description": "Framework-mapped, control gaps, evidence",
+        "max_findings": 999,
+    },
+    "developer": {
+        "label": "Developer",
+        "description": "Actionable PRs, exact code changes, fix commands",
+        "max_findings": 999,
+    },
+}
+
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+_SEVERITY_EMOJI = {
+    "critical": "CRITICAL",
+    "high": "HIGH",
+    "medium": "MEDIUM",
+    "low": "LOW",
+    "info": "INFO",
+}
+
+
+# ── ExecutiveSummaryGenerator ───────────────────────────────────────────
+
+
+class ExecutiveSummaryGenerator:
+    """Generate executive summaries with optional LLM enhancement."""
+
+    def __init__(self, model: str = "gpt-4o-mini", temperature: float = 0.3) -> None:
+        self._model = model
+        self._temperature = temperature
+
+    def generate(
+        self,
+        scan_data: Dict[str, Any],
+        audience: str = "technical",
+        llm_client: Optional[Any] = None,
+    ) -> str:
+        """Generate a narrative summary. Uses LLM if available, otherwise templates."""
+        if audience not in AUDIENCE_MODES:
+            audience = "technical"
+
+        # Try LLM path
+        if llm_client is not None and _HAS_OPENAI:
+            try:
+                return self._generate_with_llm(scan_data, audience, llm_client)
+            except Exception:
+                pass  # Fall through to templates
+
+        # Also try if openai module exists and env vars are set
+        if _HAS_OPENAI and llm_client is None:
+            try:
+                client = openai.OpenAI()
+                return self._generate_with_llm(scan_data, audience, client)
+            except Exception:
+                pass
+
+        return self._generate_from_templates(scan_data, audience)
+
+    # ── LLM generation ───────────────────────────────────────────────────
+
+    def _generate_with_llm(
+        self,
+        scan_data: Dict[str, Any],
+        audience: str,
+        client: Any,
+    ) -> str:
+        """Send scan summary to LLM and return narrative."""
+        findings = scan_data.get("findings", [])
+        target = scan_data.get("target", "Unknown")
+        score = scan_data.get("total_score", "N/A")
+        grade = scan_data.get("grade", "N/A")
+
+        # Build a compact summary for the LLM
+        finding_summaries = []
+        for f in findings[:20]:
+            sev = f.get("severity", "info")
+            title = f.get("title", "Unknown")
+            finding_summaries.append(f"  [{sev.upper()}] {title}")
+
+        findings_text = "\n".join(finding_summaries) if finding_summaries else "  No findings."
+
+        mode = AUDIENCE_MODES[audience]
+
+        system_prompt = (
+            f"You are a senior security consultant writing a {mode['label'].lower()} "
+            f"report for a penetration test / security assessment. "
+            f"{mode['description']}. "
+            f"Be concise, professional, and actionable. "
+            f"Do not use markdown headers or bullet lists inside your narrative. "
+            f"Write in clear prose paragraphs."
+        )
+
+        user_prompt = (
+            f"Target: {target}\n"
+            f"Security Score: {score}/100 (Grade: {grade})\n"
+            f"Total Findings: {len(findings)}\n"
+            f"Findings:\n{findings_text}\n\n"
+            f"Write a {mode['label'].lower()}-focused executive summary."
+        )
+
+        response = client.chat.completions.create(
+            model=self._model,
+            temperature=self._temperature,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=1024,
+        )
+        return response.choices[0].message.content.strip()
+
+    # ── Template-based generation ────────────────────────────────────────
+
+    def _generate_from_templates(
+        self,
+        scan_data: Dict[str, Any],
+        audience: str,
+    ) -> str:
+        """Generate summary using built-in templates."""
+        findings = scan_data.get("findings", [])
+        target = scan_data.get("target", "Unknown")
+        score = scan_data.get("total_score", "N/A")
+        grade = scan_data.get("grade", "N/A")
+        modules_run = scan_data.get("modules_run", [])
+        duration = scan_data.get("duration", 0)
+
+        severity_counts = self._count_severities(findings)
+        sorted_findings = self._sort_findings(findings)
+        max_findings = AUDIENCE_MODES[audience]["max_findings"]
+        top_findings = sorted_findings[:max_findings]
+
+        if audience == "executive":
+            return self._template_executive(
+                target, score, grade, severity_counts, top_findings
+            )
+        elif audience == "technical":
+            return self._template_technical(
+                target, score, grade, modules_run, duration, sorted_findings
+            )
+        elif audience == "compliance":
+            return self._template_compliance(
+                target, score, grade, severity_counts, sorted_findings
+            )
+        elif audience == "developer":
+            return self._template_developer(target, score, grade, sorted_findings)
+        return self._template_technical(
+            target, score, grade, modules_run, duration, sorted_findings
+        )
+
+    # ── Audience templates ───────────────────────────────────────────────
+
+    @staticmethod
+    def _template_executive(
+        target: str,
+        score: Any,
+        grade: str,
+        severity_counts: Dict[str, int],
+        top_findings: List[Dict[str, Any]],
+    ) -> str:
+        lines: List[str] = [
+            f"Security Assessment Summary for {target}",
+            "",
+            f"Overall Grade: {grade} (Score: {score}/100)",
+            "",
+            f"A security assessment was conducted against {target}. "
+            f"The assessment identified {severity_counts.get('critical', 0)} critical, "
+            f"{severity_counts.get('high', 0)} high, "
+            f"{severity_counts.get('medium', 0)} medium, and "
+            f"{severity_counts.get('low', 0)} low-severity findings.",
+            "",
+            "Key Findings:",
+        ]
+        for i, f in enumerate(top_findings, 1):
+            sev = f.get("severity", "info").upper()
+            title = f.get("title", "Unknown")
+            desc = f.get("description", "").strip()
+            lines.append(f"  {i}. [{sev}] {title}")
+            if desc:
+                lines.append(f"     {desc[:200]}")
+        lines.append("")
+
+        # Business impact paragraph
+        crit = severity_counts.get("critical", 0)
+        high = severity_counts.get("high", 0)
+        if crit > 0 or high > 0:
+            lines.append(
+                "Business Impact: The presence of critical and high-severity "
+                "vulnerabilities poses significant risk to data confidentiality, "
+                "integrity, and availability. Immediate remediation is recommended "
+                "to reduce exposure to potential breaches and regulatory penalties."
+            )
+        else:
+            lines.append(
+                "Business Impact: No critical or high-severity findings were "
+                "identified. The target demonstrates a reasonable security posture. "
+                "Addressing medium and low findings will further harden defenses."
+            )
+        lines.append("")
+        lines.append(
+            "Recommendations: Prioritize remediation of critical findings within "
+            "24-48 hours. High-severity issues should be addressed within one week. "
+            "Schedule a follow-up assessment after remediation is complete."
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _template_technical(
+        target: str,
+        score: Any,
+        grade: str,
+        modules_run: List[str],
+        duration: float,
+        findings: List[Dict[str, Any]],
+    ) -> str:
+        mins = int(duration // 60)
+        secs = int(duration % 60)
+        lines: List[str] = [
+            f"Technical Assessment Report - {target}",
+            "",
+            f"Grade: {grade} | Score: {score}/100 | Duration: {mins}m {secs}s",
+            f"Modules: {', '.join(modules_run) if modules_run else 'N/A'}",
+            f"Total Findings: {len(findings)}",
+            "",
+        ]
+        # Group findings by module
+        by_module: Dict[str, List[Dict[str, Any]]] = {}
+        for f in findings:
+            mod = f.get("module", "unknown")
+            by_module.setdefault(mod, []).append(f)
+        for mod, mod_findings in sorted(by_module.items()):
+            lines.append(f"Module: {mod} ({len(mod_findings)} findings)")
+            for f in mod_findings:
+                sev = f.get("severity", "info").upper()
+                title = f.get("title", "Unknown")
+                evidence = f.get("evidence", "")
+                remediation = f.get("remediation", "")
+                lines.append(f"  [{sev}] {title}")
+                if evidence:
+                    lines.append(f"    Evidence: {evidence[:200]}")
+                if remediation:
+                    lines.append(f"    Remediation: {remediation[:200]}")
+            lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _template_compliance(
+        target: str,
+        score: Any,
+        grade: str,
+        severity_counts: Dict[str, int],
+        findings: List[Dict[str, Any]],
+    ) -> str:
+        lines: List[str] = [
+            f"Compliance Posture Report - {target}",
+            "",
+            f"Grade: {grade} | Score: {score}/100",
+            "",
+            "Control Gap Analysis:",
+        ]
+        # Map findings to compliance categories
+        control_mapping = {
+            "Missing HSTS": "A.10.1.1 (ISO 27001) - Cryptographic Controls",
+            "Missing Content-Security-Policy": "A.8.25 (ISO 27001) - Secure Development",
+            "Missing X-Frame-Options": "SC-7 (NIST 800-53) - Boundary Protection",
+            "clickjacking": "SC-7 (NIST 800-53) - Boundary Protection",
+            "XSS": "A.8.28 (ISO 27001) - Secure Coding",
+            "SQL injection": "A.8.28 (ISO 27001) - Secure Coding",
+            "CSRF": "A.8.25 (ISO 27001) - Secure Development",
+            "information disclosure": "A.8.12 (ISO 27001) - Data Leakage",
+        }
+        for f in findings:
+            title = f.get("title", "")
+            sev = f.get("severity", "info").upper()
+            evidence = f.get("evidence", "")
+            matched_controls = []
+            for trigger, control in control_mapping.items():
+                if trigger.lower() in title.lower() or trigger.lower() in evidence.lower():
+                    matched_controls.append(control)
+            lines.append(f"  [{sev}] {title}")
+            if matched_controls:
+                for ctrl in matched_controls:
+                    lines.append(f"    -> {ctrl}")
+            else:
+                lines.append(f"    -> General security control (no specific mapping)")
+            if evidence:
+                lines.append(f"    Evidence: {evidence[:150]}")
+        lines.append("")
+        lines.append("Remediation Plan:")
+        lines.append(
+            "  1. Address all CRITICAL and HIGH findings within SLA."
+        )
+        lines.append(
+            "  2. Document compensating controls for accepted risks."
+        )
+        lines.append(
+            "  3. Schedule re-assessment within 30 days of remediation."
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _template_developer(
+        target: str,
+        score: Any,
+        grade: str,
+        findings: List[Dict[str, Any]],
+    ) -> str:
+        lines: List[str] = [
+            f"Developer Fix Report - {target}",
+            "",
+            f"Grade: {grade} | Score: {score}/100",
+            "",
+            "Fix Priority Queue:",
+        ]
+        priority_map = {"critical": 1, "high": 2, "medium": 3, "low": 4, "info": 5}
+        sorted_f = sorted(
+            findings,
+            key=lambda x: (priority_map.get(x.get("severity", "info"), 9), x.get("title", "")),
+        )
+        for i, f in enumerate(sorted_f, 1):
+            sev = f.get("severity", "info").upper()
+            title = f.get("title", "Unknown")
+            remediation = f.get("remediation", "No specific remediation provided.")
+            evidence = f.get("evidence", "")
+            asset = f.get("asset", "")
+            lines.append(f"  #{i} [{sev}] {title}")
+            if asset:
+                lines.append(f"      Asset: {asset}")
+            lines.append(f"      Fix: {remediation[:250]}")
+            if evidence:
+                lines.append(f"      Evidence: {evidence[:150]}")
+            lines.append("")
+        lines.append("Quick Wins (can fix in < 5 min each):")
+        quick_wins = [f for f in sorted_f if f.get("severity") in ("low", "medium")]
+        for f in quick_wins[:5]:
+            lines.append(f"  - {f.get('title', '')}: {f.get('remediation', '')[:120]}")
+        return "\n".join(lines)
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _count_severities(findings: List[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for f in findings:
+            sev = f.get("severity", "info").lower()
+            counts[sev] = counts.get(sev, 0) + 1
+        return counts
+
+    @staticmethod
+    def _sort_findings(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return sorted(
+            findings,
+            key=lambda x: (_SEVERITY_ORDER.get(x.get("severity", "info"), 9), x.get("title", "")),
+        )
+
+
+# ── MarkdownReportBuilder ───────────────────────────────────────────────
+
+
+class MarkdownReportBuilder:
+    """Build a complete markdown report from scan data."""
+
+    def __init__(self) -> None:
+        self._summary_gen = ExecutiveSummaryGenerator()
+
+    def build_report(
+        self,
+        scan_data: Dict[str, Any],
+        audience: str = "technical",
+        summary_text: str = "",
+    ) -> str:
+        """Build a full markdown report combining summary + findings + remediation."""
+        if audience not in AUDIENCE_MODES:
+            audience = "technical"
+
+        # Generate summary if not provided
+        if not summary_text:
+            summary_text = self._summary_gen.generate(scan_data, audience)
+
+        target = scan_data.get("target", "Unknown")
+        score = scan_data.get("total_score", "N/A")
+        grade = scan_data.get("grade", "N/A")
+        findings = scan_data.get("findings", [])
+        modules_run = scan_data.get("modules_run", [])
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+        sorted_findings = ExecutiveSummaryGenerator._sort_findings(findings)
+        severity_counts = ExecutiveSummaryGenerator._count_severities(findings)
+
+        md: List[str] = []
+        md.append(f"# ReconPro Security Report")
+        md.append("")
+        md.append(f"**Target:** {target}  ")
+        md.append(f"**Grade:** {grade} ({score}/100)  ")
+        md.append(f"**Date:** {ts}  ")
+        md.append(f"**Audience:** {AUDIENCE_MODES[audience]['label']}  ")
+        if modules_run:
+            md.append(f"**Modules:** {', '.join(modules_run)}")
+        md.append("")
+
+        # Summary section
+        md.append("---")
+        md.append("")
+        md.append("## Executive Summary")
+        md.append("")
+        for line in summary_text.split("\n"):
+            md.append(line)
+        md.append("")
+
+        # Severity overview
+        md.append("---")
+        md.append("")
+        md.append("## Severity Overview")
+        md.append("")
+        md.append("| Severity | Count |")
+        md.append("|----------|-------|")
+        for sev in ("critical", "high", "medium", "low", "info"):
+            cnt = severity_counts.get(sev, 0)
+            md.append(f"| {sev.upper()} | {cnt} |")
+        md.append("")
+
+        # Findings table
+        if sorted_findings:
+            md.append("---")
+            md.append("")
+            md.append("## Detailed Findings")
+            md.append("")
+            md.append("| # | Severity | Finding | Module | Evidence |")
+            md.append("|---|----------|---------|--------|----------|")
+            for i, f in enumerate(sorted_findings, 1):
+                sev = _SEVERITY_EMOJI.get(f.get("severity", "info"), "INFO")
+                title = f.get("title", "Unknown").replace("|", "\\|")[:60]
+                mod = f.get("module", "-")[:15]
+                evidence = f.get("evidence", "").replace("|", "\\|")[:40]
+                md.append(f"| {i} | {sev} | {title} | {mod} | {evidence} |")
+            md.append("")
+
+        # Module breakdown
+        if modules_run:
+            md.append("---")
+            md.append("")
+            md.append("## Module Breakdown")
+            md.append("")
+            by_module: Dict[str, List[Dict[str, Any]]] = {}
+            for f in findings:
+                mod = f.get("module", "unknown")
+                by_module.setdefault(mod, []).append(f)
+            for mod in modules_run:
+                mod_findings = by_module.get(mod, [])
+                crit = sum(1 for x in mod_findings if x.get("severity") == "critical")
+                high = sum(1 for x in mod_findings if x.get("severity") == "high")
+                total = len(mod_findings)
+                status = "PASS" if total == 0 else ("FAIL" if crit > 0 or high > 0 else "WARN")
+                md.append(f"### {mod}")
+                md.append(f"- **Status:** {status}  ")
+                md.append(
+                    f"- **Findings:** {total} "
+                    f"({crit} critical, {high} high, {total - crit - high} other)"
+                )
+                for f in mod_findings[:10]:
+                    sev = f.get("severity", "info").upper()
+                    title = f.get("title", "")
+                    rem = f.get("remediation", "")
+                    md.append(f"  - [{sev}] {title}")
+                    if rem:
+                        md.append(f"    - Fix: {rem[:200]}")
+                md.append("")
+
+        # Remediation section
+        critical_high = [f for f in sorted_findings if f.get("severity") in ("critical", "high")]
+        if critical_high:
+            md.append("---")
+            md.append("")
+            md.append("## Priority Remediation")
+            md.append("")
+            for i, f in enumerate(critical_high, 1):
+                sev = f.get("severity", "").upper()
+                title = f.get("title", "")
+                rem = f.get("remediation", "No remediation specified.")
+                md.append(f"### {i}. [{sev}] {title}")
+                md.append("")
+                md.append(f"{rem}")
+                md.append("")
+
+        md.append("---")
+        md.append("")
+        md.append("*Generated by ReconPro v10.0*")
+        md.append("")
+
+        return "\n".join(md)
+
+
+# ── Convenience functions ────────────────────────────────────────────────
+
+_summary_generator = ExecutiveSummaryGenerator()
+_report_builder = MarkdownReportBuilder()
+
+
+def generate_narrative(scan_data: Dict[str, Any], audience: str = "technical") -> str:
+    """Generate a narrative summary for the given audience."""
+    return _summary_generator.generate(scan_data, audience)
+
+
+def generate_report_md(
+    scan_data: Dict[str, Any],
+    audience: str = "technical",
+    summary_text: str = "",
+) -> str:
+    """Generate a full markdown report."""
+    return _report_builder.build_report(scan_data, audience, summary_text)
+
+
+__all__ = [
+    "AUDIENCE_MODES",
+    "ExecutiveSummaryGenerator",
+    "MarkdownReportBuilder",
+    "generate_narrative",
+    "generate_report_md",
+]

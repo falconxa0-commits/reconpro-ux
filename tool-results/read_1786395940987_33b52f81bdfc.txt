@@ -1,0 +1,876 @@
+     1→"""VCS Webhook Listeners for ReconPro v8.5.
+     2→
+     3→Receives GitHub and GitLab webhooks, triggers scans on changed files,
+     4→and posts results as PR/MR comments or commit statuses.
+     5→
+     6→Endpoints:
+     7→  POST /webhook/github   — GitHub push / pull_request events
+     8→  POST /webhook/gitlab   — GitLab push / merge_request events
+     9→  GET  /webhook/config   — List active webhook configurations
+    10→
+    11→Config stored at ~/.reconpro/config/webhooks.json
+    12→"""
+    13→from __future__ import annotations
+    14→
+    15→import hashlib
+    16→import hmac
+    17→import json
+    18→import os
+    19→import sys
+    20→import threading
+    21→import time
+    22→from datetime import datetime
+    23→from http.server import HTTPServer, BaseHTTPRequestHandler
+    24→from typing import Any, Dict, List, Optional, Tuple
+    25→from urllib.parse import urlparse, parse_qs
+    26→from pathlib import Path
+    27→
+    28→_CONFIG_DIR = Path.home() / ".reconpro" / "config"
+    29→_CONFIG_FILE = _CONFIG_DIR / "webhooks.json"
+    30→
+    31→
+    32→# ── Config helpers ─────────────────────────────────────────────────────
+    33→
+    34→
+    35→def _load_config() -> Dict[str, Any]:
+    36→    """Load webhook configuration from disk."""
+    37→    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    38→    if _CONFIG_FILE.exists():
+    39→        try:
+    40→            with open(_CONFIG_FILE, "r") as f:
+    41→                return json.load(f)
+    42→        except (json.JSONDecodeError, OSError):
+    43→            pass
+    44→    return {}
+    45→
+    46→
+    47→def _save_config(cfg: Dict[str, Any]) -> None:
+    48→    """Persist webhook configuration to disk."""
+    49→    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    50→    with open(_CONFIG_FILE, "w") as f:
+    51→        json.dump(cfg, f, indent=2)
+    52→
+    53→
+    54→def _get_secret(provider: str) -> str:
+    55→    """Get webhook secret for a provider from config."""
+    56→    cfg = _load_config()
+    57→    return cfg.get(provider, {}).get("secret", "")
+    58→
+    59→
+    60→def _get_api_token(provider: str) -> str:
+    61→    """Get API token for posting comments/statuses."""
+    62→    cfg = _load_config()
+    63→    return cfg.get(provider, {}).get("api_token", "")
+    64→
+    65→
+    66→def _post_pr_comment(
+    67→    provider: str,
+    68→    repo_full: str,
+    69→    pr_number: int,
+    70→    body: str,
+    71→) -> bool:
+    72→    """Post a comment on a PR/MR using the provider's API.
+    73→
+    74→    Uses only stdlib urllib. Returns True on success.
+    75→    """
+    76→    token = _get_api_token(provider)
+    77→    if not token:
+    78→        return False
+    79→
+    80→    try:
+    81→        import urllib.request
+    82→        import urllib.error
+    83→
+    84→        if provider == "github":
+    85→            url = (
+    86→                f"https://api.github.com/repos/{repo_full}"
+    87→                f"/issues/{pr_number}/comments"
+    88→            )
+    89→            payload = json.dumps({"body": body}).encode()
+    90→            req = urllib.request.Request(
+    91→                url, data=payload, method="POST",
+    92→                headers={
+    93→                    "Authorization": f"Bearer {token}",
+    94→                    "Accept": "application/vnd.github.v3+json",
+    95→                    "Content-Type": "application/json",
+    96→                    "User-Agent": "ReconPro-Webhook/8.5",
+    97→                },
+    98→            )
+    99→        elif provider == "gitlab":
+   100→            url = (
+   101→                f"https://gitlab.com/api/v4/projects"
+   102→                f"/{repo_full.replace('/', '%2F')}/merge_requests"
+   103→                f"/{pr_number}/notes"
+   104→            )
+   105→            payload = json.dumps({"body": body}).encode()
+   106→            req = urllib.request.Request(
+   107→                url, data=payload, method="POST",
+   108→                headers={
+   109→                    "PRIVATE-TOKEN": token,
+   110→                    "Content-Type": "application/json",
+   111→                },
+   112→            )
+   113→        else:
+   114→            return False
+   115→
+   116→        with urllib.request.urlopen(req, timeout=15) as resp:
+   117→            return resp.status in (200, 201)
+   118→    except Exception:
+   119→        return False
+   120→
+   121→
+   122→def _set_commit_status(
+   123→    repo_full: str,
+   124→    sha: str,
+   125→    state: str,
+   126→    description: str,
+   127→    target_url: str = "",
+   128→) -> bool:
+   129→    """Set a GitHub commit status via the API."""
+   130→    token = _get_api_token("github")
+   131→    if not token:
+   132→        return False
+   133→    try:
+   134→        import urllib.request
+   135→
+   136→        url = (
+   137→            f"https://api.github.com/repos/{repo_full}"
+   138→            f"/statuses/{sha}"
+   139→        )
+   140→        payload = json.dumps({
+   141→            "state": state,
+   142→            "description": description,
+   143→            "target_url": target_url,
+   144→            "context": "reconpro/security-scan",
+   145→        }).encode()
+   146→        req = urllib.request.Request(
+   147→            url, data=payload, method="POST",
+   148→            headers={
+   149→                "Authorization": f"Bearer {token}",
+   150→                "Accept": "application/vnd.github.v3+json",
+   151→                "Content-Type": "application/json",
+   152→                "User-Agent": "ReconPro-Webhook/8.5",
+   153→            },
+   154→        )
+   155→        with urllib.request.urlopen(req, timeout=15) as resp:
+   156→            return resp.status in (200, 201)
+   157→    except Exception:
+   158→        return False
+   159→
+   160→
+   161→# ── GitHub Webhook Handler ──────────────────────────────────────────────
+   162→
+   163→
+   164→class GitHubWebhookHandler:
+   165→    """Parse and handle GitHub webhook events."""
+   166→
+   167→    @staticmethod
+   168→    def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
+   169→        """Verify HMAC-SHA256 signature of a GitHub webhook payload.
+   170→
+   171→        Args:
+   172→            payload: Raw request body bytes.
+   173→            signature: Value of X-Hub-Signature-256 header (sha256=...).
+   174→            secret: Webhook secret configured in GitHub.
+   175→
+   176→        Returns:
+   177→            True if the signature is valid.
+   178→        """
+   179→        if not secret or not signature:
+   180→            return False
+   181→        if not signature.startswith("sha256="):
+   182→            return False
+   183→        expected = hmac.new(
+   184→            secret.encode("utf-8"), payload, hashlib.sha256
+   185→        ).hexdigest()
+   186→        return hmac.compare_digest(f"sha256={expected}", signature)
+   187→
+   188→    @staticmethod
+   189→    def parse_event(headers: Dict[str, str], body: bytes) -> Dict[str, Any]:
+   190→        """Extract structured event data from GitHub webhook headers + body.
+   191→
+   192→        Returns dict with keys: event_type, action, repo, branch,
+   193→        changed_files, sha, pr_number, sender.
+   194→        """
+   195→        event_type = headers.get("X-GitHub-Event", "unknown")
+   196→        try:
+   197→            data = json.loads(body)
+   198→        except (json.JSONDecodeError, UnicodeDecodeError):
+   199→            return {"event_type": event_type, "error": "invalid JSON body"}
+   200→
+   201→        repo_data = data.get("repository", {})
+   202→        repo_full = repo_data.get("full_name", "")
+   203→
+   204→        result: Dict[str, Any] = {
+   205→            "event_type": event_type,
+   206→            "action": data.get("action", ""),
+   207→            "repo": repo_full,
+   208→            "branch": "",
+   209→            "changed_files": [],
+   210→            "sha": "",
+   211→            "pr_number": None,
+   212→            "sender": data.get("sender", {}).get("login", ""),
+   213→            "raw": data,
+   214→        }
+   215→
+   216→        if event_type == "pull_request":
+   217→            pr = data.get("pull_request", {})
+   218→            result["branch"] = pr.get("head", {}).get("ref", "")
+   219→            result["sha"] = pr.get("head", {}).get("sha", "")
+   220→            result["pr_number"] = pr.get("number")
+   221→            # Collect changed files from the PR (if included in webhook)
+   222→            for f in pr.get("changed_files", []):
+   223→                result["changed_files"].append(f if isinstance(f, str) else f.get("filename", ""))
+   224→            # Also check additions/deletions lists
+   225→            if not result["changed_files"]:
+   226→                for key in ("added_files", "modified_files", "removed_files"):
+   227→                    for f in pr.get(key, []):
+   228→                        name = f if isinstance(f, str) else f.get("filename", "")
+   229→                        if name and name not in result["changed_files"]:
+   230→                            result["changed_files"].append(name)
+   231→
+   232→        elif event_type == "push":
+   233→            result["branch"] = data.get("ref", "").replace("refs/heads/", "")
+   234→            result["sha"] = data.get("after", "")
+   235→            for commit in data.get("commits", []):
+   236→                for f in commit.get("added", []) + commit.get("modified", []) + commit.get("removed", []):
+   237→                    if f not in result["changed_files"]:
+   238→                        result["changed_files"].append(f)
+   239→
+   240→        return result
+   241→
+   242→    @staticmethod
+   243→    def handle_pull_request(event: Dict[str, Any]) -> Dict[str, Any]:
+   244→        """Determine scan scope for a pull_request event.
+   245→
+   246→        Returns dict with: scan_type, files, target, repo, pr_number, sha.
+   247→        scan_type is 'incremental' (only changed files) or 'full'.
+   248→        """
+   249→        action = event.get("action", "")
+   250→        pr_number = event.get("pr_number")
+   251→        repo = event.get("repo", "")
+   252→        changed_files = event.get("changed_files", [])
+   253→        sha = event.get("sha", "")
+   254→        branch = event.get("branch", "")
+   255→
+   256→        # Only scan on opened, synchronize, or reopened
+   257→        scan_actions = {"opened", "synchronize", "reopened"}
+   258→        if action not in scan_actions:
+   259→            return {
+   260→                "scan_type": "skip",
+   261→                "reason": f"Action '{action}' does not trigger a scan",
+   262→                "repo": repo,
+   263→                "pr_number": pr_number,
+   264→            }
+   265→
+   266→        if changed_files:
+   267→            scan_type = "incremental"
+   268→        else:
+   269→            scan_type = "full"
+   270→
+   271→        return {
+   272→            "scan_type": scan_type,
+   273→            "files": changed_files if scan_type == "incremental" else [],
+   274→            "target": repo,
+   275→            "repo": repo,
+   276→            "pr_number": pr_number,
+   277→            "sha": sha,
+   278→            "branch": branch,
+   279→        }
+   280→
+   281→    @staticmethod
+   282→    def handle_push(event: Dict[str, Any]) -> Dict[str, Any]:
+   283→        """Determine scan scope for a push event.
+   284→
+   285→        Full scan on push to main/master, incremental on other branches.
+   286→        """
+   287→        branch = event.get("branch", "")
+   288→        repo = event.get("repo", "")
+   289→        changed_files = event.get("changed_files", [])
+   290→        sha = event.get("sha", "")
+   291→
+   292→        main_branches = {"main", "master"}
+   293→
+   294→        if branch in main_branches:
+   295→            return {
+   296→                "scan_type": "full",
+   297→                "files": [],
+   298→                "target": repo,
+   299→                "repo": repo,
+   300→                "pr_number": None,
+   301→                "sha": sha,
+   302→                "branch": branch,
+   303→            }
+   304→
+   305→        if changed_files:
+   306→            return {
+   307→                "scan_type": "incremental",
+   308→                "files": changed_files,
+   309→                "target": repo,
+   310→                "repo": repo,
+   311→                "pr_number": None,
+   312→                "sha": sha,
+   313→                "branch": branch,
+   314→            }
+   315→
+   316→        return {
+   317→            "scan_type": "skip",
+   318→            "reason": "No changed files on non-main branch",
+   319→            "repo": repo,
+   320→            "pr_number": None,
+   321→        }
+   322→
+   323→    @staticmethod
+   324→    def generate_status(event: Dict[str, Any], scan_result: Dict[str, Any]) -> Dict[str, Any]:
+   325→        """Generate a GitHub commit status dict from a scan result.
+   326→
+   327→        Returns dict with: state (pending/success/failure/error),
+   328→        description, target_url, context.
+   329→        """
+   330→        grade = scan_result.get("grade", "N/A")
+   331→        score = scan_result.get("total_score", 0)
+   332→        sev = scan_result.get("severity_counts", {})
+   333→        critical_count = sev.get("critical", 0)
+   334→        high_count = sev.get("high", 0)
+   335→
+   336→        if critical_count > 0:
+   337→            state = "failure"
+   338→            description = f"ReconPro: {grade} ({score}/100) — {critical_count} critical, {high_count} high"
+   339→        elif high_count > 0:
+   340→            state = "failure"
+   341→            description = f"ReconPro: {grade} ({score}/100) — {high_count} high findings"
+   342→        elif score >= 80:
+   343→            state = "success"
+   344→            description = f"ReconPro: {grade} ({score}/100) — No critical/high findings"
+   345→        else:
+   346→            state = "failure"
+   347→            description = f"ReconPro: {grade} ({score}/100) — Score below threshold"
+   348→
+   349→        return {
+   350→            "state": state,
+   351→            "description": description,
+   352→            "target_url": "",
+   353→            "context": "reconpro/security-scan",
+   354→            "sha": event.get("sha", ""),
+   355→            "repo": event.get("repo", ""),
+   356→        }
+   357→
+   358→
+   359→# ── GitLab Webhook Handler ──────────────────────────────────────────────
+   360→
+   361→
+   362→class GitLabWebhookHandler:
+   363→    """Parse and handle GitLab webhook events."""
+   364→
+   365→    @staticmethod
+   366→    def verify_token(headers: Dict[str, str], secret: str) -> bool:
+   367→        """Verify the X-Gitlab-Token header against the configured secret.
+   368→
+   369→        GitLab uses a simple static token (not HMAC).
+   370→        """
+   371→        if not secret:
+   372→            return True  # No secret configured — allow
+   373→        token = headers.get("X-Gitlab-Token", "")
+   374→        return hmac.compare_digest(token, secret)
+   375→
+   376→    @staticmethod
+   377→    def parse_event(headers: Dict[str, str], body: bytes) -> Dict[str, Any]:
+   378→        """Extract structured event data from GitLab webhook headers + body.
+   379→
+   380→        Returns dict with: event_type, action, repo, branch,
+   381→        changed_files, sha, mr_iid, sender.
+   382→        """
+   383→        event_type = headers.get("X-Gitlab-Event", "unknown")
+   384→        try:
+   385→            data = json.loads(body)
+   386→        except (json.JSONDecodeError, UnicodeDecodeError):
+   387→            return {"event_type": event_type, "error": "invalid JSON body"}
+   388→
+   389→        project = data.get("project", {})
+   390→        repo_path = project.get("path_with_namespace", "")
+   391→
+   392→        result: Dict[str, Any] = {
+   393→            "event_type": event_type,
+   394→            "action": data.get("object_attributes", {}).get("action", ""),
+   395→            "repo": repo_path,
+   396→            "branch": "",
+   397→            "changed_files": [],
+   398→            "sha": "",
+   399→            "mr_iid": None,
+   400→            "sender": data.get("user", {}).get("username", ""),
+   401→            "raw": data,
+   402→        }
+   403→
+   404→        attrs = data.get("object_attributes", {})
+   405→
+   406→        if event_type == "Merge Request Hook":
+   407→            result["branch"] = attrs.get("source_branch", "")
+   408→            result["sha"] = attrs.get("last_commit", {}).get("id", "")
+   409→            result["mr_iid"] = attrs.get("iid")
+   410→            # Collect changed files
+   411→            for key in ("added_files", "modified_files", "removed_files"):
+   412→                for f in attrs.get(key, []):
+   413→                    if isinstance(f, dict):
+   414→                        name = f.get("filename", "") or f.get("old_path", "")
+   415→                    else:
+   416→                        name = str(f)
+   417→                    if name and name not in result["changed_files"]:
+   418→                        result["changed_files"].append(name)
+   419→
+   420→        elif event_type == "Push Hook":
+   421→            result["branch"] = attrs.get("ref", "").replace("refs/heads/", "")
+   422→            result["sha"] = attrs.get("after", "")
+   423→            for commit in data.get("commits", []):
+   424→                for f in commit.get("added", []) + commit.get("modified", []) + commit.get("removed", []):
+   425→                    if f not in result["changed_files"]:
+   426→                        result["changed_files"].append(f)
+   427→
+   428→        return result
+   429→
+   430→    @staticmethod
+   431→    def handle_merge_request(event: Dict[str, Any]) -> Dict[str, Any]:
+   432→        """Determine scan scope for a GitLab merge request event.
+   433→
+   434→        Returns dict with: scan_type, files, target, repo, mr_iid, sha.
+   435→        """
+   436→        action = event.get("action", "")
+   437→        mr_iid = event.get("mr_iid")
+   438→        repo = event.get("repo", "")
+   439→        changed_files = event.get("changed_files", [])
+   440→        sha = event.get("sha", "")
+   441→        branch = event.get("branch", "")
+   442→
+   443→        scan_actions = {"open", "update", "reopen"}
+   444→        if action not in scan_actions:
+   445→            return {
+   446→                "scan_type": "skip",
+   447→                "reason": f"Action '{action}' does not trigger a scan",
+   448→                "repo": repo,
+   449→                "mr_iid": mr_iid,
+   450→            }
+   451→
+   452→        if changed_files:
+   453→            scan_type = "incremental"
+   454→        else:
+   455→            scan_type = "full"
+   456→
+   457→        return {
+   458→            "scan_type": scan_type,
+   459→            "files": changed_files if scan_type == "incremental" else [],
+   460→            "target": repo,
+   461→            "repo": repo,
+   462→            "mr_iid": mr_iid,
+   463→            "sha": sha,
+   464→            "branch": branch,
+   465→        }
+   466→
+   467→
+   468→# ── Webhook HTTP Server ─────────────────────────────────────────────────
+   469→
+   470→
+   471→class _WebhookRequestHandler(BaseHTTPRequestHandler):
+   472→    """HTTP request handler for the webhook server."""
+   473→
+   474→    _gh_handler = GitHubWebhookHandler()
+   475→    _gl_handler = GitLabWebhookHandler()
+   476→
+   477→    def log_message(self, format: str, *args: Any) -> None:
+   478→        """Suppress default stderr logging."""
+   479→        pass
+   480→
+   481→    def _json_response(self, code: int, data: Any) -> None:
+   482→        body = json.dumps(data, default=str).encode()
+   483→        self.send_response(code)
+   484→        self.send_header("Content-Type", "application/json")
+   485→        self.send_header("Access-Control-Allow-Origin", "*")
+   486→        self.send_header("Content-Length", str(len(body)))
+   487→        self.end_headers()
+   488→        self.wfile.write(body)
+   489→
+   490→    def _read_body(self) -> bytes:
+   491→        length = int(self.headers.get("Content-Length", 0))
+   492→        return self.rfile.read(length) if length else b""
+   493→
+   494→    def _headers_dict(self) -> Dict[str, str]:
+   495→        return {k: v for k, v in self.headers.items()}
+   496→
+   497→    def do_GET(self) -> None:
+   498→        parsed = urlparse(self.path)
+   499→        path = parsed.path.rstrip("/")
+   500→
+   501→        if path == "/webhook/config":
+   502→            cfg = _load_config()
+   503→            # Redact secrets from response
+   504→            safe = {}
+   505→            for provider, settings in cfg.items():
+   506→                safe[provider] = {
+   507→                    k: ("***" if "secret" in k.lower() or "token" in k.lower() else v)
+   508→                    for k, v in settings.items()
+   509→                }
+   510→                safe[provider]["secret_set"] = bool(settings.get("secret"))
+   511→                safe[provider]["token_set"] = bool(settings.get("api_token"))
+   512→            self._json_response(200, {"config": safe})
+   513→            return
+   514→
+   515→        self._json_response(404, {"error": "Not found"})
+   516→
+   517→    def do_POST(self) -> None:
+   518→        parsed = urlparse(self.path)
+   519→        path = parsed.path.rstrip("/")
+   520→        body = self._read_body()
+   521→        hdrs = self._headers_dict()
+   522→
+   523→        try:
+   524→            if path == "/webhook/github":
+   525→                self._handle_github(hdrs, body)
+   526→            elif path == "/webhook/gitlab":
+   527→                self._handle_gitlab(hdrs, body)
+   528→            else:
+   529→                self._json_response(404, {"error": "Not found"})
+   530→        except Exception as exc:
+   531→            self._json_response(500, {"error": str(exc)})
+   532→
+   533→    def do_OPTIONS(self) -> None:
+   534→        self.send_response(200)
+   535→        self.send_header("Access-Control-Allow-Origin", "*")
+   536→        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+   537→        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Hub-Signature-256, X-Gitlab-Token")
+   538→        self.end_headers()
+   539→
+   540→    # ── GitHub route ────────────────────────────────────────────────
+   541→
+   542→    def _handle_github(self, hdrs: Dict[str, str], body: bytes) -> None:
+   543→        secret = _get_secret("github")
+   544→        sig = hdrs.get("X-Hub-Signature-256", "")
+   545→
+   546→        if secret and not GitHubWebhookHandler.verify_signature(body, sig, secret):
+   547→            self._json_response(401, {"error": "Invalid signature"})
+   548→            return
+   549→
+   550→        event = GitHubWebhookHandler.parse_event(hdrs, body)
+   551→        event_type = event.get("event_type", "unknown")
+   552→
+   553→        if event_type == "pull_request":
+   554→            scope = GitHubWebhookHandler.handle_pull_request(event)
+   555→            self._execute_scan_and_respond("github", event, scope)
+   556→        elif event_type == "push":
+   557→            scope = GitHubWebhookHandler.handle_push(event)
+   558→            self._execute_scan_and_respond("github", event, scope)
+   559→        else:
+   560→            self._json_response(200, {
+   561→                "status": "ignored",
+   562→                "event_type": event_type,
+   563→                "reason": "Unsupported event type",
+   564→            })
+   565→
+   566→    # ── GitLab route ────────────────────────────────────────────────
+   567→
+   568→    def _handle_gitlab(self, hdrs: Dict[str, str], body: bytes) -> None:
+   569→        secret = _get_secret("gitlab")
+   570→
+   571→        if secret and not GitLabWebhookHandler.verify_token(hdrs, secret):
+   572→            self._json_response(401, {"error": "Invalid token"})
+   573→            return
+   574→
+   575→        event = GitLabWebhookHandler.parse_event(hdrs, body)
+   576→        event_type = event.get("event_type", "unknown")
+   577→
+   578→        if event_type == "Merge Request Hook":
+   579→            scope = GitLabWebhookHandler.handle_merge_request(event)
+   580→            self._execute_scan_and_respond("gitlab", event, scope)
+   581→        elif event_type == "Push Hook":
+   582→            # Reuse GitHub push logic (structurally identical)
+   583→            scope = GitHubWebhookHandler.handle_push(event)
+   584→            self._execute_scan_and_respond("gitlab", event, scope)
+   585→        else:
+   586→            self._json_response(200, {
+   587→                "status": "ignored",
+   588→                "event_type": event_type,
+   589→                "reason": "Unsupported event type",
+   590→            })
+   591→
+   592→    # ── Scan execution + comment posting ────────────────────────────
+   593→
+   594→    def _execute_scan_and_respond(
+   595→        self,
+   596→        provider: str,
+   597→        event: Dict[str, Any],
+   598→        scope: Dict[str, Any],
+   599→    ) -> None:
+   600→        """Run the scan (or skip) and post results."""
+   601→        scan_type = scope.get("scan_type", "skip")
+   602→
+   603→        if scan_type == "skip":
+   604→            self._json_response(200, {"status": "skipped", "reason": scope.get("reason", "")})
+   605→            return
+   606→
+   607→        # Acknowledge immediately, run scan in background
+   608→        self._json_response(202, {
+   609→            "status": "accepted",
+   610→            "scan_type": scan_type,
+   611→            "repo": event.get("repo", ""),
+   612→            "branch": event.get("branch", ""),
+   613→        })
+   614→
+   615→        # Run scan in a background thread so the webhook returns quickly
+   616→        t = threading.Thread(
+   617→            target=self._background_scan,
+   618→            args=(provider, event, scope),
+   619→            daemon=True,
+   620→        )
+   621→        t.start()
+   622→
+   623→    @staticmethod
+   624→    def _background_scan(
+   625→        provider: str,
+   626→        event: Dict[str, Any],
+   627→        scope: Dict[str, Any],
+   628→    ) -> None:
+   629→        """Execute the scan in the background and post results."""
+   630→        try:
+   631→            from .scanner import scan
+   632→            from .history import save_scan
+   633→            from .delta import generate_delta_report
+   634→
+   635→            target = scope.get("target", "")
+   636→            files = scope.get("files", [])
+   637→
+   638→            # Run the scan
+   639→            result = scan(target, modules=None, timeout=10, verify_tls=True)
+   640→            scan_dict = result.to_dict()
+   641→            save_scan(scan_dict, label="webhook")
+   642→
+   643→            # Generate delta report if there's a previous scan
+   644→            delta_md = generate_delta_report(target, format="markdown")
+   645→
+   646→            # Set commit status (GitHub)
+   647→            sha = event.get("sha", "")
+   648→            repo = event.get("repo", "")
+   649→            if provider == "github" and sha:
+   650→                status = GitHubWebhookHandler.generate_status(event, scan_dict)
+   651→                state = status["state"]
+   652→                desc = status["description"]
+   653→                _set_commit_status(repo, sha, state, desc)
+   654→
+   655→            # Post PR/MR comment
+   656→            pr_number = event.get("pr_number") or event.get("mr_iid")
+   657→            if pr_number and repo:
+   658→                comment_body = (
+   659→                    f"## ReconPro Security Scan Results\n\n"
+   660→                    f"**Grade:** {scan_dict.get('grade', 'N/A')} | "
+   661→                    f"**Score:** {scan_dict.get('total_score', 0)}/100 | "
+   662→                    f"**Findings:** {scan_dict.get('total_findings', 0)}\n\n"
+   663→                )
+   664→                sev = scan_dict.get("severity_counts", {})
+   665→                if sev.get("critical", 0) or sev.get("high", 0):
+   666→                    comment_body += f"**Critical:** {sev.get('critical', 0)} | **High:** {sev.get('high', 0)}\n\n"
+   667→
+   668→                if delta_md:
+   669→                    comment_body += f"### Delta Report\n\n{delta_md}\n"
+   670→
+   671→                _post_pr_comment(provider, repo, pr_number, comment_body)
+   672→
+   673→        except Exception:
+   674→            pass  # Background scan failure — already returned 202
+   675→
+   676→
+   677→class WebhookServer(HTTPServer):
+   678→    """HTTP server that listens for GitHub and GitLab webhooks.
+   679→
+   680→    Usage:
+   681→        server = WebhookServer(port=7891)
+   682→        server.serve_forever()
+   683→    """
+   684→
+   685→    def __init__(self, port: int = 7891, host: str = "0.0.0.0") -> None:
+   686→        self.host = host
+   687→        self.port = port
+   688→        super().__init__((host, port), _WebhookRequestHandler)
+   689→
+   690→    def serve_forever(self, poll_interval: float = 0.5) -> None:
+   691→        print(f"  [bright_green]ReconPro Webhook Server v8.5[/] running on [cyan]http://{self.host}:{self.port}[/]")
+   692→        print(f"  [dim]POST /webhook/github  |  POST /webhook/gitlab  |  GET /webhook/config[/]")
+   693→        print(f"  [dim]Press Ctrl+C to stop[/]")
+   694→        try:
+   695→            super().serve_forever(poll_interval)
+   696→        except KeyboardInterrupt:
+   697→            print("\n  [yellow]Webhook server stopped.[/]")
+   698→            self.server_close()
+   699→
+   700→
+   701→def run_webhook_server(port: int = 7891) -> None:
+   702→    """Start the webhook server (convenience function)."""
+   703→    server = WebhookServer(port=port)
+   704→    server.serve_forever()
+   705→
+   706→
+   707→# ═══════════════════════════════════════════════════════════════════════════
+   708→# OUTBOUND NOTIFICATION WEBHOOKS — Slack, Discord, Microsoft Teams
+   709→# ═══════════════════════════════════════════════════════════════════════════
+   710→
+   711→class NotificationWebhook:
+   712→    """Base class for outbound notification webhooks."""
+   713→
+   714→    def __init__(self, webhook_url: str, channel: Optional[str] = None):
+   715→        self.webhook_url = webhook_url
+   716→        self.channel = channel
+   717→
+   718→    def send(self, message: str, severity: str = "info") -> bool:
+   719→        raise NotImplementedError
+   720→
+   721→    def _post(self, payload: Dict[str, Any]) -> bool:
+   722→        try:
+   723→            import urllib.request
+   724→            data = json.dumps(payload).encode()
+   725→            req = urllib.request.Request(
+   726→                self.webhook_url, data=data, method="POST",
+   727→                headers={"Content-Type": "application/json", "User-Agent": "ReconPro/9"},
+   728→            )
+   729→            with urllib.request.urlopen(req, timeout=10) as resp:
+   730→                return resp.status == 200
+   731→        except Exception:
+   732→            return False
+   733→
+   734→
+   735→class SlackWebhook(NotificationWebhook):
+   736→    """Send scan results to Slack via incoming webhook."""
+   737→
+   738→    SEVERITY_COLORS = {
+   739→        "critical": "#FF0000", "high": "#FF6600",
+   740→        "medium": "#FFAA00", "low": "#00CC00", "info": "#0088FF",
+   741→    }
+   742→
+   743→    def send(self, message: str, severity: str = "info", title: str = "ReconPro Scan",
+   744→             findings: Optional[List[Dict]] = None, score: Optional[int] = None) -> bool:
+   745→        severity = severity.lower()
+   746→        blocks = []
+   747→        blocks.append({
+   748→            "type": "header",
+   749→            "text": {"type": "plain_text", "text": f"{'🔴' if severity in ('critical','high') else '🟡' if severity == 'medium' else '🟢'} {title}"},
+   750→        })
+   751→        if score is not None:
+   752→            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Security Score:* {score}/100"}})
+   753→        if findings:
+   754→            sev_count = {}
+   755→            for f in findings:
+   756→                s = f.get("severity", "info").lower()
+   757→                sev_count[s] = sev_count.get(s, 0) + 1
+   758→            summary = "  ".join(f"`{k.upper()}: {v}`" for k, v in sorted(sev_count.items(), key=lambda x: ["critical","high","medium","low","info"].index(x[0]) if x[0] in ["critical","high","medium","low","info"] else 99))
+   759→            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Findings:* {summary}"}})
+   760→            # Top 5 critical/high findings
+   761→            top = [f for f in findings if f.get("severity","").lower() in ("critical","high")][:5]
+   762→            for f in top:
+   763→                blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"• *{f.get('title','')}* — `{f.get('category','')}`"}})
+   764→        if message:
+   765→            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": message}})
+   766→        payload = {"blocks": blocks}
+   767→        if self.channel:
+   768→            payload["channel"] = self.channel
+   769→        return self._post(payload)
+   770→
+   771→
+   772→class DiscordWebhook(NotificationWebhook):
+   773→    """Send scan results to Discord via webhook."""
+   774→
+   775→    SEVERITY_COLORS = {
+   776→        "critical": 15158332, "high": 15158588,
+   777→        "medium": 15157532, "low": 3066993, "info": 3447003,
+   778→    }
+   779→
+   780→    def send(self, message: str, severity: str = "info", title: str = "ReconPro Scan",
+   781→             findings: Optional[List[Dict]] = None, score: Optional[int] = None) -> bool:
+   782→        severity = severity.lower()
+   783→        embed = {
+   784→            "title": title,
+   785→            "description": message[:2000] if message else "",
+   786→            "color": self.SEVERITY_COLORS.get(severity, 3447003),
+   787→            "footer": {"text": "ReconPro v9.0.0"},
+   788→            "timestamp": datetime.utcnow().isoformat(),
+   789→            "fields": [],
+   790→        }
+   791→        if score is not None:
+   792→            embed["fields"].append({"name": "Security Score", "value": f"{score}/100", "inline": True})
+   793→        if findings:
+   794→            sev_count = {}
+   795→            for f in findings:
+   796→                s = f.get("severity", "info").lower()
+   797→                sev_count[s] = sev_count.get(s, 0) + 1
+   798→            embed["fields"].append({
+   799→                "name": "Findings", "value": "\n".join(f"**{k.upper()}:** {v}" for k,v in sorted(sev_count.items())),
+   800→                "inline": True,
+   801→            })
+   802→            top = [f for f in findings if f.get("severity","").lower() in ("critical","high")][:5]
+   803→            for f in top:
+   804→                embed["fields"].append({"name": f.get("title",""), "value": f.get("description","")[:500], "inline": False})
+   805→        payload = {"embeds": [embed]}
+   806→        if self.channel:
+   807→            payload["channel_id"] = self.channel  # Not typically used but available
+   808→        return self._post(payload)
+   809→
+   810→
+   811→class TeamsWebhook(NotificationWebhook):
+   812→    """Send scan results to Microsoft Teams via incoming webhook."""
+   813→
+   814→    SEVERITY_COLORS = {
+   815→        "critical": "FF0000", "high": "FF6600",
+   816→        "medium": "FFAA00", "low": "00CC00", "info": "0088FF",
+   817→    }
+   818→
+   819→    def send(self, message: str, severity: str = "info", title: str = "ReconPro Scan",
+   820→             findings: Optional[List[Dict]] = None, score: Optional[int] = None) -> bool:
+   821→        severity = severity.lower()
+   822→        facts = []
+   823→        if score is not None:
+   824→            facts.append({"name": "Security Score", "value": f"{score}/100"})
+   825→        if findings:
+   826→            sev_count = {}
+   827→            for f in findings:
+   828→                s = f.get("severity", "info").lower()
+   829→                sev_count[s] = sev_count.get(s, 0) + 1
+   830→            facts.append({"name": "Findings", "value": ", ".join(f"{k.upper()}: {v}" for k,v in sorted(sev_count.items()))})
+   831→        top = [f for f in findings if f.get("severity","").lower() in ("critical","high")][:5]
+   832→        for f in top:
+   833→            facts.append({"name": f.get("title",""), "value": f.get("category","")})
+   834→        payload = {
+   835→            "@type": "MessageCard",
+   836→            "@context": "http://schema.org/extensions",
+   837→            "themeColor": self.SEVERITY_COLORS.get(severity, "0088FF"),
+   838→            "summary": title,
+   839→            "sections": [{
+   840→                "activityTitle": title,
+   841→                "activitySubtitle": f"ReconPro v9.0.0 — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
+   842→                "facts": facts,
+   843→                "text": message[:2000] if message else "",
+   844→            }],
+   845→        }
+   846→        return self._post(payload)
+   847→
+   848→
+   849→def send_scan_notification(
+   850→    webhook_url: str,
+   851→    platform: str = "slack",
+   852→    findings: Optional[List[Dict]] = None,
+   853→    score: Optional[int] = None,
+   854→    title: str = "ReconPro Scan Complete",
+   855→    message: str = "",
+   856→) -> bool:
+   857→    """Convenience function to send a notification to any supported platform."""
+   858→    platform = platform.lower().strip()
+   859→    cls_map = {"slack": SlackWebhook, "discord": DiscordWebhook, "teams": TeamsWebhook}
+   860→    cls = cls_map.get(platform, SlackWebhook)
+   861→    notifier = cls(webhook_url)
+   862→    return notifier.send(message=message, title=title, findings=findings, score=score)
+   863→
+   864→
+   865→__all__ = [
+   866→    "GitHubWebhookHandler",
+   867→    "GitLabWebhookHandler",
+   868→    "WebhookServer",
+   869→    "run_webhook_server",
+   870→    "NotificationWebhook",
+   871→    "SlackWebhook",
+   872→    "DiscordWebhook",
+   873→    "TeamsWebhook",
+   874→    "send_scan_notification",
+   875→]
+   876→

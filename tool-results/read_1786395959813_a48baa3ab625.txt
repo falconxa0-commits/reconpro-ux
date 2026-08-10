@@ -1,0 +1,809 @@
+   131→    def __init__(
+   132→        self,
+   133→        name: str,
+   134→        url: str,
+   135→        ttl: int = DEFAULT_TTL,
+   136→        feeds_dir: Optional[Path] = None,
+   137→        timeout: int = 30,
+   138→    ) -> None:
+   139→        """Initialize a threat feed client.
+   140→
+   141→        Args:
+   142→            name: Unique identifier for this feed (used for cache filename).
+   143→            url: URL to fetch the feed from.
+   144→            ttl: Time-to-live for the cached feed data in seconds.
+   145→            feeds_dir: Directory for cache files. Defaults to ~/.reconpro/threat_feeds/.
+   146→            timeout: HTTP request timeout in seconds.
+   147→        """
+   148→        self.name = name
+   149→        self.url = url
+   150→        self._ttl = ttl
+   151→        self._timeout = timeout
+   152→        self._feeds_dir = feeds_dir or FEEDS_DIR
+   153→        self._cache_file = self._feeds_dir / f"{name}.json"
+   154→        self._ips: Set[str] = set()
+   155→        self._cidrs: List[str] = []
+   156→        self._last_fetch: float = 0.0
+   157→        self._loaded: bool = False
+   158→
+   159→    def fetch(self, force: bool = False) -> int:
+   160→        """Fetch and parse the threat feed, respecting the TTL cache.
+   161→
+   162→        Args:
+   163→            force: If True, bypass the cache and re-fetch from the source.
+   164→
+   165→        Returns:
+   166→            Total count of indicators (IPs + CIDRs) in this feed.
+   167→        """
+   168→        import urllib.request
+   169→        import urllib.error
+   170→
+   171→        # Serve from cache if still fresh and data exists
+   172→        if not force and self._loaded and self.is_fresh():
+   173→            return len(self._ips) + len(self._cidrs)
+   174→
+   175→        # Try loading from disk cache first if not forced
+   176→        if not force and not self._loaded:
+   177→            self._load_cache()
+   178→            if self._loaded and self.is_fresh():
+   179→                return len(self._ips) + len(self._cidrs)
+   180→
+   181→        # Fetch raw content from URL
+   182→        raw_content = self._fetch_raw()
+   183→        if raw_content is None:
+   184→            if self._loaded:
+   185→                logger.warning("[%s] Fetch failed — serving stale cache", self.name)
+   186→                return len(self._ips) + len(self._cidrs)
+   187→            logger.error("[%s] Fetch failed and no cache available", self.name)
+   188→            return 0
+   189→
+   190→        # Parse and cache
+   191→        ips, cidrs = self.parse(raw_content)
+   192→        self._ips = ips
+   193→        self._cidrs = cidrs
+   194→        self._last_fetch = time.time()
+   195→        self._loaded = True
+   196→        self._save_cache()
+   197→
+   198→        logger.info(
+   199→            "[%s] Fetched %d IPs, %d CIDRs from %s",
+   200→            self.name, len(self._ips), len(self._cidrs), self.url,
+   201→        )
+   202→        return len(self._ips) + len(self._cidrs)
+   203→
+   204→    def _fetch_raw(self) -> Optional[str]:
+   205→        """Perform an HTTP GET request and return the response body as a string.
+   206→
+   207→        Uses only urllib (no external dependencies).
+   208→        """
+   209→        import urllib.request
+   210→        import urllib.error
+   211→
+   212→        try:
+   213→            req = urllib.request.Request(
+   214→                self.url,
+   215→                headers={
+   216→                    "User-Agent": USER_AGENT,
+   217→                    "Accept": "text/plain, application/json, */*",
+   218→                },
+   219→            )
+   220→            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+   221→                return resp.read().decode("utf-8", errors="replace")
+   222→        except urllib.error.HTTPError as exc:
+   223→            logger.error("[%s] HTTP %d fetching %s", self.name, exc.code, self.url)
+   224→        except urllib.error.URLError as exc:
+   225→            logger.error("[%s] URL error fetching %s: %s", self.name, self.url, exc.reason)
+   226→        except Exception as exc:
+   227→            logger.error("[%s] Unexpected error fetching %s: %s", self.name, self.url, exc)
+   228→        return None
+   229→
+   230→    def parse(self, raw: str) -> Tuple[Set[str], List[str]]:
+   231→        """Parse raw feed content into a set of IPs and a list of CIDRs.
+   232→
+   233→        Subclasses must override this to handle feed-specific formats.
+   234→        The default implementation handles plain IP lists with '#' or ';' comments.
+   235→        """
+   236→        ips: Set[str] = set()
+   237→        cidrs: List[str] = []
+   238→        for line in raw.strip().split("\n"):
+   239→            line = line.strip()
+   240→            if not line or line.startswith("#") or line.startswith(";"):
+   241→                continue
+   242→            # Extract the first token (before whitespace or tab)
+   243→            token = line.split()[0]
+   244→            if "/" in token:
+   245→                try:
+   246→                    ipaddress.ip_network(token, strict=False)
+   247→                    cidrs.append(token)
+   248→                except ValueError:
+   249→                    pass
+   250→            elif _is_valid_ipv4(token):
+   251→                ips.add(token)
+   252→        return ips, cidrs
+   253→
+   254→    def cache(self, ips: Set[str], cidrs: List[str]) -> None:
+   255→        """Manually set and persist feed data to the cache.
+   256→
+   257→        Args:
+   258→            ips: Set of IPv4 address strings.
+   259→            cidrs: List of CIDR notation strings.
+   260→        """
+   261→        self._ips = set(ips)
+   262→        self._cidrs = list(cidrs)
+   263→        self._last_fetch = time.time()
+   264→        self._loaded = True
+   265→        self._save_cache()
+   266→
+   267→    def is_fresh(self) -> bool:
+   268→        """Check whether the cached feed data is still within its TTL."""
+   269→        if not self._loaded:
+   270→            return False
+   271→        return (time.time() - self._last_fetch) < self._ttl
+   272→
+   273→    def contains_ip(self, ip: str) -> bool:
+   274→        """Check whether a specific IP is present in this feed.
+   275→
+   276→        Checks both exact IP matches and CIDR range membership.
+   277→        """
+   278→        if not self._loaded:
+   279→            self._load_cache()
+   280→        if ip in self._ips:
+   281→            return True
+   282→        return any(is_ip_in_cidr(ip, cidr) for cidr in self._cidrs)
+   283→
+   284→    def get_ips(self) -> Set[str]:
+   285→        """Return a copy of all IPs in this feed."""
+   286→        if not self._loaded:
+   287→            self._load_cache()
+   288→        return set(self._ips)
+   289→
+   290→    def get_cidrs(self) -> List[str]:
+   291→        """Return a copy of all CIDRs in this feed."""
+   292→        if not self._loaded:
+   293→            self._load_cache()
+   294→        return list(self._cidrs)
+   295→
+   296→    def get_stats(self) -> Dict[str, Any]:
+   297→        """Return feed statistics."""
+   298→        return {
+   299→            "name": self.name,
+   300→            "url": self.url,
+   301→            "ip_count": len(self._ips),
+   302→            "cidr_count": len(self._cidrs),
+   303→            "last_fetch": self._last_fetch,
+   304→            "fresh": self.is_fresh(),
+   305→            "ttl": self._ttl,
+   306→        }
+   307→
+   308→    # ── Private cache methods ────────────────────────────────────────
+   309→
+   310→    def _load_cache(self) -> None:
+   311→        """Load feed data from the local JSON cache file."""
+   312→        if not self._cache_file.exists():
+   313→            return
+   314→        try:
+   315→            data = json.loads(self._cache_file.read_text(encoding="utf-8"))
+   316→            self._ips = set(data.get("ips", []))
+   317→            self._cidrs = data.get("cidrs", [])
+   318→            self._last_fetch = data.get("last_fetch", 0.0)
+   319→            self._loaded = True
+   320→            logger.debug("[%s] Loaded cache with %d IPs, %d CIDRs", self.name, len(self._ips), len(self._cidrs))
+   321→        except (json.JSONDecodeError, OSError, KeyError) as exc:
+   322→            logger.warning("[%s] Failed to load cache: %s", self.name, exc)
+   323→
+   324→    def _save_cache(self) -> None:
+   325→        """Persist feed data to the local JSON cache file."""
+   326→        try:
+   327→            self._feeds_dir.mkdir(parents=True, exist_ok=True)
+   328→            data = {
+   329→                "name": self.name,
+   330→                "url": self.url,
+   331→                "ips": sorted(self._ips),
+   332→                "cidrs": sorted(self._cidrs),
+   333→                "last_fetch": self._last_fetch,
+   334→                "ttl": self._ttl,
+   335→            }
+   336→            tmp_path = self._cache_file.with_suffix(".tmp")
+   337→            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+   338→            tmp_path.replace(self._cache_file)
+   339→            logger.debug("[%s] Cache saved (%d IPs, %d CIDRs)", self.name, len(self._ips), len(self._cidrs))
+   340→        except OSError as exc:
+   341→            logger.warning("[%s] Failed to save cache: %s", self.name, exc)
+   342→
+   343→
+   344→# ── Concrete Feed Implementations ─────────────────────────────────────────────
+   345→
+   346→class BlocklistDEFeed(ThreatFeedClient):
+   347→    """Fetches IP lists from blocklist.de (https://www.blocklist.de/en/export.html).
+   348→
+   349→    Supports 'strong' (all strong IPs) and 'bots' (botnet IPs) sub-lists.
+   350→    Format is plain text with one IP per line, prefixed with optional timestamps.
+   351→    """
+   352→
+   353→    STRONG_URL = "https://lists.blocklist.de/lists/all.txt"
+   354→    BOTS_URL = "https://lists.blocklist.de/lists/bots.txt"
+   355→
+   356→    def __init__(
+   357→        self,
+   358→        feed_type: str = "strong",
+   359→        ttl: int = DEFAULT_TTL,
+   360→        feeds_dir: Optional[Path] = None,
+   361→    ) -> None:
+   362→        """Initialize the Blocklist.de feed.
+   363→
+   364→        Args:
+   365→            feed_type: Either 'strong' or 'bots'.
+   366→            ttl: Cache TTL in seconds.
+   367→            feeds_dir: Override default cache directory.
+   368→        """
+   369→        if feed_type == "bots":
+   370→            url = self.BOTS_URL
+   371→            name = "blocklist_de_bots"
+   372→        else:
+   373→            url = self.STRONG_URL
+   374→            name = "blocklist_de_strong"
+   375→        super().__init__(name=name, url=url, ttl=ttl, feeds_dir=feeds_dir)
+   376→
+   377→    def parse(self, raw: str) -> Tuple[Set[str], List[str]]:
+   378→        """Parse blocklist.de format: plain IPs, one per line.
+   379→
+   380→        Lines may contain timestamps or other metadata — only the first token is used.
+   381→        """
+   382→        ips: Set[str] = set()
+   383→        cidrs: List[str] = []
+   384→        for line in raw.strip().split("\n"):
+   385→            line = line.strip()
+   386→            if not line or line.startswith("#") or line.startswith(";"):
+   387→                continue
+   388→            token = line.split()[0]
+   389→            if _is_valid_ipv4(token):
+   390→                ips.add(token)
+   391→        return ips, cidrs
+   392→
+   393→
+   394→class SpamhausDROPFeed(ThreatFeedClient):
+   395→    """Fetches Spamhaus DROP and EDROP lists.
+   396→
+   397→    - DROP: https://www.spamhaus.org/drop/drop.txt
+   398→    - EDROP: https://www.spamhaus.org/drop/drop-edon.txt
+   399→
+   400→    Format uses semicolon-separated fields: CIDR;sdn;net;comment
+   401→    CIDR ranges represent hijacked or bogon network space.
+   402→    """
+   403→
+   404→    DROP_URL = "https://www.spamhaus.org/drop/drop.txt"
+   405→    EDROP_URL = "https://www.spamhaus.org/drop/drop-edon.txt"
+   406→
+   407→    def __init__(
+   408→        self,
+   409→        drop_type: str = "drop",
+   410→        ttl: int = DEFAULT_TTL,
+   411→        feeds_dir: Optional[Path] = None,
+   412→    ) -> None:
+   413→        """Initialize the Spamhaus DROP feed.
+   414→
+   415→        Args:
+   416→            drop_type: Either 'drop' or 'edrop'.
+   417→            ttl: Cache TTL in seconds.
+   418→            feeds_dir: Override default cache directory.
+   419→        """
+   420→        if drop_type == "edrop":
+   421→            url = self.EDROP_URL
+   422→            name = "spamhaus_edrop"
+   423→        else:
+   424→            url = self.DROP_URL
+   425→            name = "spamhaus_drop"
+   426→        super().__init__(name=name, url=url, ttl=ttl, feeds_dir=feeds_dir)
+   427→
+   428→    def parse(self, raw: str) -> Tuple[Set[str], List[str]]:
+   429→        """Parse Spamhaus DROP format: 'CIDR ; sdn ; comment'.
+   430→
+   431→        Lines starting with ';' are comments. First field is the CIDR.
+   432→        """
+   433→        ips: Set[str] = set()
+   434→        cidrs: List[str] = []
+   435→        for line in raw.strip().split("\n"):
+   436→            line = line.strip()
+   437→            if not line or line.startswith(";"):
+   438→                continue
+   439→            # Spamhaus format: CIDR ; SDN ; comment
+   440→            parts = line.split(";")
+   441→            if not parts:
+   442→                continue
+   443→            entry = parts[0].strip()
+   444→            if "/" in entry:
+   445→                try:
+   446→                    ipaddress.ip_network(entry, strict=False)
+   447→                    cidrs.append(entry)
+   448→                except ValueError:
+   449→                    pass
+   450→            elif _is_valid_ipv4(entry):
+   451→                ips.add(entry)
+   452→        return ips, cidrs
+   453→
+   454→
+   455→class FireholFeed(ThreatFeedClient):
+   456→    """Fetches the Firehol Level 1 blocklist.
+   457→
+   458→    URL: https://iplists.firehol.org/files/firehol_level1.netset
+   459→    Format: plain IP/CIDR list with comments prefixed by '#'.
+   460→    Combines multiple upstream blocklists for maximum coverage.
+   461→    """
+   462→
+   463→    FIREHOL_L1_URL = "https://iplists.firehol.org/files/firehol_level1.netset"
+   464→
+   465→    def __init__(
+   466→        self,
+   467→        ttl: int = DEFAULT_TTL,
+   468→        feeds_dir: Optional[Path] = None,
+   469→    ) -> None:
+   470→        super().__init__(
+   471→            name="firehol_level1",
+   472→            url=self.FIREHOL_L1_URL,
+   473→            ttl=ttl,
+   474→            feeds_dir=feeds_dir,
+   475→        )
+   476→
+   477→    def parse(self, raw: str) -> Tuple[Set[str], List[str]]:
+   478→        """Parse Firehol netset format: IP or CIDR per line, '#' comments.
+   479→
+   480→        Handles both individual IPs and CIDR ranges.
+   481→        """
+   482→        ips: Set[str] = set()
+   483→        cidrs: List[str] = []
+   484→        for line in raw.strip().split("\n"):
+   485→            line = line.strip()
+   486→            if not line or line.startswith("#"):
+   487→                continue
+   488→            token = line.split()[0]
+   489→            if "/" in token:
+   490→                try:
+   491→                    ipaddress.ip_network(token, strict=False)
+   492→                    cidrs.append(token)
+   493→                except ValueError:
+   494→                    pass
+   495→            elif _is_valid_ipv4(token):
+   496→                ips.add(token)
+   497→        return ips, cidrs
+   498→
+   499→
+   500→class EmergingThreatsFeed(ThreatFeedClient):
+   501→    """Fetches EmergingThreats Suricata rules and extracts IP addresses.
+   502→
+   503→    URL: https://rules.emergingthreats.net/blockrules/emerging-drop.suricata.rules
+   504→    Format: Suricata rule syntax with IPs embedded in rule fields.
+   505→    Extracts IPs from 'content', 'src_ip', 'dst_ip', and '$HOME_NET' patterns.
+   506→    """
+   507→
+   508→    ET_URL = "https://rules.emergingthreats.net/blockrules/emerging-drop.suricata.rules"
+   509→
+   510→    def __init__(
+   511→        self,
+   512→        ttl: int = DEFAULT_TTL,
+   513→        feeds_dir: Optional[Path] = None,
+   514→    ) -> None:
+   515→        super().__init__(
+   516→            name="emerging_threats",
+   517→            url=self.ET_URL,
+   518→            ttl=ttl,
+   519→            feeds_dir=feeds_dir,
+   520→        )
+   521→
+   522→    def parse(self, raw: str) -> Tuple[Set[str], List[str]]:
+   523→        """Parse Suricata rule files to extract IP addresses.
+   524→
+   525→        Looks for IPs in various rule fields:
+   526→          - 'alert ... any -> $HOME_NET any' (header IPs)
+   527→          - '[msg="..."]' blocks with IP content
+   528→          - 'content:"|...|"' binary patterns (skipped)
+   529→          - Standalone IPv4 addresses in rule options
+   530→        """
+   531→        import re
+   532→
+   533→        ips: Set[str] = set()
+   534→        cidrs: List[str] = []
+   535→        # Pattern to match IPv4 addresses (not part of larger numbers)
+   536→        ip_pattern = re.compile(
+   537→            r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}"
+   538→            r"(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b"
+   539→        )
+   540→
+   541→        for line in raw.strip().split("\n"):
+   542→            line = line.strip()
+   543→            if not line or line.startswith("#") or line.startswith(";"):
+   544→                continue
+   545→            # Skip rules that don't look like alert/drop/pass
+   546→            if not re.match(r"^(alert|drop|reject|pass)\s", line):
+   547→                continue
+   548→
+   549→            # Find all IP addresses in the rule
+   550→            for match in ip_pattern.finditer(line):
+   551→                token = match.group()
+   552→                if _is_valid_ipv4(token):
+   553→                    # Skip reserved/private ranges that appear in rule syntax
+   554→                    # but aren't threat indicators (e.g., $HOME_NET, any)
+   555→                    first_octet = int(token.split(".")[0])
+   556→                    if first_octet == 0:
+   557→                        continue
+   558→                    ips.add(token)
+   559→
+   560→        return ips, cidrs
+   561→
+   562→
+   563→class DShieldFeed(ThreatFeedClient):
+   564→    """Fetches DShield's top 100 attacker IPs via their JSON API.
+   565→
+   566→    URL: https://isc.sans.edu/api/top/ips/100?json
+   567→    Format: JSON array with 'number', 'count', 'attacks', 'as', 'name', etc.
+   568→    Extracts the 'number' field as the attacker IP.
+   569→    """
+   570→
+   571→    DSHIELD_URL = "https://isc.sans.edu/api/top/ips/100?json"
+   572→
+   573→    def __init__(
+   574→        self,
+   575→        ttl: int = DEFAULT_TTL,
+   576→        feeds_dir: Optional[Path] = None,
+   577→    ) -> None:
+   578→        super().__init__(
+   579→            name="dshield_top100",
+   580→            url=self.DSHIELD_URL,
+   581→            ttl=ttl,
+   582→            feeds_dir=feeds_dir,
+   583→        )
+   584→
+   585→    def parse(self, raw: str) -> Tuple[Set[str], List[str]]:
+   586→        """Parse DShield JSON API response.
+   587→
+   588→        Expected format: JSON array of objects, each with a 'number' key
+   589→        containing the attacker IP address.
+   590→        Handles both array and single-object responses.
+   591→        """
+   592→        ips: Set[str] = set()
+   593→        cidrs: List[str] = []
+   594→        try:
+   595→            data = json.loads(raw)
+   596→        except json.JSONDecodeError as exc:
+   597→            logger.error("[%s] Failed to parse JSON: %s", self.name, exc)
+   598→            return ips, cidrs
+   599→
+   600→        # Normalize to a list
+   601→        if isinstance(data, dict):
+   602→            # If the response is a wrapper dict, look for an array inside
+   603→            for key in ("data", "top", "results", "ips"):
+   604→                if key in data and isinstance(data[key], list):
+   605→                    data = data[key]
+   606→                    break
+   607→            else:
+   608→                data = [data]
+   609→        elif not isinstance(data, list):
+   610→            data = []
+   611→
+   612→        for entry in data:
+   613→            if not isinstance(entry, dict):
+   614→                continue
+   615→            # Try multiple field names that DShield has used historically
+   616→            for field in ("number", "ip", "address", "source"):
+   617→                if field in entry:
+   618→                    ip_val = entry[field]
+   619→                    if isinstance(ip_val, str) and _is_valid_ipv4(ip_val.strip()):
+   620→                        ips.add(ip_val.strip())
+   621→                    break
+   622→
+   623→        return ips, cidrs
+   624→
+   625→
+   626→# ── Threat Feed Manager ─────────────────────────────────────────────────────────
+   627→
+   628→class ThreatFeedManager:
+   629→    """Aggregates all threat feeds, deduplicates, and caches to disk.
+   630→
+   631→    Provides a unified interface to check IPs against all feed sources.
+   632→    Feed data is persisted in ~/.reconpro/threat_feeds/ with JSON files.
+   633→
+   634→    Usage:
+   635→        mgr = ThreatFeedManager(ttl=3600)  # 1-hour TTL
+   636→        counts = mgr.refresh_all()
+   637→        hits = mgr.check_ip("1.2.3.4")
+   638→        all_ips = mgr.get_unified_ip_set()
+   639→    """
+   640→
+   641→    def __init__(
+   642→        self,
+   643→        ttl: int = DEFAULT_TTL,
+   644→        feeds_dir: Optional[Path] = None,
+   645→        enable_feeds: Optional[List[str]] = None,
+   646→    ) -> None:
+   647→        """Initialize the ThreatFeedManager.
+   648→
+   649→        Args:
+   650→            ttl: Time-to-live for all feed caches in seconds (default: 6 hours).
+   651→            feeds_dir: Override the default cache directory.
+   652→            enable_feeds: List of feed names to enable. If None, all feeds are enabled.
+   653→        """
+   654→        self._ttl = ttl
+   655→        self._feeds_dir = feeds_dir
+   656→        self._feeds: Dict[str, ThreatFeedClient] = {
+   657→            "blocklist_de_strong": BlocklistDEFeed("strong", ttl=ttl, feeds_dir=feeds_dir),
+   658→            "blocklist_de_bots": BlocklistDEFeed("bots", ttl=ttl, feeds_dir=feeds_dir),
+   659→            "spamhaus_drop": SpamhausDROPFeed("drop", ttl=ttl, feeds_dir=feeds_dir),
+   660→            "spamhaus_edrop": SpamhausDROPFeed("edrop", ttl=ttl, feeds_dir=feeds_dir),
+   661→            "firehol_level1": FireholFeed(ttl=ttl, feeds_dir=feeds_dir),
+   662→            "emerging_threats": EmergingThreatsFeed(ttl=ttl, feeds_dir=feeds_dir),
+   663→            "dshield_top100": DShieldFeed(ttl=ttl, feeds_dir=feeds_dir),
+   664→        }
+   665→
+   666→        # Filter enabled feeds if specified
+   667→        if enable_feeds is not None:
+   668→            self._feeds = {
+   669→                k: v for k, v in self._feeds.items() if k in enable_feeds
+   670→            }
+   671→
+   672→    def refresh_all(self, force: bool = False) -> Dict[str, int]:
+   673→        """Fetch and refresh all enabled feeds.
+   674→
+   675→        Args:
+   676→            force: If True, bypass the TTL cache for all feeds.
+   677→
+   678→        Returns:
+   679→            Dictionary mapping feed names to their indicator counts.
+   680→            A value of -1 indicates a fetch failure with no cached data.
+   681→        """
+   682→        results: Dict[str, int] = {}
+   683→        for name, feed in self._feeds.items():
+   684→            try:
+   685→                count = feed.fetch(force=force)
+   686→                results[name] = count
+   687→            except Exception as exc:
+   688→                logger.error("[ThreatFeedManager] Error refreshing %s: %s", name, exc)
+   689→                results[name] = -1
+   690→        return results
+   691→
+   692→    def check_ip(self, ip: str) -> List[Dict[str, Any]]:
+   693→        """Check a single IP against all enabled threat feeds.
+   694→
+   695→        Args:
+   696→            ip: IPv4 address to check.
+   697→
+   698→        Returns:
+   699→            List of hit dictionaries, each containing 'feed', 'ip', and 'url'.
+   700→        """
+   701→        hits: List[Dict[str, Any]] = []
+   702→        for name, feed in self._feeds.items():
+   703→            try:
+   704→                if feed.contains_ip(ip):
+   705→                    hits.append({
+   706→                        "feed": name,
+   707→                        "ip": ip,
+   708→                        "url": feed.url,
+   709→                    })
+   710→            except Exception as exc:
+   711→                logger.error("[ThreatFeedManager] Error checking %s on %s: %s", ip, name, exc)
+   712→        return hits
+   713→
+   714→    def check_ips(self, ips: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+   715→        """Check multiple IPs against all threat feeds.
+   716→
+   717→        Args:
+   718→            ips: List of IPv4 addresses to check.
+   719→
+   720→        Returns:
+   721→            Dictionary mapping each IP to its list of feed hits.
+   722→        """
+   723→        return {ip: self.check_ip(ip) for ip in ips}
+   724→
+   725→    def get_unified_ip_set(self) -> Set[str]:
+   726→        """Return a deduplicated set of all IPs from all enabled feeds.
+   727→
+   728→        CIDRs are NOT expanded — only standalone IPs are included.
+   729→        """
+   730→        all_ips: Set[str] = set()
+   731→        for feed in self._feeds.values():
+   732→            if not feed._loaded:
+   733→                feed._load_cache()
+   734→            all_ips |= feed.get_ips()
+   735→        return all_ips
+   736→
+   737→    def get_unified_cidr_list(self) -> List[str]:
+   738→        """Return all CIDRs from all enabled feeds (deduplicated)."""
+   739→        seen: Set[str] = set()
+   740→        result: List[str] = []
+   741→        for feed in self._feeds.values():
+   742→            if not feed._loaded:
+   743→                feed._load_cache()
+   744→            for cidr in feed.get_cidrs():
+   745→                if cidr not in seen:
+   746→                    seen.add(cidr)
+   747→                    result.append(cidr)
+   748→        return result
+   749→
+   750→    def get_stats(self) -> Dict[str, Dict[str, Any]]:
+   751→        """Return statistics for all enabled feeds.
+   752→
+   753→        Returns:
+   754→            Dictionary mapping feed names to their stats dictionaries.
+   755→        """
+   756→        return {name: feed.get_stats() for name, feed in self._feeds.items()}
+   757→
+   758→    def get_total_count(self) -> int:
+   759→        """Return the total number of unique indicators across all feeds."""
+   760→        return len(self.get_unified_ip_set()) + len(self.get_unified_cidr_list())
+   761→
+   762→    def get_feed(self, name: str) -> Optional[ThreatFeedClient]:
+   763→        """Get a specific feed client by name."""
+   764→        return self._feeds.get(name)
+   765→
+   766→    def list_feeds(self) -> List[str]:
+   767→        """Return the list of enabled feed names."""
+   768→        return list(self._feeds.keys())
+   769→
+   770→
+   771→# ── DNSBL Checker ──────────────────────────────────────────────────────────────
+   772→
+   773→class DNSBLChecker:
+   774→    """Checks IP addresses against DNS-based Blackhole Lists (DNSBLs).
+   775→
+   776→    Uses standard DNS queries via socket.getaddrinfo to query each DNSBL zone.
+   777→    For each IP, the octets are reversed and appended to the DNSBL zone name.
+   778→
+   779→    Example: checking 1.2.3.4 on zen.spamhaus.org queries:
+   780→        4.3.2.1.zen.spamhaus.org
+   781→
+   782→    Usage:
+   783→        checker = DNSBLChecker()
+   784→        hits = checker.check_ip("1.2.3.4")
+   785→        is_bad = checker.is_listed("1.2.3.4")
+   786→    """
+   787→
+   788→    def __init__(
+   789→        self,
+   790→        servers: Optional[List[Tuple[str, str]]] = None,
+   791→        timeout: float = 3.0,
+   792→    ) -> None:
+   793→        """Initialize the DNSBL checker.
+   794→
+   795→        Args:
+   796→            servers: List of (zone, name) tuples. Defaults to built-in DNSBL_SERVERS.
+   797→            timeout: DNS query timeout in seconds per server.
+   798→        """
+   799→        self._servers = servers if servers is not None else list(DNSBL_SERVERS)
+   800→        self._timeout = timeout
+   801→
+   802→    def check_ip(self, ip: str) -> List[Dict[str, Any]]:
+   803→        """Check a single IP against all configured DNSBL servers.
+   804→
+   805→        Args:
+   806→            ip: IPv4 address to check.
+   807→
+   808→        Returns:
+   809→            List of hit dictionaries with 'dnsbl', 'server', 'ip', and 'listed' fields.
+   810→        """
+   811→        hits: List[Dict[str, Any]] = []
+   812→        reversed_ip = _reverse_ip(ip)
+   813→
+   814→        for zone, name in self._servers:
+   815→            query = f"{reversed_ip}.{zone}"
+   816→            try:
+   817→                # Use getaddrinfo for DNS resolution — returns result if listed
+   818→                old_timeout = socket.getdefaulttimeout()
+   819→                socket.setdefaulttimeout(self._timeout)
+   820→                try:
+   821→                    result = socket.getaddrinfo(query, None)
+   822→                finally:
+   823→                    socket.setdefaulttimeout(old_timeout)
+   824→
+   825→                if result:
+   826→                    # Extract the return code (A record) for additional context
+   827→                    response_ip = result[0][4][0] if result[0][4] else "unknown"
+   828→                    hits.append({
+   829→                        "dnsbl": name,
+   830→                        "server": zone,
+   831→                        "ip": ip,
+   832→                        "listed": True,
+   833→                        "response_ip": response_ip,
+   834→                    })
+   835→            except (socket.gaierror, socket.herror):
+   836→                # Not listed — gaierror with EAI_NONAME means negative result
+   837→                pass
+   838→            except socket.timeout:
+   839→                logger.warning("[DNSBL] Timeout checking %s on %s", ip, zone)
+   840→            except Exception as exc:
+   841→                logger.error("[DNSBL] Error checking %s on %s: %s", ip, zone, exc)
+   842→
+   843→        return hits
+   844→
+   845→    def check_ips(self, ips: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+   846→        """Check multiple IPs against all DNSBL servers.
+   847→
+   848→        Args:
+   849→            ips: List of IPv4 addresses.
+   850→
+   851→        Returns:
+   852→            Dictionary mapping each IP to its DNSBL hit list.
+   853→        """
+   854→        return {ip: self.check_ip(ip) for ip in ips}
+   855→
+   856→    def is_listed(self, ip: str) -> bool:
+   857→        """Quick boolean check: is the IP listed on any DNSBL?
+   858→
+   859→        Args:
+   860→            ip: IPv4 address.
+   861→
+   862→        Returns:
+   863→            True if the IP is found on at least one DNSBL.
+   864→        """
+   865→        return len(self.check_ip(ip)) > 0
+   866→
+   867→    def get_listed_servers(self, ip: str) -> List[str]:
+   868→        """Return the names of DNSBL servers where the IP is listed.
+   869→
+   870→        Args:
+   871→            ip: IPv4 address.
+   872→
+   873→        Returns:
+   874→            List of DNSBL server names that have the IP listed.
+   875→        """
+   876→        hits = self.check_ip(ip)
+   877→        return [h["dnsbl"] for h in hits]
+   878→
+   879→
+   880→# ── Convenience Functions ─────────────────────────────────────────────────────
+   881→
+   882→def check_ip_reputation(
+   883→    ip: str,
+   884→    feed_manager: Optional[ThreatFeedManager] = None,
+   885→    dnsbl_checker: Optional[DNSBLChecker] = None,
+   886→    ttl: int = DEFAULT_TTL,
+   887→) -> Dict[str, Any]:
+   888→    """Perform a comprehensive IP reputation check combining feed and DNSBL data.
+   889→
+   890→    Args:
+   891→        ip: IPv4 address to check.
+   892→        feed_manager: Optional pre-configured ThreatFeedManager.
+   893→        dnsbl_checker: Optional pre-configured DNSBLChecker.
+   894→        ttl: TTL for feed cache if a new manager is created.
+   895→
+   896→    Returns:
+   897→        Dictionary with 'ip', 'threat_feeds', 'dnsbl_hits', 'is_malicious',
+   898→        and 'threat_score' (0–100 scale).
+   899→    """
+   900→    results: Dict[str, Any] = {
+   901→        "ip": ip,
+   902→        "threat_feeds": [],
+   903→        "dnsbl_hits": [],
+   904→        "is_malicious": False,
+   905→        "threat_score": 0,
+   906→        "checked_at": time.time(),
+   907→    }
+   908→
+   909→    # Check threat feeds
+   910→    if feed_manager is None:
+   911→        feed_manager = ThreatFeedManager(ttl=ttl)
+   912→        feed_manager.refresh_all()
+   913→
+   914→    feed_hits = feed_manager.check_ip(ip)
+   915→    results["threat_feeds"] = feed_hits
+   916→    results["threat_score"] += len(feed_hits) * 20
+   917→
+   918→    # Check DNSBLs
+   919→    if dnsbl_checker is None:
+   920→        dnsbl_checker = DNSBLChecker()
+   921→
+   922→    dnsbl_hits = dnsbl_checker.check_ip(ip)
+   923→    results["dnsbl_hits"] = dnsbl_hits
+   924→    results["threat_score"] += len(dnsbl_hits) * 10
+   925→
+   926→    # Clamp score to 0–100
+   927→    results["threat_score"] = min(results["threat_score"], 100)
+   928→    results["is_malicious"] = results["threat_score"] > 0
+   929→
+   930→    return results
+   931→
+   932→
+   933→def quick_threat_check(ip: str) -> Dict[str, Any]:
+   934→    """Quick single-call threat check using default configuration.
+   935→
+   936→    Combines ThreatFeedManager and DNSBLChecker with default settings.
+   937→    """
+   938→    return check_ip_reputation(ip)
+   939→

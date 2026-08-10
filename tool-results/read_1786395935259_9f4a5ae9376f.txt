@@ -1,0 +1,646 @@
+  2500→        recommendations = self._generate_recommendations(
+  2501→            attribution_report, findings
+  2502→        )
+  2503→
+  2504→        threat_report = {
+  2505→            "report_type": "threat_attribution_report",
+  2506→            "engine_version": __version__,
+  2507→            "generated_at": datetime.now(timezone.utc).isoformat(),
+  2508→            "target": target,
+  2509→            "executive_summary": executive_summary,
+  2510→            "attribution": attribution_report,
+  2511→            "technique_analysis": technique_details,
+  2512→            "related_groups": related_groups,
+  2513→            "recommendations": recommendations,
+  2514→            "mitre_attack_version": "v14.1",
+  2515→        }
+  2516→
+  2517→        return threat_report
+  2518→
+  2519→    # ----- Internal helpers -----
+  2520→
+  2521→    def _extract_techniques(self, findings: List[Dict[str, Any]]) -> List[str]:
+  2522→        """Extract unique technique IDs from findings."""
+  2523→        techniques: Set[str] = set()
+  2524→        for finding in findings:
+  2525→            for key in ("technique_id", "ttp", "technique", "mitre_id"):
+  2526→                val = finding.get(key)
+  2527→                if val and isinstance(val, str):
+  2528→                    techniques.add(val)
+  2529→        return sorted(techniques)
+  2530→
+  2531→    def _calculate_risk_score(
+  2532→        self,
+  2533→        ttp_results: List[APTAttribution],
+  2534→        campaign_results: List[CampaignMatch],
+  2535→        sovereignty: SovereigntyProfile,
+  2536→    ) -> float:
+  2537→        """Calculate an overall risk score (0–100) for the target."""
+  2538→        risk = 0.0
+  2539→
+  2540→        # TTP risk component (0–40)
+  2541→        if ttp_results:
+  2542→            top_conf = ttp_results[0].confidence
+  2543→            risk += top_conf * 40
+  2544→            if len(ttp_results) > 1:
+  2545→                risk += min(len(ttp_results) - 1, 5) * 2  # up to 10
+  2546→
+  2547→        # Campaign risk component (0–25)
+  2548→        if campaign_results:
+  2549→            top_campaign = campaign_results[0].confidence
+  2550→            risk += top_campaign * 25
+  2551→
+  2552→        # Sovereignty risk component (0–25)
+  2553→        risk += sovereignty.confidence * 25
+  2554→
+  2555→        # Sophistication bonus (0–10)
+  2556→        if ttp_results:
+  2557→            soph = ttp_results[0].sophistication
+  2558→            soph_bonus = {
+  2559→                "minimal": 1, "moderate": 3,
+  2560→                "high": 6, "very_high": 10,
+  2561→            }
+  2562→            risk += soph_bonus.get(soph, 3)
+  2563→
+  2564→        return round(min(risk, 100.0), 2)
+  2565→
+  2566→    def _build_summary(
+  2567→        self,
+  2568→        target: str,
+  2569→        ttp_results: List[APTAttribution],
+  2570→        campaign_results: List[CampaignMatch],
+  2571→        sovereignty: SovereigntyProfile,
+  2572→        risk_score: float,
+  2573→    ) -> str:
+  2574→        """Build a human-readable summary string."""
+  2575→        parts: List[str] = [f"Attribution analysis for {target}."]
+  2576→
+  2577→        if ttp_results:
+  2578→            top = ttp_results[0]
+  2579→            parts.append(
+  2580→                f"Primary attribution: {top.group_name} ({top.group_id}) "
+  2581→                f"with {top.confidence_level.value} confidence "
+  2582→                f"({top.confidence:.1%}). "
+  2583→                f"Origin: {top.country}. "
+  2584→                f"Motivation: {top.motivation}."
+  2585→            )
+  2586→            if len(ttp_results) > 1:
+  2587→                parts.append(
+  2588→                    f"Secondary candidates: "
+  2589→                    + ", ".join(
+  2590→                        f"{r.group_name} ({r.confidence:.0%})"
+  2591→                        for r in ttp_results[1:4]
+  2592→                    )
+  2593→                )
+  2594→        else:
+  2595→            parts.append("No APT groups matched the observed TTPs.")
+  2596→
+  2597→        if campaign_results:
+  2598→            top_camp = campaign_results[0]
+  2599→            parts.append(
+  2600→                f"Top campaign match: {top_camp.campaign_name} "
+  2601→                f"(confidence {top_camp.confidence:.0%})."
+  2602→            )
+  2603→
+  2604→        if sovereignty.confidence > 0.2:
+  2605→            parts.append(
+  2606→                f"Infrastructure sovereignty: {sovereignty.primary_country} "
+  2607→                f"(confidence {sovereignty.confidence:.0%})."
+  2608→            )
+  2609→
+  2610→        parts.append(f"Overall risk score: {risk_score}/100.")
+  2611→        return " ".join(parts)
+  2612→
+  2613→    def _passive_recon(
+  2614→        self, url: str, timeout: int,
+  2615→    ) -> Dict[str, Any]:
+  2616→        """Attempt a lightweight HTTP fetch to gather passive signals
+  2617→        (headers, WAF banners, etc.) without being intrusive.
+  2618→
+  2619→        Returns a dict with ``"headers"``, ``"body"``, ``"tls"``, ``"geo"``,
+  2620→        ``"waf"`` fields. Never raises — returns partial data on failure.
+  2621→        """
+  2622→        result: Dict[str, Any] = {
+  2623→            "headers": {},
+  2624→            "body": "",
+  2625→            "tls": {},
+  2626→            "geo": {},
+  2627→            "waf": {},
+  2628→        }
+  2629→
+  2630→        try:
+  2631→            parsed = urllib.parse.urlparse(url)
+  2632→            hostname = parsed.hostname or ""
+  2633→            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+  2634→
+  2635→            # TLS certificate probe
+  2636→            if parsed.scheme == "https":
+  2637→                try:
+  2638→                    context = ssl.create_default_context()
+  2639→                    context.check_hostname = False
+  2640→                    context.verify_mode = ssl.CERT_NONE
+  2641→                    with socket.create_connection(
+  2642→                        (hostname, port), timeout=timeout
+  2643→                    ) as sock:
+  2644→                        with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+  2645→                            cert = ssock.getpeercert(binary_form=True)
+  2646→                            if cert:
+  2647→                                cert_text = ssl.DER_cert_to_PEM_cert(cert)
+  2648→                                result["tls"]["raw"] = cert_text[:2000]
+  2649→                                # Extract org, issuer etc. via regex
+  2650→                                for field in ("O=", "CN=", "OU=", "ST=", "L="):
+  2651→                                    matches = re.findall(
+  2652→                                        rf"{field}([^,\n]+)", cert_text
+  2653→                                    )
+  2654→                                    if matches:
+  2655→                                        result["tls"][field.rstrip("=").lower()] = (
+  2656→                                            matches[0].strip()
+  2657→                                        )
+  2658→                            # Resolve IP for geo hints
+  2659→                            ip = sock.getpeername()[0]
+  2660→                            result["geo"]["resolved_ip"] = ip
+  2661→                            try:
+  2662→                                # Extract ASN-style info from reverse DNS
+  2663→                                rev = socket.gethostbyaddr(ip)[0]
+  2664→                                result["geo"]["reverse_dns"] = rev
+  2665→                                asn_hint = rev.split(".")
+  2666→                                if len(asn_hint) > 1:
+  2667→                                    for part in asn_hint:
+  2668→                                        if part.upper().startswith("AS"):
+  2669→                                            result["geo"]["asn"] = part.upper()
+  2670→                                            break
+  2671→                            except (socket.herror, socket.gaierror):
+  2672→                                pass
+  2673→                except (socket.timeout, socket.error, ssl.SSLError):
+  2674→                    pass
+  2675→
+  2676→            # HTTP header fetch
+  2677→            try:
+  2678→                req = urllib.request.Request(
+  2679→                    url,
+  2680→                    headers={"User-Agent": "ReconPro/9.2.0 AttributionEngine"},
+  2681→                )
+  2682→                with urllib.request.urlopen(req, timeout=timeout) as resp:
+  2683→                    headers_dict = dict(resp.headers)
+  2684→                    result["headers"] = headers_dict
+  2685→                    # Read body (first 8KB for language analysis)
+  2686→                    body = resp.read(8192)
+  2687→                    try:
+  2688→                        result["body"] = body.decode("utf-8", errors="replace")
+  2689→                    except Exception:
+  2690→                        result["body"] = body.decode("latin-1", errors="replace")
+  2691→
+  2692→                    # Detect WAF from headers
+  2693→                    server = headers_dict.get("server", "")
+  2694→                    waf_headers = (
+  2695→                        headers_dict.get("x-waf", "")
+  2696→                        + " " + headers_dict.get("cf-ray", "")
+  2697→                        + " " + headers_dict.get("x-cdn", "")
+  2698→                    )
+  2699→                    if server or waf_headers.strip():
+  2700→                        result["waf"] = {
+  2701→                            "waf_name": server,
+  2702→                            "waf_vendor": waf_headers.strip(),
+  2703→                        }
+  2704→
+  2705→            except (urllib.error.URLError, socket.timeout, ValueError):
+  2706→                pass
+  2707→
+  2708→        except Exception:
+  2709→            pass
+  2710→
+  2711→        return result
+  2712→
+  2713→    def _enrich_technique_details(
+  2714→        self, technique_ids: List[str],
+  2715→    ) -> List[Dict[str, Any]]:
+  2716→        """Add contextual information for observed techniques."""
+  2717→        details: List[Dict[str, Any]] = []
+  2718→
+  2719→        for tech_id in technique_ids:
+  2720→            tech_info: Dict[str, Any] = {
+  2721→                "technique_id": tech_id,
+  2722→                "tactic": "Unknown",
+  2723→                "description": self._technique_description(tech_id),
+  2724→                "groups_using": [],
+  2725→                "detection_difficulty": self._detection_difficulty(tech_id),
+  2726→            }
+  2727→
+  2728→            # Map to tactic
+  2729→            for tactic_id, tactic_name in MITRE_TACTICS.items():
+  2730→                if tech_id.startswith(tactic_id[:3]):
+  2731→                    tech_info["tactic"] = tactic_name
+  2732→                    tech_info["tactic_id"] = tactic_id
+  2733→                    break
+  2734→
+  2735→            # Find groups using this technique
+  2736→            for gid, gdata in self._groups.items():
+  2737→                if tech_id in gdata.get("techniques", []):
+  2738→                    tech_info["groups_using"].append(
+  2739→                        {
+  2740→                            "group_id": gid,
+  2741→                            "group_name": gdata.get("name", gid),
+  2742→                        }
+  2743→                    )
+  2744→
+  2745→            details.append(tech_info)
+  2746→
+  2747→        return details
+  2748→
+  2749→    def _technique_description(self, technique_id: str) -> str:
+  2750→        """Return a human-readable description for a technique ID."""
+  2751→        descriptions: Dict[str, str] = {
+  2752→            "T1566.001": "Spearphishing Attachment — Malicious file delivered via email",
+  2753→            "T1566.002": "Spearphishing Link — Malicious URL delivered via email",
+  2754→            "T1566.003": "Spearphishing via Service — Third-party service exploitation",
+  2755→            "T1190": "Exploit Public-Facing Application — Remote code execution via vulnerable services",
+  2756→            "T1078": "Valid Accounts — Using compromised or stolen credentials",
+  2757→            "T1078.003": "Valid Accounts: Local Accounts — Compromised local credentials",
+  2758→            "T1133": "External Remote Services — Exploiting VPN/RDP for initial access",
+  2759→            "T1059.001": "PowerShell — Command execution via PowerShell",
+  2760→            "T1059.003": "Windows Command Shell — cmd.exe execution",
+  2761→            "T1547.001": "Registry Run Keys — Persistence via Windows registry",
+  2762→            "T1053.005": "Scheduled Task — Persistence via Windows Task Scheduler",
+  2763→            "T1543.003": "Windows Service — Persistence via malicious services",
+  2764→            "T1055": "Process Injection — Code injection into legitimate processes",
+  2765→            "T1055.001": "Dynamic-link Library Injection — DLL injection",
+  2766→            "T1070.004": "File Deletion — Anti-forensics via file removal",
+  2767→            "T1562.001": "Disable or Modify Tools — Disabling security software",
+  2768→            "T1562.003": "Impair Command History Logging — Bash history manipulation",
+  2769→            "T1003": "OS Credential Dumping — Extracting credentials from memory/registry",
+  2770→            "T1003.001": "LSASS Memory — Credential extraction from LSASS",
+  2771→            "T1003.002": "Security Account Manager — SAM database extraction",
+  2772→            "T1110.001": "Brute Force — Password guessing attacks",
+  2773→            "T1110.002": "Password Spraying — Low-and-slow password attacks",
+  2774→            "T1110.003": "Password Policy Manipulation — Weakening password requirements",
+  2775→            "T1082": "System Information Discovery — Gathering system metadata",
+  2776→            "T1083": "File and Directory Discovery — Enumerating filesystem",
+  2777→            "T1046": "Network Service Discovery — Scanning for network services",
+  2778→            "T1049": "System Network Connections Discovery — Enumerating active connections",
+  2779→            "T1005": "Data from Local System — Collecting data from local storage",
+  2780→            "T1119": "Automated Collection — Automated data harvesting",
+  2781→            "T1041": "Exfiltration Over C2 Channel — Data theft via command and control",
+  2782→            "T1048": "Exfiltration Over Alternative Protocol — DNS/HTTP exfiltration",
+  2783→            "T1048.003": "Exfiltration Over Unencrypted Protocol — Cleartext exfiltration",
+  2784→            "T1071.001": "Web Protocols — C2 via HTTP/HTTPS",
+  2785→            "T1071.004": "DNS — C2 via DNS tunneling",
+  2786→            "T1573.001": "Symmetric Cryptography — Encrypted C2 communications",
+  2787→            "T1105": "Ingress Tool Transfer — Downloading tools to target",
+  2788→            "T1486": "Data Encrypted for Impact — Ransomware/disk encryption",
+  2789→            "T1489.001": "Inhibit System Recovery — Destroying backups and recovery tools",
+  2790→            "T1498": "Network Denial of Service — Flooding attacks",
+  2791→            "T1189": "Drive-by Compromise — Watering hole attacks",
+  2792→            "T1203": "Exploitation for Client Execution — Malicious file exploitation",
+  2793→            "T1195.002": "Compromise Software Supply Chain — Supply chain attack",
+  2794→            "T1589.002": "Phishing Information — Victim reconnaissance for phishing",
+  2795→        }
+  2796→        return descriptions.get(technique_id, "MITRE ATT&CK technique")
+  2797→
+  2798→    def _detection_difficulty(self, technique_id: str) -> str:
+  2799→        """Estimate detection difficulty for a given technique."""
+  2800→        hard_techniques = {
+  2801→            "T1055", "T1055.001", "T1003", "T1003.001",
+  2802→            "T1071.004", "T1573.001", "T1048", "T1562.001",
+  2803→        }
+  2804→        moderate_techniques = {
+  2805→            "T1566.001", "T1566.002", "T1190", "T1547.001",
+  2806→            "T1053.005", "T1082", "T1083", "T1046",
+  2807→            "T1041", "T1105", "T1110.001", "T1110.003",
+  2808→        }
+  2809→        if technique_id in hard_techniques:
+  2810→            return "difficult"
+  2811→        elif technique_id in moderate_techniques:
+  2812→            return "moderate"
+  2813→        return "easy"
+  2814→
+  2815→    def _find_related_groups(
+  2816→        self, observed_techniques: List[str],
+  2817→    ) -> List[Dict[str, Any]]:
+  2818→        """Find APT groups that share the most techniques with the observed set
+  2819→        beyond the top match — useful for identifying potential
+  2820→        false flags or allied threat actors.
+  2821→        """
+  2822→        observed_set = set(observed_techniques)
+  2823→        related: List[Dict[str, Any]] = []
+  2824→
+  2825→        for gid, gdata in self._groups.items():
+  2826→            group_techs = set(gdata.get("techniques", []))
+  2827→            overlap = observed_set & group_techs
+  2828→            if len(overlap) >= 2:
+  2829→                related.append({
+  2830→                    "group_id": gid,
+  2831→                    "group_name": gdata.get("name", gid),
+  2832→                    "country": gdata.get("country", ""),
+  2833→                    "shared_techniques": len(overlap),
+  2834→                    "overlap_pct": round(
+  2835→                        len(overlap) / len(observed_set) * 100, 1
+  2836→                    ) if observed_set else 0,
+  2837→                })
+  2838→
+  2839→        related.sort(key=lambda x: x["shared_techniques"], reverse=True)
+  2840→        return related[:15]
+  2841→
+  2842→    def _generate_executive_summary(
+  2843→        self,
+  2844→        target: str,
+  2845→        attribution_report: Dict[str, Any],
+  2846→        findings: List[Dict[str, Any]],
+  2847→    ) -> str:
+  2848→        """Generate an executive-level summary paragraph."""
+  2849→        primary = attribution_report.get("primary_attribution")
+  2850→        risk = attribution_report.get("risk_score", 0)
+  2851→        sovereignty = attribution_report.get("sovereignty_profile", {})
+  2852→
+  2853→        if primary and primary.get("confidence", 0) >= 0.3:
+  2854→            name = primary.get("group_name", "Unknown")
+  2855→            conf = primary.get("confidence", 0)
+  2856→            level = primary.get("confidence_level", "low")
+  2857→            country = primary.get("country", "Unknown")
+  2858→            motivation = primary.get("motivation", "Unknown")
+  2859→
+  2860→            summary = (
+  2861→                f"Analysis of {target} reveals indicators consistent with "
+  2862→                f"activity by {name} ({country}), a threat actor primarily "
+  2863→                f"motivated by {motivation.lower()}. Attribution confidence "
+  2864→                f"is {level} ({conf:.0%}). "
+  2865→            )
+  2866→
+  2867→            if sovereignty and sovereignty.get("confidence", 0) >= 0.3:
+  2868→                s_country = sovereignty.get("primary_country", "")
+  2869→                s_conf = sovereignty.get("confidence", 0)
+  2870→                summary += (
+  2871→                    f"Infrastructure analysis supports attribution to "
+  2872→                    f"{s_country} ({s_conf:.0%} confidence). "
+  2873→                )
+  2874→
+  2875→            if risk >= 70:
+  2876→                summary += (
+  2877→                    f"Overall risk score is {risk}/100 — CRITICAL. "
+  2878→                    f"Immediate defensive action recommended."
+  2879→                )
+  2880→            elif risk >= 40:
+  2881→                summary += (
+  2882→                    f"Overall risk score is {risk}/100 — HIGH. "
+  2883→                    f"Enhanced monitoring and investigation recommended."
+  2884→                )
+  2885→            else:
+  2886→                summary += f"Overall risk score is {risk}/100."
+  2887→        elif primary:
+  2888→            summary = (
+  2889→                f"Analysis of {target} shows weak indicators of APT activity. "
+  2890→                f"The best match is {primary.get('group_name', 'Unknown')} "
+  2891→                f"at {primary.get('confidence_level', 'low')} confidence. "
+  2892→                f"Additional intelligence is needed for conclusive attribution."
+  2893→            )
+  2894→        else:
+  2895→            summary = (
+  2896→                f"Analysis of {target} did not identify indicators consistent "
+  2897→                f"with known APT group activity. The observed techniques and "
+  2898→                f"patterns do not match any tracked threat actors in the database."
+  2899→            )
+  2900→
+  2901→        return summary
+  2902→
+  2903→    def _generate_recommendations(
+  2904→        self,
+  2905→        attribution_report: Dict[str, Any],
+  2906→        findings: List[Dict[str, Any]],
+  2907→    ) -> List[Dict[str, Any]]:
+  2908→        """Generate actionable security recommendations based on findings."""
+  2909→        recommendations: List[Dict[str, Any]] = []
+  2910→        primary = attribution_report.get("primary_attribution")
+  2911→
+  2912→        # General hardening
+  2913→        recommendations.append({
+  2914→            "priority": "high",
+  2915→            "category": "monitoring",
+  2916→            "recommendation": (
+  2917→                "Deploy network traffic analysis (NTA) to detect "
+  2918→                "C2 communication patterns and data exfiltration attempts."
+  2919→            ),
+  2920→        })
+  2921→
+  2922→        recommendations.append({
+  2923→            "priority": "high",
+  2924→            "category": "endpoint",
+  2925→            "recommendation": (
+  2926→                "Enable advanced endpoint detection and response (EDR) "
+  2927→                "with behavioral analysis for process injection and "
+  2928→                "credential dumping detection."
+  2929→            ),
+  2930→        })
+  2931→
+  2932→        if primary and primary.get("confidence", 0) >= 0.4:
+  2933→            country = primary.get("country", "")
+  2934→            techniques = primary.get("matching_techniques", [])
+  2935→
+  2936→            # Country-specific recommendations
+  2937→            if country in ("China", "Russia", "Iran", "North Korea"):
+  2938→                recommendations.append({
+  2939→                    "priority": "high",
+  2940→                    "category": "network_defense",
+  2941→                    "recommendation": (
+  2942→                        f"Block or heavily inspect traffic to/from "
+  2943→                        f"{country} ASNs associated with state-sponsored "
+  2944→                        f"activity. Implement geo-IP filtering for "
+  2945→                        f"non-business-essential traffic."
+  2946→                    ),
+  2947→                })
+  2948→
+  2949→            # Technique-specific recommendations
+  2950→            tech_rec_map = {
+  2951→                "T1566.001": {
+  2952→                    "category": "email_security",
+  2953→                    "rec": (
+  2954→                        "Enhance email security with sandboxed attachment "
+  2955→                        "analysis and URL rewriting for phishing prevention."
+  2956→                    ),
+  2957→                },
+  2958→                "T1078": {
+  2959→                    "category": "identity",
+  2960→                    "rec": (
+  2961→                        "Implement phishing-resistant MFA (FIDO2/WebAuthn) "
+  2962→                        "across all accounts. Audit for credential reuse."
+  2963→                    ),
+  2964→                },
+  2965→                "T1003": {
+  2966→                    "category": "endpoint",
+  2967→                    "rec": (
+  2968→                        "Deploy credential guard and LSASS protection. "
+  2969→                        "Monitor for Mimikatz-style credential dumping."
+  2970→                    ),
+  2971→                },
+  2972→                "T1055": {
+  2973→                    "category": "endpoint",
+  2974→                    "rec": (
+  2975→                        "Enable anti-process-injection policies. Monitor "
+  2976→                        "for suspicious cross-process memory access."
+  2977→                    ),
+  2978→                },
+  2979→                "T1071.004": {
+  2980→                    "category": "network_defense",
+  2981→                    "rec": (
+  2982→                        "Monitor DNS query patterns for tunneling indicators. "
+  2983→                        "Deploy DNS security solutions with anomaly detection."
+  2984→                    ),
+  2985→                },
+  2986→                "T1486": {
+  2987→                    "category": "backup",
+  2988→                    "rec": (
+  2989→                        "Verify offline, immutable backups are in place. "
+  2990→                        "Test backup restoration procedures quarterly."
+  2991→                    ),
+  2992→                },
+  2993→                "T1190": {
+  2994→                    "category": "patch_management",
+  2995→                    "rec": (
+  2996→                        "Accelerate patching for public-facing applications. "
+  2997→                        "Deploy virtual patching/WAF rules for known CVEs."
+  2998→                    ),
+  2999→                },
+  3000→            }
+  3001→
+  3002→            for tech in techniques:
+  3003→                if tech in tech_rec_map:
+  3004→                    rec = tech_rec_map[tech]
+  3005→                    recommendations.append({
+  3006→                        "priority": "medium",
+  3007→                        "category": rec["category"],
+  3008→                        "recommendation": rec["rec"],
+  3009→                    })
+  3010→
+  3011→        if attribution_report.get("risk_score", 0) >= 60:
+  3012→            recommendations.append({
+  3013→                "priority": "critical",
+  3014→                "category": "incident_response",
+  3015→                "recommendation": (
+  3016→                    "Initiate incident response procedures. "
+  3017→                    "Isolate affected systems and preserve forensic evidence. "
+  3018→                    "Engage threat intelligence and legal teams."
+  3019→                ),
+  3020→            })
+  3021→
+  3022→        # De-duplicate
+  3023→        seen = set()
+  3024→        unique: List[Dict[str, Any]] = []
+  3025→        for rec in recommendations:
+  3026→            key = rec["recommendation"][:80]
+  3027→            if key not in seen:
+  3028→                seen.add(key)
+  3029→                unique.append(rec)
+  3030→
+  3031→        return unique
+  3032→
+  3033→    # ----- Utility / class methods -----
+  3034→
+  3035→    @classmethod
+  3036→    def list_groups(cls) -> List[Dict[str, str]]:
+  3037→        """Return a summary list of all APT groups in the database.
+  3038→
+  3039→        Returns:
+  3040→            List of dicts with ``id``, ``name``, ``country``, ``motivation``.
+  3041→        """
+  3042→        return [
+  3043→            {
+  3044→                "id": gid,
+  3045→                "name": data.get("name", gid),
+  3046→                "country": data.get("country", "?"),
+  3047→                "motivation": data.get("motivation", "?"),
+  3048→                "sophistication": data.get("sophistication", "?"),
+  3049→            }
+  3050→            for gid, data in APT_GROUPS.items()
+  3051→        ]
+  3052→
+  3053→    @classmethod
+  3054→    def list_campaigns(cls) -> List[Dict[str, str]]:
+  3055→        """Return a summary list of all known campaigns.
+  3056→
+  3057→        Returns:
+  3058→            List of dicts with ``id``, ``name``, ``year``, ``attributed_to``.
+  3059→        """
+  3060→        return [
+  3061→            {
+  3062→                "id": c.get("id", ""),
+  3063→                "name": c.get("name", ""),
+  3064→                "year": str(c.get("year", "?")),
+  3065→                "attributed_to": ", ".join(c.get("attributed_to", [])),
+  3066→            }
+  3067→            for c in KNOWN_CAMPAIGNS
+  3068→        ]
+  3069→
+  3070→    @classmethod
+  3071→    def search_groups_by_technique(
+  3072→        cls, technique_id: str,
+  3073→    ) -> List[Dict[str, str]]:
+  3074→        """Find all APT groups that use a specific technique.
+  3075→
+  3076→        Args:
+  3077→            technique_id: MITRE ATT&CK technique ID.
+  3078→
+  3079→        Returns:
+  3080→            List of group summary dicts.
+  3081→        """
+  3082→        results: List[Dict[str, str]] = []
+  3083→        for gid, data in APT_GROUPS.items():
+  3084→            if technique_id in data.get("techniques", []):
+  3085→                results.append({
+  3086→                    "id": gid,
+  3087→                    "name": data.get("name", gid),
+  3088→                    "country": data.get("country", "?"),
+  3089→                })
+  3090→        return results
+  3091→
+  3092→    @classmethod
+  3093→    def search_groups_by_country(cls, country: str) -> List[Dict[str, str]]:
+  3094→        """Find all APT groups associated with a country.
+  3095→
+  3096→        Args:
+  3097→            country: Country name or code.
+  3098→
+  3099→        Returns:
+  3100→            List of group summary dicts.
+  3101→        """
+  3102→        results: List[Dict[str, str]] = []
+  3103→        country_upper = country.upper()
+  3104→        for gid, data in APT_GROUPS.items():
+  3105→            if (data.get("country", "").upper() == country_upper
+  3106→                    or data.get("country_code", "").upper() == country_upper):
+  3107→                results.append({
+  3108→                    "id": gid,
+  3109→                    "name": data.get("name", gid),
+  3110→                    "aliases": ", ".join(data.get("aliases", [])),
+  3111→                    "sophistication": data.get("sophistication", "?"),
+  3112→                })
+  3113→        return results
+  3114→
+  3115→    @classmethod
+  3116→    def technique_overlap_matrix(
+  3117→        cls, group_ids: Optional[List[str]] = None,
+  3118→    ) -> Dict[str, Dict[str, int]]:
+  3119→        """Compute a pairwise technique overlap matrix for APT groups.
+  3120→
+  3121→        Args:
+  3122→            group_ids: Optional list of group IDs. If ``None``, uses all groups.
+  3123→
+  3124→        Returns:
+  3125→            Nested dict mapping ``group_id -> group_id -> overlap_count``.
+  3126→        """
+  3127→        ids = group_ids or list(APT_GROUPS.keys())
+  3128→        matrix: Dict[str, Dict[str, int]] = {}
+  3129→
+  3130→        for gid_a in ids:
+  3131→            matrix[gid_a] = {}
+  3132→            techs_a = set(APT_GROUPS.get(gid_a, {}).get("techniques", []))
+  3133→            for gid_b in ids:
+  3134→                techs_b = set(APT_GROUPS.get(gid_b, {}).get("techniques", []))
+  3135→                matrix[gid_a][gid_b] = len(techs_a & techs_b)
+  3136→
+  3137→        return matrix
+  3138→
+  3139→    def __repr__(self) -> str:
+  3140→        return (
+  3141→            f"AttributionEngine(groups={len(self._groups)}, "
+  3142→            f"version={__version__}, "
+  3143→            f"analyses={self._analysis_count})"
+  3144→        )
+  3145→

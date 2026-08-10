@@ -1,0 +1,795 @@
+     1→# ReconPro v7–v9 Master Architecture Plan
+     2→
+     3→> **Current State**: v6.0.0 — 28 files, ~12,200 lines, urllib-based sync HTTP, ThreadPoolExecutor concurrency, 27 CLI subcommands, rule-based agent with optional LLM, pure-Python fallback graph.
+     4→
+     5→---
+     6→
+     7→## Phase 1 — v7.0: Async Core & Evasion Engine
+     8→
+     9→### 1.1 Asynchronous Engine Core
+    10→**Problem**: All HTTP goes through `urllib.request` (sync). Max throughput: ~100 req/s per thread. Blitz uses ThreadPoolExecutor (4-8 workers default). Can't scale to thousands of concurrent connections.
+    11→
+    12→**Architecture**:
+    13→```
+    14→reconpro/
+    15→  async_http.py      (NEW — ~400 lines)
+    16→    - AsyncSession: wraps aiohttp ClientSession with connection pooling
+    17→    - AdaptiveLimiter: token-bucket that auto-tunes based on 429/timeout rates
+    18→    - RawSocket: optional raw SYN scanner using scapy (if installed)
+    19→    - Backward compat: sync wrapper so existing modules keep working
+    20→
+    21→  engine.py          (NEW — ~300 lines) 
+    22→    - ScanEngine: replaces scan() in scanner.py
+    23→    - Manages async task queue, module execution, result aggregation
+    24→    - Runs modules concurrently (not sequentially like today)
+    25→    - Emits events: on_finding, on_module_start, on_module_complete
+    26→    - Progress callbacks for TUI integration
+    27→```
+    28→
+    29→**Migration Strategy**:
+    30→- Add `aiohttp>=3.9` as optional dep (`pip install reconpro[async]`)
+    31→- Keep urllib as fallback for zero-dep mode
+    32→- Rewrite scanner.py to use engine.py internally
+    33→- Each module gets `async_run()` alongside existing `run()`
+    34→- Modules that don't have async versions get wrapped in `asyncio.to_thread()`
+    35→
+    36→**Target**: 10,000+ concurrent connections, 50x throughput improvement
+    37→
+    38→### 1.2 Low-Level Raw Packet Assembly
+    39→**Problem**: Port scanning uses urllib-based HTTP probes on top-20 ports. Can't do real SYN scans, UDP probes, or custom flag manipulation.
+    40→
+    41→**Architecture**:
+    42→```
+    43→reconpro/
+    44→  raw_sockets.py     (NEW — ~350 lines)
+    45→    - SynScanner: raw TCP SYN scan (requires root/scapy)
+    46→    - UdpProber: custom UDP payload sender
+    47→    - ArpSpy: ARP table discovery on local network
+    48→    - TtlAnalyzer: TTL-based OS fingerprinting
+    49→    - Graceful fallback: if no scapy/root, falls back to connect() scan
+    50→
+    51→  modules/
+    52→    portscan.py     (NEW — ~250 lines, replaces port checks in recon.py/host.py)
+    53→    - Full 65,535-port scan mode
+    54→    - Service version detection via banner grabbing
+    55→    - OS fingerprinting via TTL/probe responses
+    56→```
+    57→
+    58→**Dependencies**: `scapy>=2.5` (optional, `[raw]` extra)
+    59→
+    60→### 1.3 Adaptive Rate-Limiting Engine
+    61→**Problem**: Current `RateLimiter` in http.py is a simple token bucket (fixed rate). Doesn't adapt to target behavior.
+    62→
+    63→**Architecture**:
+    64→```
+    65→reconpro/async_http.py  (extends existing)
+    66→  AdaptiveLimiter:
+    67→    - Tracks: response_time_ema, error_rate_ema, timeout_rate
+    68→    - On 429/503: multiply rate by 0.5, add jitter
+    69→    - On timeout: reduce concurrent connections by 25%
+    70→    - On fast responses (<200ms): increase rate by 10% (up to max)
+    71→    - Per-target rate tracking (separate limiter per domain)
+    72→    - Config: min_rps, max_rps, backoff_factor, recovery_time
+    73→```
+    74→
+    75→### 1.4 Behavioral Footprint Shifting
+    76→**Problem**: Every request has identical structure — same headers, same timing, same TLS fingerprint. Easy to detect and block.
+    77→
+    78→**Architecture**:
+    79→```
+    80→reconpro/
+    81→  evasion.py         (NEW — ~300 lines)
+    82→    - HeaderRotator: cycles through 50+ real browser UA strings
+    83→    - TlsFingerprint: randomizes TLS cipher suites, extensions order
+    84→    - TimingJitter: adds gaussian-distributed delays (mean=0, stddev=configurable)
+    85→    - PathCanonicalization: alternates between /path, /./path, /../ normalization
+    86→    - CookieJar: maintains per-target cookie state across requests
+    87→    - RefererChain: simulates realistic navigation patterns
+    88→    - ProfileManager: loads evasion profiles from ~/.reconpro/profiles/
+    89→```
+    90→
+    91→### 1.5 Decentralized Proxy Routing
+    92→**Problem**: All scans originate from one IP. Large-scale audits need distributed origins.
+    93→
+    94→**Architecture**:
+    95→```
+    96→reconpro/
+    97→  proxy.py           (NEW — ~250 lines)
+    98→    - ProxyPool: manages list of proxies (HTTP/SOCKS5/rotate)
+    99→    - Sources: file input, ProxyList API, TOR circuit rotation
+   100→    - Health checking: async probe of all proxies, auto-removal of dead ones
+   101→    - RotatingStrategy: round-robin, random, least-connections, geo-distributed
+   102→    - Integration: AsyncSession accepts proxy_pool parameter
+   103→
+   104→  modules/
+   105→    distributed.py   (NEW — ~200 lines)
+   106→    - Split target list across proxy origins
+   107→    - Aggregate results with origin metadata
+   108→    - Detect IP-based blocking by comparing results across proxies
+   109→```
+   110→
+   111→---
+   112→
+   113→## Phase 2 — v7.5: Unified Intelligence Layer
+   114→
+   115→### 2.1 Unified Memory Graphs
+   116→**Problem**: knowledge_graph.py is only called from nexus_agent tool. Swarm agents can't share discoveries. Adversarial loop doesn't persist state between rounds.
+   117→
+   118→**Architecture**:
+   119→```
+   120→reconpro/
+   121→  memory.py          (REWRITE knowledge_graph.py → ~600 lines)
+   122→    - UnifiedMemoryStore: single source of truth for all agents
+   123→    - Backends: JSON file (default), SQLite (optional), Redis (optional)
+   124→    - Sub-systems:
+   125→      - KnowledgeGraph: asset/vuln/relationship graph
+   126→      - FindingStore: time-series of all findings per target
+   127→      - AgentBlackboard: shared state for active swarm/adversarial runs
+   128→      - CredentialVault: encrypted storage for discovered credentials
+   129→    - Events: all writes emit to connected agents
+   130→    - Query language: graph traversal + temporal filters
+   131→
+   132→  swarm.py           (MODIFY — connect to UnifiedMemoryStore)
+   133→  adversarial.py     (MODIFY — connect to UnifiedMemoryStore)
+   134→  nexus_agent.py     (MODIFY — connect to UnifiedMemoryStore)
+   135→```
+   136→
+   137→### 2.2 Multi-Vector Attack-Path Chaining
+   138→**Problem**: Each finding is independent. A low-severity info leak + missing header + open redirect could chain into account takeover, but ReconPro doesn't see the connection.
+   139→
+   140→**Architecture**:
+   141→```
+   142→reconpro/
+   143→  chain_engine.py    (NEW — ~500 lines)
+   144→    - AttackPathFinder: takes KnowledgeGraph, finds compound attack paths
+   145→    - ChainRules: 50+ predefined chain patterns:
+   146→      - Info leak + open redirect → credential phishing URL
+   147→      - Missing CSP + XSS payload → stored XSS
+   148→      - CORS wildcard + authenticated API → cross-origin data theft
+   149→      - Cloud metadata SSRF + IAM misconfig → full cloud takeover
+   150→      - JWT no-verify + weak signing key → token forgery
+   151→    - LLM-assisted chain discovery: send graph to LLM, ask "what compound paths exist?"
+   152→    - Scoring: chain severity = max(child severities) * 1.5 + path_length_bonus
+   153→    - Output: ChainReport with step-by-step attack narrative
+   154→
+   155→  modules/
+   156→    chain_analysis.py (NEW — wraps chain_engine for scan integration)
+   157→```
+   158→
+   159→### 2.3 Inter-Language AST Tracking (Taint Analysis)
+   160→**Problem**: Current ast_analyzer.py checks single files in isolation. Can't track `user_input = request.get("x")` flowing through 3 Python files into a SQL query.
+   161→
+   162→**Architecture**:
+   163→```
+   164→reconpro/modules/
+   165→  ast_analyzer.py   (MAJOR REWRITE — ~1200 lines)
+   166→    - TaintTracker: inter-procedural, inter-file taint analysis
+   167→      - Phase 1: Build call graph (who calls whom)
+   168→      - Phase 2: Identify sources (user input, env vars, file reads, DB)
+   169→      - Phase 3: Propagate taint through assignments, function calls, returns
+   170→      - Phase 4: Check if tainted data reaches sinks (SQL, eval, exec, os.system)
+   171→    - Supported languages:
+   172→      - Python: real AST walking (already exists, upgrade to taint)
+   173→      - JavaScript/TypeScript: tree-sitter based (optional dep)
+   174→      - Go: tree-sitter based (optional dep)
+   175→    - Cross-language: if Python calls subprocess(["node", "x.js", user_input]) → track across boundary
+   176→    - Output: TaintReport with full data flow path: source → propagation → sink
+   177→
+   178→  deps: tree-sitter>=0.21 (optional, `[ast-full]` extra)
+   179→```
+   180→
+   181→### 2.4 Context-Aware Payload Fuzzing
+   182→**Problem**: gorgon.py uses 3 hardcoded injection payloads per category. Doesn't adapt to the target's framework.
+   183→
+   184→**Architecture**:
+   185→```
+   186→reconpro/
+   187→  fuzzer.py          (NEW — ~600 lines)
+   188→    - TechDetector: enhanced version detection (X-Powered-By, headers, HTML, JS libs, meta generator)
+   189→    - PayloadDB: 2000+ payloads organized by:
+   190→      - Category (SQLi, XSS, SSTI, SSRF, path traversal, etc.)
+   191→      - Framework (Django, Flask, Express, Spring, Rails, Laravel, WordPress, etc.)
+   192→      - Encoding (plain, URL-encoded, double-encoded, Unicode, HTML entity)
+   193→      - WAF bypass (Space2Comment, case alternation, Unicode normalization)
+   194→    - FuzzSession: given a target + detected tech, select top-50 most relevant payloads
+   195→    - ResponseAnalyzer: classify responses (reflected, error-based, time-based, blind)
+   196→    - Integration: called by gorgon.py, auth.py, chain.py with target-specific payloads
+   197→
+   198→  data/
+   199→    payloads/         (NEW directory — ~50KB of payload files)
+   200→      sqli.json, xss.json, ssti.json, ssrf.json, path_traversal.json
+   201→      waf_bypass.json, framework_specific.json
+   202→```
+   203→
+   204→### 2.5 Agent Tool Customization (Plugin SDK)
+   205→**Problem**: Nexus agent has 18 hardcoded tools. Users can't add custom tools without editing source.
+   206→
+   207→**Architecture**:
+   208→```
+   209→reconpro/
+   210→  tool_sdk.py        (NEW — ~300 lines)
+   211→    - @tool decorator: registers a function as an agent tool
+   212→    - ToolSpec: name, description, parameters (JSON Schema), examples
+   213→    - ToolRegistry (extend existing): loads from:
+   214→      1. Built-in tools (existing 18)
+   215→      2. Plugin tools (~/.reconpro/tools/*.py)
+   216→      3. External CLI wrappers (configured in tools.yaml)
+   217→    - External CLI integration:
+   218→      ```yaml
+   219→      # ~/.reconpro/tools.yaml
+   220→      tools:
+   221→        - name: nuclei
+   222→          description: "Run Nuclei template scanner"
+   223→          command: "nuclei -target {target} -json"
+   224→          parser: "json"  # how to parse output into Findings
+   225→        - name: ffuf
+   226→          description: "Fuzz directories with ffuf"
+   227→          command: "ffuf -u {target}/FUZZ -w {wordlist} -fc 404"
+   228→          parser: "regex:.*(?P<url>https?://\S+)"
+   229→      ```
+   230→    - LLM tool selection: agent sees all available tools, picks based on goal
+   231→```
+   232→
+   233→---
+   234→
+   235→## Phase 3 — v8.0: Autonomous Defense & Advanced Scanning
+   236→
+   237→### 3.1 Autonomous Defense Generation
+   238→**Problem**: adversarial.py generates text remediation suggestions. Doesn't produce deployable fixes.
+   239→
+   240→**Architecture**:
+   241→```
+   242→reconpro/
+   243→  defense.py         (NEW — ~500 lines)
+   244→    - PatchGenerator: for each finding, generates:
+   245→      - WAF rules (ModSecurity SecRule, AWS WAF JSON, Cloudflare rules)
+   246→      - Code patches (diff format, applicable with `patch` command)
+   247→      - Infrastructure fixes ( Terraform/CloudFormation changes, K8s manifests)
+   248→      - Nginx/Apache config snippets
+   249→      - CI/CD pipeline additions (pre-commit hooks, GitHub Actions)
+   250→    - DefenseBundle: collection of all patches for a scan, with:
+   251→      - apply.sh: one-click apply all fixes
+   252→      - rollback.sh: revert all changes
+   253→      - verification_scan: re-scan command to confirm fixes worked
+   254→    - LLM-enhanced: if API key available, generate context-aware patches
+   255→    - Rule-based fallback: 30+ patch templates for common categories
+   256→```
+   257→
+   258→### 3.2 Infrastructure-as-Code (IaC) Auditing
+   259→**Problem**: No cloud/infra scanning. Terraform misconfigs, overly permissive IAM roles, exposed S3 buckets go undetected.
+   260→
+   261→**Architecture**:
+   262→```
+   263→reconpro/modules/
+   264→  iac_audit.py      (NEW — ~600 lines)
+   265→    - TerraformParser: parses .tf and .tfstate files (HCL format)
+   266→    - CloudFormationParser: parses YAML/JSON templates
+   267→    - DockerfileParser: parses Dockerfiles for security issues
+   268→    - K8sManifestParser: parses Kubernetes YAML manifests
+   269→    - Checks (100+ rules):
+   270→      - S3 bucket policies (public access, encryption, versioning)
+   271→      - IAM policies (admin access, wildcard actions, no MFA)
+   272→      - Security groups (0.0.0.0/0 ingress, open high ports)
+   273→      - K8s (privileged containers, hostPID, mount sensitive paths, no network policy)
+   274→      - Docker (running as root, no healthcheck, stale base images, secrets in ENV)
+   275→      - TLS configuration (expired certs, weak ciphers, no HSTS)
+   276→    - Output: Finding per misconfig with exact file:line reference
+   277→
+   278→  modules/
+   279→    cloud_recon.py   (NEW — ~400 lines)
+   280→    - AWS metadata SSRF (enhanced from nhi.py)
+   281→    - Azure IMDS probing
+   282→    - GCP metadata probing
+   283→    - Cloud asset discovery (S3 buckets, Azure blobs, GCP storage)
+   284→    - DNS record enumeration for cloud services
+   285→```
+   286→
+   287→### 3.3 Dynamic API Blueprint Reconstruction
+   288→**Problem**: recon.py checks a hardcoded list of ~30 common API paths. Doesn't discover custom/undocumented endpoints.
+   289→
+   290→**Architecture**:
+   291→```
+   292→reconpro/
+   293→  api_discovery.py   (NEW — ~500 lines)
+   294→    - JsEndpointExtractor: parses JS bundles to find API URLs
+   295→      - Regex: /api/v[0-9]+/, fetch(), axios.get(), fetchJson()
+   296→      - Source map parsing (if .map files available)
+   297→      - Webpack chunk analysis
+   298→    - GraphQLSchemaExtractor: introspection query, schema dumps
+   299→    - GRPCReflection: gRPC server reflection to enumerate services/methods
+   300→    - OpenAPISpecParser: parse /swagger.json, /openapi.yaml, /docs
+   301→    - LinkCrawler: follow all links, forms, and JS-discovered URLs
+   302→    - ParameterFuzzer: for each endpoint, fuzz query/body/header params
+   303→    - AuthMatrix: test each endpoint with no auth, valid auth, invalid auth, cross-user auth
+   304→    - Output: APIBlueprint with endpoints, methods, params, auth requirements
+   305→```
+   306→
+   307→### 3.4 Granular Secret Entropy Scoring
+   308→**Problem**: dev.py uses 13 regex patterns. High false-positive rate — matches random strings that aren't secrets.
+   309→
+   310→**Architecture**:
+   311→```
+   312→reconpro/
+   313→  entropy.py         (NEW — ~200 lines)
+   314→    - ShannonEntropy: calculates entropy of a string
+   315→    - SecretClassifier: ML-inspired scoring:
+   316→      - High entropy (>4.0) + known prefix (AKIA, ghp_, gsk_, xoxb-, etc.) → CRITICAL
+   317→      - High entropy + assignment context (API_KEY=, password=, token=) → HIGH
+   318→      - High entropy + no context → MEDIUM (likely false positive)
+   319→      - Low entropy + known pattern (password123) → HIGH
+   320→      - Format validation: AWS keys (20+40 chars, specific regex), GitHub tokens (36 hex), JWT structure
+   321→    - ContextAnalysis: checks surrounding code for:
+   322→      - Variable names (contains: key, secret, token, password, cred, auth)
+   323→      - File names (.env, credentials, config, secrets)
+   324→      - Adjacent comments (TODO: remove, FIXME, temporary)
+   325→    - Integration: replaces _check_hardcoded_secrets() in dev.py and _scan_for_tokens() in nhi.py
+   326→```
+   327→
+   328→### 3.5 Container Sandbox Escape Analysis
+   329→**Problem**: dev.py has basic Docker Compose checks. Doesn't analyze Dockerfiles, K8s manifests, or evaluate escape vectors.
+   330→
+   331→**Architecture**:
+   332→```
+   333→reconpro/modules/
+   334→  container_sec.py   (NEW — ~500 lines)
+   335→    - DockerfileAnalyzer:
+   336→      - Runs as root (USER root / no USER directive)
+   337→      - Secrets in ENV/ARG/COPY
+   338→      - No .dockerignore (sensitive files copied in)
+   339→      - Stale/vulnerable base images (checks CVE database)
+   340→      - COPY --from= pulling untrusted stages
+   341→    - K8sAnalyzer:
+   342→      - Privileged containers (securityContext.privileged: true)
+   343→      - hostPID, hostNetwork, hostIPC
+   344→      - Mounting sensitive host paths (/var/run/docker.sock, /, /etc)
+   345→      - No resource limits (CPU/memory)
+   346→      - No network policy (default allow-all)
+   347→      - Service account token auto-mount
+   348→      - Image pull policy: Always vs IfNotPresent
+   349→    - EscapeVectorEvaluator:
+   350→      - Combines findings to assess escape likelihood
+   351→      - privileged + hostPID + docker.sock mount → CRITICAL (container escape)
+   352→      - No network policy + exposed service → HIGH (lateral movement)
+   353→```
+   354→
+   355→---
+   356→
+   357→## Phase 4 — v8.5: CI/CD & Collaborative Operations
+   358→
+   359→### 4.1 Native VCS Webhook Listeners
+   360→**Problem**: server.py is a basic HTTP server. No webhook support.
+   361→
+   362→**Architecture**:
+   363→```
+   364→reconpro/
+   365→  webhooks.py        (NEW — ~400 lines)
+   366→    - GitHubWebhookHandler: handles push, pull_request events
+   367→    - GitLabWebhookHandler: handles merge_request, push events
+   368→    - EventRouter: maps events to scan actions:
+   369→      - pull_request.opened → scan changed files with ast_analyzer + dev
+   370→      - push to main → full project scan + diff with previous
+   371→      - push to any branch → incremental scan of changed files
+   372→    - Secret validation: HMAC-SHA256 signature verification
+   373→    - Queuing: async task queue for concurrent webhook processing
+   374→    - Status reporting: post scan results back as PR comments / commit statuses
+   375→
+   376→  server.py          (MODIFY — add webhook routes)
+   377→    POST /webhook/github
+   378→    POST /webhook/gitlab
+   379→    GET /webhook/config  (list active webhook configs)
+   380→```
+   381→
+   382→### 4.2 Dynamic Delta Reporting
+   383→**Problem**: history.py has basic diff (new/fixed/persistent findings). Doesn't map findings to specific commits or show code-level changes.
+   384→
+   385→**Architecture**:
+   386→```
+   387→reconpro/
+   388→  delta.py           (NEW — ~350 lines)
+   389→    - DeltaReporter: compares two scan results with:
+   390→      - Git integration: map findings to the commit that introduced them
+   391→      - Blame analysis: git blame on the vulnerable file:line
+   392→      - Author attribution: who introduced the vulnerability
+   393→      - Time tracking: how long each finding has existed
+   394→      - Trend analysis: severity/count trends over N scans
+   395→      - Risk velocity: new critical findings per week
+   396→    - DeltaReport formats:
+   397→      - Markdown (PR comment friendly)
+   398→      - JSON (machine readable)
+   399→      - SARIF (GitHub Code Scanning compatible)
+   400→      - HTML (standalone report)
+   401→```
+   402→
+   403→### 4.3 Bi-Directional Jira & Slack Synchronization
+   404→**Problem**: No external integration. Findings stay in the terminal.
+   405→
+   406→**Architecture**:
+   407→```
+   408→reconpro/
+   409→  integrations/
+   410→    __init__.py
+   411→    jira.py           (NEW — ~300 lines)
+   412→      - JiraClient: create/update/search issues
+   413→      - Auto-create: critical/high findings → Jira tickets
+   414→      - Fields: summary, description, severity, component, labels, attachments
+   415→      - Sync: re-scan → update ticket status (fixed if finding gone)
+   416→      - Config: ~/.reconpro/integrations/jira.yaml
+   417→
+   418→    slack.py          (NEW — ~200 lines)
+   419→      - SlackClient: post messages to channels
+   420→      - Real-time alerts: critical findings → immediate Slack notification
+   421→      - Daily/weekly digest: summary of all new findings
+   422→      - Interactive: Slash commands (/reconpro scan, /reconpro status)
+   423→      - Config: ~/.reconpro/integrations/slack.yaml
+   424→
+   425→    github.py         (NEW — ~250 lines)
+   426→      - GitHubClient: create issues, post PR comments, commit statuses
+   427→      - Auto-file: findings as GitHub issues with labels
+   428→      - PR comments: scan results as PR review comments
+   429→      - Code Scanning: upload SARIF to GitHub Code Scanning API
+   430→      - Config: ~/.reconpro/integrations/github.yaml (PAT token)
+   431→
+   432→  deps: jira>=3.0, slack-sdk>=3.0 (optional, `[integrations]` extra)
+   433→```
+   434→
+   435→### 4.4 Interactive Knowledge Graph UI (Browser-Based)
+   436→**Problem**: knowledge_graph.py outputs text stats to terminal. No visual interaction.
+   437→
+   438→**Architecture**:
+   439→```
+   440→reconpro/
+   441→  graph_ui.py        (NEW — ~600 lines)
+   442→    - Generates a self-contained HTML file with:
+   443→      - D3.js force-directed graph visualization
+   444→      - Nodes: color-coded by type (target=blue, vuln=red, asset=green)
+   445→      - Edges: labeled by relationship type
+   446→      - Click node: shows details panel (findings, CVEs, remediation)
+   447→      - Click edge: shows relationship description
+   448→      - Search bar: filter nodes by type/severity/name
+   449→      - Path finder: click two nodes → highlights all paths between them
+   450→      - Blast radius: click a node → highlights all reachable vulnerabilities
+   451→    - Served via: `reconpro graph --action visual` opens browser
+   452→    - Also: embedded in HTML reports as an interactive section
+   453→    - No server needed — pure client-side D3.js in a single HTML file
+   454→```
+   455→
+   456→### 4.5 Air-Gapped Deployment Packages
+   457→**Problem**: Requires pip + network for install. Can't run in isolated environments.
+   458→
+   459→**Architecture**:
+   460→```
+   461→build/
+   462→  bundle.py         (NEW — ~200 lines)
+   463→    - Creates a single-file executable using PyInstaller:
+   464→      - `python build/bundle.py --output reconpro.bin`
+   465→      - Bundles: all Python deps, all modules, all payload data
+   466→      - Strips: textual, openai, anthropic, networkx (not needed for core)
+   467→      - Result: ~15MB standalone binary, zero external deps
+   468→    - Also creates: 
+   469→      - ZIP bundle: reconpro-portable.zip (Python + all code, no pip needed)
+   470→      - Docker image: multi-stage build, ~50MB final image
+   471→
+   472→  Dockerfile          (NEW)
+   473→    FROM python:3.12-slim AS builder
+   474→    COPY . /app
+   475→    RUN pip install . && strip unnecessary deps
+   476→    FROM python:3.12-slim
+   477→    COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/
+   478→    COPY --from=builder /app/reconpro /app/reconpro
+   479→    ENTRYPOINT ["python", "-m", "reconpro.cli"]
+   480→```
+   481→
+   482→---
+   483→
+   484→## Phase 5 — v9.0: Next-Gen Features (My Additions)
+   485→
+   486→### 5.1 Live Traffic Interception & Replay
+   487→**Why**: Most recon tools only see the current snapshot. Real attacks exploit timing — intercepting live traffic reveals runtime secrets, session tokens, and API patterns that static analysis misses.
+   488→
+   489→**Architecture**:
+   490→```
+   491→reconpro/
+   492→  mitm.py            (NEW — ~500 lines)
+   493→    - ProxyInterceptor: MITM proxy that logs all HTTP/HTTPS traffic
+   494→    - Based on mitmproxy library (optional dep)
+   495→    - Auto-discovers: API endpoints, auth tokens, session cookies, hidden params
+   496→    - TrafficReplay: replay requests with modifications (auth removal, param tampering)
+   497→    - SessionHijackTest: replay session tokens from different origins
+   498→    - Integration: `reconpro intercept --port 8080` starts proxy, then `reconpro analyze-traffic`
+   499→```
+   500→
+   501→### 5.2 Passive DNS & Historical Intel
+   502→**Why**: Current subdomain discovery is active (CT logs + DNS brute). Passive DNS databases contain years of historical records that reveal deprecated subdomains still pointing to old infrastructure.
+   503→
+   504→**Architecture**:
+   505→```
+   506→reconpro/
+   507→  passive_intel.py   (NEW — ~300 lines)
+   508→    - PassiveDNS: queries VirusTotal, SecurityTrails, Shodan APIs for historical DNS
+   509→    - WaybackMachine: fetches archived versions of target pages
+   510→    - CertificateTransparency: enhanced CT log search with historical cert analysis
+   511→    - DeprecationDetector: finds subdomains with stale DNS (pointing to decommissioned IPs)
+   512→    - TechHistory: tracks technology changes over time (WordPress → Laravel migration = exposed wp-admin)
+   513→    - Integration: `reconpro passive example.com`
+   514→
+   515→  deps: shodan>=1.25 (optional, `[intel]` extra)
+   516→```
+   517→
+   518→### 5.3 Real-Time Collaboration (Multi-Operator)
+   519→**Why**: Security audits are team efforts. Multiple pentesters should see each other's findings in real-time.
+   520→
+   521→**Architecture**:
+   522→```
+   523→reconpro/
+   524→  collab.py          (NEW — ~400 lines)
+   525→    - CollabServer: WebSocket server built on server.py
+   526→    - Operators connect: `reconpro collab --join ws://team-server:7890`
+   527→    - Shared state: all operators see live findings feed
+   528→    - Operator identity: each operator has a name/color
+   529→    - Finding claims: "I'm investigating this" → locks finding to operator
+   530→    - Chat: built-in operator chat alongside findings
+   531→    - Session recording: full audit trail of who found what, when
+   532→    - Integration: `reconpro serve --collab` enables collaboration mode
+   533→
+   534→  deps: websockets>=12.0 (optional, `[collab]` extra)
+   535→```
+   536→
+   537→### 5.4 Automated Compliance Mapping
+   538→**Why**: Organizations need to map findings to compliance frameworks (SOC2, ISO27001, PCI-DSS, HIPAA, GDPR). Currently manual.
+   539→
+   540→**Architecture**:
+   541→```
+   542→reconpro/
+   543→  compliance.py      (NEW — ~400 lines)
+   544→    - ComplianceMapper: maps each finding category to compliance controls
+   545→    - Built-in frameworks:
+   546→      - SOC2: CC6.1 (logical access), CC6.3 (encryption), CC7.1 (detection)
+   547→      - ISO27001: A.8 (cryptography), A.9 (access control), A.12 (operations)
+   548→      - PCI-DSS: Req 1 (network security), Req 6 (secure development), Req 8 (cryptography)
+   549→      - HIPAA: §164.312 (access controls), §164.312(e) (transmission security)
+   550→      - GDPR: Art. 25 (data protection by design), Art. 32 (security of processing)
+   551→      - CIS Benchmarks: mapping to specific CIS controls
+   552→    - ComplianceReport: percentage compliance per framework, gaps, evidence
+   553→    - Output: `reconpro compliance --framework soc2,pci-dss target.com`
+   554→    - Integration: findings automatically tagged with applicable compliance controls
+   555→
+   556→  data/
+   557→    compliance/
+   558→      soc2.yaml, iso27001.yaml, pci-dss.yaml, hipaa.yaml, gdpr.yaml, cis.yaml
+   559→```
+   560→
+   561→### 5.5 Smart Recon Profiler (Target Fingerprinting)
+   562→**Why**: Currently every target gets the same scan. A WordPress site needs different tests than a React SPA or a Java Spring API.
+   563→
+   564→**Architecture**:
+   565→```
+   566→reconpro/
+   567→  profiler.py        (NEW — ~350 lines)
+   568→    - TargetProfiler: runs a 30-second rapid assessment to classify the target
+   569→    - Classification:
+   570→      - Technology stack (language, framework, server, CDN, WAF)
+   571→      - Application type (SPA, SSR, API-only, static site, microservices)
+   572→      - Authentication model (none, session, JWT, OAuth, API key, mTLS)
+   573→      - Infrastructure (cloud provider, region, load balancer, caching)
+   574→      - Security posture estimate (based on headers, CSP, HSTS, etc.)
+   575→    - AutoPlan: given the profile, selects optimal module combination:
+   576→      - WordPress → recon + auth + vibesec + bot + nhi (skip gorgon SQLi)
+   577→      - React SPA → recon + chain + api_discovery + vibesec
+   578→      - Java API → recon + auth + chain + gorgon + nhi + cve_enrichment
+   579→    - Integration: `scan()` calls profiler first, then runs selected modules
+   580→    - Saves profiles: ~/.reconpro/profiles/{target}.json for faster re-scans
+   581→```
+   582→
+   583→### 5.6 AI-Powered Report Writer
+   584→**Why**: Current reports are data-dense but lack narrative. Security auditors need executive summaries and risk narratives.
+   585→
+   586→**Architecture**:
+   587→```
+   588→reconpro/
+   589→  report_writer.py    (NEW — ~300 lines)
+   590→    - ExecutiveSummaryGenerator:
+   591→      - If LLM available: generates natural language risk narrative
+   592→      - If no LLM: template-based summary with dynamic fill-in
+   593→      - Sections: Overview, Key Risks, Attack Surface, Recommendations, Compliance Impact
+   594→    - Audience modes:
+   595→      - Executive: 1-page summary, business risk language, no jargon
+   596→      - Technical: full findings with code references, CVE links, proof of concept
+   597→      - Compliance: framework-mapped with control gaps
+   598→      - Developer: actionable fix PRs with exact code changes
+   599→    - Output: `reconpro report --audience executive --format pdf`
+   600→```
+   601→
+   602→### 5.7 Zero-Trust Network Mapper
+   603→**Why**: host.py checks the local machine. Doesn't map the network topology or find lateral movement paths.
+   604→
+   605→**Architecture**:
+   606→```
+   607→reconpro/
+   608→  netmap.py          (NEW — ~400 lines)
+   609→    - NetworkDiscovery: ARP scan, ping sweep, mDNS discovery
+   610→    - ServiceFingerprinting: probe open ports, identify services and versions
+   611→    - TrustRelationshipMapper:
+   612→      - SSH key trust chains (who can SSH into whom)
+   613→      - Docker network topology (container-to-container communication)
+   614→      - K8s network policies (actual vs declared)
+   615→      - Active Directory trust relationships (if on Windows domain)
+   616→    - LateralPathFinder: given a compromised host, find all reachable hosts
+   617→    - SegmentationChecker: verify network segmentation between zones
+   618→    - Visual output: network graph with trust relationships
+   619→    - Integration: `reconpro netmap --subnet 192.168.1.0/24`
+   620→```
+   621→
+   622→### 5.8 Scheduled Competitive Benchmarking
+   623→**Why**: Security posture degrades over time. Teams need continuous scoring against their own history and industry peers.
+   624→
+   625→**Architecture**:
+   626→```
+   627→reconpro/
+   628→  benchmark.py       (NEW — ~300 lines)
+   629→    - ScoreTracker: time-series of security scores per target
+   630→    - BenchmarkRunner: scheduled scans that track score trends
+   631→    - Comparisons:
+   632→      - Self: score today vs last week vs last month
+   633→      - Team: score of project A vs project B vs team average
+   634→      - Industry: anonymous aggregate scores from opt-in telemetry
+   635→    - Alerts: score drops below threshold → notification
+   636→    - Leaderboard: `reconpro benchmark --team --period 30d`
+   637→    - Integration with scheduler.py for automated periodic benchmarking
+   638→```
+   639→
+   640→---
+   641→
+   642→## Implementation Priority Matrix
+   643→
+   644→| Priority | Feature | Effort | Impact | Phase |
+   645→|----------|---------|--------|--------|-------|
+   646→| P0 | Async Engine Core | High | Critical | v7.0 |
+   647→| P0 | Evasion Engine | Medium | High | v7.0 |
+   648→| P0 | IaC Auditing | Medium | Critical | v8.0 |
+   649→| P0 | CI/CD Webhooks | Medium | Critical | v8.5 |
+   650→| P1 | Adaptive Rate Limiter | Low | Medium | v7.0 |
+   651→| P1 | Unified Memory | High | Critical | v7.5 |
+   652→| P1 | Attack-Path Chaining | High | Critical | v7.5 |
+   653→| P1 | API Discovery | High | High | v8.0 |
+   654→| P1 | Compliance Mapping | Medium | High | v9.0 |
+   655→| P1 | Profiler/AutoPlan | Medium | High | v9.0 |
+   656→| P2 | Raw Packet Assembly | High | Medium | v7.0 |
+   657→| P2 | Proxy Routing | Medium | Medium | v7.0 |
+   658→| P2 | Inter-Language AST | Very High | High | v7.5 |
+   659→| P2 | Payload Fuzzing | Medium | High | v7.5 |
+   660→| P2 | Agent Tool SDK | Medium | High | v7.5 |
+   661→| P2 | Defense Generation | High | High | v8.0 |
+   662→| P2 | Secret Entropy | Low | Medium | v8.0 |
+   663→| P2 | Container Security | Medium | High | v8.0 |
+   664→| P2 | Delta Reporting | Medium | High | v8.5 |
+   665→| P2 | Jira/Slack/GitHub | Medium | High | v8.5 |
+   666→| P2 | Graph UI | Medium | High | v8.5 |
+   667→| P2 | Air-Gapped Binary | Medium | Medium | v8.5 |
+   668→| P3 | Traffic Interception | High | Medium | v9.0 |
+   669→| P3 | Passive Intel | Medium | Medium | v9.0 |
+   670→| P3 | Collaboration | High | Medium | v9.0 |
+   671→| P3 | AI Report Writer | Medium | Medium | v9.0 |
+   672→| P3 | Network Mapper | High | Medium | v9.0 |
+   673→| P3 | Benchmarking | Low | Medium | v9.0 |
+   674→
+   675→---
+   676→
+   677→## New File Structure (v9.0 final)
+   678→
+   679→```
+   680→reconpro/
+   681→  __init__.py           (existing)
+   682→  cli.py                (existing, 27→40+ subcommands)
+   683→  http.py               (existing, kept for sync fallback)
+   684→  async_http.py         (NEW — async HTTP + adaptive limiter)
+   685→  engine.py             (NEW — async scan orchestration)
+   686→  scanner.py            (existing, rewritten to use engine.py)
+   687→  evasion.py            (NEW — behavioral fingerprint shifting)
+   688→  proxy.py              (NEW — proxy pool management)
+   689→  raw_sockets.py        (NEW — raw packet assembly)
+   690→  memory.py             (REWRITE of knowledge_graph.py — unified memory)
+   691→  knowledge_graph.py    (existing, delegates to memory.py)
+   692→  chain_engine.py       (NEW — multi-vector attack path chaining)
+   693→  fuzzer.py             (NEW — context-aware payload fuzzing)
+   694→  tool_sdk.py           (NEW — agent tool plugin system)
+   695→  defense.py            (NEW — autonomous defense/patch generation)
+   696→  api_discovery.py      (NEW — dynamic API blueprint reconstruction)
+   697→  entropy.py            (NEW — secret entropy scoring)
+   698→  profiler.py           (NEW — target fingerprinting + auto-plan)
+   699→  report_writer.py      (NEW — AI-powered report narratives)
+   700→  mitm.py               (NEW — traffic interception & replay)
+   701→  passive_intel.py      (NEW — passive DNS & historical intel)
+   702→  collab.py             (NEW — real-time multi-operator collaboration)
+   703→  compliance.py         (NEW — compliance framework mapping)
+   704→  netmap.py             (NEW — zero-trust network mapper)
+   705→  benchmark.py          (NEW — competitive benchmarking)
+   706→  webhooks.py           (NEW — VCS webhook listeners)
+   707→  delta.py              (NEW — dynamic delta reporting)
+   708→  graph_ui.py           (NEW — interactive D3.js knowledge graph)
+   709→  
+   710→  integrations/
+   711→    __init__.py
+   712→    jira.py             (NEW — Jira ticket sync)
+   713→    slack.py            (NEW — Slack notifications)
+   714→    github.py           (NEW — GitHub issues/PR/Code Scanning)
+   715→  
+   716→  modules/
+   717→    __init__.py          (existing)
+   718→    recon.py             (existing, enhanced)
+   719→    auth.py              (existing, enhanced with fuzzer.py)
+   720→    chain.py             (existing, enhanced)
+   721→    bot.py               (existing)
+   722→    gorgon.py            (existing, rewritten to use fuzzer.py)
+   723→    oblivion.py          (existing, enhanced)
+   724→    vibesec.py           (existing)
+   725→    nhi.py               (existing, enhanced)
+   726→    host.py              (existing)
+   727→    dev.py               (existing, rewritten to use entropy.py)
+   728→    doctor.py            (existing)
+   729→    ast_analyzer.py      (existing, MAJOR REWRITE — taint tracking)
+   730→    iac_audit.py         (NEW — Terraform/CF/Docker/K8s auditing)
+   731→    container_sec.py     (NEW — container escape analysis)
+   732→    cloud_recon.py       (NEW — cloud infrastructure recon)
+   733→    portscan.py          (NEW — full port scanning)
+   734→    distributed.py       (NEW — distributed proxy scanning)
+   735→    
+   736→  data/
+   737→    payloads/            (NEW — organized payload databases)
+   738→    compliance/          (NEW — framework rule YAML files)
+   739→  
+   740→  chat.py               (existing)
+   741→  tui_app.py            (existing)
+   742→  nexus_tui.py          (existing, enhanced)
+   743→  nexus_agent.py        (existing, enhanced with tool_sdk.py)
+   744→  agent.py              (existing)
+   745→  swarm.py              (existing, enhanced with memory.py)
+   746→  adversarial.py        (existing, enhanced with defense.py)
+   747→  parallel.py           (existing, rewritten for async)
+   748→  subdomains.py         (existing, enhanced with passive_intel.py)
+   749→  scheduler.py          (existing)
+   750→  server.py             (existing, enhanced with webhooks + collab)
+   751→  reports.py            (existing)
+   752→  formats.py            (existing)
+   753→  history.py            (existing)
+   754→  plugins.py            (existing)
+   755→  browser_mod.py        (existing)
+   756→  cve_radar.py          (existing)
+   757→```
+   758→
+   759→---
+   760→
+   761→## Dependency Strategy
+   762→
+   763→```toml
+   764→# pyproject.toml optional deps
+   765→[project.optional-dependencies]
+   766→async      = ["aiohttp>=3.9"]
+   767→browser    = ["playwright>=1.40.0"]
+   768→llm        = ["openai>=1.0.0", "anthropic>=0.18.0"]
+   769→graph      = ["networkx>=3.0"]
+   770→raw        = ["scapy>=2.5"]
+   771→intel      = ["shodan>=1.25"]
+   772→collab     = ["websockets>=12.0"]
+   773→integrations = ["jira>=3.0", "slack-sdk>=3.0"]
+   774→full       = ["aiohttp>=3.9", "playwright>=1.40.0", "openai>=1.0.0",
+   775→             "anthropic>=0.18.0", "networkx>=3.0", "scapy>=2.5",
+   776→             "shodan>=1.25", "websockets>=12.0", "jira>=3.0", "slack-sdk>=3.0"]
+   777→```
+   778→
+   779→Core deps remain: `rich>=13.0.0`, `requests>=2.28.0` (requests actually isn't used — can drop to zero).
+   780→
+   781→---
+   782→
+   783→## Estimated Line Counts by Version
+   784→
+   785→| Version | New Lines | Total Lines | New Files |
+   786→|---------|-----------|-------------|-----------|
+   787→| v6.0.0 (current) | — | ~12,200 | 28 |
+   788→| v7.0 | +3,500 | ~15,700 | 33 |
+   789→| v7.5 | +4,500 | ~20,200 | 38 |
+   790→| v8.0 | +5,000 | ~25,200 | 43 |
+   791→| v8.5 | +4,000 | ~29,200 | 48 |
+   792→| v9.0 | +4,500 | ~33,700 | 55 |
+   793→
+   794→**Final v9.0: ~33,700 lines across 55 files.**
+   795→

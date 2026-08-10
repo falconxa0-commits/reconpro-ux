@@ -1,0 +1,623 @@
+   626→
+   627→    # Check for wildcard sources
+   628→    for directive_name, values in directives.items():
+   629→        if "*" in values:
+   630→            findings.append(Finding(
+   631→                title=f"CSP wildcard in {directive_name}",
+   632→                severity="medium", category="csp_analysis", module="recon",
+   633→                description=f"CSP {directive_name} uses wildcard (*) — overly permissive",
+   634→                evidence=f"{directive_name}: {' '.join(values[:5])}",
+   635→                asset=host, points_deducted=5,
+   636→            ))
+   637→            break
+   638→
+   639→    # Check for data: URIs
+   640→    for directive_name, values in directives.items():
+   641→        if "data:" in values:
+   642→            findings.append(Finding(
+   643→                title=f"CSP allows data: URIs in {directive_name}",
+   644→                severity="medium", category="csp_analysis", module="recon",
+   645→                description=f"data: URIs in {directive_name} can bypass CSP for script injection",
+   646→                evidence=f"{directive_name} includes 'data:'",
+   647→                asset=host, points_deducted=5,
+   648→            ))
+   649→            break
+   650→
+   651→    # Check for missing report-uri / report-to
+   652→    if "report-uri" not in directives and "report-to" not in directives:
+   653→        findings.append(Finding(
+   654→            title="CSP missing report-uri/report-to",
+   655→            severity="low", category="csp_analysis", module="recon",
+   656→            description="CSP has no report-uri or report-to — CSP violations are not monitored",
+   657→            evidence=f"CSP lacks reporting directive",
+   658→            asset=host, points_deducted=2,
+   659→        ))
+   660→
+   661→    return findings
+   662→
+   663→
+   664→# ── 20. HTTP/2 and Protocol Analysis ─────────────────────────────────────
+   665→
+   666→def _check_http2(host: str, base_url: str, timeout: int, verify_tls: bool) -> List[Finding]:
+   667→    findings = []
+   668→    try:
+   669→        ctx = ssl.create_default_context()
+   670→        # Set ALPN to advertise HTTP/2
+   671→        ctx.set_alpn_protocols(['h2', 'http/1.1'])
+   672→        with socket.create_connection((host, 443), timeout=timeout) as sock:
+   673→            with ctx.wrap_socket(sock, server_hostname=host) as s:
+   674→                negotiated = s.selected_alpn_protocol()
+   675→                if negotiated == 'h2':
+   676→                    findings.append(Finding(
+   677→                        title="HTTP/2 supported via ALPN",
+   678→                        severity="info", category="http2", module="recon",
+   679→                        description="Server supports HTTP/2 via ALPN negotiation",
+   680→                        evidence=f"ALPN: h2",
+   681→                        asset=host,
+   682→                    ))
+   683→                else:
+   684→                    findings.append(Finding(
+   685→                        title="HTTP/2 not supported (HTTP/1.1 only)",
+   686→                        severity="low", category="http2", module="recon",
+   687→                        description="Server does not support HTTP/2 — slower performance and missing features",
+   688→                        evidence=f"ALPN: {negotiated or 'none'}",
+   689→                        asset=host, points_deducted=2,
+   690→                    ))
+   691→    except Exception:
+   692→        # Fallback: check response headers for HTTP/2 indication
+   693→        try:
+   694→            resp = http_probe(base_url, timeout=timeout, verify_tls=verify_tls)
+   695→            # No reliable way to tell HTTP/2 from urllib, skip silently
+   696→            pass
+   697→        except Exception:
+   698→            pass
+   699→    return findings
+   700→
+   701→
+   702→# ── 21. Subdomain Enumeration ────────────────────────────────────────────
+   703→
+   704→def _check_subdomains(host: str, crt_subdomains: set) -> List[Finding]:
+   705→    findings = []
+   706→    found_subdomains = []
+   707→    wildcard_detected = False
+   708→
+   709→    # First check for DNS wildcard by resolving a random subdomain
+   710→    try:
+   711→        test_sub = f"xzyrandomtest123.{host}"
+   712→        try:
+   713→            socket.gethostbyname(test_sub)
+   714→            wildcard_detected = True
+   715→        except socket.gaierror:
+   716→            pass
+   717→    except Exception:
+   718→        pass
+   719→
+   720→    if wildcard_detected:
+   721→        findings.append(Finding(
+   722→            title="DNS wildcard detected",
+   723→            severity="medium", category="subdomain_enum", module="recon",
+   724→            description="DNS wildcard resolves all subdomains — active enumeration unreliable",
+   725→            evidence=f"Random subdomain xzyrandomtest123.{host} resolved",
+   726→            asset=host, points_deducted=3,
+   727→        ))
+   728→
+   729→    # Resolve common subdomains
+   730→    for sub in COMMON_SUBDOMAINS:
+   731→        fqdn = f"{sub}.{host}"
+   732→        try:
+   733→            ip = socket.gethostbyname(fqdn)
+   734→            if ip:
+   735→                found_subdomains.append(fqdn)
+   736→        except socket.gaierror:
+   737→            pass
+   738→        except Exception:
+   739→            pass
+   740→
+   741→    # Merge with crt.sh results
+   742→    for s in crt_subdomains:
+   743→        if s not in found_subdomains:
+   744→            found_subdomains.append(s)
+   745→
+   746→    if found_subdomains:
+   747→        findings.append(Finding(
+   748→            title=f"Subdomains discovered: {len(found_subdomains)}",
+   749→            severity="info", category="subdomain_enum", module="recon",
+   750→            description=f"Found {len(found_subdomains)} subdomains: {', '.join(found_subdomains[:15])}"
+   751→                + (f" ... and {len(found_subdomains)-15} more" if len(found_subdomains) > 15 else ""),
+   752→            evidence=f"Subdomains: {', '.join(found_subdomains[:10])}",
+   753→            asset=host,
+   754→        ))
+   755→
+   756→    return findings
+   757→
+   758→
+   759→# ── 22. Email Harvesting ─────────────────────────────────────────────────
+   760→
+   761→def _check_email_harvest(base_url: str, body: str, timeout: int,
+   762→                         verify_tls: bool) -> List[Finding]:
+   763→    findings = []
+   764→    email_pattern = re.compile(
+   765→        r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'
+   766→    )
+   767→    all_emails = set()
+   768→
+   769→    # Check main page
+   770→    emails = email_pattern.findall(body)
+   771→    all_emails.update(emails)
+   772→
+   773→    # Check contact paths
+   774→    for path in CONTACT_PATHS:
+   775→        url = base_url.rstrip("/") + path
+   776→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   777→        if resp.get("status") in (200, 301, 302):
+   778→            page_body = resp.get("body", "")
+   779→            found = email_pattern.findall(page_body)
+   780→            all_emails.update(found)
+   781→
+   782→    if all_emails:
+   783→        # Filter out common non-human / obfuscated-looking patterns
+   784→        email_list = sorted(all_emails)
+   785→        findings.append(Finding(
+   786→            title=f"Email addresses harvested: {len(email_list)}",
+   787→            severity="medium", category="email_harvest", module="recon",
+   788→            description=f"Found {len(email_list)} email addresses in page content: {', '.join(email_list[:10])}"
+   789→                + (f" ... and {len(email_list)-10} more" if len(email_list) > 10 else ""),
+   790→            evidence=f"Emails: {', '.join(email_list[:5])}",
+   791→            asset="", points_deducted=4,
+   792→        ))
+   793→
+   794→    return findings
+   795→
+   796→
+   797→# ── 23. Open Redirect Deep Check ────────────────────────────────────────
+   798→
+   799→def _check_open_redirect(base_url: str, timeout: int,
+   800→                         verify_tls: bool) -> List[Finding]:
+   801→    findings = []
+   802→    for endpoint in REDIRECT_ENDPOINTS:
+   803→        for payload in OPEN_REDIRECT_PAYLOADS:
+   804→            target_url = base_url.rstrip("/") + endpoint + "?url=" + urllib.parse.quote(payload, safe="")
+   805→            try:
+   806→                resp = http_probe(target_url, timeout=timeout, verify_tls=verify_tls)
+   807→                location = resp.get("headers", {}).get("location", "")
+   808→                status = resp.get("status", 0)
+   809→                # Check if redirect leads to evil.com
+   810→                if status in (301, 302, 303, 307, 308) and "evil.com" in location:
+   811→                    findings.append(Finding(
+   812→                        title=f"Open redirect: {endpoint}",
+   813→                        severity="high", category="open_redirect", module="recon",
+   814→                        description=f"Open redirect at {endpoint} — redirects to attacker-controlled URL",
+   815→                        evidence=f"GET {endpoint}?url=... -> 302 {location[:80]}",
+   816→                        asset="", points_deducted=8,
+   817→                    ))
+   818→                    break  # One hit per endpoint is enough
+   819→            except Exception:
+   820→                pass
+   821→    return findings
+   822→
+   823→
+   824→# ── 24. Mixed Content Detection ──────────────────────────────────────────
+   825→
+   826→def _check_mixed_content(base_url: str, body: str, host: str) -> List[Finding]:
+   827→    findings = []
+   828→    # Only check if the base URL is HTTPS
+   829→    if not base_url.startswith("https://"):
+   830→        return findings
+   831→
+   832→    mixed_patterns = [
+   833→        (r'<img[^>]+src=["\']http://[^"\']*["\']', "image"),
+   834→        (r'<script[^>]+src=["\']http://[^"\']*["\']', "script"),
+   835→        (r'<link[^>]+href=["\']http://[^"\']*["\']', "stylesheet"),
+   836→        (r'<iframe[^>]+src=["\']http://[^"\']*["\']', "iframe"),
+   837→        (r'<video[^>]+src=["\']http://[^"\']*["\']', "video"),
+   838→        (r'<audio[^>]+src=["\']http://[^"\']*["\']', "audio"),
+   839→    ]
+   840→
+   841→    mixed_count = 0
+   842→    mixed_types = set()
+   843→    for pattern, resource_type in mixed_patterns:
+   844→        matches = re.findall(pattern, body, re.IGNORECASE)
+   845→        if matches:
+   846→            mixed_count += len(matches)
+   847→            mixed_types.add(resource_type)
+   848→
+   849→    if mixed_count > 0:
+   850→        sev = "high" if "script" in mixed_types else "medium"
+   851→        findings.append(Finding(
+   852→            title=f"Mixed content: {mixed_count} HTTP resource(s) on HTTPS page",
+   853→            severity=sev, category="mixed_content", module="recon",
+   854→            description=f"HTTPS page loads {mixed_count} HTTP resource(s) of type(s): {', '.join(sorted(mixed_types))} — insecure content",
+   855→            evidence=f"Mixed content types: {', '.join(sorted(mixed_types))}, count: {mixed_count}",
+   856→            asset=host, points_deducted=6 if sev == "high" else 3,
+   857→        ))
+   858→
+   859→    return findings
+   860→
+   861→
+   862→# ── 25. Meta Tag Security ────────────────────────────────────────────────
+   863→
+   864→def _check_meta_tags(body: str, host: str) -> List[Finding]:
+   865→    findings = []
+   866→
+   867→    # Extract all meta tags
+   868→    meta_pattern = re.compile(r'<meta\s+([^>]+)/?>', re.IGNORECASE)
+   869→    metas = meta_pattern.findall(body)
+   870→
+   871→    meta_dict = {}
+   872→    for meta_attrs in metas:
+   873→        name_match = re.search(r'(?:name|property|http-equiv)=["\']([^"\']+)["\']', meta_attrs, re.IGNORECASE)
+   874→        content_match = re.search(r'content=["\']([^"\']*)["\']', meta_attrs, re.IGNORECASE)
+   875→        if name_match and content_match:
+   876→            key = name_match.group(1).lower()
+   877→            val = content_match.group(1)
+   878→            meta_dict[key] = val
+   879→
+   880→    # Check for missing viewport
+   881→    has_viewport = any(k.lower() == "viewport" for k in meta_dict)
+   882→    if not has_viewport:
+   883→        findings.append(Finding(
+   884→            title="Missing viewport meta tag",
+   885→            severity="info", category="meta_tags", module="recon",
+   886→            description="No viewport meta tag found — page may not render properly on mobile devices",
+   887→            evidence="No <meta name=viewport> found",
+   888→            asset=host,
+   889→        ))
+   890→
+   891→    # Check for missing charset
+   892→    has_charset = any(k.lower() == "charset" for k in meta_dict)
+   893→    charset_in_head = re.search(r'<meta\s+charset=["\']([^"\']+)["\']', body, re.IGNORECASE)
+   894→    if not has_charset and not charset_in_head:
+   895→        findings.append(Finding(
+   896→            title="Missing charset declaration",
+   897→            severity="low", category="meta_tags", module="recon",
+   898→            description="No charset meta tag found — may cause rendering issues",
+   899→            evidence="No charset declaration found in meta tags",
+   900→            asset=host, points_deducted=1,
+   901→        ))
+   902→
+   903→    # Check for sensitive meta tags
+   904→    sensitive_metas = {
+   905→        "generator": ("Generator meta tag leaks technology", "info", 0),
+   906→        "author": ("Author meta tag leaks personnel info", "low", 1),
+   907→        "keywords": ("Keywords meta tag may leak sensitive info", "low", 1),
+   908→    }
+   909→    for meta_name, (title, sev, pts) in sensitive_metas.items():
+   910→        val = meta_dict.get(meta_name)
+   911→        if val:
+   912→            findings.append(Finding(
+   913→                title=f"Sensitive meta tag: {meta_name}",
+   914→                severity=sev, category="meta_tags", module="recon",
+   915→                description=f"{title}: '{val[:80]}'",
+   916→                evidence=f"<{meta_name}: {val[:60]}",
+   917→                asset=host, points_deducted=pts,
+   918→            ))
+   919→
+   920→    return findings
+   921→
+   922→
+   923→# ── Main recon runner ─────────────────────────────────────────────────────
+   924→
+   925→def run_recon(target: str, base_url: str, timeout: int = 8,
+   926→              verify_tls: bool = True) -> List[Finding]:
+   927→    """Run full 25-category reconnaissance. Returns list of Findings."""
+   928→    findings: List[Finding] = []
+   929→    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+   930→
+   931→    def add(title, severity, category, desc, evidence, pts=0):
+   932→        findings.append(Finding(
+   933→            title=title, severity=severity, category=category,
+   934→            module="recon", description=desc, evidence=evidence,
+   935→            asset=host, points_deducted=pts,
+   936→    ))
+   937→
+   938→    # ── 1. DNS (Cloudflare DoH + socket fallback) ─────────────────────────
+   939→    dns = _dns_lookup(host)
+   940→
+   941→    # v9.1.0: Inject ReconPro Signature into DNS-check probe
+   942→    _sig_headers = {}
+   943→    try:
+   944→        from ..wishes import SignatureBroadcaster
+   945→        _sig_headers = SignatureBroadcaster().broadcast()
+   946→    except Exception:
+   947→        pass
+   948→
+   949→    if not dns["a"] and not dns["aaaa"]:
+   950→        add("DNS resolution failed", "critical", "dns",
+   951→            f"No A or AAAA records found for {host}", "DNS lookup: no results")
+   952→    else:
+   953→        # Report DNS records found
+   954→        record_summary = []
+   955→        if dns["a"]:
+   956→            record_summary.append(f"A: {'; '.join(dns['a'][:5])}")
+   957→        if dns["aaaa"]:
+   958→            record_summary.append(f"AAAA: {'; '.join(dns['aaaa'][:5])}")
+   959→        if dns["cname"]:
+   960→            record_summary.append(f"CNAME: {'; '.join(dns['cname'][:3])}")
+   961→        if dns["mx"]:
+   962→            record_summary.append(f"MX: {'; '.join(dns['mx'][:5])}")
+   963→        if dns["ns"]:
+   964→            record_summary.append(f"NS: {'; '.join(dns['ns'][:5])}")
+   965→        if dns["txt"]:
+   966→            record_summary.append(f"TXT: {len(dns['txt'])} record(s)")
+   967→        if record_summary:
+   968→            add(f"DNS records: {len(record_summary)} type(s)", "info", "dns",
+   969→                f"DNS resolution returned: {'; '.join(record_summary)}",
+   970→                f"{' | '.join(record_summary[:4])}", 0)
+   971→
+   972→    # Collect IPs for threat intel
+   973→    ip_list = dns.get("a", []) + dns.get("aaaa", [])
+   974→
+   975→    # ── 2. Security headers ───────────────────────────────────────────────
+   976→    root = http_probe(base_url, timeout=timeout, verify_tls=verify_tls, extra_headers=_sig_headers)
+   977→    root_h = root.get("headers", {})
+   978→    for hdr, display, sev, pts in SECURITY_HEADERS:
+   979→        if hdr.lower() not in {k.lower() for k in root_h}:
+   980→            add(f"Missing {display} header", sev, "security_headers",
+   981→                f"{display} ({hdr}) not set", f"Header {hdr} absent", pts)
+   982→
+   983→    # ── 3. Technology fingerprinting ───────────────────────────────────────
+   984→    body = root.get("body", "")[:16384]
+   985→    tech = _detect_tech(body, root_h)
+   986→    if tech:
+   987→        add(f"Technologies detected: {', '.join(tech[:10])}"
+   988→            + (f" +{len(tech)-10} more" if len(tech) > 10 else ""),
+   989→            "info", "tech",
+   990→            f"Detected {len(tech)} technologies: {', '.join(tech[:15])}",
+   991→            f"Tech: {', '.join(tech[:8])}", 0)
+   992→
+   993→    # ── 4. robots.txt / sitemap.xml ───────────────────────────────────────
+   994→    for path in ["/robots.txt", "/sitemap.xml"]:
+   995→        resp = http_probe(base_url.rstrip("/") + path, timeout=timeout, verify_tls=verify_tls)
+   996→        if resp.get("status") == 200:
+   997→            add(f"{path} accessible", "info", "discovery",
+   998→                f"{path} is publicly accessible ({len(resp.get('body', ''))} bytes)",
+   999→                f"GET {path} -> 200", 0)
+  1000→
+  1001→    # ── 5. TLS / SSL certificate info ─────────────────────────────────────
+  1002→    tls = _check_tls(host)
+  1003→    if tls.get("days_left") is not None and tls["days_left"] < 30:
+  1004→        add(f"TLS cert expiring in {tls['days_left']} days", "high", "tls",
+  1005→            f"Certificate expires {tls['expiry']}",
+  1006→            f"Days left: {tls['days_left']}", 8)
+  1007→    if tls.get("version") and "3.0" in tls["version"]:
+  1008→        add("Deprecated TLS version", "critical", "tls",
+  1009→            f"Server uses {tls['version']}", f"TLS: {tls['version']}", 12)
+  1010→
+  1011→    # ── 6. Port scan (top 20) ─────────────────────────────────────────────
+  1012→    open_p = _check_ports(host)
+  1013→    for p in open_p:
+  1014→        if p["port"] not in (80, 443):
+  1015→            add(f"Open port: {p['port']}", "medium", "ports",
+  1016→                f"Port {p['port']} is open", f"Port {p['port']}: open", 3)
+  1017→
+  1018→    # ── 6b. ASN lookup ────────────────────────────────────────────────────
+  1019→    try:
+  1020→        whois_result = subprocess.run(
+  1021→            ["whois", host],
+  1022→            capture_output=True, text=True, timeout=10
+  1023→        )
+  1024→        whois_text = whois_result.stdout
+  1025→        asn_match = re.search(r'(?:ASN|AS)(?:\t|[ :]+)(\d+)', whois_text, re.IGNORECASE)
+  1026→        org_match = re.search(r'(?:OrgName|Organization|org-name)[:\s]+(.+)', whois_text, re.IGNORECASE)
+  1027→        if asn_match:
+  1028→            asn = asn_match.group(1)
+  1029→            org = org_match.group(1).strip()[:80] if org_match else "Unknown"
+  1030→            add(f"ASN: AS{asn} ({org})", "info", "asn",
+  1031→                f"Hosted on AS{asn}, operated by {org}",
+  1032→                f"ASN: AS{asn}, Org: {org[:50]}", 0)
+  1033→        elif org_match:
+  1034→            add(f"Hosting: {org_match.group(1).strip()[:60]}", "info", "asn",
+  1035→                f"Operated by: {org_match.group(1).strip()[:80]}",
+  1036→                f"Org: {org_match.group(1).strip()[:50]}", 0)
+  1037→    except (FileNotFoundError, subprocess.TimeoutExpired):
+  1038→        pass
+  1039→
+  1040→    # ── 7. Sensitive paths ────────────────────────────────────────────────
+  1041→    for path in SENSITIVE_PATHS:
+  1042→        url = base_url.rstrip("/") + path
+  1043→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+  1044→        if resp.get("status") == 200 and len(resp.get("body", "")) > 10:
+  1045→            add(f"Exposed: {path}", "high", "exposed_files",
+  1046→                f"Sensitive path accessible: {path}", f"GET {path} -> 200", 10)
+  1047→
+  1048→    # ── 8. API endpoints ──────────────────────────────────────────────────
+  1049→    for path in API_PATHS:
+  1050→        url = base_url.rstrip("/") + path
+  1051→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+  1052→        if resp.get("status") == 200:
+  1053→            b = resp.get("body", "").lower()
+  1054→            if not any(kw in b for kw in ["unauthorized", "401", "forbidden", "login required"]):
+  1055→                add(f"Unauthenticated API: {path}", "high", "api",
+  1056→                    f"API route accessible without auth", f"GET {path} -> 200", 10)
+  1057→
+  1058→    # ── 9. CORS ───────────────────────────────────────────────────────────
+  1059→    findings.extend(_check_cors(base_url))
+  1060→
+  1061→    # ── 10. Cookies ───────────────────────────────────────────────────────
+  1062→    findings.extend(_check_cookies(root_h))
+  1063→
+  1064→    # ── 11. WAF detection ─────────────────────────────────────────────────
+  1065→    waf = _detect_waf(root_h, body)
+  1066→    if not waf:
+  1067→        add("No WAF detected", "medium", "waf",
+  1068→            "No Web Application Firewall signatures found", "No WAF headers/signatures", 4)
+  1069→    else:
+  1070→        add(f"WAF detected: {', '.join(waf)}", "info", "waf",
+  1071→            f"Web Application Firewall(s) found: {', '.join(waf)}",
+  1072→            f"WAF: {', '.join(waf)}", 0)
+  1073→
+  1074→    # ── 12. Redirect chain ────────────────────────────────────────────────
+  1075→    if root.get("status") in (301, 302, 307, 308):
+  1076→        loc = root_h.get("location", "")
+  1077→        add(f"Redirect: {root['status']} -> {loc[:80]}", "info", "redirects",
+  1078→            f"Root URL redirects to {loc}", f"Status {root['status']}", 0)
+  1079→
+  1080→    # ── 13. Email / SPF / DMARC ───────────────────────────────────────────
+  1081→    try:
+  1082→        for qtype in ["TXT", "MX"]:
+  1083→            try:
+  1084→                result = subprocess.run(
+  1085→                    ["dig", "+short", host, qtype],
+  1086→                    capture_output=True, text=True, timeout=5
+  1087→                )
+  1088→                output = result.stdout.strip()
+  1089→                if qtype == "MX" and output:
+  1090→                    mx_records = [l.strip() for l in output.split("\n") if l.strip()]
+  1091→                    add(f"MX records found ({len(mx_records)})", "info", "email",
+  1092→                        f"Mail servers: {'; '.join(mx_records[:5])}",
+  1093→                        f"MX: {'; '.join(mx_records[:3])}", 0)
+  1094→                elif qtype == "TXT" and output:
+  1095→                    lines = output.split("\n")
+  1096→                    has_spf = any('v=spf1' in l.lower() for l in lines)
+  1097→                    has_dmarc = False
+  1098→                    for l in lines:
+  1099→                        if 'v=dmarc1' in l.lower():
+  1100→                            has_dmarc = True
+  1101→                    if not has_spf:
+  1102→                        add("Missing SPF record", "medium", "email",
+  1103→                            "No SPF (Sender Policy Framework) TXT record found — email spoofing possible",
+  1104→                            "dig TXT: no v=spf1", 5)
+  1105→                    if not has_dmarc:
+  1106→                        # Check _dmarc subdomain
+  1107→                        try:
+  1108→                            dmarc_result = subprocess.run(
+  1109→                                ["dig", "+short", f"_dmarc.{host}", "TXT"],
+  1110→                                capture_output=True, text=True, timeout=5
+  1111→                            )
+  1112→                            if 'v=dmarc1' not in dmarc_result.stdout.lower():
+  1113→                                add("Missing DMARC record", "medium", "email",
+  1114→                                    "No DMARC record found — no email authentication policy",
+  1115→                                    "dig _dmarc TXT: no v=dmarc1", 5)
+  1116→                        except Exception:
+  1117→                            add("Missing DMARC record", "medium", "email",
+  1118→                                "Could not check DMARC record",
+  1119→                                "DMARC check failed", 3)
+  1120→            except (FileNotFoundError, subprocess.TimeoutExpired):
+  1121→                pass
+  1122→    except Exception:
+  1123→        pass
+  1124→
+  1125→    # ── 14. Certificate Transparency (crt.sh) ─────────────────────────────
+  1126→    findings.extend(_check_cert_transparency(host))
+  1127→
+  1128→    # ── 15. Threat Intelligence (abuse.ch) ────────────────────────────────
+  1129→    findings.extend(_check_threat_intel(host, ip_list))
+  1130→
+  1131→    # ── 16. Enhanced TLS Cipher Analysis ──────────────────────────────────
+  1132→    findings.extend(_check_tls_ciphers(tls, host))
+  1133→
+  1134→    # ── 17. Enhanced Technology Fingerprinting ────────────────────────────
+  1135→    # (already handled in step 3 with expanded TECH_SIGNATURES)
+  1136→
+  1137→    # ── 18. Enhanced WAF Detection ────────────────────────────────────────
+  1138→    # (already handled in step 11 with expanded WAF_SIGNATURES)
+  1139→
+  1140→    # ── 19. Content Security Policy Deep Analysis ─────────────────────────
+  1141→    findings.extend(_check_csp_deep(root_h, host))
+  1142→
+  1143→    # ── 20. HTTP/2 and Protocol Analysis ──────────────────────────────────
+  1144→    findings.extend(_check_http2(host, base_url, timeout, verify_tls))
+  1145→
+  1146→    # ── 21. Subdomain Enumeration via Passive DNS ─────────────────────────
+  1147→    # Gather crt.sh subdomains first
+  1148→    crt_subdomains = set()
+  1149→    try:
+  1150→        crt_url = f"https://crt.sh/?q=%.{host}&output=json"
+  1151→        crt_req = urllib.request.Request(crt_url,
+  1152→            headers={"Accept": "application/json", "User-Agent": "ReconPro/2.0"})
+  1153→        ctx = ssl.create_default_context()
+  1154→        with urllib.request.urlopen(crt_req, timeout=15, context=ctx) as resp:
+  1155→            crt_data = json.loads(resp.read(1048576).decode())
+  1156→        if isinstance(crt_data, list):
+  1157→            for entry in crt_data:
+  1158→                name_val = entry.get("name_value", "")
+  1159→                for name in name_val.split("\n"):
+  1160→                    n = name.strip().lstrip("*.").lower()
+  1161→                    if n and n != host:
+  1162→                        crt_subdomains.add(n)
+  1163→    except Exception:
+  1164→        pass
+  1165→    findings.extend(_check_subdomains(host, crt_subdomains))
+  1166→
+  1167→    # ── 22. Email Harvesting ──────────────────────────────────────────────
+  1168→    findings.extend(_check_email_harvest(base_url, body, timeout, verify_tls))
+  1169→
+  1170→    # ── 23. Open Redirect Deep Check ──────────────────────────────────────
+  1171→    findings.extend(_check_open_redirect(base_url, timeout, verify_tls))
+  1172→
+  1173→    # ── 24. Mixed Content Detection ───────────────────────────────────────
+  1174→    findings.extend(_check_mixed_content(base_url, body, host))
+  1175→
+  1176→    # ── 25. Meta Tag Security ─────────────────────────────────────────────
+  1177→    findings.extend(_check_meta_tags(body, host))
+  1178→
+  1179→    # ── v9.2.0: Social Graph + Sovereignty ─────────────────────────────
+  1180→    findings.extend(_check_social_graph(target, base_url, timeout=timeout, verify_tls=verify_tls))
+  1181→    findings.extend(_check_sovereignty(target, base_url, ip_list, timeout=timeout))
+  1182→
+  1183→    return findings
+  1184→
+  1185→
+  1186→def _check_social_graph(target: str, base_url: str, timeout: int = 8,
+  1187→                         verify_tls: bool = True) -> List[Finding]:
+  1188→    """v9.2.0: Build social graph and identify critical bridge entities."""
+  1189→    findings: List[Finding] = []
+  1190→    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+  1191→
+  1192→    try:
+  1193→        from ..social_graph import GraphIntelligence
+  1194→        gi = GraphIntelligence()
+  1195→        graph = gi.build_graph(host, base_url)
+  1196→        stats = graph.stats()
+  1197→        if stats.get("entity_count", 0) > 3:
+  1198→            clusters = stats.get("cluster_count", 0)
+  1199→            bridges = graph.find_bridge_entities()
+  1200→            findings.append(Finding(
+  1201→                title="Social graph: {} entities, {} clusters".format(
+  1202→                    stats["entity_count"], clusters),
+  1203→                severity="medium", category="social_graph",
+  1204→                module="recon",
+  1205→                description="OSINT relationship graph: {} entities, {} relationships, "
+  1206→                            "{} clusters, {} bridge entities.".format(
+  1207→                    stats["entity_count"], stats.get("relationship_count", 0),
+  1208→                    clusters, len(bridges)),
+  1209→                evidence="Bridges: {}".format(", ".join(str(b) for b in bridges[:5])),
+  1210→                asset=host, points_deducted=5 if len(bridges) > 2 else 3,
+  1211→                remediation="Bridge entities are critical nodes — securing them collapses multiple attack paths.",
+  1212→            ))
+  1213→    except Exception:
+  1214→        pass
+  1215→
+  1216→    return findings
+  1217→
+  1218→
+  1219→def _check_sovereignty(target: str, base_url: str, ip_list: list,
+  1220→                        timeout: int = 8) -> List[Finding]:
+  1221→    """v9.2.0: Digital sovereignty and jurisdiction mapping."""
+  1222→    findings: List[Finding] = []
+  1223→    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+  1224→
+  1225→    try:
+  1226→        from ..sovereignty import SovereigntyMapper
+  1227→        sm = SovereigntyMapper()
+  1228→        profile = sm.map_sovereignty(host, base_url, timeout=min(timeout, 5))
+  1229→        jurisdictions = profile.get("jurisdictions", [])
+  1230→        surveillance = profile.get("surveillance_risk", "low")
+  1231→        if jurisdictions:
+  1232→            countries = [j.get("country", "?") for j in jurisdictions[:3]]
+  1233→            findings.append(Finding(
+  1234→                title="Digital sovereignty: {}".format(", ".join(countries)),
+  1235→                severity="medium" if surveillance == "high" else "low",
+  1236→                category="sovereignty",
+  1237→                module="recon",
+  1238→                description="Infrastructure sovereignty spans: {}. Surveillance risk: {}.".format(
+  1239→                    ", ".join(countries), surveillance),
+  1240→                evidence="Jurisdictions: {}".format(len(jurisdictions)),
+  1241→                asset=host, points_deducted=5 if surveillance == "high" else 2,
+  1242→                remediation="Review data residency compliance for identified jurisdictions.",
+  1243→            ))
+  1244→    except Exception:
+  1245→        pass
+  1246→
+  1247→    return findings
+  1248→

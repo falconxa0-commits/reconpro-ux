@@ -1,0 +1,1026 @@
+     1→r"""
+     2→ReconPro v9.2.0 - Protocol Tunnel Detection
+     3→
+     4→Detects covert protocol tunneling in network traffic.  Probes a target host
+     5→for indicators of DNS, ICMP, IPv6, GRE, SSH, and HTTP tunneling.
+     6→
+     7→Pure Python stdlib -- zero external dependencies.
+     8→
+     9→Classes:
+    10→    TunnelType        - Enum of supported tunnel types.
+    11→    TunnelIndicator   - Dataclass for a single tunnel detection result.
+    12→    EntropyAnalyzer   - Shannon-entropy calculator for data randomness.
+    13→    DNSEntropyChecker - Specialised checker for high-entropy DNS labels.
+    14→    TunnelDetector    - Main orchestrator that runs all detection methods.
+    15→"""
+    16→from __future__ import annotations
+    17→
+    18→import enum
+    19→import http.client
+    20→import logging
+    21→import math
+    22→import re
+    23→import socket
+    24→import struct
+    25→import subprocess
+    26→import urllib.error
+    27→import urllib.parse
+    28→import urllib.request
+    29→from dataclasses import dataclass, field
+    30→from datetime import datetime, timezone
+    31→from typing import Any, Dict, List, Optional, Tuple
+    32→
+    33→logger = logging.getLogger(__name__)
+    34→
+    35→
+    36→# ---------------------------------------------------------------------------
+    37→# TunnelType enum
+    38→# ---------------------------------------------------------------------------
+    39→
+    40→class TunnelType(enum.Enum):
+    41→    """Supported tunnel protocol categories."""
+    42→    DNS_TUNNEL = "DNS Tunneling"
+    43→    ICMP_TUNNEL = "ICMP Tunneling"
+    44→    IPV6_TUNNEL = "IPv6 Tunneling"
+    45→    GRE_TUNNEL = "GRE Tunneling"
+    46→    SSH_TUNNEL = "SSH Tunneling"
+    47→    HTTP_TUNNEL = "HTTP CONNECT Tunneling"
+    48→    HTTPS_TUNNEL = "HTTPS Tunneling"
+    49→    TCP_OVER_UDP = "TCP-over-UDP Tunneling"
+    50→
+    51→
+    52→# ---------------------------------------------------------------------------
+    53→# TunnelIndicator
+    54→# ---------------------------------------------------------------------------
+    55→
+    56→@dataclass
+    57→class TunnelIndicator:
+    58→    """A single indicator that a specific tunnel type may be present.
+    59→
+    60→    Attributes:
+    61→        tunnel_type:      The :class:`TunnelType` detected.
+    62→        confidence:       0.0 – 1.0 confidence in this finding.
+    63→        evidence:         Free-text description of what was observed.
+    64→        source_ip:        IP of the probing host (may be empty).
+    65→        destination_ip:   IP of the target host.
+    66→        protocol_details: Extra metadata (port numbers, banners, etc.).
+    67→    """
+    68→    tunnel_type: TunnelType
+    69→    confidence: float
+    70→    evidence: str
+    71→    source_ip: str = ""
+    72→    destination_ip: str = ""
+    73→    protocol_details: Dict[str, Any] = field(default_factory=dict)
+    74→
+    75→    def __post_init__(self) -> None:
+    76→        if not 0.0 <= self.confidence <= 1.0:
+    77→            raise ValueError("confidence must be between 0.0 and 1.0")
+    78→
+    79→    def to_dict(self) -> Dict[str, Any]:
+    80→        return {
+    81→            "tunnel_type": self.tunnel_type.value,
+    82→            "confidence": round(self.confidence, 3),
+    83→            "evidence": self.evidence,
+    84→            "source_ip": self.source_ip,
+    85→            "destination_ip": self.destination_ip,
+    86→            "protocol_details": self.protocol_details,
+    87→        }
+    88→
+    89→
+    90→# ---------------------------------------------------------------------------
+    91→# EntropyAnalyzer
+    92→# ---------------------------------------------------------------------------
+    93→
+    94→class EntropyAnalyzer:
+    95→    """Calculate Shannon entropy of byte or string data.
+    96→
+    97→    High entropy (> 4.0 bits/byte for ASCII) suggests encrypted or compressed
+    98→    payloads -- a strong tunneling indicator.
+    99→    """
+   100→
+   101→    @staticmethod
+   102→    def shannon_entropy(data: bytes | str) -> float:
+   103→        """Calculate Shannon entropy in bits per byte (0-8 range).
+   104→
+   105→        Args:
+   106→            data: Input bytes or string to analyse.
+   107→
+   108→        Returns:
+   109→            Entropy value between 0.0 (uniform/low randomness) and 8.0
+   110→            (maximum randomness).
+   111→        """
+   112→        if isinstance(data, str):
+   113→            data = data.encode("utf-8", errors="replace")
+   114→        if not data:
+   115→            return 0.0
+   116→
+   117→        length = len(data)
+   118→        freq: Dict[int, int] = {}
+   119→        for byte in data:
+   120→            freq[byte] = freq.get(byte, 0) + 1
+   121→
+   122→        entropy = 0.0
+   123→        for count in freq.values():
+   124→            if count > 0:
+   125→                p = count / length
+   126→                if p > 0:
+   127→                    entropy -= p * math.log2(p)
+   128→        return round(entropy, 4)
+   129→
+   130→    @staticmethod
+   131→    def is_high_entropy(data: bytes | str, threshold: float = 4.0) -> bool:
+   132→        """Return True if *data* has entropy above *threshold*."""
+   133→        return EntropyAnalyzer.shannon_entropy(data) >= threshold
+   134→
+   135→    @staticmethod
+   136→    def byte_distribution(data: bytes | str) -> Dict[int, float]:
+   137→        """Return a dict mapping byte value (0-255) to its frequency."""
+   138→        if isinstance(data, str):
+   139→            data = data.encode("utf-8", errors="replace")
+   140→        if not data:
+   141→            return {}
+   142→        length = len(data)
+   143→        dist: Dict[int, float] = {}
+   144→        for byte in data:
+   145→            dist[byte] = dist.get(byte, 0.0) + 1.0 / length
+   146→        return dist
+   147→
+   148→
+   149→# ---------------------------------------------------------------------------
+   150→# DNSEntropyChecker
+   151→# ---------------------------------------------------------------------------
+   152→
+   153→class DNSEntropyChecker:
+   154→    """Specialised analyser for detecting high-entropy DNS labels.
+   155→
+   156→    DNS tunneling tools encode data into subdomain labels.  These encoded
+   157→    labels have significantly higher entropy than normal domain names.
+   158→    """
+   159→
+   160→    # Normal English domain labels rarely exceed this entropy
+   161→    LABEL_ENTROPY_THRESHOLD = 3.5
+   162→    # Very long labels are themselves suspicious
+   163→    MAX_NORMAL_LABEL_LEN = 30
+   164→    # Base64 character set
+   165→    BASE64_CHARS = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+   166→    HEX_CHARS = set("0123456789abcdef")
+   167→
+   168→    def __init__(self, entropy_analyzer: Optional[EntropyAnalyzer] = None) -> None:
+   169→        self.entropy = entropy_analyzer or EntropyAnalyzer()
+   170→
+   171→    def check_label(self, label: str) -> Dict[str, Any]:
+   172→        """Analyse a single DNS label for tunneling indicators.
+   173→
+   174→        Returns a dict with keys: ``entropy``, ``is_high_entropy``,
+   175→        ``is_base64_like``, ``is_hex_like``, ``label_length``, ``suspicious``.
+   176→        """
+   177→        label_lower = label.lower()
+   178→        label_len = len(label_lower)
+   179→        ent = self.entropy.shannon_entropy(label_lower)
+   180→
+   181→        is_base64 = (
+   182→            label_len > 12
+   183→            and all(c in self.BASE64_CHARS for c in label_lower)
+   184→        )
+   185→        is_hex = (
+   186→            label_len > 10
+   187→            and all(c in self.HEX_CHARS for c in label_lower)
+   188→        )
+   189→
+   190→        suspicious = (
+   191→            ent >= self.LABEL_ENTROPY_THRESHOLD
+   192→            or label_len > self.MAX_NORMAL_LABEL_LEN
+   193→            or is_base64
+   194→            or is_hex
+   195→        )
+   196→
+   197→        return {
+   198→            "label": label,
+   199→            "entropy": ent,
+   200→            "is_high_entropy": ent >= self.LABEL_ENTROPY_THRESHOLD,
+   201→            "is_base64_like": is_base64,
+   202→            "is_hex_like": is_hex,
+   203→            "label_length": label_len,
+   204→            "suspicious": suspicious,
+   205→        }
+   206→
+   207→    def check_fqdn(self, fqdn: str) -> Dict[str, Any]:
+   208→        """Analyse all labels in a fully-qualified domain name.
+   209→
+   210→        Returns:
+   211→            ``{"fqdn": ..., "labels": [...], "suspicious_labels": [...], "overall_suspicious": bool}``
+   212→        """
+   213→        labels = fqdn.rstrip(".").split(".")
+   214→        results = [self.check_label(lbl) for lbl in labels]
+   215→        suspicious = [r for r in results if r["suspicious"]]
+   216→        return {
+   217→            "fqdn": fqdn,
+   218→            "labels": results,
+   219→            "suspicious_labels": suspicious,
+   220→            "overall_suspicious": len(suspicious) > 0,
+   221→        }
+   222→
+   223→
+   224→# ---------------------------------------------------------------------------
+   225→# TunnelDetector
+   226→# ---------------------------------------------------------------------------
+   227→
+   228→class TunnelDetector:
+   229→    """Main tunnel detection orchestrator.
+   230→
+   231→    Probes the target host for indicators of various tunnel types and
+   232→    returns a list of :class:`TunnelIndicator` results.
+   233→    """
+   234→
+   235→    DEFAULT_TIMEOUT: int = 8
+   236→
+   237→    def __init__(self) -> None:
+   238→        self.entropy_analyzer = EntropyAnalyzer()
+   239→        self.dns_checker = DNSEntropyChecker(self.entropy_analyzer)
+   240→
+   241→    def detect_all(
+   242→        self,
+   243→        host: str,
+   244→        base_url: Optional[str] = None,
+   245→        timeout: int = DEFAULT_TIMEOUT,
+   246→    ) -> List[TunnelIndicator]:
+   247→        """Run all tunnel detectors against *host*.
+   248→
+   249→        Args:
+   250→            host:     Target hostname or IP address.
+   251→            base_url: Optional URL for HTTP/HTTPS tunnel checks.
+   252→            timeout:  Network timeout in seconds.
+   253→
+   254→        Returns:
+   255→            List of :class:`TunnelIndicator` sorted by confidence descending.
+   256→        """
+   257→        indicators: List[TunnelIndicator] = []
+   258→
+   259→        # Resolve target to IP
+   260→        dest_ip = self._resolve_host(host)
+   261→
+   262→        # 1. DNS tunnel detection
+   263→        logger.info("[TunnelDetect] Checking DNS tunnel indicators for %s", host)
+   264→        indicators.extend(self.detect_dns_tunnel(host, timeout=timeout))
+   265→
+   266→        # 2. ICMP tunnel detection
+   267→        logger.info("[TunnelDetect] Checking ICMP tunnel indicators for %s", host)
+   268→        indicators.extend(self.detect_icmp_tunnel(host, timeout=timeout))
+   269→
+   270→        # 3. IPv6 tunnel detection
+   271→        logger.info("[TunnelDetect] Checking IPv6 tunnel indicators for %s", host)
+   272→        indicators.extend(self.detect_ipv6_tunnel(host, timeout=timeout))
+   273→
+   274→        # 4. GRE tunnel detection
+   275→        logger.info("[TunnelDetect] Checking GRE tunnel indicators for %s", host)
+   276→        indicators.extend(self.detect_gre_tunnel(host, timeout=timeout))
+   277→
+   278→        # 5. SSH tunnel detection
+   279→        logger.info("[TunnelDetect] Checking SSH tunnel indicators for %s", host)
+   280→        indicators.extend(self.detect_ssh_tunnel(host, timeout=timeout, dest_ip=dest_ip))
+   281→
+   282→        # 6. HTTP CONNECT tunnel detection
+   283→        if base_url:
+   284→            logger.info("[TunnelDetect] Checking HTTP CONNECT tunnel indicators for %s", base_url)
+   285→            indicators.extend(self.detect_http_tunnel(base_url, timeout=timeout))
+   286→
+   287→        # Sort by confidence descending
+   288→        indicators.sort(key=lambda i: i.confidence, reverse=True)
+   289→        return indicators
+   290→
+   291→    # -- DNS tunnel --------------------------------------------------------
+   292→
+   293→    def detect_dns_tunnel(
+   294→        self, host: str, timeout: int = 8
+   295→    ) -> List[TunnelIndicator]:
+   296→        """Analyse DNS response patterns for tunneling indicators.
+   297→
+   298→        Checks:
+   299→        - Unusually long TXT records
+   300→        - Entropy of subdomain labels
+   301→        - Base64/hex encoded data in DNS responses
+   302→        - Frequency of queryable subdomains
+   303→        """
+   304→        indicators: List[TunnelIndicator] = []
+   305→
+   306→        # 1. TXT record analysis
+   307→        txt_records = self._query_txt_records(host, timeout)
+   308→        for txt in txt_records:
+   309→            ent = self.entropy_analyzer.shannon_entropy(txt)
+   310→            details: Dict[str, Any] = {
+   311→                "record_length": len(txt),
+   312→                "entropy": ent,
+   313→            }
+   314→            if len(txt) > 200:
+   315→                indicators.append(
+   316→                    TunnelIndicator(
+   317→                        tunnel_type=TunnelType.DNS_TUNNEL,
+   318→                        confidence=min(0.5 + (len(txt) - 200) / 1000, 0.95),
+   319→                        evidence=(
+   320→                            f"Unusually long TXT record ({len(txt)} bytes, "
+   321→                            f"entropy={ent:.2f}): {txt[:80]}..."
+   322→                        ),
+   323→                        destination_ip=host,
+   324→                        protocol_details=details,
+   325→                    )
+   326→                )
+   327→            if ent > 4.0:
+   328→                indicators.append(
+   329→                    TunnelIndicator(
+   330→                        tunnel_type=TunnelType.DNS_TUNNEL,
+   331→                        confidence=min(0.4 + (ent - 4.0) * 0.15, 0.9),
+   332→                        evidence=(
+   333→                            f"High-entropy TXT record (entropy={ent:.2f}): {txt[:80]}..."
+   334→                        ),
+   335→                        destination_ip=host,
+   336→                        protocol_details=details,
+   337→                    )
+   338→                )
+   339→
+   340→        # 2. Entropy check on the host itself
+   341→        label_analysis = self.dns_checker.check_fqdn(host)
+   342→        if label_analysis["overall_suspicious"]:
+   343→            sus_labels = label_analysis["suspicious_labels"]
+   344→            evidence_parts = [
+   345→                f"label '{s['label']}' (len={s['label_length']}, ent={s['entropy']:.2f})"
+   346→                for s in sus_labels[:3]
+   347→            ]
+   348→            indicators.append(
+   349→                TunnelIndicator(
+   350→                    tunnel_type=TunnelType.DNS_TUNNEL,
+   351→                    confidence=0.5,
+   352→                    evidence=f"Suspicious DNS labels: {'; '.join(evidence_parts)}",
+   353→                    destination_ip=host,
+   354→                    protocol_details={"label_analysis": sus_labels},
+   355→                )
+   356→            )
+   357→
+   358→        # 3. Check for base64-like subdomain acceptance (tunneling surface)
+   359→        test_subdomains = self._probe_dns_subdomains(host, timeout)
+   360→        if test_subdomains:
+   361→            indicators.append(
+   362→                TunnelIndicator(
+   363→                    tunnel_type=TunnelType.DNS_TUNNEL,
+   364→                    confidence=0.6,
+   365→                    evidence=(
+   366→                        f"Host accepts base64-like subdomains: {test_subdomains[:3]}"
+   367→                    ),
+   368→                    destination_ip=host,
+   369→                    protocol_details={"resolvable_subdomains": test_subdomains},
+   370→                )
+   371→            )
+   372→
+   373→        # 4. Check ANY response size via dig
+   374→        any_output = self._dig_any(host, timeout)
+   375→        if any_output and len(any_output) > 512:
+   376→            ent = self.entropy_analyzer.shannon_entropy(any_output)
+   377→            indicators.append(
+   378→                TunnelIndicator(
+   379→                    tunnel_type=TunnelType.DNS_TUNNEL,
+   380→                    confidence=min(0.3 + (len(any_output) - 512) / 2000, 0.85),
+   381→                    evidence=(
+   382→                        f"Large DNS ANY response ({len(any_output)} bytes, "
+   383→                        f"entropy={ent:.2f})"
+   384→                    ),
+   385→                    destination_ip=host,
+   386→                    protocol_details={"response_size": len(any_output), "entropy": ent},
+   387→                )
+   388→            )
+   389→
+   390→        return indicators
+   391→
+   392→    # -- ICMP tunnel -------------------------------------------------------
+   393→
+   394→    def detect_icmp_tunnel(
+   395→        self, host: str, timeout: int = 8
+   396→    ) -> List[TunnelIndicator]:
+   397→        """Send pings and analyse response patterns for tunneling.
+   398→
+   399→        Checks:
+   400→        - Payload size in responses
+   401→        - Response timing consistency (low jitter = stable tunnel)
+   402→        - Payload data content (non-standard padding)
+   403→        - Whether large payloads are accepted
+   404→        """
+   405→        indicators: List[TunnelIndicator] = []
+   406→
+   407→        # 1. Standard 4-ping
+   408→        try:
+   409→            result = subprocess.run(
+   410→                ["ping", "-c", "4", "-W", str(timeout), host],
+   411→                capture_output=True, text=True, timeout=timeout + 5,
+   412→            )
+   413→            output = result.stdout + result.stderr
+   414→
+   415→            if result.returncode != 0:
+   416→                return indicators  # Host doesn't respond to ping
+   417→
+   418→            # Parse timing
+   419→            times = re.findall(r"time=([\d.]+)\s*ms", output)
+   420→            if len(times) >= 2:
+   421→                float_times = [float(t) for t in times]
+   422→                avg = sum(float_times) / len(float_times)
+   423→                jitter = max(float_times) - min(float_times)
+   424→                std_dev = self._std_dev(float_times)
+   425→
+   426→                details: Dict[str, Any] = {
+   427→                    "avg_ms": round(avg, 2),
+   428→                    "jitter_ms": round(jitter, 2),
+   429→                    "std_dev_ms": round(std_dev, 2),
+   430→                    "samples": len(float_times),
+   431→                }
+   432→
+   433→                # Very low jitter suggests a stable tunnel channel
+   434→                if jitter < 2.0 and len(float_times) >= 3:
+   435→                    indicators.append(
+   436→                        TunnelIndicator(
+   437→                            tunnel_type=TunnelType.ICMP_TUNNEL,
+   438→                            confidence=0.55,
+   439→                            evidence=(
+   440→                                f"Very low ICMP jitter ({jitter:.2f}ms, std={std_dev:.2f}ms) "
+   441→                                f"across {len(float_times)} pings -- stable timing channel"
+   442→                            ),
+   443→                            destination_ip=host,
+   444→                            protocol_details=details,
+   445→                        )
+   446→                    )
+   447→
+   448→            # Parse payload size
+   449→            size_match = re.search(r"(\d+)\s*bytes?\s+(?:from|of data)", output)
+   450→            if size_match:
+   451→                payload = int(size_match.group(1))
+   452→                if payload > 64:
+   453→                    indicators.append(
+   454→                        TunnelIndicator(
+   455→                            tunnel_type=TunnelType.ICMP_TUNNEL,
+   456→                            confidence=min(0.4 + (payload - 64) / 200, 0.85),
+   457→                            evidence=(
+   458→                                f"ICMP payload size {payload} bytes exceeds standard 64 bytes"
+   459→                            ),
+   460→                            destination_ip=host,
+   461→                            protocol_details={"payload_bytes": payload},
+   462→                        )
+   463→                    )
+   464→
+   465→            # Check TTL consistency
+   466→            ttls = re.findall(r"ttl=(\d+)", output)
+   467→            if len(ttls) >= 2:
+   468→                ttl_values = [int(t) for t in ttls]
+   469→                ttl_range = max(ttl_values) - min(ttl_values)
+   470→                if ttl_range > 2:
+   471→                    indicators.append(
+   472→                        TunnelIndicator(
+   473→                            tunnel_type=TunnelType.ICMP_TUNNEL,
+   474→                            confidence=0.5,
+   475→                            evidence=(
+   476→                                f"Inconsistent TTL values: {ttl_values} "
+   477→                                f"(range={ttl_range}) -- possible tunnel hop"
+   478→                            ),
+   479→                            destination_ip=host,
+   480→                            protocol_details={"ttl_values": ttl_values},
+   481→                        )
+   482→                    )
+   483→
+   484→        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+   485→            logger.debug("ICMP detection failed: %s", exc)
+   486→            return indicators
+   487→
+   488→        # 2. Large-payload ping
+   489→        try:
+   490→            result = subprocess.run(
+   491→                ["ping", "-c", "1", "-s", "1400", "-W", str(timeout), host],
+   492→                capture_output=True, text=True, timeout=timeout + 5,
+   493→            )
+   494→            if result.returncode == 0:
+   495→                output2 = result.stdout
+   496→                if "1400" in output2 or "1428" in output2:
+   497→                    indicators.append(
+   498→                        TunnelIndicator(
+   499→                            tunnel_type=TunnelType.ICMP_TUNNEL,
+   500→                            confidence=0.7,
+   501→                            evidence=(
+   502→                                "Host accepts large ICMP payloads (1400+ bytes) "
+   503→                                "-- significant data channel capacity"
+   504→                            ),
+   505→                            destination_ip=host,
+   506→                            protocol_details={"large_payload_accepted": True},
+   507→                        )
+   508→                    )
+   509→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   510→            pass
+   511→
+   512→        return indicators
+   513→
+   514→    # -- IPv6 tunnel -------------------------------------------------------
+   515→
+   516→    def detect_ipv6_tunnel(
+   517→        self, host: str, timeout: int = 8
+   518→    ) -> List[TunnelIndicator]:
+   519→        """Check for IPv6 transition tunnel endpoints.
+   520→
+   521→        Detects 6to4, Teredo, ISATAP, and 6in4 tunnel encodings via DNS
+   522→        AAAA records and well-known tunnel relay addresses.
+   523→        """
+   524→        indicators: List[TunnelIndicator] = []
+   525→
+   526→        # 1. Check for AAAA records
+   527→        try:
+   528→            addrs = socket.getaddrinfo(host, None, socket.AF_INET6, socket.SOCK_STREAM)
+   529→            v6_addrs: List[str] = []
+   530→            for _fam, _st, _pr, _canon, sockaddr in addrs:
+   531→                ip6 = sockaddr[0]
+   532→                if ip6 not in v6_addrs:
+   533→                    v6_addrs.append(ip6)
+   534→
+   535→            for ip6 in v6_addrs:
+   536→                tunnel_info = self._classify_ipv6_tunnel(ip6)
+   537→                if tunnel_info:
+   538→                    ttype, confidence, desc = tunnel_info
+   539→                    indicators.append(
+   540→                        TunnelIndicator(
+   541→                            tunnel_type=TunnelType.IPV6_TUNNEL,
+   542→                            confidence=confidence,
+   543→                            evidence=f"{ttype} tunnel endpoint: {ip6} -- {desc}",
+   544→                            destination_ip=host,
+   545→                            protocol_details={
+   546→                                "ipv6_address": ip6,
+   547→                                "tunnel_technology": ttype,
+   548→                            },
+   549→                        )
+   550→                    )
+   551→        except (socket.gaierror, OSError) as exc:
+   552→            logger.debug("IPv6 AAAA lookup failed for %s: %s", host, exc)
+   553→
+   554→        # 2. Check DNS for tunnel-related subdomains
+   555→        tunnel_subdomains = [
+   556→            ("teredo", "teredo.{host}"),
+   557→            ("isatap", "isatap.{host}"),
+   558→            ("6to4", "6to4.{host}"),
+   559→            ("ipv6", "ipv6.{host}"),
+   560→        ]
+   561→        for tname, subdomain in tunnel_subdomains:
+   562→            try:
+   563→                addrs = socket.getaddrinfo(subdomain, None)
+   564→                if addrs:
+   565→                    ip = addrs[0][4][0]
+   566→                    indicators.append(
+   567→                        TunnelIndicator(
+   568→                            tunnel_type=TunnelType.IPV6_TUNNEL,
+   569→                            confidence=0.65,
+   570→                            evidence=(
+   571→                                f"Tunnel-related subdomain '{subdomain}' resolves to {ip}"
+   572→                            ),
+   573→                            destination_ip=host,
+   574→                            protocol_details={
+   575→                                "tunnel_subdomain": subdomain,
+   576→                                "resolved_ip": ip,
+   577→                            },
+   578→                        )
+   579→                    )
+   580→            except socket.gaierror:
+   581→                continue
+   582→
+   583→        return indicators
+   584→
+   585→    # -- GRE tunnel --------------------------------------------------------
+   586→
+   587→    def detect_gre_tunnel(
+   588→        self, host: str, timeout: int = 8
+   589→    ) -> List[TunnelIndicator]:
+   590→        """Check for GRE protocol (IP protocol 47) availability.
+   591→
+   592→        GRE tunneling cannot be reliably detected without raw sockets or
+   593→        captured traffic, so we check indirect indicators:
+   594→        - PPTP port 1723 (often used with GRE)
+   595→        - DNS records suggesting VPN infrastructure
+   596→        - Known GRE-tunnel-friendly patterns
+   597→        """
+   598→        indicators: List[TunnelIndicator] = []
+   599→
+   600→        # 1. Check PPTP port (1723) -- commonly paired with GRE
+   601→        pptp_open = self._check_port(host, 1723, timeout)
+   602→        if pptp_open:
+   603→            indicators.append(
+   604→                TunnelIndicator(
+   605→                    tunnel_type=TunnelType.GRE_TUNNEL,
+   606→                    confidence=0.55,
+   607→                    evidence=(
+   608→                        f"PPTP port 1723 is open on {host} -- "
+   609→                        f"PPTP uses GRE (protocol 47) for data"
+   610→                    ),
+   611→                    destination_ip=host,
+   612→                    protocol_details={"port_1723_open": True},
+   613→                )
+   614→            )
+   615→
+   616→        # 2. Check for VPN-related DNS TXT records
+   617→        vpn_keywords = ["vpn", "tunnel", "gre", "pptp", "ipsec"]
+   618→        txt_records = self._query_txt_records(host, timeout)
+   619→        for txt in txt_records:
+   620→            for kw in vpn_keywords:
+   621→                if kw in txt.lower():
+   622→                    indicators.append(
+   623→                        TunnelIndicator(
+   624→                            tunnel_type=TunnelType.GRE_TUNNEL,
+   625→                            confidence=0.4,
+   626→                            evidence=f"VPN/tunnel-related TXT record: {txt[:100]}",
+   627→                            destination_ip=host,
+   628→                            protocol_details={"txt_record": txt},
+   629→                        )
+   630→                    )
+   631→                    break
+   632→
+   633→        # 3. Common GRE/VPN ports
+   634→        vpn_ports = {
+   635→            47: "GRE",
+   636→            1723: "PPTP",
+   637→            500: "IKE (IPSec)",
+   638→            4500: "NAT-T (IPSec)",
+   639→            1194: "OpenVPN",
+   640→            1293: "IPSec",
+   641→            2134: "GRE over IP",
+   642→        }
+   643→        open_ports: Dict[int, str] = {}
+   644→        for port, name in vpn_ports.items():
+   645→            if port == 1723:  # already checked
+   646→                continue
+   647→            if self._check_port(host, port, timeout):
+   648→                open_ports[port] = name
+   649→
+   650→        if open_ports:
+   651→            indicators.append(
+   652→                TunnelIndicator(
+   653→                    tunnel_type=TunnelType.GRE_TUNNEL,
+   654→                    confidence=0.45,
+   655→                    evidence=(
+   656→                        f"VPN/tunnel ports open: "
+   657→                        + ", ".join(f"{p} ({n})" for p, n in open_ports.items())
+   658→                    ),
+   659→                    destination_ip=host,
+   660→                    protocol_details={"open_vpn_ports": open_ports},
+   661→                )
+   662→            )
+   663→
+   664→        return indicators
+   665→
+   666→    # -- SSH tunnel --------------------------------------------------------
+   667→
+   668→    def detect_ssh_tunnel(
+   669→        self, host: str, timeout: int = 8,
+   670→        dest_ip: Optional[str] = None
+   671→    ) -> List[TunnelIndicator]:
+   672→        """Check SSH port 22 availability and analyse the banner.
+   673→
+   674→        An open SSH port with a permissive configuration (e.g. allowing
+   675→        port forwarding) is a potential tunneling vector.
+   676→        """
+   677→        indicators: List[TunnelIndicator] = []
+   678→
+   679→        ssh_port = 22
+   680→        try:
+   681→            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   682→            sock.settimeout(timeout)
+   683→            result = sock.connect_ex((host, ssh_port))
+   684→            if result != 0:
+   685→                sock.close()
+   686→                return indicators
+   687→
+   688→            # Read banner
+   689→            banner = b""
+   690→            try:
+   691→                banner = sock.recv(1024)
+   692→            except OSError:
+   693→                pass
+   694→            sock.close()
+   695→
+   696→            banner_text = banner.decode("utf-8", errors="replace").strip()
+   697→
+   698→            if not banner_text:
+   699→                return indicators
+   700→
+   701→            details: Dict[str, Any] = {
+   702→                "port": ssh_port,
+   703→                "banner": banner_text,
+   704→            }
+   705→
+   706→            indicators.append(
+   707→                TunnelIndicator(
+   708→                    tunnel_type=TunnelType.SSH_TUNNEL,
+   709→                    confidence=0.5,
+   710→                    evidence=f"SSH port {ssh_port} is open: {banner_text}",
+   711→                    destination_ip=dest_ip or host,
+   712→                    protocol_details=details,
+   713→                )
+   714→            )
+   715→
+   716→            # Analyse banner for tunnel-friendly software
+   717→            tunnel_friendly = [
+   718→                (r"OpenSSH", 0.5, "OpenSSH supports Local/Remote/Dynamic port forwarding"),
+   719→                (r"Dropbear", 0.55, "Dropbear is a lightweight SSH often used in embedded tunnel setups"),
+   720→                (r"libssh", 0.45, "libssh library-based server -- programmatic tunneling possible"),
+   721→            ]
+   722→            for pattern, conf, desc in tunnel_friendly:
+   723→                if re.search(pattern, banner_text, re.IGNORECASE):
+   724→                    indicators.append(
+   725→                        TunnelIndicator(
+   726→                            tunnel_type=TunnelType.SSH_TUNNEL,
+   727→                            confidence=conf,
+   728→                            evidence=f"{desc}: {banner_text}",
+   729→                            destination_ip=dest_ip or host,
+   730→                            protocol_details=details,
+   731→                        )
+   732→                    )
+   733→
+   734→            # Check for non-standard SSH port (sometimes used to hide tunnels)
+   735→            # Scan common alternate SSH ports
+   736→            alt_ssh_ports = [2222, 222, 8022, 443, 8443]
+   737→            for port in alt_ssh_ports:
+   738→                try:
+   739→                    sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   740→                    sock2.settimeout(timeout)
+   741→                    r = sock2.connect_ex((host, port))
+   742→                    if r == 0:
+   743→                        alt_banner = b""
+   744→                        try:
+   745→                            alt_banner = sock2.recv(512)
+   746→                        except OSError:
+   747→                            pass
+   748→                        sock2.close()
+   749→                        alt_text = alt_banner.decode("utf-8", errors="replace").strip()
+   750→                        if "ssh" in alt_text.lower():
+   751→                            indicators.append(
+   752→                                TunnelIndicator(
+   753→                                    tunnel_type=TunnelType.SSH_TUNNEL,
+   754→                                    confidence=0.6,
+   755→                                    evidence=(
+   756→                                        f"SSH running on non-standard port {port}: {alt_text}"
+   757→                                    ),
+   758→                                    destination_ip=dest_ip or host,
+   759→                                    protocol_details={"port": port, "banner": alt_text},
+   760→                                )
+   761→                            )
+   762→                    else:
+   763→                        sock2.close()
+   764→                except OSError:
+   765→                    pass
+   766→
+   767→        except OSError as exc:
+   768→            logger.debug("SSH tunnel detection failed for %s: %s", host, exc)
+   769→
+   770→        return indicators
+   771→
+   772→    # -- HTTP CONNECT tunnel ----------------------------------------------
+   773→
+   774→    def detect_http_tunnel(
+   775→        self, base_url: str, timeout: int = 8
+   776→    ) -> List[TunnelIndicator]:
+   777→        """Check for HTTP CONNECT method support (proxy functionality).
+   778→
+   779→        An open HTTP proxy allows arbitrary TCP connections, making it a
+   780→        powerful tunneling vector.
+   781→        """
+   782→        indicators: List[TunnelIndicator] = []
+   783→
+   784→        parsed = urllib.parse.urlparse(base_url)
+   785→        proxy_host = parsed.hostname or ""
+   786→        proxy_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+   787→        scheme = parsed.scheme or "http"
+   788→
+   789→        # 1. Send CONNECT request
+   790→        try:
+   791→            connect_target = "example.com:443"
+   792→            conn = http.client.HTTPConnection(proxy_host, proxy_port, timeout=timeout)
+   793→            conn.request("CONNECT", connect_target, headers={
+   794→                "Host": connect_target,
+   795→                "User-Agent": "ReconPro/9.2.0",
+   796→            })
+   797→            resp = conn.getresponse()
+   798→            status = resp.status
+   799→            resp.read()
+   800→            conn.close()
+   801→
+   802→            if status == 200:
+   803→                indicators.append(
+   804→                    TunnelIndicator(
+   805→                        tunnel_type=TunnelType.HTTP_TUNNEL,
+   806→                        confidence=0.85,
+   807→                        evidence=(
+   808→                            f"HTTP CONNECT to {connect_target} returned 200 -- "
+   809→                            f"open proxy / tunnel endpoint"
+   810→                        ),
+   811→                        destination_ip=proxy_host,
+   812→                        protocol_details={
+   813→                            "method": "CONNECT",
+   814→                            "target": connect_target,
+   815→                            "status": status,
+   816→                        },
+   817→                    )
+   818→                )
+   819→            elif status in (403, 407):
+   820→                indicators.append(
+   821→                    TunnelIndicator(
+   822→                        tunnel_type=TunnelType.HTTP_TUNNEL,
+   823→                        confidence=0.3,
+   824→                        evidence=(
+   825→                            f"HTTP CONNECT returned {status} -- proxy detected "
+   826→                            f"but access restricted (may be exploitable with creds)"
+   827→                        ),
+   828→                        destination_ip=proxy_host,
+   829→                        protocol_details={"status": status},
+   830→                    )
+   831→                )
+   832→
+   833→        except (OSError, TimeoutError, Exception) as exc:
+   834→            logger.debug("HTTP CONNECT test failed: %s", exc)
+   835→
+   836→        # 2. Check for proxy-related headers in normal response
+   837→        try:
+   838→            req = urllib.request.Request(
+   839→                base_url, headers={"User-Agent": "ReconPro/9.2.0"},
+   840→            )
+   841→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   842→                headers = {k.lower(): v for k, v in resp.getheaders()}
+   843→
+   844→            proxy_headers = [
+   845→                ("via", "Proxy chain detected"),
+   846→                ("x-forwarded-for", "Forwarding proxy present"),
+   847→                ("forwarded", "Forwarded header present"),
+   848→                ("proxy-connection", "Proxy-Connection header (proxy behavior)"),
+   849→                ("x-proxy-id", "Proxy ID header detected"),
+   850→            ]
+   851→            for hdr, desc in proxy_headers:
+   852→                val = headers.get(hdr)
+   853→                if val:
+   854→                    indicators.append(
+   855→                        TunnelIndicator(
+   856→                            tunnel_type=TunnelType.HTTP_TUNNEL,
+   857→                            confidence=0.4,
+   858→                            evidence=f"{desc}: {hdr}={val}",
+   859→                            destination_ip=proxy_host,
+   860→                            protocol_details={"header": hdr, "value": val},
+   861→                        )
+   862→                    )
+   863→
+   864→        except (urllib.error.URLError, OSError, TimeoutError):
+   865→            pass
+   866→
+   867→        # 3. HTTPS tunnel detection (check for TLS 1.3 + large certificate chain)
+   868→        if scheme == "https":
+   869→            try:
+   870→                # We can't easily inspect TLS from stdlib, but check for HSTS
+   871→                # and certificate transparency which suggest HTTPS tunnel surface
+   872→                req = urllib.request.Request(
+   873→                    base_url, headers={"User-Agent": "ReconPro/9.2.0"},
+   874→                )
+   875→                with urllib.request.urlopen(req, timeout=timeout) as resp:
+   876→                    hdrs = {k.lower(): v for k, v in resp.getheaders()}
+   877→                if "strict-transport-security" in hdrs:
+   878→                    indicators.append(
+   879→                        TunnelIndicator(
+   880→                            tunnel_type=TunnelType.HTTPS_TUNNEL,
+   881→                            confidence=0.25,
+   882→                            evidence=(
+   883→                                "HSTS enabled -- encrypted HTTPS tunnel surface exists "
+   884→                                "(normal for legitimate sites, but enables covert TLS tunnels)"
+   885→                            ),
+   886→                            destination_ip=proxy_host,
+   887→                            protocol_details={
+   888→                                "hsts": hdrs["strict-transport-security"]
+   889→                            },
+   890→                        )
+   891→                    )
+   892→            except (urllib.error.URLError, OSError, TimeoutError):
+   893→                pass
+   894→
+   895→        return indicators
+   896→
+   897→    # -- helpers -----------------------------------------------------------
+   898→
+   899→    @staticmethod
+   900→    def _resolve_host(host: str) -> str:
+   901→        """Resolve hostname to IP.  Returns the IP or the original string."""
+   902→        try:
+   903→            addrs = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+   904→            if addrs:
+   905→                return addrs[0][4][0]
+   906→        except (socket.gaierror, OSError):
+   907→            pass
+   908→        return host
+   909→
+   910→    @staticmethod
+   911→    def _query_txt_records(host: str, timeout: int = 5) -> List[str]:
+   912→        """Return TXT record values via dig."""
+   913→        try:
+   914→            result = subprocess.run(
+   915→                ["dig", "+short", "TXT", host],
+   916→                capture_output=True, text=True, timeout=timeout,
+   917→            )
+   918→            records: List[str] = []
+   919→            for line in result.stdout.strip().splitlines():
+   920→                line = line.strip().strip('"')
+   921→                if line:
+   922→                    records.append(line)
+   923→            return records
+   924→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   925→            return []
+   926→
+   927→    def _probe_dns_subdomains(
+   928→        self, host: str, timeout: int = 5, count: int = 3
+   929→    ) -> List[str]:
+   930→        """Try resolving base64-like subdomains to test DNS tunnel surface."""
+   931→        import base64
+   932→        resolved: List[str] = []
+   933→        for i in range(count):
+   934→            payload = base64.b64encode(
+   935→                f"RECONPRO_TUNNEL_TEST_{i}_{datetime.now(timezone.utc).timestamp()}".encode()
+   936→            ).decode("ascii")
+   937→            label = payload[:50]  # DNS label max 63 chars
+   938→            fqdn = f"{label}.{host}"
+   939→            try:
+   940→                socket.setdefaulttimeout(timeout)
+   941→                socket.getaddrinfo(fqdn, None)
+   942→                resolved.append(fqdn)
+   943→            except socket.gaierror:
+   944→                pass
+   945→        return resolved
+   946→
+   947→    @staticmethod
+   948→    def _dig_any(host: str, timeout: int = 5) -> str:
+   949→        """Run dig ANY and return stdout."""
+   950→        try:
+   951→            result = subprocess.run(
+   952→                ["dig", "+short", "ANY", host],
+   953→                capture_output=True, text=True, timeout=timeout,
+   954→            )
+   955→            return result.stdout.strip()
+   956→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   957→            return ""
+   958→
+   959→    @staticmethod
+   960→    def _check_port(host: str, port: int, timeout: int = 5) -> bool:
+   961→        """Return True if a TCP connection to (host, port) succeeds."""
+   962→        try:
+   963→            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   964→            sock.settimeout(timeout)
+   965→            result = sock.connect_ex((host, port))
+   966→            sock.close()
+   967→            return result == 0
+   968→        except OSError:
+   969→            return False
+   970→
+   971→    @staticmethod
+   972→    def _classify_ipv6_tunnel(ip6: str) -> Optional[Tuple[str, float, str]]:
+   973→        """Classify an IPv6 address as a known tunnel type.
+   974→
+   975→        Returns ``(tunnel_name, confidence, description)`` or ``None``.
+   976→        """
+   977→        # 6to4: 2002::/16, embedded IPv4
+   978→        if ip6.startswith("2002:"):
+   979→            # Extract embedded IPv4 from bytes 2-5
+   980→            try:
+   981→                # Expand :: if needed
+   982→                parts = ip6.split(":")
+   983→                if len(parts) >= 3:
+   984→                    embedded = ".".join(
+   985→                        str(int(p, 16) if len(p) <= 4 else 0)
+   986→                        for p in parts[2:6]
+   987→                    )
+   988→                    return (
+   989→                        "6to4",
+   990→                        0.8,
+   991→                        f"6to4 tunnel with embedded IPv4: {embedded}",
+   992→                    )
+   993→            except (ValueError, IndexError):
+   994→                return ("6to4", 0.6, "6to4 tunnel prefix detected")
+   995→
+   996→        # Teredo: 2001:0000::/32
+   997→        if ip6.startswith("2001:0:") or ip6.startswith("2001:0000:"):
+   998→            return (
+   999→                "Teredo",
+  1000→                0.75,
+  1001→                "Teredo tunnel address (2001:0::/32 prefix)",
+  1002→            )
+  1003→
+  1004→        # ISATAP: ::0200:5efe:/96 or ::0000:5efe:/96
+  1005→        if ":5efe:" in ip6.lower():
+  1006→            return (
+  1007→                "ISATAP",
+  1008→                0.8,
+  1009→                f"ISATAP tunnel address (contains :5efe:)",
+  1010→            )
+  1011→
+  1012→        # 6in4 / 6rd: typically uses a /64 from a tunnel broker
+  1013→        # Hard to detect from address alone, skip low-confidence guess
+  1014→
+  1015→        return None
+  1016→
+  1017→    @staticmethod
+  1018→    def _std_dev(values: List[float]) -> float:
+  1019→        """Calculate population standard deviation."""
+  1020→        if not values:
+  1021→            return 0.0
+  1022→        n = len(values)
+  1023→        mean = sum(values) / n
+  1024→        variance = sum((v - mean) ** 2 for v in values) / n
+  1025→        return math.sqrt(variance)
+  1026→

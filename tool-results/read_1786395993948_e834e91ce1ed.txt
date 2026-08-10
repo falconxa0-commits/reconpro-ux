@@ -1,0 +1,708 @@
+     1→"""Dynamic Delta Reporting for ReconPro v8.5.
+     2→
+     3→Compares two scan results and produces rich diff reports with:
+     4→  - New / fixed / persistent findings
+     5→  - Severity escalation / de-escalation
+     6→  - Score and grade change tracking
+     7→  - Per-module breakdown
+     8→  - Git integration (blame, log between timestamps)
+     9→  - Risk velocity (new critical/high per day)
+    10→  - Markdown and SARIF output formats
+    11→
+    12→Standalone functions:
+    13→  compare_with_last(target) -> DeltaReport
+    14→  generate_delta_report(target, format='markdown') -> str
+    15→"""
+    16→from __future__ import annotations
+    17→
+    18→import json
+    19→import os
+    20→import subprocess
+    21→from dataclasses import dataclass, field
+    22→from datetime import datetime, timezone
+    23→from pathlib import Path
+    24→from typing import Any, Dict, List, Optional, Tuple
+    25→
+    26→
+    27→# ── Severity ordering (highest severity = lowest number) ────────────────
+    28→
+    29→_SEV_ORDER: Dict[str, int] = {
+    30→    "critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4,
+    31→}
+    32→
+    33→_SEV_NAMES = list(_SEV_ORDER.keys())
+    34→
+    35→
+    36→# ── Git availability check ──────────────────────────────────────────────
+    37→
+    38→_GIT_AVAILABLE: Optional[bool] = None
+    39→
+    40→
+    41→def _git_available() -> bool:
+    42→    """Check whether the git binary is on PATH."""
+    43→    global _GIT_AVAILABLE
+    44→    if _GIT_AVAILABLE is not None:
+    45→        return _GIT_AVAILABLE
+    46→    try:
+    47→        subprocess.run(
+    48→            ["git", "--version"],
+    49→            capture_output=True, timeout=5, check=False,
+    50→        )
+    51→        _GIT_AVAILABLE = True
+    52→    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+    53→        _GIT_AVAILABLE = False
+    54→    return _GIT_AVAILABLE
+    55→
+    56→
+    57→def _git_log_between(start_ts: str, end_ts: str) -> List[Dict[str, str]]:
+    58→    """Get git log between two ISO timestamps.
+    59→
+    60→    Returns list of dicts with keys: hash, author, date, message.
+    61→    """
+    62→    if not _git_available():
+    63→        return []
+    64→    try:
+    65→        since = start_ts.replace("T", " ").split(".")[0][:19]
+    66→        until = end_ts.replace("T", " ").split(".")[0][:19]
+    67→        result = subprocess.run(
+    68→            [
+    69→                "git", "log",
+    70→                f"--since={since}",
+    71→                f"--until={until}",
+    72→                "--pretty=format:%H|%an|%aI|%s",
+    73→                "-100",
+    74→            ],
+    75→            capture_output=True, text=True, timeout=10, check=False,
+    76→        )
+    77→        commits: List[Dict[str, str]] = []
+    78→        for line in result.stdout.strip().split("\n"):
+    79→            if not line.strip():
+    80→                continue
+    81→            parts = line.split("|", 3)
+    82→            if len(parts) >= 4:
+    83→                commits.append({
+    84→                    "hash": parts[0],
+    85→                    "author": parts[1],
+    86→                    "date": parts[2],
+    87→                    "message": parts[3],
+    88→                })
+    89→        return commits
+    90→    except (subprocess.TimeoutExpired, OSError):
+    91→        return []
+    92→
+    93→
+    94→def _git_blame(filepath: str, lineno: int = 1) -> Optional[Dict[str, str]]:
+    95→    """Run git blame on a specific file:line.
+    96→
+    97→    Returns dict with keys: author, date, hash, line_text or None.
+    98→    """
+    99→    if not _git_available():
+   100→        return None
+   101→    try:
+   102→        result = subprocess.run(
+   103→            [
+   104→                "git", "blame",
+   105→                f"-L{lineno},{lineno}",
+   106→                "--porcelain",
+   107→                filepath,
+   108→            ],
+   109→            capture_output=True, text=True, timeout=10, check=False,
+   110→        )
+   111→        output = result.stdout.strip()
+   112→        if not output:
+   113→            return None
+   114→        author = ""
+   115→        date = ""
+   116→        commit_hash = ""
+   117→        line_text = ""
+   118→        for line in output.split("\n"):
+   119→            if line.startswith("author "):
+   120→                author = line[7:]
+   121→            elif line.startswith("author-time "):
+   122→                ts = int(line[12:])
+   123→                date = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+   124→            elif line.startswith("summary "):
+   125→                commit_hash = line.split()[0] if not commit_hash else commit_hash
+   126→            elif line.startswith("      "):
+   127→                line_text = line[1:]
+   128→        # Extract hash from first line
+   129→        first_line = output.split("\n")[0]
+   130→        hash_part = first_line.split()[0]
+   131→        return {
+   132→            "author": author,
+   133→            "date": date,
+   134→            "hash": hash_part,
+   135→            "line_text": line_text,
+   136→        }
+   137→    except (subprocess.TimeoutExpired, OSError, ValueError):
+   138→        return None
+   139→
+   140→
+   141→# ── DeltaReport dataclass ───────────────────────────────────────────────
+   142→
+   143→
+   144→@dataclass
+   145→class DeltaReport:
+   146→    """Complete comparison of two scan results.
+   147→
+   148→    Attributes:
+   149→        target: The scanned target.
+   150→        scan_a: Baseline scan dict (older).
+   151→        scan_b: Comparison scan dict (newer).
+   152→        timestamp_a: When scan_a was taken (ISO string).
+   153→        timestamp_b: When scan_b was taken (ISO string).
+   154→        new_findings: Findings present in B but not A.
+   155→        fixed_findings: Findings present in A but not B.
+   156→        persistent_findings: Findings present in both scans.
+   157→        severity_changes: List of (finding_title, old_sev, new_sev, direction).
+   158→        score_a, score_b: Scores from each scan.
+   159→        grade_a, grade_b: Grades from each scan.
+   160→        score_change: score_b - score_a.
+   161→        grade_change: Direction string like "+2 grades" or "same".
+   162→        new_critical_count: Number of new critical findings.
+   163→        fixed_critical_count: Number of fixed critical findings.
+   164→        per_module: Dict mapping module -> {new, fixed, persistent} counts.
+   165→        risk_velocity: New critical+high findings per day.
+   166→        git_info: Git log entries between the two scans.
+   167→        author_attribution: Dict mapping author -> list of new finding titles.
+   168→    """
+   169→    target: str = ""
+   170→    scan_a: Dict[str, Any] = field(default_factory=dict)
+   171→    scan_b: Dict[str, Any] = field(default_factory=dict)
+   172→    timestamp_a: str = ""
+   173→    timestamp_b: str = ""
+   174→    new_findings: List[Dict[str, Any]] = field(default_factory=list)
+   175→    fixed_findings: List[Dict[str, Any]] = field(default_factory=list)
+   176→    persistent_findings: List[Dict[str, Any]] = field(default_factory=list)
+   177→    severity_changes: List[Tuple[str, str, str, str]] = field(default_factory=list)
+   178→    score_a: int = 0
+   179→    score_b: int = 0
+   180→    grade_a: str = ""
+   181→    grade_b: str = ""
+   182→    score_change: int = 0
+   183→    grade_change: str = "same"
+   184→    new_critical_count: int = 0
+   185→    fixed_critical_count: int = 0
+   186→    per_module: Dict[str, Dict[str, int]] = field(default_factory=dict)
+   187→    risk_velocity: float = 0.0
+   188→    git_info: List[Dict[str, str]] = field(default_factory=list)
+   189→    author_attribution: Dict[str, List[str]] = field(default_factory=dict)
+   190→
+   191→    def to_dict(self) -> Dict[str, Any]:
+   192→        return {
+   193→            "target": self.target,
+   194→            "timestamp_a": self.timestamp_a,
+   195→            "timestamp_b": self.timestamp_b,
+   196→            "score_a": self.score_a,
+   197→            "score_b": self.score_b,
+   198→            "score_change": self.score_change,
+   199→            "grade_a": self.grade_a,
+   200→            "grade_b": self.grade_b,
+   201→            "grade_change": self.grade_change,
+   202→            "new_findings": self.new_findings,
+   203→            "fixed_findings": self.fixed_findings,
+   204→            "persistent_findings": self.persistent_findings,
+   205→            "severity_changes": self.severity_changes,
+   206→            "new_critical_count": self.new_critical_count,
+   207→            "fixed_critical_count": self.fixed_critical_count,
+   208→            "per_module": self.per_module,
+   209→            "risk_velocity": self.risk_velocity,
+   210→            "git_info": self.git_info,
+   211→            "author_attribution": self.author_attribution,
+   212→        }
+   213→
+   214→
+   215→# ── DeltaReporter ────────────────────────────────────────────────────────
+   216→
+   217→
+   218→class DeltaReporter:
+   219→    """Compares two ReconPro scan results and produces DeltaReport objects.
+   220→
+   221→    Also generates markdown and SARIF representations of the delta.
+   222→    """
+   223→
+   224→    def compare(self, scan_a: Dict[str, Any], scan_b: Dict[str, Any]) -> DeltaReport:
+   225→        """Compare two scan result dicts and return a DeltaReport.
+   226→
+   227→        Args:
+   228→            scan_a: Baseline (older) scan result dict.
+   229→            scan_b: Comparison (newer) scan result dict.
+   230→
+   231→        Returns:
+   232→            A fully populated DeltaReport.
+   233→        """
+   234→        target = scan_b.get("target", scan_a.get("target", ""))
+   235→        ts_a = scan_a.get("_saved_at", "")
+   236→        ts_b = scan_b.get("_saved_at", "")
+   237→        score_a = scan_a.get("total_score", 0)
+   238→        score_b = scan_b.get("total_score", 0)
+   239→        grade_a = scan_a.get("grade", "")
+   240→        grade_b = scan_b.get("grade", "")
+   241→
+   242→        # Index findings by title for comparison
+   243→        a_findings = {f.get("title", ""): f for f in scan_a.get("findings", [])}
+   244→        b_findings = {f.get("title", ""): f for f in scan_b.get("findings", [])}
+   245→        a_titles = set(a_findings.keys())
+   246→        b_titles = set(b_findings.keys())
+   247→
+   248→        # Classify findings
+   249→        new_titles = b_titles - a_titles
+   250→        fixed_titles = a_titles - b_titles
+   251→        persistent_titles = a_titles & b_titles
+   252→
+   253→        new_findings = [b_findings[t] for t in sorted(new_titles) if t in b_findings]
+   254→        fixed_findings = [a_findings[t] for t in sorted(fixed_titles) if t in a_findings]
+   255→        persistent_findings = [b_findings[t] for t in sorted(persistent_titles) if t in b_findings]
+   256→
+   257→        # Severity changes in persistent findings
+   258→        severity_changes: List[Tuple[str, str, str, str]] = []
+   259→        for title in persistent_titles:
+   260→            old_sev = a_findings.get(title, {}).get("severity", "").lower()
+   261→            new_sev = b_findings.get(title, {}).get("severity", "").lower()
+   262→            if old_sev != new_sev and old_sev in _SEV_ORDER and new_sev in _SEV_ORDER:
+   263→                direction = "worse" if _SEV_ORDER[new_sev] < _SEV_ORDER[old_sev] else "better"
+   264→                severity_changes.append((title, old_sev, new_sev, direction))
+   265→
+   266→        # Score and grade change
+   267→        score_change = score_b - score_a
+   268→        grade_change = self._compute_grade_change(grade_a, grade_b)
+   269→
+   270→        # Critical counts
+   271→        new_critical_count = sum(
+   272→            1 for f in new_findings if f.get("severity", "").lower() == "critical"
+   273→        )
+   274→        fixed_critical_count = sum(
+   275→            1 for f in fixed_findings if f.get("severity", "").lower() == "critical"
+   276→        )
+   277→
+   278→        # Per-module breakdown
+   279→        per_module: Dict[str, Dict[str, int]] = {}
+   280→        all_findings_classified = [
+   281→            ("new", new_findings),
+   282→            ("fixed", fixed_findings),
+   283→            ("persistent", persistent_findings),
+   284→        ]
+   285→        for category, findings in all_findings_classified:
+   286→            for f in findings:
+   287→                mod = f.get("module", "unknown")
+   288→                if mod not in per_module:
+   289→                    per_module[mod] = {"new": 0, "fixed": 0, "persistent": 0}
+   290→                per_module[mod][category] += 1
+   291→
+   292→        # Risk velocity: new critical+high per day
+   293→        risk_velocity = 0.0
+   294→        days = self._days_between(ts_a, ts_b)
+   295→        if days and days > 0:
+   296→            new_high_sev = sum(
+   297→                1 for f in new_findings
+   298→                if f.get("severity", "").lower() in ("critical", "high")
+   299→            )
+   300→            risk_velocity = round(new_high_sev / days, 2)
+   301→
+   302→        # Git integration
+   303→        git_info: List[Dict[str, str]] = []
+   304→        author_attribution: Dict[str, List[str]] = {}
+   305→        if ts_a and ts_b:
+   306→            git_info = _git_log_between(ts_a, ts_b)
+   307→
+   308→        # Author attribution for new findings via git blame
+   309→        for f in new_findings:
+   310→            asset = f.get("asset", "")
+   311→            # Try to extract file path and line from evidence or asset
+   312→            blamed = self._blame_finding(f)
+   313→            if blamed and blamed.get("author"):
+   314→                author = blamed["author"]
+   315→                title = f.get("title", "")
+   316→                author_attribution.setdefault(author, []).append(title)
+   317→
+   318→        return DeltaReport(
+   319→            target=target,
+   320→            scan_a=scan_a,
+   321→            scan_b=scan_b,
+   322→            timestamp_a=ts_a,
+   323→            timestamp_b=ts_b,
+   324→            new_findings=new_findings,
+   325→            fixed_findings=fixed_findings,
+   326→            persistent_findings=persistent_findings,
+   327→            severity_changes=severity_changes,
+   328→            score_a=score_a,
+   329→            score_b=score_b,
+   330→            grade_a=grade_a,
+   331→            grade_b=grade_b,
+   332→            score_change=score_change,
+   333→            grade_change=grade_change,
+   334→            new_critical_count=new_critical_count,
+   335→            fixed_critical_count=fixed_critical_count,
+   336→            per_module=per_module,
+   337→            risk_velocity=risk_velocity,
+   338→            git_info=git_info,
+   339→            author_attribution=author_attribution,
+   340→        )
+   341→
+   342→    def generate_markdown(self, delta: DeltaReport) -> str:
+   343→        """Generate a PR-comment-friendly markdown report from a DeltaReport."""
+   344→        lines: List[str] = []
+   345→
+   346→        # Header
+   347→        direction = "+" if delta.score_change > 0 else ""
+   348→        lines.append(f"## ReconPro Delta Report\n")
+   349→        lines.append(
+   350→            f"**Target:** `{delta.target}`  |  "
+   351→            f"**Score:** {delta.grade_a} ({delta.score_a}) → {delta.grade_b} ({delta.score_b}) "
+   352→            f"({direction}{delta.score_change})  |  "
+   353→            f"**{delta.grade_change}**\n"
+   354→        )
+   355→
+   356→        # Summary boxes
+   357→        lines.append(f"- **New findings:** {len(delta.new_findings)} ({delta.new_critical_count} critical)")
+   358→        lines.append(f"- **Fixed findings:** {len(delta.fixed_findings)} ({delta.fixed_critical_count} critical)")
+   359→        lines.append(f"- **Persistent findings:** {len(delta.persistent_findings)}")
+   360→        if delta.risk_velocity > 0:
+   361→            lines.append(f"- **Risk velocity:** {delta.risk_velocity} new crit/high per day")
+   362→        lines.append("")
+   363→
+   364→        # New findings table
+   365→        if delta.new_findings:
+   366→            lines.append("### New Findings\n")
+   367→            lines.append("| Severity | Finding | Module | Author |")
+   368→            lines.append("|----------|---------|--------|--------|")
+   369→            for f in sorted(delta.new_findings, key=lambda x: _SEV_ORDER.get(x.get("severity", "info").lower(), 99)):
+   370→                sev = f.get("severity", "info").upper()
+   371→                title = f.get("title", "")
+   372→                mod = f.get("module", "")
+   373→                # Find author attribution
+   374→                author = ""
+   375→                for auth, titles in delta.author_attribution.items():
+   376→                    if title in titles:
+   377→                        author = auth
+   378→                        break
+   379→                lines.append(f"| {sev} | {title} | `{mod}` | {author} |")
+   380→            lines.append("")
+   381→
+   382→        # Fixed findings table
+   383→        if delta.fixed_findings:
+   384→            lines.append("### Fixed Findings ✅\n")
+   385→            lines.append("| Severity | Finding | Module |")
+   386→            lines.append("|----------|---------|--------|")
+   387→            for f in sorted(delta.fixed_findings, key=lambda x: _SEV_ORDER.get(x.get("severity", "info").lower(), 99)):
+   388→                sev = f.get("severity", "info").upper()
+   389→                title = f.get("title", "")
+   390→                mod = f.get("module", "")
+   391→                lines.append(f"| {sev} | ~~{title}~~ | `{mod}` |")
+   392→            lines.append("")
+   393→
+   394→        # Severity changes
+   395→        if delta.severity_changes:
+   396→            lines.append("### Severity Changes\n")
+   397→            lines.append("| Finding | Before | After | Direction |")
+   398→            lines.append("|---------|--------|-------|-----------|")
+   399→            for title, old_sev, new_sev, direction in delta.severity_changes:
+   400→                arrow = "⬇️" if direction == "worse" else "⬆️"
+   401→                lines.append(f"| {title} | {old_sev} | {new_sev} | {arrow} {direction} |")
+   402→            lines.append("")
+   403→
+   404→        # Per-module breakdown
+   405→        if delta.per_module:
+   406→            lines.append("### Per-Module Breakdown\n")
+   407→            lines.append("| Module | New | Fixed | Persistent |")
+   408→            lines.append("|--------|-----|-------|-----------|")
+   409→            for mod in sorted(delta.per_module.keys()):
+   410→                counts = delta.per_module[mod]
+   411→                lines.append(f"| `{mod}` | {counts['new']} | {counts['fixed']} | {counts['persistent']} |")
+   412→            lines.append("")
+   413→
+   414→        # Git info (last 5 commits)
+   415→        if delta.git_info:
+   416→            lines.append("### Recent Commits\n")
+   417→            for commit in delta.git_info[:5]:
+   418→                short_hash = commit.get("hash", "")[:8]
+   419→                author = commit.get("author", "")
+   420→                message = commit.get("message", "")[:80]
+   421→                lines.append(f"- `{short_hash}` **{author}**: {message}")
+   422→            lines.append("")
+   423→
+   424→        lines.append("---\n*Generated by ReconPro Delta Engine v8.5*\n")
+   425→        return "\n".join(lines)
+   426→
+   427→    def generate_sarif(self, delta: DeltaReport) -> Dict[str, Any]:
+   428→        """Generate a SARIF 2.1.0 dict with change annotations."""
+   429→        rules: List[Dict[str, Any]] = []
+   430→        results: List[Dict[str, Any]] = []
+   431→        rule_index: Dict[str, Dict[str, Any]] = {}
+   432→
+   433→        _SARIF_LEVEL = {
+   434→            "critical": "error", "high": "error",
+   435→            "medium": "warning", "low": "note", "info": "note",
+   436→        }
+   437→
+   438→        def _ensure_rule(rule_id: str, title: str, description: str) -> None:
+   439→            if rule_id not in rule_index:
+   440→                rule_index[rule_id] = {
+   441→                    "id": rule_id,
+   442→                    "name": title,
+   443→                    "shortDescription": {"text": title},
+   444→                    "fullDescription": {"text": description},
+   445→                    "properties": {"category": "delta"},
+   446→                }
+   447→
+   448→        # New findings as SARIF results
+   449→        for f in delta.new_findings:
+   450→            rule_id = f"RP-DELTA-NEW-{f.get('category', 'general').upper()}"
+   451→            _ensure_rule(rule_id, f.get("title", ""), f.get("description", ""))
+   452→            sev = f.get("severity", "info").lower()
+   453→            author = ""
+   454→            for auth, titles in delta.author_attribution.items():
+   455→                if f.get("title", "") in titles:
+   456→                    author = auth
+   457→                    break
+   458→            result: Dict[str, Any] = {
+   459→                "ruleId": rule_id,
+   460→                "level": _SARIF_LEVEL.get(sev, "note"),
+   461→                "message": {
+   462→                    "text": f"[NEW] {f.get('title', '')}",
+   463→                    "markdown": f"**[NEW] {f.get('title', '')}**\n\n{f.get('description', '')}",
+   464→                },
+   465→                "locations": [{
+   466→                    "physicalLocation": {
+   467→                        "artifactLocation": {"uri": f.get("asset", delta.target)},
+   468→                    },
+   469→                }],
+   470→                "properties": {
+   471→                    "change_type": "new",
+   472→                    "category": f.get("category", ""),
+   473→                    "module": f.get("module", ""),
+   474→                    "delta_author": author,
+   475→                },
+   476→            }
+   477→            results.append(result)
+   478→
+   479→        # Fixed findings
+   480→        for f in delta.fixed_findings:
+   481→            rule_id = "RP-DELTA-FIXED"
+   482→            _ensure_rule(rule_id, "Fixed Finding", "A previously reported finding is no longer detected.")
+   483→            results.append({
+   484→                "ruleId": rule_id,
+   485→                "level": "note",
+   486→                "message": {
+   487→                    "text": f"[FIXED] {f.get('title', '')}",
+   488→                },
+   489→                "locations": [{
+   490→                    "physicalLocation": {
+   491→                        "artifactLocation": {"uri": f.get("asset", delta.target)},
+   492→                    },
+   493→                }],
+   494→                "properties": {
+   495→                    "change_type": "fixed",
+   496→                    "category": f.get("category", ""),
+   497→                    "module": f.get("module", ""),
+   498→                },
+   499→            })
+   500→
+   501→        # Severity changes
+   502→        for title, old_sev, new_sev, direction in delta.severity_changes:
+   503→            rule_id = "RP-DELTA-SEVERITY"
+   504→            _ensure_rule(rule_id, "Severity Change", "A finding changed severity between scans.")
+   505→            results.append({
+   506→                "ruleId": rule_id,
+   507→                "level": "error" if direction == "worse" else "note",
+   508→                "message": {
+   509→                    "text": f"[SEVERITY {direction.upper()}] {title}: {old_sev} → {new_sev}",
+   510→                },
+   511→                "properties": {
+   512→                    "change_type": "severity_change",
+   513→                    "old_severity": old_sev,
+   514→                    "new_severity": new_sev,
+   515→                    "direction": direction,
+   516→                },
+   517→            })
+   518→
+   519→        rules = list(rule_index.values())
+   520→
+   521→        return {
+   522→            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+   523→            "version": "2.1.0",
+   524→            "runs": [{
+   525→                "tool": {
+   526→                    "driver": {
+   527→                        "name": "ReconPro Delta",
+   528→                        "version": "8.5.0",
+   529→                        "informationUri": "https://github.com/reconpro-security/reconpro",
+   530→                        "rules": rules,
+   531→                    }
+   532→                },
+   533→                "results": results,
+   534→                "invocations": [{
+   535→                    "executionSuccessful": True,
+   536→                    "startTimeUtc": datetime.now(timezone.utc).isoformat(),
+   537→                }],
+   538→                "properties": {
+   539→                    "target": delta.target,
+   540→                    "score_a": delta.score_a,
+   541→                    "score_b": delta.score_b,
+   542→                    "score_change": delta.score_change,
+   543→                    "grade_a": delta.grade_a,
+   544→                    "grade_b": delta.grade_b,
+   545→                    "risk_velocity": delta.risk_velocity,
+   546→                    "new_critical_count": delta.new_critical_count,
+   547→                    "fixed_critical_count": delta.fixed_critical_count,
+   548→                },
+   549→            }],
+   550→        }
+   551→
+   552→    # ── Private helpers ──────────────────────────────────────────────
+   553→
+   554→    @staticmethod
+   555→    def _compute_grade_change(grade_a: str, grade_b: str) -> str:
+   556→        """Compute a human-readable grade change description."""
+   557→        grade_list = ["A+", "A", "B", "C", "D", "F"]
+   558→        try:
+   559→            idx_a = grade_list.index(grade_a)
+   560→            idx_b = grade_list.index(grade_b)
+   561→        except ValueError:
+   562→            return "same" if grade_a == grade_b else f"{grade_a} → {grade_b}"
+   563→        diff = idx_a - idx_b  # Positive = improved
+   564→        if diff == 0:
+   565→            return "same"
+   566→        if diff > 0:
+   567→            return f"+{diff} grade{'s' if abs(diff) > 1 else ''} improved"
+   568→        return f"{abs(diff)} grade{'s' if abs(diff) > 1 else ''} worse"
+   569→
+   570→    @staticmethod
+   571→    def _days_between(ts_a: str, ts_b: str) -> Optional[float]:
+   572→        """Return fractional days between two ISO timestamps."""
+   573→        try:
+   574→            dt_a = datetime.fromisoformat(ts_a.replace("Z", "+00:00"))
+   575→            dt_b = datetime.fromisoformat(ts_b.replace("Z", "+00:00"))
+   576→            delta = dt_b - dt_a
+   577→            return max(delta.total_seconds() / 86400.0, 0.0)
+   578→        except (ValueError, TypeError):
+   579→            return None
+   580→
+   581→    @staticmethod
+   582→    def _blame_finding(finding: Dict[str, Any]) -> Optional[Dict[str, str]]:
+   583→        """Attempt to blame a finding's asset file to get author info."""
+   584→        if not _git_available():
+   585→            return None
+   586→        asset = finding.get("asset", "")
+   587→        if not asset or "/" in asset or asset.startswith(("http", ".")):
+   588→            # Skip URLs, relative paths, and assets that look like domains
+   589→            if os.path.isfile(asset):
+   590→                return _git_blame(asset, 1)
+   591→            return None
+   592→        if os.path.isfile(asset):
+   593→            return _git_blame(asset, 1)
+   594→        return None
+   595→
+   596→
+   597→# ── Standalone convenience functions ─────────────────────────────────────
+   598→
+   599→
+   600→def compare_with_last(target: str) -> Optional[DeltaReport]:
+   601→    """Compare the latest two scans for *target* from history.
+   602→
+   603→    Returns a DeltaReport or None if fewer than two scans exist.
+   604→    """
+   605→    from .history import list_scans
+   606→
+   607→    scans = list_scans(target=target, limit=2)
+   608→    if len(scans) < 2:
+   609→        return None
+   610→    # list_scans returns newest first
+   611→    scan_b = scans[0]
+   612→    scan_a = scans[1]
+   613→    reporter = DeltaReporter()
+   614→    return reporter.compare(scan_a, scan_b)
+   615→
+   616→
+   617→def generate_delta_report(target: str, format: str = "markdown") -> str:
+   618→    """Generate a delta report string for *target*.
+   619→
+   620→    Args:
+   621→        target: The scan target to compare.
+   622→        format: 'markdown' or 'sarif' (as JSON string).
+   623→
+   624→    Returns:
+   625→        The formatted report string, or empty string if no delta available.
+   626→    """
+   627→    delta = compare_with_last(target)
+   628→    if delta is None:
+   629→        return ""
+   630→    reporter = DeltaReporter()
+   631→    if format == "sarif":
+   632→        return json.dumps(reporter.generate_sarif(delta), indent=2)
+   633→    return reporter.generate_markdown(delta)
+   634→
+   635→
+   636→__all__ = [
+   637→    "DeltaReport",
+   638→    "DeltaReporter",
+   639→    "compare_with_last",
+   640→    "generate_delta_report",
+   641→]
+   642→
+   643→
+   644→# ── Snapshot & Baseline Management ───────────────────────────────────────
+   645→
+   646→import hashlib
+   647→import json
+   648→import time as _time
+   649→
+   650→_SNAPSHOT_DIR = Path.home() / ".reconpro" / "snapshots"
+   651→
+   652→def save_snapshot(data: Dict[str, Any], label: str = "", target: str = "") -> str:
+   653→    """Save a scan result as a named snapshot for comparison."""
+   654→    _SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+   655→    ts = _time.strftime("%Y%m%d_%H%M%S")
+   656→    snap_id = hashlib.md5(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()[:8]
+   657→    filename = f"{ts}_{label}_{snap_id}.json" if label else f"{ts}_{snap_id}.json"
+   658→    if target:
+   659→        filename = f"{target.replace('.', '_')}_{filename}"
+   660→    fpath = _SNAPSHOT_DIR / filename
+   661→    with open(fpath, "w") as f:
+   662→        json.dump({"timestamp": _time.time(), "label": label, "target": target, "data": data}, f, indent=2, default=str)
+   663→    return str(fpath)
+   664→
+   665→def list_snapshots(target: str = "") -> List[Dict[str, str]]:
+   666→    """List saved snapshots."""
+   667→    _SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+   668→    result = []
+   669→    for f in sorted(_SNAPSHOT_DIR.glob("*.json"), reverse=True):
+   670→        try:
+   671→            with open(f) as fp:
+   672→                meta = json.load(fp)
+   673→            result.append({"path": str(f), "label": meta.get("label", ""), "target": meta.get("target", ""), "timestamp": meta.get("timestamp", 0)})
+   674→        except (json.JSONDecodeError, OSError):
+   675→            pass
+   676→    if target:
+   677→        result = [s for s in result if s["target"] == target]
+   678→    return result
+   679→
+   680→def load_snapshot(path: str) -> Optional[Dict[str, Any]]:
+   681→    """Load a specific snapshot."""
+   682→    try:
+   683→        with open(path) as f:
+   684→            return json.load(f)
+   685→    except (OSError, json.JSONDecodeError):
+   686→        return None
+   687→
+   688→def compare_snapshots(old_path: str, new_path: str) -> Dict[str, Any]:
+   689→    """Compare two snapshots and report differences."""
+   690→    old = load_snapshot(old_path)
+   691→    new = load_snapshot(new_path)
+   692→    if not old or not new:
+   693→        return {"error": "Could not load one or both snapshots"}
+   694→    old_findings = set(f.get("title", "") for f in old.get("data", {}).get("findings", []))
+   695→    new_findings = set(f.get("title", "") for f in new.get("data", {}).get("findings", []))
+   696→    added = new_findings - old_findings
+   697→    removed = old_findings - new_findings
+   698→    old_score = old.get("data", {}).get("score", {}).get("overall", 0)
+   699→    new_score = new.get("data", {}).get("score", {}).get("overall", 0)
+   700→    return {
+   701→        "old_score": old_score,
+   702→        "new_score": new_score,
+   703→        "score_delta": new_score - old_score,
+   704→        "added_findings": list(added),
+   705→        "removed_findings": list(removed),
+   706→        "unchanged_count": len(old_findings & new_findings),
+   707→    }
+   708→

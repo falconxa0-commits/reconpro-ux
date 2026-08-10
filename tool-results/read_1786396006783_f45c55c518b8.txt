@@ -1,0 +1,688 @@
+   574→    def map_sovereignty(
+   575→        self,
+   576→        target: str,
+   577→        base_url: str,
+   578→        geo_data: Optional[Dict[str, Any]] = None,
+   579→        tls_data: Optional[Dict[str, Any]] = None,
+   580→        timeout: int = 8,
+   581→    ) -> Dict[str, Any]:
+   582→        """Build a full sovereignty profile for *target*.
+   583→
+   584→        Returns a dict with keys: ``jurisdictions``, ``primary_jurisdiction``,
+   585→        ``cloud_provider``, ``cloud_region``, ``surveillance_risk``,
+   586→        ``data_residency_compliance``, ``overall_risk_score``, ``details``.
+   587→        """
+   588→        host = self._extract_host(base_url)
+   589→
+   590→        asn_jur = self.analyze_asn_jurisdiction(host, timeout=timeout)
+   591→        cert_jur = self.analyze_certificate_jurisdiction(host, timeout=timeout)
+   592→        dns_jur = self.analyze_dns_jurisdiction(host, timeout=timeout)
+   593→        content_jur = self.analyze_content_jurisdiction(base_url, timeout=timeout)
+   594→        cloud_jur = self.analyze_cloud_jurisdiction(base_url, timeout=timeout)
+   595→
+   596→        all_jurisdictions: List[Jurisdiction] = [asn_jur, cert_jur, dns_jur, content_jur]
+   597→
+   598→        # Merge into a primary assessment weighted by confidence
+   599→        primary = self._merge_jurisdictions(all_jurisdictions)
+   600→
+   601→        # Surveillance risk assessment
+   602→        surveillance = self.assess_surveillance_risk(primary.country)
+   603→
+   604→        # Data residency compliance
+   605→        involved_countries = list({
+   606→            j.country for j in all_jurisdictions if j.country != "Unknown"
+   607→        })
+   608→        compliance = self.assess_data_residency_compliance(involved_countries)
+   609→
+   610→        risk_score = self._calculate_overall_risk(primary, surveillance, cloud_jur)
+   611→
+   612→        return {
+   613→            "target": target,
+   614→            "base_url": base_url,
+   615→            "host": host,
+   616→            "jurisdictions": [j.to_dict() for j in all_jurisdictions],
+   617→            "primary_jurisdiction": primary.to_dict(),
+   618→            "cloud_provider": cloud_jur.get("provider", "Unknown"),
+   619→            "cloud_region": cloud_jur.get("region", "Unknown"),
+   620→            "surveillance_risk": surveillance,
+   621→            "data_residency_compliance": compliance,
+   622→            "overall_risk_score": risk_score,
+   623→            "details": {
+   624→                "geo_data_supplied": geo_data is not None,
+   625→                "tls_data_supplied": tls_data is not None,
+   626→                "timestamp": datetime.now(timezone.utc).isoformat(),
+   627→            },
+   628→        }
+   629→
+   630→    # ── ASN jurisdiction ───────────────────────────────────────────
+   631→
+   632→    def analyze_asn_jurisdiction(
+   633→        self, host: str, timeout: int = 8
+   634→    ) -> Jurisdiction:
+   635→        """Map a host's ASN to a country via WHOIS lookup."""
+   636→        jur = Jurisdiction(evidence=[])  # type: ignore[arg-type]
+   637→
+   638→        try:
+   639→            result = self._whois_query(host, timeout=timeout)
+   640→            if result:
+   641→                country = self._extract_country_from_whois(result)
+   642→                if country:
+   643→                    jur.country = _country_code_to_name(country)
+   644→                    jur.confidence = 0.75
+   645→                    jur.evidence.append(f"WHOIS ASN country: {country}")
+   646→
+   647→                org = self._extract_org_from_whois(result)
+   648→                if org:
+   649→                    jur.evidence.append(f"WHOIS Organization: {org}")
+   650→
+   651→                # Check for known surveillance countries
+   652→                code = country.upper() if country else ""
+   653→                if code in SURVEILLANCE_DATABASE:
+   654→                    db = SURVEILLANCE_DATABASE[code]
+   655→                    jur.surveillance_laws = db["programs"]
+   656→                    if db["encryption_backdoor_laws"]:
+   657→                        jur.encryption_regulations.append(
+   658→                            "Mandatory backdoor / key escrow"
+   659→                        )
+   660→                    jur.data_residency_risk = db["risk_level"]
+   661→        except Exception as exc:
+   662→            jur.evidence.append(f"ASN lookup failed: {exc}")
+   663→
+   664→        return jur
+   665→
+   666→    # ── Certificate jurisdiction ────────────────────────────────────
+   667→
+   668→    def analyze_certificate_jurisdiction(
+   669→        self, host: str, timeout: int = 8
+   670→    ) -> Jurisdiction:
+   671→        """Analyze TLS certificate issuer to determine jurisdiction."""
+   672→        jur = Jurisdiction(evidence=[])  # type: ignore[arg-type]
+   673→
+   674→        try:
+   675→            ctx = ssl.create_default_context()
+   676→            ctx.check_hostname = False
+   677→            ctx.verify_mode = ssl.CERT_NONE
+   678→
+   679→            with socket.create_connection((host, 443), timeout=timeout) as sock:
+   680→                with ctx.wrap_socket(sock, server_hostname=host) as tls:
+   681→                    cert_der = tls.getpeercert(binary_form=True)
+   682→                    if cert_der is None:
+   683→                        jur.evidence.append("No TLS certificate returned")
+   684→                        return jur
+   685→
+   686→                    import ssl as _ssl_mod
+   687→                    # decode_der_subj takes DER; we use getpeercert() dict instead
+   688→                    cert_dict = tls.getpeercert()
+   689→                    if not cert_dict:
+   690→                        jur.evidence.append("Could not parse certificate")
+   691→                        return jur
+   692→
+   693→                    # Extract issuer
+   694→                    issuer_parts = cert_dict.get("issuer", [])
+   695→                    issuer_str = ", ".join(
+   696→                        f"{k}={v}" for item in issuer_parts for k, v in item
+   697→                    )
+   698→
+   699→                    subject_parts = cert_dict.get("subject", [])
+   700→                    subject_str = ", ".join(
+   701→                        f"{k}={v}" for item in subject_parts for k, v in item
+   702→                    )
+   703→
+   704→                    jur.evidence.append(f"Certificate Subject: {subject_str}")
+   705→                    jur.evidence.append(f"Certificate Issuer: {issuer_str}")
+   706→
+   707→                    # Map known CAs to jurisdictions
+   708→                    issuer_country = self._map_ca_to_jurisdiction(issuer_str)
+   709→                    if issuer_country:
+   710→                        jur.country = issuer_country
+   711→                        jur.confidence = 0.55
+   712→                        jur.evidence.append(f"CA jurisdiction: {issuer_country}")
+   713→
+   714→                    # Check for EV certs (higher identity assurance)
+   715→                    if "businessCategory" in subject_str or "jurisdiction" in subject_str.lower():
+   716→                        jur.evidence.append("Extended Validation (EV) certificate detected")
+   717→                        jur.confidence = min(jur.confidence + 0.1, 1.0)
+   718→
+   719→        except socket.timeout:
+   720→            jur.evidence.append("TLS connection timed out")
+   721→        except socket.gaierror as exc:
+   722→            jur.evidence.append(f"DNS resolution failed: {exc}")
+   723→        except ssl.SSLError as exc:
+   724→            jur.evidence.append(f"TLS handshake error: {exc}")
+   725→        except OSError as exc:
+   726→            jur.evidence.append(f"Connection error: {exc}")
+   727→
+   728→        return jur
+   729→
+   730→    # ── DNS jurisdiction ────────────────────────────────────────────
+   731→
+   732→    def analyze_dns_jurisdiction(
+   733→        self, host: str, timeout: int = 8
+   734→    ) -> Jurisdiction:
+   735→        """Check the countries where a host's nameservers are located."""
+   736→        jur = Jurisdiction(evidence=[])  # type: ignore[arg-type]
+   737→
+   738→        try:
+   739→            answers = socket.getaddrinfo(host, None)
+   740→            ips = list({addr[4][0] for addr in answers if addr[4]})
+   741→            jur.evidence.append(f"Resolved IPs: {', '.join(ips[:5])}")
+   742→
+   743→            # Try to get NS records via system resolver
+   744→            ns_result = self._dig_ns(host, timeout=timeout)
+   745→            if ns_result:
+   746→                for ns in ns_result:
+   747→                    jur.evidence.append(f"Nameserver: {ns}")
+   748→                    ns_country = self._infer_ns_country(ns)
+   749→                    if ns_country and jur.country == "Unknown":
+   750→                        jur.country = ns_country
+   751→                        jur.confidence = 0.45
+   752→        except socket.gaierror as exc:
+   753→            jur.evidence.append(f"DNS resolution failed: {exc}")
+   754→        except Exception as exc:
+   755→            jur.evidence.append(f"DNS analysis error: {exc}")
+   756→
+   757→        return jur
+   758→
+   759→    # ── Content jurisdiction ────────────────────────────────────────
+   760→
+   761→    def analyze_content_jurisdiction(
+   762→        self, base_url: str, timeout: int = 8
+   763→    ) -> Jurisdiction:
+   764→        """Detect page language, cultural markers, and jurisdiction hints."""
+   765→        jur = Jurisdiction(evidence=[])  # type: ignore[arg-type]
+   766→
+   767→        try:
+   768→            req = urllib.request.Request(
+   769→                base_url,
+   770→                headers={"User-Agent": self._ua},
+   771→            )
+   772→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   773→                body = resp.read(65_536).decode("utf-8", errors="replace")
+   774→                ct = resp.headers.get("Content-Language", "")
+   775→                if ct:
+   776→                    jur.evidence.append(f"Content-Language header: {ct}")
+   777→
+   778→                # Detect lang attribute
+   779→                lang_match = re.search(r'<html[^>]+lang=["\']([a-zA-Z-]+)["\']', body, re.I)
+   780→                if lang_match:
+   781→                    lang = lang_match.group(1).split("-")[0].upper()
+   782→                    jur.evidence.append(f"HTML lang attribute: {lang_match.group(1)}")
+   783→                    country = self._lang_to_country(lang)
+   784→                    if country and jur.country == "Unknown":
+   785→                        jur.country = country
+   786→                        jur.confidence = 0.30
+   787→
+   788→                # Detect cultural / jurisdictional markers
+   789→                markers = self._detect_cultural_markers(body)
+   790→                jur.evidence.extend(markers)
+   791→
+   792→                # Detect privacy policy / legal jurisdiction references
+   793→                legal_refs = self._detect_legal_references(body)
+   794→                jur.evidence.extend(legal_refs)
+   795→                for ref in legal_refs:
+   796→                    detected_country = self._legal_ref_to_country(ref)
+   797→                    if detected_country and jur.country == "Unknown":
+   798→                        jur.country = detected_country
+   799→                        jur.confidence = 0.60
+   800→
+   801→        except (urllib.error.URLError, socket.timeout, OSError) as exc:
+   802→            jur.evidence.append(f"Content fetch failed: {exc}")
+   803→
+   804→        return jur
+   805→
+   806→    # ── Cloud jurisdiction ──────────────────────────────────────────
+   807→
+   808→    def analyze_cloud_jurisdiction(
+   809→        self, base_url: str, timeout: int = 8
+   810→    ) -> Dict[str, str]:
+   811→        """Detect AWS, Azure, GCP region from headers, URLs, or page content."""
+   812→        result: Dict[str, str] = {"provider": "Unknown", "region": "Unknown"}
+   813→
+   814→        try:
+   815→            req = urllib.request.Request(
+   816→                base_url,
+   817→                headers={"User-Agent": self._ua},
+   818→            )
+   819→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   820→                headers = dict(resp.headers)
+   821→                body = resp.read(65_536).decode("utf-8", errors="replace")
+   822→
+   823→            # AWS detection
+   824→            if (headers.get("server", "").lower() in ("amazonS3", "awselb", "cloudfront")
+   825→                    or "amazonaws.com" in base_url.lower()
+   826→                    or "s3.amazonaws.com" in body.lower()
+   827→                    or "x-amz-request-id" in headers
+   828→                    or "x-amz-cf-id" in headers):
+   829→                result["provider"] = "AWS"
+   830→                region = self._detect_aws_region(base_url, headers, body)
+   831→                if region:
+   832→                    result["region"] = region
+   833→
+   834→            # Azure detection
+   835→            elif ("azure" in headers.get("server", "").lower()
+   836→                  or ".azurewebsites.net" in base_url.lower()
+   837→                  or "x-azure-ref" in headers
+   838→                  or "x-ms-request-id" in headers):
+   839→                result["provider"] = "Azure"
+   840→                region = self._detect_azure_region(headers, body)
+   841→                if region:
+   842→                    result["region"] = region
+   843→
+   844→            # GCP detection
+   845→            elif ("gke" in headers.get("server", "").lower()
+   846→                  or ".appspot.com" in base_url.lower()
+   847→                  or ".run.app" in base_url.lower()
+   848→                  or "x-goog-request-id" in headers):
+   849→                result["provider"] = "GCP"
+   850→                region = self._detect_gcp_region(base_url, headers, body)
+   851→                if region:
+   852→                    result["region"] = region
+   853→
+   854→            # Cloudflare detection
+   855→            elif ("cloudflare" in headers.get("server", "").lower()
+   856→                  or "cf-ray" in headers):
+   857→                result["provider"] = "Cloudflare"
+   858→                cf_ray = headers.get("cf-ray", "")
+   859→                if "-" in cf_ray:
+   860→                    iata = cf_ray.rsplit("-", 1)[-1]
+   861→                    result["region"] = f"Cloudflare edge (IATA: {iata})"
+   862→
+   863→            # Generic CDN / hosting detection
+   864→            elif headers.get("server", ""):
+   865→                result["provider"] = f"Hosting: {headers['server']}"
+   866→
+   867→        except (urllib.error.URLError, socket.timeout, OSError):
+   868→            pass
+   869→
+   870→        return result
+   871→
+   872→    # ── Surveillance risk assessment ────────────────────────────────
+   873→
+   874→    def assess_surveillance_risk(self, country: str) -> Dict[str, Any]:
+   875→        """Return surveillance profile for a country.
+   876→
+   877→        Looks up the country in SURVEILLANCE_DATABASE. Falls back to
+   878→        a generic assessment when no entry exists.
+   879→        """
+   880→        code = self._country_name_to_code(country)
+   881→
+   882→        if code and code in SURVEILLANCE_DATABASE:
+   883→            db = SURVEILLANCE_DATABASE[code]
+   884→            return {
+   885→                "country": db["country_name"],
+   886→                "country_code": code,
+   887→                "risk_level": db["risk_level"],
+   888→                "surveillance_programs": db["programs"],
+   889→                "data_retention_laws": db["data_retention_laws"],
+   890→                "retention_period": db["retention_period"],
+   891→                "encryption_backdoor_mandated": db["encryption_backdoor_laws"],
+   892→                "backdoor_notes": db["backdoor_notes"],
+   893→                "intelligence_sharing": db["intelligence_sharing"],
+   894→                "risk_score": self._surveillance_risk_score(db),
+   895→            }
+   896→
+   897→        # Also check EU aggregate
+   898→        if country.lower() in ("european union", "eu", "eea"):
+   899→            return self._eu_surveillance_profile()
+   900→
+   901→        return {
+   902→            "country": country,
+   903→            "country_code": code or "??",
+   904→            "risk_level": "unknown",
+   905→            "surveillance_programs": [],
+   906→            "data_retention_laws": False,
+   907→            "retention_period": "Unknown",
+   908→            "encryption_backdoor_mandated": False,
+   909→            "backdoor_notes": "No surveillance data available for this country",
+   910→            "intelligence_sharing": [],
+   911→            "risk_score": 0.0,
+   912→        }
+   913→
+   914→    # ── Data residency compliance ───────────────────────────────────
+   915→
+   916→    def assess_data_residency_compliance(
+   917→        self, countries: List[str]
+   918→    ) -> Dict[str, Any]:
+   919→        """Check GDPR, CCPA, PIPL, LGPD compliance across involved countries.
+   920→
+   921→        Returns a compliance assessment showing which data protection
+   922→        frameworks apply and whether cross-border transfers are at risk.
+   923→        """
+   924→        applicable_laws: List[Dict[str, Any]] = []
+   925→        cross_border_risk = False
+   926→        data_localization_required = False
+   927→        compliance_gaps: List[str] = []
+   928→
+   929→        for country in countries:
+   930→            code = self._country_name_to_code(country)
+   931→            if code and code in DATA_PROTECTION_LAWS:
+   932→                law = DATA_PROTECTION_LAWS[code]
+   933→                applicable_laws.append({
+   934→                    "country": country,
+   935→                    "law": law["name"],
+   936→                    "full_name": law["full_name"],
+   937→                    "compliance_score": law["compliance_score"],
+   938→                    "data_localization": law["data_localization"],
+   939→                })
+   940→                if law["data_localization"]:
+   941→                    data_localization_required = True
+   942→
+   943→        # Check for cross-border transfer issues
+   944→        if len(countries) > 1:
+   945→            cross_border_risk = True
+   946→            compliance_gaps.append(
+   947→                "Data spans multiple jurisdictions — cross-border transfer mechanisms required"
+   948→            )
+   949→
+   950→        # Check for conflicting data localization requirements
+   951→        localization_countries = [
+   952→            c for c, law in zip(countries, applicable_laws)
+   953→            if law.get("data_localization")
+   954→        ]
+   955→        if len(localization_countries) > 1:
+   956→            compliance_gaps.append(
+   957→                f"Conflicting data localization: {', '.join(localization_countries)}"
+   958→            )
+   959→
+   960→        # Check for surveillance countries
+   961→        for country in countries:
+   962→            code = self._country_name_to_code(country)
+   963→            if code and code in SURVEILLANCE_DATABASE:
+   964→                risk = SURVEILLANCE_DATABASE[code]["risk_level"]
+   965→                if risk in ("high", "critical"):
+   966→                    compliance_gaps.append(
+   967→                        f"High surveillance risk in {country} may conflict with data protection obligations"
+   968→                    )
+   969→
+   970→        return {
+   971→            "applicable_laws": applicable_laws,
+   972→            "cross_border_risk": cross_border_risk,
+   973→            "data_localization_required": data_localization_required,
+   974→            "compliance_gaps": compliance_gaps,
+   975→            "jurisdiction_count": len(countries),
+   976→            "assessment": "compliant" if not compliance_gaps else "review_required",
+   977→        }
+   978→
+   979→    # ── private helpers ─────────────────────────────────────────────
+   980→
+   981→    @staticmethod
+   982→    def _extract_host(url: str) -> str:
+   983→        parsed = urllib.parse.urlparse(url)
+   984→        return parsed.hostname or parsed.path.split("/")[0]
+   985→
+   986→    @staticmethod
+   987→    def _whois_query(host: str, timeout: int = 8) -> Optional[str]:
+   988→        """Attempt a WHOIS lookup via the system ``whois`` command."""
+   989→        try:
+   990→            proc = subprocess.run(
+   991→                ["whois", host],
+   992→                capture_output=True, text=True, timeout=timeout,
+   993→            )
+   994→            if proc.returncode == 0 and proc.stdout.strip():
+   995→                return proc.stdout
+   996→        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+   997→            pass
+   998→        return None
+   999→
+  1000→    @staticmethod
+  1001→    def _extract_country_from_whois(text: str) -> Optional[str]:
+  1002→        for line in text.splitlines():
+  1003→            low = line.lower().strip()
+  1004→            if low.startswith("country:"):
+  1005→                return line.split(":", 1)[1].strip().upper()
+  1006→        return None
+  1007→
+  1008→    @staticmethod
+  1009→    def _extract_org_from_whois(text: str) -> Optional[str]:
+  1010→        for key in ("OrgName", "org-name", "organisation", "Organization"):
+  1011→            for line in text.splitlines():
+  1012→                if line.lower().startswith(key.lower()):
+  1013→                    return line.split(":", 1)[1].strip()
+  1014→        return None
+  1015→
+  1016→    @staticmethod
+  1017→    def _map_ca_to_jurisdiction(issuer: str) -> Optional[str]:
+  1018→        ca_map = {
+  1019→            "DigiCert": "United States",
+  1020→            "Sectigo": "United States",
+  1021→            "Let's Encrypt": "United States",
+  1022→            "ISRG": "United States",
+  1023→            "GlobalSign": "Belgium",
+  1024→            "IdenTrust": "United States",
+  1025→            "Entrust": "United States",
+  1026→            "CFCA": "China",
+  1027→            "WoSign": "China",
+  1028→            "StartCom": "China",
+  1029→            "CNNIC": "China",
+  1030→            "TeliaSonera": "Sweden",
+  1031→            "Certum": "Poland",
+  1032→            "AC Camerfirma": "Spain",
+  1033→            "Izenpe": "Spain",
+  1034→            "FNMT": "Spain",
+  1035→            "eMudhra": "India",
+  1036→            "Safescrypt": "India",
+  1037→            "Nic ": "India",
+  1038→            "NetLock": "Hungary",
+  1039→            "T-Systems": "Germany",
+  1040→            "TeleSec": "Germany",
+  1041→            "D-Trust": "Germany",
+  1042→            "Bundesnetzagentur": "Germany",
+  1043→            "Gandi": "France",
+  1044→            "Keynectis": "France",
+  1045→        }
+  1046→        low = issuer.lower()
+  1047→        for ca, country in ca_map.items():
+  1048→            if ca.lower() in low:
+  1049→                return country
+  1050→        return None
+  1051→
+  1052→    @staticmethod
+  1053→    def _dig_ns(host: str, timeout: int = 8) -> Optional[List[str]]:
+  1054→        try:
+  1055→            proc = subprocess.run(
+  1056→                ["dig", "+short", "NS", host],
+  1057→                capture_output=True, text=True, timeout=timeout,
+  1058→            )
+  1059→            if proc.returncode == 0:
+  1060→                return [
+  1061→                    line.strip()
+  1062→                    for line in proc.stdout.strip().splitlines()
+  1063→                    if line.strip()
+  1064→                ]
+  1065→        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+  1066→            pass
+  1067→        return None
+  1068→
+  1069→    @staticmethod
+  1070→    def _infer_ns_country(ns: str) -> Optional[str]:
+  1071→        ns_tlds = {
+  1072→            ".cn": "China",
+  1073→            ".ru": "Russia",
+  1074→            ".br": "Brazil",
+  1075→            ".in": "India",
+  1076→            ".jp": "Japan",
+  1077→            ".kr": "South Korea",
+  1078→            ".au": "Australia",
+  1079→            ".de": "Germany",
+  1080→            ".fr": "France",
+  1081→            ".uk": "United Kingdom",
+  1082→        }
+  1083→        ns_lower = ns.lower().rstrip(".")
+  1084→        for tld, country in ns_tlds.items():
+  1085→            if ns_lower.endswith(tld):
+  1086→                return country
+  1087→        return None
+  1088→
+  1089→    @staticmethod
+  1090→    def _lang_to_country(lang_code: str) -> Optional[str]:
+  1091→        mapping = {
+  1092→            "ZH": "China", "EN": "Unknown", "DE": "Germany",
+  1093→            "FR": "France", "ES": "Spain", "PT": "Brazil",
+  1094→            "JA": "Japan", "KO": "South Korea", "AR": "Saudi Arabia",
+  1095→            "FA": "Iran", "RU": "Russia", "HI": "India",
+  1096→            "TR": "Turkey", "IT": "Italy", "NL": "Netherlands",
+  1097→            "PL": "Poland", "SV": "Sweden", "DA": "Denmark",
+  1098→        }
+  1099→        return mapping.get(lang_code.upper())
+  1100→
+  1101→    @staticmethod
+  1102→    def _detect_cultural_markers(html: str) -> List[str]:
+  1103→        markers: List[str] = []
+  1104→        patterns = {
+  1105→            "ICP license (China)": r"ICP[\s\d]*[\u8BB8\u53EF\u8BC1]|ICP\s*\d+",
+  1106→            "Russian Federal registration": r"\u0424\u0435\u0434\u0435\u0440\u0430\u043B\u044C\u043D\u0430\u044F|Roskomnadzor",
+  1107→            "Iranian registration": r"\u062B\u0628\u062A|\u0641\u0631\u0647\u0646\u06AF\u06CC|irancf.ir",
+  1108→            "GDPR consent banner": r"cookie[- ]?consent|gdpr|privacy[- ]?policy|dsgvo|rgpd",
+  1109→            "US-specific legal": r"california|ccpa|do[- ]?not[- ]?sell|state of california",
+  1110→            "Brazil LGPD": r"lgpd|autoridade nacional de protecao|anpd",
+  1111→            "China PIPL": r"\u4E2A\u4EBA\u4FE1\u606F\u4FDD\u62A4|PIPL|\u9690\u79C1\u653F\u7B56",
+  1112→        }
+  1113→        for label, pattern in patterns.items():
+  1114→            if re.search(pattern, html, re.I):
+  1115→                markers.append(f"Cultural marker: {label}")
+  1116→        return markers
+  1117→
+  1118→    @staticmethod
+  1119→    def _detect_legal_references(html: str) -> List[str]:
+  1120→        refs: List[str] = []
+  1121→        patterns = {
+  1122→            "Governing law: England/Wales": r"governing law[^.]*england|governing law[^.]*wales",
+  1123→            "Governing law: California": r"governing law[^.]*california",
+  1124→            "Governing law: New York": r"governing law[^.]*new\s+york",
+  1125→            "Governing law: Germany": r"governing law[^.]*germany|gerichtsstand",
+  1126→            "Governing law: France": r"governing law[^.]*france|droit\s+fran\u00E7ais",
+  1127→            "Jurisdiction: EU": r"courts of the european union|eu\s+jurisdiction",
+  1128→            "Arbitration: ICC Paris": r"icc\s+(arbitration|paris)|international\s+court\s+of\s+arbitration",
+  1129→        }
+  1130→        for label, pattern in patterns.items():
+  1131→            if re.search(pattern, html, re.I):
+  1132→                refs.append(f"Legal reference: {label}")
+  1133→        return refs
+  1134→
+  1135→    @staticmethod
+  1136→    def _legal_ref_to_country(ref: str) -> Optional[str]:
+  1137→        ref_map = {
+  1138→            "england": "United Kingdom", "wales": "United Kingdom",
+  1139→            "california": "United States", "new york": "United States",
+  1140→            "germany": "Germany", "france": "France",
+  1141→            "european union": "EU",
+  1142→        }
+  1143→        low = ref.lower()
+  1144→        for key, country in ref_map.items():
+  1145→            if key in low:
+  1146→                return country
+  1147→        return None
+  1148→
+  1149→    @staticmethod
+  1150→    def _detect_aws_region(url: str, headers: Dict[str, str], body: str) -> Optional[str]:
+  1151→        region_patterns = [
+  1152→            r"s3[.-]([a-z]{2}-[a-z]+-\d)\.amazonaws\.com",
+  1153→            r"([a-z]{2}-[a-z]+-\d)\.compute\.amazonaws\.com",
+  1154→            r"x-amz-cf-pop:\s*([a-z]{3}\d+-[a-z]+\d+)",
+  1155→        ]
+  1156→        for pattern in region_patterns:
+  1157→            match = re.search(pattern, url + "\n" + "\n".join(headers.values()) + "\n" + body, re.I)
+  1158→            if match:
+  1159→                return match.group(1).upper()
+  1160→        return None
+  1161→
+  1162→    @staticmethod
+  1163→    def _detect_azure_region(headers: Dict[str, str], body: str) -> Optional[str]:
+  1164→        combined = "\n".join(headers.values()) + "\n" + body
+  1165→        match = re.search(r"([a-z]{2}-[a-z]+\d?)\.azurewebsites\.net", combined, re.I)
+  1166→        if match:
+  1167→            return match.group(1).upper()
+  1168→        return None
+  1169→
+  1170→    @staticmethod
+  1171→    def _detect_gcp_region(url: str, headers: Dict[str, str], body: str) -> Optional[str]:
+  1172→        combined = url + "\n" + "\n".join(headers.values()) + "\n" + body
+  1173→        match = re.search(r"([a-z]{2}-[a-z]+\d)\.run\.app", combined, re.I)
+  1174→        if match:
+  1175→            return match.group(1).upper()
+  1176→        match = re.search(r"([a-z]{2}-[a-z]+\d)\.appspot\.com", combined, re.I)
+  1177→        if match:
+  1178→            return match.group(1).upper()
+  1179→        return None
+  1180→
+  1181→    @staticmethod
+  1182→    def _country_name_to_code(name: str) -> Optional[str]:
+  1183→        name_to_code = {
+  1184→            "united states": "US", "usa": "US",
+  1185→            "united kingdom": "GB", "uk": "GB", "great britain": "GB",
+  1186→            "china": "CN", "russia": "RU", "iran": "IR",
+  1187→            "germany": "DE", "france": "FR", "australia": "AU",
+  1188→            "india": "IN", "brazil": "BR", "saudi arabia": "SA",
+  1189→            "turkey": "TR", "japan": "JP", "south korea": "KR",
+  1190→            "israel": "IL", "singapore": "SG",
+  1191→            "united arab emirates": "AE", "uae": "AE",
+  1192→            "north korea": "KP",
+  1193→            "belgium": "BE", "spain": "ES", "sweden": "SE",
+  1194→            "italy": "IT", "netherlands": "NL", "poland": "PL",
+  1195→            "denmark": "DK", "portugal": "PT",
+  1196→            "eu": "EU", "european union": "EU", "eea": "EU",
+  1197→        }
+  1198→        return name_to_code.get(name.lower().strip())
+  1199→
+  1200→    @staticmethod
+  1201→    def _merge_jurisdictions(jurisdictions: List[Jurisdiction]) -> Jurisdiction:
+  1202→        """Weighted merge: highest-confidence non-Unknown country wins."""
+  1203→        best = Jurisdiction()
+  1204→        for j in jurisdictions:
+  1205→            if j.country != "Unknown" and j.confidence > best.confidence:
+  1206→                best = j
+  1207→        if best.country == "Unknown":
+  1208→            for j in jurisdictions:
+  1209→                if j.evidence:
+  1210→                    best.evidence.extend(j.evidence)
+  1211→        return best
+  1212→
+  1213→    @staticmethod
+  1214→    def _surveillance_risk_score(db: Dict[str, Any]) -> float:
+  1215→        score = 0.0
+  1216→        risk_map = {"low": 20.0, "medium": 50.0, "high": 75.0, "critical": 95.0}
+  1217→        score += risk_map.get(db["risk_level"], 0)
+  1218→        if db["data_retention_laws"]:
+  1219→            score += 10.0
+  1220→        if db["encryption_backdoor_laws"]:
+  1221→            score += 15.0
+  1222→        score += min(len(db["programs"]) * 2.0, 20.0)
+  1223→        return min(score, 100.0)
+  1224→
+  1225→    @staticmethod
+  1226→    def _eu_surveillance_profile() -> Dict[str, Any]:
+  1227→        return {
+  1228→            "country": "European Union",
+  1229→            "country_code": "EU",
+  1230→            "risk_level": "medium",
+  1231→            "surveillance_programs": [
+  1232→                "EU Data Retention Directive (invalidated, but national laws persist)",
+  1233→                "Member state intelligence agencies (BND, DGSE, etc.)",
+  1234→                "EU PNR Directive (Passenger Name Record)",
+  1235→                "ePrivacy Directive tracking provisions",
+  1236→            ],
+  1237→            "data_retention_laws": True,
+  1238→            "retention_period": "Varies by member state",
+  1239→            "encryption_backdoor_mandated": False,
+  1240→            "backdoor_notes": "No EU-wide backdoor mandate; GDPR protects encryption rights",
+  1241→            "intelligence_sharing": ["Nine Eyes", "Fourteen Eyes"],
+  1242→            "risk_score": 40.0,
+  1243→        }
+  1244→
+  1245→    @staticmethod
+  1246→    def _calculate_overall_risk(
+  1247→        primary: Jurisdiction,
+  1248→        surveillance: Dict[str, Any],
+  1249→        cloud: Dict[str, str],
+  1250→    ) -> float:
+  1251→        score = 0.0
+  1252→        score += surveillance.get("risk_score", 0) * 0.5
+  1253→        if cloud.get("provider") not in ("Unknown", ""):
+  1254→            score += 15.0
+  1255→        if primary.data_residency_risk == "critical":
+  1256→            score += 20.0
+  1257→        elif primary.data_residency_risk == "high":
+  1258→            score += 10.0
+  1259→        score += len(primary.evidence) * 0.5
+  1260→        return round(min(score, 100.0), 1)
+  1261→

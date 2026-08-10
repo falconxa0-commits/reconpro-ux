@@ -1,0 +1,613 @@
+     1→"""
+     2→ReconPro v8.5 — Live Traffic Interception
+     3→
+     4→MITM proxy using stdlib http.server, with traffic replay and
+     5→session analysis for discovering exposed tokens, missing auth,
+     6→and sensitive data leakage.
+     7→
+     8→Exports:
+     9→    ProxyInterceptor  – MITM HTTP proxy server
+    10→    TrafficReplay     – replay requests with modifications
+    11→    SessionAnalysis   – analyze captured traffic for security issues
+    12→"""
+    13→
+    14→from __future__ import annotations
+    15→
+    16→import base64
+    17→import json
+    18→import re
+    19→import socket
+    20→import socketserver
+    21→import threading
+    22→import time
+    23→import urllib.parse
+    24→import urllib.request
+    25→import urllib.error
+    26→from datetime import datetime, timezone
+    27→from http.server import BaseHTTPRequestHandler, HTTPServer
+    28→from typing import Any, Callable, Dict, List, Optional, Tuple
+    29→
+    30→
+    31→# ── Sensitive data patterns ─────────────────────────────────────────
+    32→
+    33→TOKEN_PATTERNS: List[Tuple[str, re.Pattern, str]] = [
+    34→    ("Bearer Token", re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.I), "high"),
+    35→    ("API Key", re.compile(r"(?:api[_-]?key|apikey)\s*[=:]\s*[\'\"]?([A-Za-z0-9_\-]{20,})[\'\"]?", re.I), "high"),
+    36→    ("AWS Access Key", re.compile(r"AKIA[0-9A-Z]{16}"), "critical"),
+    37→    ("AWS Secret Key", re.compile(r"(?i)aws_secret_access_key\s*[=:]\s*[\'\"]?([A-Za-z0-9/+=]{40})[\'\"]?"), "critical"),
+    38→    ("GitHub Token", re.compile(r"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}"), "high"),
+    39→    ("Google API Key", re.compile(r"AIza[0-9A-Za-z\-_]{35}"), "medium"),
+    40→    ("Slack Token", re.compile(r"xox[baprs]-[0-9]{10,13}-[0-9A-Za-z]{24,}"), "high"),
+    41→    ("Stripe Key", re.compile(r"(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{24,}"), "critical"),
+    42→    ("Session ID", re.compile(r"(?:sessionid|session_id|sid|jsessionid)\s*[=:]\s*[\'\"]?([A-Za-z0-9\-]{20,})", re.I), "medium"),
+    43→    ("JWT", re.compile(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"), "high"),
+    44→    ("Private Key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----"), "critical"),
+    45→    ("Auth Basic", re.compile(r"Authorization:\s*Basic\s+[A-Za-z0-9+/=]+"), "medium"),
+    46→    ("Cookie Auth", re.compile(r"(?:auth|token|session)\s*=[A-Za-z0-9\-._~%/+]{20,}", re.I), "medium"),
+    47→]
+    48→
+    49→SENSITIVE_QUERY_PARAMS = {
+    50→    "api_key", "apikey", "key", "token", "secret", "password", "passwd",
+    51→    "access_token", "auth_token", "session_token", "private_key",
+    52→    "client_secret", "refresh_token", "id_token",
+    53→}
+    54→
+    55→MAX_BODY_SIZE = 10240  # 10KB
+    56→
+    57→
+    58→# ══════════════════════════════════════════════════════════════════════
+    59→# ProxyInterceptor
+    60→# ══════════════════════════════════════════════════════════════════════
+    61→
+    62→class _ProxyHandler(BaseHTTPRequestHandler):
+    63→    """HTTP request handler that proxies and logs all traffic."""
+    64→
+    65→    _captured: List[Dict[str, Any]] = []
+    66→    _api_endpoints: List[str] = []
+    67→    _lock = threading.Lock()
+    68→    _on_request: Optional[Callable] = None
+    69→    _on_response: Optional[Callable] = None
+    70→
+    71→    def log_message(self, format: str, *args: Any) -> None:
+    72→        # Suppress default stderr logging
+    73→        pass
+    74→
+    75→    def _relay(self) -> None:
+    76→        """Read the full request, forward it, capture and relay the response."""
+    77→        content_length = int(self.headers.get("Content-Length", 0))
+    78→        body = self.rfile.read(min(content_length, MAX_BODY_SIZE)) if content_length > 0 else b""
+    79→
+    80→        # Build the target URL
+    81→        host = self.headers.get("Host", "")
+    82→        scheme = "https"
+    83→        if hasattr(self, "_proxy_scheme"):
+    84→            scheme = self._proxy_scheme
+    85→        target_url = f"{scheme}://{host}{self.path}"
+    86→
+    87→        # Capture request
+    88→        req_headers = {k: v for k, v in self.headers.items()}
+    89→        body_str = body.decode("utf-8", errors="replace")[:MAX_BODY_SIZE]
+    90→
+    91→        # Auto-discover API endpoints
+    92→        parsed = urllib.parse.urlparse(self.path)
+    93→        if parsed.path.startswith(("/api/", "/v1/", "/v2/", "/graphql", "/rest/")):
+    94→            with _ProxyHandler._lock:
+    95→                if target_url not in _ProxyHandler._api_endpoints:
+    96→                    _ProxyHandler._api_endpoints.append(target_url)
+    97→
+    98→        # Forward the request
+    99→        resp_status = 0
+   100→        resp_headers: Dict[str, str] = {}
+   101→        resp_body = b""
+   102→
+   103→        try:
+   104→            req = urllib.request.Request(target_url, data=body if body else None, method=self.command)
+   105→            for k, v in self.headers.items():
+   106→                if k.lower() not in ("host", "connection", "proxy-connection", "proxy-authorization"):
+   107→                    try:
+   108→                        req.add_header(k, v)
+   109→                    except Exception:
+   110→                        pass
+   111→
+   112→            try:
+   113→                response = urllib.request.urlopen(req, timeout=30)
+   114→                resp_status = response.status
+   115→                resp_headers = dict(response.headers)
+   116→                resp_body = response.read(MAX_BODY_SIZE)
+   117→            except urllib.error.HTTPError as e:
+   118→                resp_status = e.code
+   119→                resp_headers = dict(e.headers) if e.headers else {}
+   120→                try:
+   121→                    resp_body = e.read(MAX_BODY_SIZE)
+   122→                except Exception:
+   123→                    resp_body = b""
+   124→        except Exception:
+   125→            resp_status = 502
+   126→            resp_body = b"Bad Gateway"
+   127→
+   128→        resp_body_str = resp_body.decode("utf-8", errors="replace")[:MAX_BODY_SIZE]
+   129→
+   130→        # Store captured data
+   131→        entry = {
+   132→            "timestamp": datetime.now(timezone.utc).isoformat(),
+   133→            "method": self.command,
+   134→            "url": target_url,
+   135→            "path": self.path,
+   136→            "query": parsed.query,
+   137→            "request_headers": req_headers,
+   138→            "request_body": body_str,
+   139→            "response_status": resp_status,
+   140→            "response_headers": resp_headers,
+   141→            "response_body": resp_body_str,
+   142→            "content_type": resp_headers.get("Content-Type", ""),
+   143→        }
+   144→        with _ProxyHandler._lock:
+   145→            _ProxyHandler._captured.append(entry)
+   146→
+   147→        if _ProxyHandler._on_request:
+   148→            _ProxyHandler._on_request(entry)
+   149→        if _ProxyHandler._on_response:
+   150→            _ProxyHandler._on_response(entry)
+   151→
+   152→        # Send response back to client
+   153→        self.send_response(resp_status)
+   154→        for k, v in resp_headers.items():
+   155→            if k.lower() not in ("transfer-encoding", "connection", "proxy-connection"):
+   156→                self.send_header(k, v)
+   157→        self.end_headers()
+   158→        self.wfile.write(resp_body)
+   159→
+   160→    def do_GET(self) -> None:
+   161→        self._relay()
+   162→
+   163→    def do_POST(self) -> None:
+   164→        self._relay()
+   165→
+   166→    def do_PUT(self) -> None:
+   167→        self._relay()
+   168→
+   169→    def do_PATCH(self) -> None:
+   170→        self._relay()
+   171→
+   172→    def do_DELETE(self) -> None:
+   173→        self._relay()
+   174→
+   175→    def do_HEAD(self) -> None:
+   176→        self._relay()
+   177→
+   178→    def do_OPTIONS(self) -> None:
+   179→        self._relay()
+   180→
+   181→
+   182→class ProxyInterceptor:
+   183→    """Man-in-the-middle HTTP proxy server.
+   184→
+   185→    Intercepts all HTTP traffic, logs requests/responses, and
+   186→    auto-discovers API endpoints, auth tokens, and session cookies.
+   187→    """
+   188→
+   189→    def __init__(self, host: str = "127.0.0.1", port: int = 8888) -> None:
+   190→        self._host = host
+   191→        self._port = port
+   192→        self._server: Optional[HTTPServer] = None
+   193→        self._thread: Optional[threading.Thread] = None
+   194→        self._running = False
+   195→
+   196→    @property
+   197→    def address(self) -> str:
+   198→        return f"{self._host}:{self._port}"
+   199→
+   200→    def start(self, background: bool = True, on_request: Optional[Callable] = None, on_response: Optional[Callable] = None) -> None:
+   201→        """Start the MITM proxy server.
+   202→
+   203→        Parameters
+   204→        ----------
+   205→        background : bool
+   206→            If True, runs in a daemon thread.
+   207→        on_request, on_response : callable | None
+   208→            Callbacks invoked for each captured request/response.
+   209→        """
+   210→        _ProxyHandler._on_request = on_request
+   211→        _ProxyHandler._on_response = on_response
+   212→
+   213→        class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+   214→            daemon_threads = True
+   215→            allow_reuse_address = True
+   216→
+   217→        self._server = ThreadedHTTPServer((self._host, self._port), _ProxyHandler)
+   218→        self._running = True
+   219→
+   220→        if background:
+   221→            self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+   222→            self._thread.start()
+   223→        else:
+   224→            self._server.serve_forever()
+   225→
+   226→    def stop(self) -> None:
+   227→        """Stop the proxy server."""
+   228→        self._running = False
+   229→        if self._server:
+   230→            self._server.shutdown()
+   231→            self._server.server_close()
+   232→
+   233→    def get_captured(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+   234→        """Return captured request/response entries.
+   235→
+   236→        If *limit* is set, returns the most recent *limit* entries.
+   237→        """
+   238→        with _ProxyHandler._lock:
+   239→            data = list(_ProxyHandler._captured)
+   240→        if limit:
+   241→            return data[-limit:]
+   242→        return data
+   243→
+   244→    def clear_captured(self) -> int:
+   245→        """Clear all captured data and return the count of cleared entries."""
+   246→        with _ProxyHandler._lock:
+   247→            count = len(_ProxyHandler._captured)
+   248→            _ProxyHandler._captured.clear()
+   249→            return count
+   250→
+   251→    def get_discovered_endpoints(self) -> List[str]:
+   252→        """Return auto-discovered API endpoints."""
+   253→        with _ProxyHandler._lock:
+   254→            return list(_ProxyHandler._api_endpoints)
+   255→
+   256→    def get_tokens(self) -> List[Dict[str, Any]]:
+   257→        """Extract all detected auth tokens from captured traffic.
+   258→
+   259→        Returns list of {"type", "value", "source", "severity", "url"}.
+   260→        """
+   261→        tokens: List[Dict[str, Any]] = []
+   262→        seen: set = set()
+   263→        for entry in self.get_captured():
+   264→            # Check headers
+   265→            headers_str = json.dumps(entry.get("request_headers", {}))
+   266→            for name, pattern, severity in TOKEN_PATTERNS:
+   267→                for match in pattern.finditer(headers_str):
+   268→                    value = match.group(0)
+   269→                    key = (name, value[:40])
+   270→                    if key not in seen:
+   271→                        seen.add(key)
+   272→                        tokens.append({
+   273→                            "type": name,
+   274→                            "value": value[:100],
+   275→                            "source": "header",
+   276→                            "severity": severity,
+   277→                            "url": entry.get("url", ""),
+   278→                        })
+   279→
+   280→            # Check URL query string
+   281→            query = entry.get("query", "")
+   282→            for param in SENSITIVE_QUERY_PARAMS:
+   283→                if param in query.lower():
+   284→                    parsed_qs = urllib.parse.parse_qs(query)
+   285→                    for p_name, p_values in parsed_qs.items():
+   286→                        if p_name.lower() in SENSITIVE_QUERY_PARAMS and p_values:
+   287→                            val = p_values[0][:80]
+   288→                            key = ("Query Param", f"{p_name}={val[:20]}")
+   289→                            if key not in seen:
+   290→                                seen.add(key)
+   291→                                tokens.append({
+   292→                                    "type": f"Query Param: {p_name}",
+   293→                                    "value": val,
+   294→                                    "source": "url",
+   295→                                    "severity": "high",
+   296→                                    "url": entry.get("url", ""),
+   297→                                })
+   298→        return tokens
+   299→
+   300→
+   301→# ══════════════════════════════════════════════════════════════════════
+   302→# TrafficReplay
+   303→# ══════════════════════════════════════════════════════════════════════
+   304→
+   305→class TrafficReplay:
+   306→    """Replay captured HTTP requests with modifications.
+   307→
+   308→    Used to test authorization by replaying requests with auth
+   309→    headers removed, or to test IDOR by changing parameters.
+   310→    """
+   311→
+   312→    def replay_request(
+   313→        self,
+   314→        original_request: Dict[str, Any],
+   315→        modifications: Optional[Dict[str, Any]] = None,
+   316→    ) -> Dict[str, Any]:
+   317→        """Replay a captured request with optional modifications.
+   318→
+   319→        Parameters
+   320→        ----------
+   321→        original_request : dict
+   322→            A captured request entry from ProxyInterceptor.
+   323→        modifications : dict | None
+   324→            Supported keys:
+   325→            - "remove_auth" (bool): strip Authorization header
+   326→            - "remove_cookies" (bool): strip Cookie header
+   327→            - "change_method" (str): override HTTP method
+   328→            - "add_headers" (dict): extra headers to add
+   329→            - "replace_path" (str): swap the path
+   330→            - "replace_params" (dict): replace query parameters
+   331→
+   332→        Returns dict with "original_status", "replay_status", "replay_headers",
+   333→        "replay_body", "diff", and "is_different".
+   334→        """
+   335→        if modifications is None:
+   336→            modifications = {}
+   337→
+   338→        url = original_request.get("url", "")
+   339→        method = modifications.get("change_method", original_request.get("method", "GET"))
+   340→        headers = dict(original_request.get("request_headers", {}))
+   341→        body = original_request.get("request_body", "")
+   342→        original_status = original_request.get("response_status", 0)
+   343→
+   344→        # Apply modifications
+   345→        if modifications.get("remove_auth"):
+   346→            headers.pop("Authorization", None)
+   347→            headers.pop("authorization", None)
+   348→
+   349→        if modifications.get("remove_cookies"):
+   350→            headers.pop("Cookie", None)
+   351→            headers.pop("cookie", None)
+   352→
+   353→        if modifications.get("add_headers"):
+   354→            headers.update(modifications["add_headers"])
+   355→
+   356→        if modifications.get("replace_path"):
+   357→            parsed = urllib.parse.urlparse(url)
+   358→            url = urllib.parse.urlunparse(
+   359→                (parsed.scheme, parsed.netloc, modifications["replace_path"],
+   360→                 parsed.params, parsed.query, parsed.fragment)
+   361→            )
+   362→
+   363→        if modifications.get("replace_params"):
+   364→            parsed = urllib.parse.urlparse(url)
+   365→            qs = urllib.parse.parse_qs(parsed.query)
+   366→            qs.update(modifications["replace_params"])
+   367→            new_query = urllib.parse.urlencode(qs, doseq=True)
+   368→            url = urllib.parse.urlunparse(
+   369→                (parsed.scheme, parsed.netloc, parsed.path,
+   370→                 parsed.params, new_query, parsed.fragment)
+   371→            )
+   372→
+   373→        # Execute replay
+   374→        replay_status = 0
+   375→        replay_headers: Dict[str, str] = {}
+   376→        replay_body = ""
+   377→
+   378→        try:
+   379→            req = urllib.request.Request(url, data=body.encode() if body else None, method=method)
+   380→            for k, v in headers.items():
+   381→                if k.lower() not in ("host", "connection", "content-length"):
+   382→                    try:
+   383→                        req.add_header(k, v)
+   384→                    except Exception:
+   385→                        pass
+   386→
+   387→            try:
+   388→                resp = urllib.request.urlopen(req, timeout=15)
+   389→                replay_status = resp.status
+   390→                replay_headers = dict(resp.headers)
+   391→                replay_body = resp.read(MAX_BODY_SIZE).decode("utf-8", errors="replace")
+   392→            except urllib.error.HTTPError as e:
+   393→                replay_status = e.code
+   394→                replay_headers = dict(e.headers) if e.headers else {}
+   395→                try:
+   396→                    replay_body = e.read(MAX_BODY_SIZE).decode("utf-8", errors="replace")
+   397→                except Exception:
+   398→                    replay_body = ""
+   399→        except Exception as exc:
+   400→            replay_status = 0
+   401→            replay_body = str(exc)
+   402→
+   403→        is_different = (replay_status != original_status)
+   404→
+   405→        # Build diff summary
+   406→        diff_parts = []
+   407→        if is_different:
+   408→            diff_parts.append(f"Status changed: {original_status} → {replay_status}")
+   409→        if modifications.get("remove_auth") and replay_status < 400:
+   410→            diff_parts.append(f"ACCESS WITHOUT AUTH: Status {replay_status} (should be 401/403)")
+   411→
+   412→        orig_body = original_request.get("response_body", "")
+   413→        if replay_body and orig_body and replay_body != orig_body:
+   414→            diff_parts.append("Response body differs")
+   415→
+   416→        return {
+   417→            "url": url,
+   418→            "method": method,
+   419→            "original_status": original_status,
+   420→            "replay_status": replay_status,
+   421→            "replay_headers": replay_headers,
+   422→            "replay_body": replay_body[:MAX_BODY_SIZE],
+   423→            "diff": "; ".join(diff_parts) if diff_parts else "No differences",
+   424→            "is_different": is_different,
+   425→            "modifications_applied": modifications,
+   426→        }
+   427→
+   428→    def test_authorization(self, captured: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+   429→        """Test all captured requests for missing authorization enforcement.
+   430→
+   431→        Replays each request without auth headers and checks if the
+   432→        server still returns a success (2xx) status.
+   433→
+   434→        Returns list of replay results where auth bypass was detected.
+   435→        """
+   436→        bypasses: List[Dict[str, Any]] = []
+   437→        for entry in captured:
+   438→            if entry.get("response_status", 0) < 400:
+   439→                result = self.replay_request(entry, {"remove_auth": True})
+   440→                if result["replay_status"] < 400:
+   441→                    result["title"] = f"Auth bypass: {entry.get('method', '')} {entry.get('path', '')}"
+   442→                    result["severity"] = "critical" if entry.get("path", "").startswith(("/api/", "/admin/")) else "high"
+   443→                    result["category"] = "access_control"
+   444→                    result["description"] = (
+   445→                        f"Request to {entry.get('path', '')} succeeded ({result['replay_status']}) "
+   446→                        f"even after removing Authorization header. "
+   447→                        f"Original status: {entry.get('response_status', 0)}."
+   448→                    )
+   449→                    bypasses.append(result)
+   450→        return bypasses
+   451→
+   452→
+   453→# ══════════════════════════════════════════════════════════════════════
+   454→# SessionAnalysis
+   455→# ══════════════════════════════════════════════════════════════════════
+   456→
+   457→class SessionAnalysis:
+   458→    """Analyze captured HTTP traffic for security issues.
+   459→
+   460→    Detects exposed tokens, missing auth on API calls, sensitive
+   461→    data in URLs, and other common web security issues.
+   462→    """
+   463→
+   464→    def analyze_session(self, captured_requests: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+   465→        """Run full session analysis on captured traffic.
+   466→
+   467→        Returns list of findings, each a dict with at least
+   468→        ``title``, ``severity``, ``category``, ``description``, ``url``.
+   469→        """
+   470→        findings: List[Dict[str, Any]] = []
+   471→        seen: set = set()
+   472→
+   473→        for entry in captured_requests:
+   474→            url = entry.get("url", "")
+   475→            path = entry.get("path", "")
+   476→            method = entry.get("method", "GET")
+   477→            headers = entry.get("request_headers", {})
+   478→            query = entry.get("query", "")
+   479→            resp_status = entry.get("response_status", 0)
+   480→            resp_body = entry.get("response_body", "")
+   481→            req_body = entry.get("request_body", "")
+   482→
+   483→            # 1. Check for tokens in headers
+   484→            headers_str = json.dumps(headers)
+   485→            for token_name, pattern, severity in TOKEN_PATTERNS:
+   486→                for match in pattern.finditer(headers_str):
+   487→                    value = match.group(0)[:60]
+   488→                    key = ("token_in_header", token_name, value[:20])
+   489→                    if key not in seen:
+   490→                        seen.add(key)
+   491→                        findings.append({
+   492→                            "title": f"{token_name} exposed in request header",
+   493→                            "severity": severity,
+   494→                            "category": "data_protection",
+   495→                            "description": (
+   496→                                f"A {token_name} was found in the {method} request to {path}. "
+   497→                                f"Value (truncated): {value}..."
+   498→                            ),
+   499→                            "url": url,
+   500→                            "remediation": "Use environment variables or secure vaults for secrets. Never log or transmit tokens in plaintext headers in non-HTTPS contexts.",
+   501→                        })
+   502→
+   503→            # 2. Check for sensitive data in URLs (query params)
+   504→            parsed_qs = urllib.parse.parse_qs(query)
+   505→            for param_name, param_values in parsed_qs.items():
+   506→                if param_name.lower() in SENSITIVE_QUERY_PARAMS and param_values:
+   507→                    key = ("sensitive_query", param_name, path)
+   508→                    if key not in seen:
+   509→                        seen.add(key)
+   510→                        val_preview = param_values[0][:30]
+   511→                        findings.append({
+   512→                            "title": f"Sensitive parameter '{param_name}' in URL",
+   513→                            "severity": "high",
+   514→                            "category": "data_protection",
+   515→                            "description": (
+   516→                                f"The parameter '{param_name}' with a sensitive value was found "
+   517→                                f"in the query string of {url}. URLs are logged in server access logs, "
+   518→                                f"browser history, and proxy caches."
+   519→                            ),
+   520→                            "url": url,
+   521→                            "remediation": "Move sensitive parameters to the request body or use POST. Consider encrypting values.",
+   522→                        })
+   523→
+   524→            # 3. Check for missing auth on API endpoints
+   525→            is_api = path.startswith(("/api/", "/v1/", "/v2/", "/graphql", "/rest/", "/admin/"))
+   526→            has_auth = any(
+   527→                k.lower() in ("authorization", "cookie", "x-api-key", "x-auth-token")
+   528→                for k in headers
+   529→            )
+   530→            if is_api and not has_auth and resp_status < 400:
+   531→                key = ("missing_auth", path)
+   532→                if key not in seen:
+   533→                    seen.add(key)
+   534→                    findings.append({
+   535→                        "title": f"API endpoint without authentication: {method} {path}",
+   536→                        "severity": "high" if "/admin/" in path else "medium",
+   537→                        "category": "access_control",
+   538→                        "description": (
+   539→                            f"{method} {path} returned {resp_status} without any authentication headers. "
+   540→                            f"API endpoints should require authentication."
+   541→                        ),
+   542→                        "url": url,
+   543→                        "remediation": "Implement authentication for all API endpoints. Use token-based auth (Bearer/JWT) with proper validation.",
+   544→                    })
+   545→
+   546→            # 4. Check for tokens in response body
+   547→            for token_name, pattern, severity in TOKEN_PATTERNS:
+   548→                for match in pattern.finditer(resp_body[:5000]):
+   549→                    value = match.group(0)[:60]
+   550→                    key = ("token_in_response", token_name, value[:20])
+   551→                    if key not in seen:
+   552→                        seen.add(key)
+   553→                        findings.append({
+   554→                            "title": f"{token_name} leaked in response body",
+   555→                            "severity": severity,
+   556→                            "category": "data_protection",
+   557→                            "description": (
+   558→                                f"A {token_name} was found in the response body of {method} {path}. "
+   559→                                f"Tokens should not be embedded in response payloads."
+   560→                            ),
+   561→                            "url": url,
+   562→                            "remediation": "Use HttpOnly, Secure cookies for session tokens. Avoid returning API keys or secrets in response bodies.",
+   563→                        })
+   564→
+   565→            # 5. Check for PII in response (email, SSN patterns)
+   566→            email_matches = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", resp_body[:10000])
+   567→            if len(email_matches) > 5:
+   568→                key = ("pii_emails", path)
+   569→                if key not in seen:
+   570→                    seen.add(key)
+   571→                    findings.append({
+   572→                        "title": f"Bulk email addresses in response: {method} {path}",
+   573→                        "severity": "medium",
+   574→                        "category": "data_protection",
+   575→                        "description": f"Response contains {len(email_matches)} email addresses. Verify this is intended and data is properly protected.",
+   576→                        "url": url,
+   577→                        "remediation": "Ensure PII is only returned when necessary, with proper access controls and audit logging.",
+   578→                    })
+   579→
+   580→            # 6. Missing security headers
+   581→            resp_headers = entry.get("response_headers", {})
+   582→            if path.startswith(("/api/", "/")) and resp_status < 400:
+   583→                missing_headers = []
+   584→                resp_header_lower = {k.lower(): v for k, v in resp_headers.items()}
+   585→                if "x-content-type-options" not in resp_header_lower:
+   586→                    missing_headers.append("X-Content-Type-Options")
+   587→                if "x-frame-options" not in resp_header_lower:
+   588→                    missing_headers.append("X-Frame-Options")
+   589→                if "strict-transport-security" not in resp_header_lower and url.startswith("https"):
+   590→                    missing_headers.append("Strict-Transport-Security")
+   591→                if "content-security-policy" not in resp_header_lower:
+   592→                    missing_headers.append("Content-Security-Policy")
+   593→                if missing_headers:
+   594→                    key = ("missing_headers", tuple(sorted(missing_headers)), path)
+   595→                    if key not in seen:
+   596→                        seen.add(key)
+   597→                        findings.append({
+   598→                            "title": f"Missing security headers on {method} {path}",
+   599→                            "severity": "low",
+   600→                            "category": "configuration",
+   601→                            "description": f"Missing headers: {', '.join(missing_headers)}",
+   602→                            "url": url,
+   603→                            "remediation": f"Add the following security headers: {', '.join(missing_headers)}.",
+   604→                        })
+   605→
+   606→        return findings
+   607→
+   608→
+   609→# Module-level convenience exports
+   610→proxy = ProxyInterceptor()
+   611→replay = TrafficReplay()
+   612→analyzer = SessionAnalysis()
+   613→
