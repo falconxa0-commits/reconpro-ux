@@ -1,6 +1,6 @@
-"""ReconPro Enterprise v10 — The Security Reconnaissance Platform.
+"""ReconPro Enterprise v11 — The Security Reconnaissance Platform.
 
-Twenty-Seven Blades. One Target. One Verdict.
+Twenty-Three Blades. One Target. One Verdict.
 Pure Python. Zero external dependencies. Enterprise-grade.
 
 Remote Modules:
@@ -66,7 +66,7 @@ Usage:
     reconpro serve                          # API server
 """
 
-__version__ = "10.0.0"
+__version__ = "11.0.0"
 __all__ = ["scan", "ReconProResult", "audit_scan", "__version__"]
 
 from .scanner import scan, ReconProResult, audit_scan  # noqa: E402

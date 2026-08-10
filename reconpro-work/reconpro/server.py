@@ -141,9 +141,9 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _check_auth(self) -> bool:
         """Check for Bearer token in Authorization header.
-        Returns True if no tokens are configured (open mode)."""
-        if not _API_TOKENS:
-            return True  # Open mode if no tokens issued
+        C-03 FIX: Require authentication when tokens exist or env is set."""
+        if not _API_TOKENS and not os.environ.get("RECONPRO_REQUIRE_AUTH"):
+            return True  # Open mode only if no tokens AND no env flag
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
             token = auth[7:]
@@ -204,7 +204,10 @@ class _Handler(BaseHTTPRequestHandler):
         # History detail
         if path.startswith("/history/"):
             filename = path.split("/history/")[1]
-            data = get_scan(filename)
+            # C-02 FIX: Sanitize filename and prevent path traversal
+            from .security import sanitize_filename
+            safe_name = sanitize_filename(filename)
+            data = get_scan(safe_name)
             if data:
                 self._json_response(200, data)
             else:
@@ -287,7 +290,12 @@ class _Handler(BaseHTTPRequestHandler):
         # Serve reports
         if path.startswith("/report/"):
             filename = path.split("/report/")[1]
-            fpath = os.path.join(REPORTS_DIR, filename)
+            # C-01 FIX: Sanitize filename and prevent path traversal
+            from .security import sanitize_filename
+            safe_name = sanitize_filename(filename)
+            fpath = os.path.realpath(os.path.join(REPORTS_DIR, safe_name))
+            if not fpath.startswith(os.path.realpath(REPORTS_DIR)):
+                return self._json_response(403, {"error": "Forbidden"})
             if os.path.exists(fpath):
                 with open(fpath, "rb") as f:
                     content = f.read()
@@ -311,7 +319,12 @@ class _Handler(BaseHTTPRequestHandler):
 
         try:
             if path == "/auth/token":
-                # Public endpoint — anyone can create a token
+                # C-03 FIX: Require bootstrap secret for token generation
+                bootstrap_secret = os.environ.get("RECONPRO_BOOTSTRAP_SECRET", "")
+                if bootstrap_secret:
+                    provided = body.get("bootstrap_secret", "")
+                    if not secrets.compare_digest(provided, bootstrap_secret):
+                        return self._json_response(403, {"error": "Invalid bootstrap secret"})
                 label = body.get("label", "default")
                 hours = int(body.get("hours", 24))
                 if hours < 1 or hours > 8760:
@@ -498,7 +511,8 @@ class _Handler(BaseHTTPRequestHandler):
 
             self._json_response(404, {"error": "Not found"})
         except Exception as e:
-            self._json_response(500, {"error": str(e)})
+            # H-06 FIX: Don't leak internal exception details
+            self._json_response(500, {"error": "Internal server error", "request_id": secrets.token_hex(8)})
 
     def do_OPTIONS(self):
         self.send_response(200)

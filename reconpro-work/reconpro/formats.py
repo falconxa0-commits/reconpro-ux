@@ -10,6 +10,7 @@ Supported formats:
 from __future__ import annotations
 
 import json
+import html as _html_module
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -380,10 +381,10 @@ def export_pdf(data: Dict[str, Any], output_path: str) -> str:
         }
         color = sev_colors.get(sev, "#999")
         rows += (
-            f'<tr><td style="color:{color};font-weight:600">{sev.upper()}</td>'
-            f'<td>{f.get("title", "")}</td>'
-            f'<td>{f.get("category", "")}</td>'
-            f'<td>{f.get("module", "")}</td>'
+            f'<tr><td style="color:{color};font-weight:600">{_html_module.escape(sev.upper())}</td>'
+            f'<td>{_html_module.escape(str(f.get("title", "")))}</td>'
+            f'<td>{_html_module.escape(str(f.get("category", "")))}</td>'
+            f'<td>{_html_module.escape(str(f.get("module", "")))}</td>'
             f'<td>-{f.get("points_deducted", 0)}</td></tr>\n'
         )
 
@@ -428,7 +429,7 @@ def export_pdf(data: Dict[str, Any], output_path: str) -> str:
   <div class="header">
     <div class="score-circle">{score}</div>
     <div class="header-info">
-      <h2>{target} &mdash; Grade {grade}</h2>
+      <h2>{_html_module.escape(str(target))} &mdash; Grade {_html_module.escape(str(grade))}</h2>
       <p>Total findings: {len(findings)} | Critical: {sc.get('critical',0)} | High: {sc.get('high',0)} | Medium: {sc.get('medium',0)}</p>
     </div>
   </div>

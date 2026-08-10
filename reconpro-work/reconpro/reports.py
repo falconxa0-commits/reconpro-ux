@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import html as _html_esc
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -802,13 +803,13 @@ def generate_html_report(data: Dict[str, Any], output_path: str = "") -> str:
         findings_rows += f'''
         <tr>
           <td style="color:#555;width:36px;font-size:11px">{i}</td>
-          <td style="color:{color};font-weight:700;text-transform:uppercase;font-size:10px;width:65px;letter-spacing:0.5px">{sev}</td>
-          <td style="color:{h_muted};font-size:11px;width:80px">{f.get("module", "")}</td>
-          <td style="color:{h_text};font-size:12px">{f.get("title", "")}</td>
-          <td style="color:{h_muted};font-size:11px;width:110px">{f.get("category", "")}</td>
+          <td style="color:{color};font-weight:700;text-transform:uppercase;font-size:10px;width:65px;letter-spacing:0.5px">{_html_esc.escape(sev)}</td>
+          <td style="color:{h_muted};font-size:11px;width:80px">{_html_esc.escape(str(f.get("module", "")))}</td>
+          <td style="color:{h_text};font-size:12px">{_html_esc.escape(str(f.get("title", "")))}</td>
+          <td style="color:{h_muted};font-size:11px;width:110px">{_html_esc.escape(str(f.get("category", "")))}</td>
           <td style="text-align:center;color:{h_med_color};width:36px;font-size:12px;font-weight:600">-{f.get("points_deducted", 0)}</td>
-          <td style="text-align:center;color:{h_accent};width:40px;font-size:11px">{dread_display}</td>
-          {evidence_cell}
+          <td style="text-align:center;color:{h_accent};width:40px;font-size:11px">{_html_esc.escape(str(dread_display))}</td>
+          {_html_esc.escape(evidence_short) if evidence_short else ""}
         </tr>'''
 
     if not findings_rows:
@@ -826,9 +827,9 @@ def generate_html_report(data: Dict[str, Any], output_path: str = "") -> str:
         pts = f.get("points_deducted", 0)
         risk_items += f'''
         <div class="risk-item">
-          <span class="risk-sev" style="background:{color}">{sev.upper()[:1]}</span>
-          <span class="risk-title">{f.get("title", "")}</span>
-          <span class="risk-module">{f.get("module", "")}</span>
+          <span class="risk-sev" style="background:{color}">{_html_esc.escape(sev.upper()[:1])}</span>
+          <span class="risk-title">{_html_esc.escape(str(f.get("title", "")))}</span>
+          <span class="risk-module">{_html_esc.escape(str(f.get("module", "")))}</span>
           <span class="risk-pts" style="color:{color}">-{pts}</span>
         </div>'''
     if not risk_items:

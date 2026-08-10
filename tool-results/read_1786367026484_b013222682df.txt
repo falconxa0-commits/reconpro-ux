@@ -1,0 +1,820 @@
+     1→#!/usr/bin/env python3
+     2→"""ReconPro v11 — Comprehensive Performance Benchmark Suite.
+     3→
+     4→Team 2: Performance Engineering.
+     5→
+     6→Benchmarks all performance-critical subsystems:
+     7→1. Report generation (JSON, HTML, Markdown, SARIF) at scale
+     8→2. Attack graph construction and analysis
+     9→3. Threat intelligence correlation
+    10→4. AI analyst classification
+    11→5. Full intelligence pipeline (end-to-end)
+    12→6. Memory profiling
+    13→7. Concurrent execution scaling
+    14→
+    15→Usage:
+    16→    python -m reconpro.scripts.benchmark_v11
+    17→"""
+    18→
+    19→from __future__ import annotations
+    20→
+    21→import gc
+    22→import io
+    23→import json
+    24→import os
+    25→import random
+    26→import sys
+    27→import tempfile
+    28→import time
+    29→import tracemalloc
+    30→from collections import defaultdict
+    31→from concurrent.futures import ThreadPoolExecutor, as_completed
+    32→from dataclasses import asdict, dataclass, field
+    33→from datetime import datetime, timezone
+    34→from typing import Any, Dict, List, Optional, Tuple
+    35→
+    36→from pathlib import Path
+    37→
+    38→PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    39→sys.path.insert(0, str(PROJECT_ROOT.parent))
+    40→
+    41→# ── Result data classes ────────────────────────────────────────────────
+    42→
+    43→
+    44→@dataclass
+    45→class BenchResult:
+    46→    """Single benchmark measurement."""
+    47→    name: str
+    48→    finding_count: int
+    49→    wall_ms: float
+    50→    peak_mem_kb: float = 0.0
+    51→    cpu_time_ms: float = 0.0
+    52→    error: str = ""
+    53→    notes: str = ""
+    54→
+    55→    def to_dict(self) -> Dict[str, Any]:
+    56→        return {
+    57→            "name": self.name,
+    58→            "finding_count": self.finding_count,
+    59→            "wall_ms": round(self.wall_ms, 2),
+    60→            "peak_mem_kb": round(self.peak_mem_kb, 1),
+    61→            "cpu_time_ms": round(self.cpu_time_ms, 2),
+    62→            "error": self.error,
+    63→            "notes": self.notes,
+    64→        }
+    65→
+    66→
+    67→@dataclass
+    68→class BenchSuite:
+    69→    """Collection of benchmark results for a subsystem."""
+    70→    suite_name: str
+    71→    results: List[BenchResult] = field(default_factory=list)
+    72→
+    73→    def add(self, r: BenchResult) -> None:
+    74→        self.results.append(r)
+    75→
+    76→    def to_dict(self) -> Dict[str, Any]:
+    77→        return {
+    78→            "suite_name": self.suite_name,
+    79→            "results": [r.to_dict() for r in self.results],
+    80→        }
+    81→
+    82→
+    83→# ── Helpers ────────────────────────────────────────────────────────────
+    84→
+    85→
+    86→SEVERITIES = ["critical", "high", "medium", "low", "info"]
+    87→SEV_WEIGHTS = {"critical": 0.1, "high": 0.2, "medium": 0.3, "low": 0.25, "info": 0.15}
+    88→
+    89→CATEGORIES = [
+    90→    "missing_hsts", "missing_csp", "open_redirect", "xss",
+    91→    "sql_injection", "csrf", "info_disclosure", "outdated_software",
+    92→    "weak_cipher", "missing_xfo", "cookie_flags", "cors_misconfig",
+    93→    "server_header_disclosure", "directory_listing", "admin_panel_exposed",
+    94→    "sensitive_data_in_url", "jwt_weak_signing", "xml_external_entity",
+    95→    "ssrf", "command_injection",
+    96→]
+    97→
+    98→MODULES = [
+    99→    "recon", "auth", "chain", "bot", "gorgon", "oblivion",
+   100→    "vibesec", "nhi", "pegasus", "cloud_recon", "team",
+   101→]
+   102→
+   103→
+   104→def _rand_sev() -> str:
+   105→    r = random.random()
+   106→    cumulative = 0.0
+   107→    for sev, w in SEV_WEIGHTS.items():
+   108→        cumulative += w
+   109→        if r < cumulative:
+   110→            return sev
+   111→    return "info"
+   112→
+   113→
+   114→def _make_finding(idx: int) -> Dict[str, Any]:
+   115→    """Generate a single synthetic finding dict."""
+   116→    sev = _rand_sev()
+   117→    pts = {"critical": 25, "high": 15, "medium": 8, "low": 3, "info": 1}[sev]
+   118→    cat = random.choice(CATEGORIES)
+   119→    mod = random.choice(MODULES)
+   120→    return {
+   121→        "title": f"Synthetic finding #{idx}: {cat.replace('_', ' ').title()}",
+   122→        "severity": sev,
+   123→        "category": cat,
+   124→        "module": mod,
+   125→        "description": f"This is a synthetic {sev} severity finding in the {cat} category from the {mod} module. " * 3,
+   126→        "evidence": f"Evidence string for finding {idx}: some-response-header-value-or-body-snippet " * 2,
+   127→        "asset": f"asset-{idx % 50}.example.com",
+   128→        "points_deducted": pts,
+   129→        "remediation": f"Apply fix for {cat}: configure proper security headers and validate input sanitization.",
+   130→        "dread_score": round(random.uniform(0.1, 1.0), 2),
+   131→    }
+   132→
+   133→
+   134→def generate_findings(n: int) -> List[Dict[str, Any]]:
+   135→    """Generate n synthetic findings."""
+   136→    random.seed(42)  # deterministic
+   137→    return [_make_finding(i) for i in range(n)]
+   138→
+   139→
+   140→def make_scan_data(findings: List[Dict[str, Any]]) -> Dict[str, Any]:
+   141→    """Wrap findings into a full scan data dict suitable for report generators."""
+   142→    sev_counts: Dict[str, int] = defaultdict(int)
+   143→    total_pts = 0
+   144→    for f in findings:
+   145→        s = f.get("severity", "info").lower()
+   146→        sev_counts[s] += 1
+   147→        total_pts += f.get("points_deducted", 0)
+   148→    score = max(0, 100 - total_pts)
+   149→    grade = "F"
+   150→    for threshold, g in [(90, "A+"), (80, "A"), (65, "B"), (50, "C"), (35, "D"), (0, "F")]:
+   151→        if score >= threshold:
+   152→            grade = g
+   153→            break
+   154→    return {
+   155→        "target": "benchmark-target.example.com",
+   156→        "modules_run": list(set(f.get("module", "recon") for f in findings)),
+   157→        "findings": findings,
+   158→        "severity_counts": dict(sev_counts),
+   159→        "total_score": score,
+   160→        "grade": grade,
+   161→        "badge_markdown": f"![ReconPro {grade}](https://img.shields.io/badge/ReconPro-{grade}-red)",
+   162→        "module_results": {},
+   163→        "intelligence": None,
+   164→    }
+   165→
+   166→
+   167→def timed_mem(func, *args, **kwargs) -> Tuple[Any, float, float, Optional[float]]:
+   168→    """Run func(*args, **kwargs), return (result, wall_s, peak_mem_kb, cpu_s).
+   169→    
+   170→    Uses tracemalloc for peak memory measurement.
+   171→    """
+   172→    gc.collect()
+   173→    tracemalloc.start()
+   174→    t0 = time.perf_counter()
+   175→    t_cpu = time.process_time()
+   176→    try:
+   177→        result = func(*args, **kwargs)
+   178→    except Exception as e:
+   179→        t1 = time.perf_counter()
+   180→        t_cpu_end = time.process_time()
+   181→        _, peak = tracemalloc.get_traced_memory()
+   182→        tracemalloc.stop()
+   183→        return None, t1 - t0, peak / 1024, t_cpu_end - t_cpu
+   184→    t1 = time.perf_counter()
+   185→    t_cpu_end = time.process_time()
+   186→    _, peak = tracemalloc.get_traced_memory()
+   187→    tracemalloc.stop()
+   188→    return result, t1 - t0, peak / 1024, t_cpu_end - t_cpu
+   189→
+   190→
+   191→# ── Benchmark: Report Generation ───────────────────────────────────────
+   192→
+   193→
+   194→def bench_report_generation(all_results: Dict[str, BenchSuite]) -> None:
+   195→    """Benchmark JSON, HTML, Markdown, SARIF export at scale."""
+   196→    print("\n" + "=" * 70)
+   197→    print("  BENCHMARK 1: Report Generation")
+   198→    print("=" * 70)
+   199→
+   200→    from reconpro.formats import export_json, export_html, export_markdown, export_sarif
+   201→
+   202→    suite = BenchSuite("report_generation")
+   203→    sizes = [100, 1000, 10000]
+   204→    tmpdir = tempfile.mkdtemp(prefix="rp_bench_")
+   205→
+   206→    for n in sizes:
+   207→        findings = generate_findings(n)
+   208→        data = make_scan_data(findings)
+   209→
+   210→        for fmt_name, exporter, ext in [
+   211→            ("JSON", export_json, ".json"),
+   212→            ("Markdown", export_markdown, ".md"),
+   213→            ("SARIF", export_sarif, ".sarif.json"),
+   214→        ]:
+   215→            path = os.path.join(tmpdir, f"bench_{n}{ext}")
+   216→            result, wall_s, mem_kb, cpu_s = timed_mem(exporter, data, path)
+   217→            if result is None:
+   218→                suite.add(BenchResult(
+   219→                    name=f"{fmt_name}_export", finding_count=n,
+   220→                    wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   221→                    error="exception during export",
+   222→                ))
+   223→            else:
+   224→                # Get file size
+   225→                fsize = os.path.getsize(path) / 1024 if os.path.exists(path) else 0
+   226→                suite.add(BenchResult(
+   227→                    name=f"{fmt_name}_export", finding_count=n,
+   228→                    wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   229→                    notes=f"output_kb={fsize:.1f}",
+   230→                ))
+   231→            # cleanup
+   232→            if os.path.exists(path):
+   233→                os.remove(path)
+   234→
+   235→        # HTML export (delegates to reports.generate_html_report)
+   236→        path_html = os.path.join(tmpdir, f"bench_{n}.html")
+   237→        result, wall_s, mem_kb, cpu_s = timed_mem(export_html, data, path_html)
+   238→        if result is None:
+   239→            suite.add(BenchResult(
+   240→                name="HTML_export", finding_count=n,
+   241→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   242→                error="exception during HTML export",
+   243→            ))
+   244→        else:
+   245→            fsize = os.path.getsize(path_html) / 1024 if os.path.exists(path_html) else 0
+   246→            suite.add(BenchResult(
+   247→                name="HTML_export", finding_count=n,
+   248→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   249→                notes=f"output_kb={fsize:.1f}",
+   250→            ))
+   251→        if os.path.exists(path_html):
+   252→            os.remove(path_html)
+   253→
+   254→        print(f"    n={n:>6} findings: completed")
+   255→
+   256→    # Try 100k for JSON/Markdown only (HTML/SARIF likely too slow)
+   257→    n = 100000
+   258→    findings_100k = generate_findings(n)
+   259→    data_100k = make_scan_data(findings_100k)
+   260→
+   261→    for fmt_name, exporter, ext in [
+   262→        ("JSON", export_json, ".json"),
+   263→        ("Markdown", export_markdown, ".md"),
+   264→    ]:
+   265→        path = os.path.join(tmpdir, f"bench_{n}{ext}")
+   266→        result, wall_s, mem_kb, cpu_s = timed_mem(exporter, data_100k, path)
+   267→        if result is None:
+   268→            suite.add(BenchResult(
+   269→                name=f"{fmt_name}_export", finding_count=n,
+   270→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   271→                error="exception during export",
+   272→            ))
+   273→        else:
+   274→            fsize = os.path.getsize(path) / 1024 if os.path.exists(path) else 0
+   275→            suite.add(BenchResult(
+   276→                name=f"{fmt_name}_export", finding_count=n,
+   277→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   278→                notes=f"output_kb={fsize:.1f}",
+   279→            ))
+   280→        if os.path.exists(path):
+   281→            os.remove(path)
+   282→    print(f"    n={n:>6} findings: completed (JSON/MD only)")
+   283→
+   284→    all_results["report_generation"] = suite
+   285→
+   286→
+   287→# ── Benchmark: Attack Graph ────────────────────────────────────────────
+   288→
+   289→
+   290→def bench_attack_graph(all_results: Dict[str, BenchSuite]) -> None:
+   291→    """Benchmark attack graph construction, path finding, cycle detection."""
+   292→    print("\n" + "=" * 70)
+   293→    print("  BENCHMARK 2: Attack Graph Construction & Analysis")
+   294→    print("=" * 70)
+   295→
+   296→    from reconpro.attack_graph import AttackGraphEngine
+   297→
+   298→    suite = BenchSuite("attack_graph")
+   299→    node_counts = [50, 200, 500, 1000]
+   300→
+   301→    for n in node_counts:
+   302→        findings = generate_findings(n)
+   303→        engine = AttackGraphEngine()
+   304→
+   305→        # Full analyze()
+   306→        result, wall_s, mem_kb, cpu_s = timed_mem(engine.analyze, findings, "benchmark.local")
+   307→        if result is None:
+   308→            suite.add(BenchResult(
+   309→                name="full_analyze", finding_count=n,
+   310→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   311→                error="exception during analyze",
+   312→            ))
+   313→        else:
+   314→            graph_res = result
+   315→            suite.add(BenchResult(
+   316→                name="full_analyze", finding_count=n,
+   317→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   318→                notes=f"nodes={len(graph_res.nodes)},edges={len(graph_res.edges)},chains={len(graph_res.attack_chains)}",
+   319→            ))
+   320→
+   321→            # Path finding benchmark: build graph first, then time path ops
+   322→            engine2 = AttackGraphEngine()
+   323→            engine2.build_graph(findings, "benchmark.local")
+   324→            g = engine2.graph
+   325→
+   326→            # Find paths between first and last node
+   327→            node_ids = list(g.nodes.keys())
+   328→            if len(node_ids) >= 2:
+   329→                start, end = node_ids[0], node_ids[-1]
+   330→                t0 = time.perf_counter()
+   331→                paths = g.bfs_paths(start, end, max_depth=10)
+   332→                t1 = time.perf_counter()
+   333→                suite.add(BenchResult(
+   334→                    name="bfs_path_finding", finding_count=n,
+   335→                    wall_ms=(t1 - t0) * 1000,
+   336→                    notes=f"paths_found={len(paths)}",
+   337→                ))
+   338→
+   339→                # Shortest path
+   340→                t0 = time.perf_counter()
+   341→                sp = g.shortest_path(start, end)
+   342→                t1 = time.perf_counter()
+   343→                suite.add(BenchResult(
+   344→                    name="shortest_path", finding_count=n,
+   345→                    wall_ms=(t1 - t0) * 1000,
+   346→                    notes=f"found={sp is not None},len={len(sp) if sp else 0}",
+   347→                ))
+   348→
+   349→                # Betweenness proxy
+   350→                t0 = time.perf_counter()
+   351→                betw = g.betweenness_proxy()
+   352→                t1 = time.perf_counter()
+   353→                suite.add(BenchResult(
+   354→                    name="betweenness_proxy", finding_count=n,
+   355→                    wall_ms=(t1 - t0) * 1000,
+   356→                    notes=f"nodes_scored={len(betw)}",
+   357→                ))
+   358→
+   359→            # Cycle detection (via DFS in _extract_attack_chains)
+   360→            # Kill chain mapping
+   361→            t0 = time.perf_counter()
+   362→            kc = engine2._map_kill_chain()
+   363→            t1 = time.perf_counter()
+   364→            suite.add(BenchResult(
+   365→                name="kill_chain_mapping", finding_count=n,
+   366→                wall_ms=(t1 - t0) * 1000,
+   367→                notes=f"phases={len(kc.get('phases', {}))}",
+   368→            ))
+   369→
+   370→        print(f"    n={n:>6} nodes: completed")
+   371→
+   372→    all_results["attack_graph"] = suite
+   373→
+   374→
+   375→# ── Benchmark: Threat Intelligence ─────────────────────────────────────
+   376→
+   377→
+   378→def bench_threat_intel(all_results: Dict[str, BenchSuite]) -> None:
+   379→    """Benchmark threat intelligence enrichment at scale."""
+   380→    print("\n" + "=" * 70)
+   381→    print("  BENCHMARK 3: Threat Intelligence Correlation")
+   382→    print("=" * 70)
+   383→
+   384→    from reconpro.threat_intel import ThreatIntelEngine
+   385→
+   386→    suite = BenchSuite("threat_intel")
+   387→    sizes = [100, 500, 1000, 5000]
+   388→
+   389→    for n in sizes:
+   390→        findings = generate_findings(n)
+   391→        engine = ThreatIntelEngine(enable_online=False)
+   392→
+   393→        # Full enrich_scan
+   394→        result, wall_s, mem_kb, cpu_s = timed_mem(engine.enrich_scan, findings, "benchmark.local")
+   395→        if result is None:
+   396→            suite.add(BenchResult(
+   397→                name="enrich_scan", finding_count=n,
+   398→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   399→                error="exception during enrich_scan",
+   400→            ))
+   401→        else:
+   402→            suite.add(BenchResult(
+   403→                name="enrich_scan", finding_count=n,
+   404→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   405→                notes=f"cves={len(result.unique_cves)},cwes={len(result.unique_cwes)},mitre={len(result.unique_mitre)}",
+   406→            ))
+   407→
+   408→        # Individual CVE lookup (cached)
+   409→        engine2 = ThreatIntelEngine(enable_online=False)
+   410→        t0 = time.perf_counter()
+   411→        for i in range(min(n, 100)):
+   412→            engine2.lookup_cve(f"CVE-2024-{10000 + i}")
+   413→        t1 = time.perf_counter()
+   414→        suite.add(BenchResult(
+   415→            name="cve_lookup_batch", finding_count=n,
+   416→            wall_ms=(t1 - t0) * 1000,
+   417→            notes=f"lookups={min(n, 100)}",
+   418→        ))
+   419→
+   420→        # CWE mapping
+   421→        engine3 = ThreatIntelEngine(enable_online=False)
+   422→        t0 = time.perf_counter()
+   423→        for i in range(min(n, 100)):
+   424→            engine3.lookup_cwe(f"CWE-{79 + (i % 20)}")
+   425→        t1 = time.perf_counter()
+   426→        suite.add(BenchResult(
+   427→            name="cwe_lookup_batch", finding_count=n,
+   428→            wall_ms=(t1 - t0) * 1000,
+   429→            notes=f"lookups={min(n, 100)}",
+   430→        ))
+   431→
+   432→        # MITRE mapping
+   433→        engine4 = ThreatIntelEngine(enable_online=False)
+   434→        t0 = time.perf_counter()
+   435→        for i in range(min(n, 100)):
+   436→            engine4.lookup_mitre(f"T{i + 1000}")
+   437→        t1 = time.perf_counter()
+   438→        suite.add(BenchResult(
+   439→            name="mitre_lookup_batch", finding_count=n,
+   440→            wall_ms=(t1 - t0) * 1000,
+   441→            notes=f"lookups={min(n, 100)}",
+   442→        ))
+   443→
+   444→        print(f"    n={n:>6} findings: completed")
+   445→
+   446→    all_results["threat_intel"] = suite
+   447→
+   448→
+   449→# ── Benchmark: AI Analyst ──────────────────────────────────────────────
+   450→
+   451→
+   452→def bench_ai_analyst(all_results: Dict[str, BenchSuite]) -> None:
+   453→    """Benchmark AI analyst classification and analysis."""
+   454→    print("\n" + "=" * 70)
+   455→    print("  BENCHMARK 4: AI Analyst Classification")
+   456→    print("=" * 70)
+   457→
+   458→    from reconpro.ai_analyst import AIAnalystEngine, FindingClassifier
+   459→
+   460→    suite = BenchSuite("ai_analyst")
+   461→    sizes = [100, 500, 1000]
+   462→
+   463→    for n in sizes:
+   464→        findings = generate_findings(n)
+   465→
+   466→        # Full analyze_scan
+   467→        engine = AIAnalystEngine()
+   468→        result, wall_s, mem_kb, cpu_s = timed_mem(engine.analyze_scan, findings, "benchmark.local")
+   469→        if result is None:
+   470→            suite.add(BenchResult(
+   471→                name="full_analyze_scan", finding_count=n,
+   472→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   473→                error="exception during analyze_scan",
+   474→            ))
+   475→        else:
+   476→            suite.add(BenchResult(
+   477→                name="full_analyze_scan", finding_count=n,
+   478→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   479→                notes=f"classified={len(result.classified)},extended={len(result.extended_findings)},paths={len(result.attack_paths)}",
+   480→            ))
+   481→
+   482→        # Batch classification only
+   483→        classifier = FindingClassifier()
+   484→        t0 = time.perf_counter()
+   485→        results = classifier.classify_batch(findings)
+   486→        t1 = time.perf_counter()
+   487→        suite.add(BenchResult(
+   488→            name="classify_batch", finding_count=n,
+   489→            wall_ms=(t1 - t0) * 1000,
+   490→            notes=f"classified={len(results)}",
+   491→        ))
+   492→
+   493→        print(f"    n={n:>6} findings: completed")
+   494→
+   495→    all_results["ai_analyst"] = suite
+   496→
+   497→
+   498→# ── Benchmark: Full Intelligence Pipeline ─────────────────────────────
+   499→
+   500→
+   501→def bench_intelligence_pipeline(all_results: Dict[str, BenchSuite]) -> None:
+   502→    """Benchmark the full end-to-end intelligence pipeline."""
+   503→    print("\n" + "=" * 70)
+   504→    print("  BENCHMARK 5: Full Intelligence Pipeline (End-to-End)")
+   505→    print("=" * 70)
+   506→
+   507→    from reconpro.intelligence_pipeline import IntelligencePipeline
+   508→
+   509→    suite = BenchSuite("intelligence_pipeline")
+   510→    # Pipeline caps at 10000 findings
+   511→    sizes = [100, 500, 1000, 5000, 10000]
+   512→
+   513→    for n in sizes:
+   514→        findings = generate_findings(n)
+   515→        pipeline = IntelligencePipeline(
+   516→            enable_ai_analyst=True,
+   517→            enable_attack_graph=True,
+   518→            enable_threat_intel=True,
+   519→        )
+   520→
+   521→        result, wall_s, mem_kb, cpu_s = timed_mem(pipeline.analyze, findings)
+   522→        if result is None:
+   523→            suite.add(BenchResult(
+   524→                name="full_pipeline", finding_count=n,
+   525→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   526→                error="exception during pipeline.analyze",
+   527→            ))
+   528→        else:
+   529→            suite.add(BenchResult(
+   530→                name="full_pipeline", finding_count=n,
+   531→                wall_ms=wall_s * 1000, peak_mem_kb=mem_kb, cpu_time_ms=cpu_s * 1000,
+   532→                notes=(
+   533→                    f"ai_ms={result.ai_duration*1000:.1f},"
+   534→                    f"graph_ms={result.graph_duration*1000:.1f},"
+   535→                    f"intel_ms={result.intel_duration*1000:.1f},"
+   536→                    f"risk_score={result.executive_risk_score}"
+   537→                ),
+   538→            ))
+   539→
+   540→        # Individual engine timings
+   541→        # AI only
+   542→        pipeline_ai = IntelligencePipeline(enable_ai_analyst=True, enable_attack_graph=False, enable_threat_intel=False)
+   543→        r, wall_s, _, _ = timed_mem(pipeline_ai.analyze, findings)
+   544→        if r:
+   545→            suite.add(BenchResult(
+   546→                name="pipeline_ai_only", finding_count=n,
+   547→                wall_ms=wall_s * 1000,
+   548→            ))
+   549→
+   550→        # Graph only
+   551→        pipeline_g = IntelligencePipeline(enable_ai_analyst=False, enable_attack_graph=True, enable_threat_intel=False)
+   552→        r, wall_s, _, _ = timed_mem(pipeline_g.analyze, findings)
+   553→        if r:
+   554→            suite.add(BenchResult(
+   555→                name="pipeline_graph_only", finding_count=n,
+   556→                wall_ms=wall_s * 1000,
+   557→            ))
+   558→
+   559→        # Intel only
+   560→        pipeline_i = IntelligencePipeline(enable_ai_analyst=False, enable_attack_graph=False, enable_threat_intel=True)
+   561→        r, wall_s, _, _ = timed_mem(pipeline_i.analyze, findings)
+   562→        if r:
+   563→            suite.add(BenchResult(
+   564→                name="pipeline_intel_only", finding_count=n,
+   565→                wall_ms=wall_s * 1000,
+   566→            ))
+   567→
+   568→        print(f"    n={n:>6} findings: completed")
+   569→
+   570→    all_results["intelligence_pipeline"] = suite
+   571→
+   572→
+   573→# ── Benchmark: Memory Profiling ───────────────────────────────────────
+   574→
+   575→
+   576→def bench_memory_profiling(all_results: Dict[str, BenchSuite]) -> None:
+   577→    """Profile memory usage patterns across operations."""
+   578→    print("\n" + "=" * 70)
+   579→    print("  BENCHMARK 6: Memory Profiling")
+   580→    print("=" * 70)
+   581→
+   582→    suite = BenchSuite("memory_profiling")
+   583→
+   584→    from reconpro.ai_analyst import AIAnalystEngine
+   585→    from reconpro.attack_graph import AttackGraphEngine
+   586→    from reconpro.threat_intel import ThreatIntelEngine
+   587→    from reconpro.intelligence_pipeline import IntelligencePipeline
+   588→    from reconpro.formats import export_json, export_markdown
+   589→
+   590→    tmpdir = tempfile.mkdtemp(prefix="rp_mem_")
+   591→
+   592→    for n in [100, 1000, 5000, 10000]:
+   593→        findings = generate_findings(n)
+   594→
+   595→        # Measure baseline memory of findings list
+   596→        gc.collect()
+   597→        tracemalloc.start()
+   598→        baseline_findings = list(findings)  # copy
+   599→        _, baseline_mem = tracemalloc.get_traced_memory()
+   600→        tracemalloc.stop()
+   601→        per_finding_kb = baseline_mem / 1024 / n if n > 0 else 0
+   602→
+   603→        # AI Analyst memory
+   604→        gc.collect()
+   605→        engine = AIAnalystEngine()
+   606→        _, _, peak_kb, _ = timed_mem(engine.analyze_scan, findings, "bench.local")
+   607→        suite.add(BenchResult(
+   608→            name="ai_analyst_memory", finding_count=n,
+   609→            wall_ms=0, peak_mem_kb=peak_kb,
+   610→            notes=f"per_finding_kb={per_finding_kb:.2f},overhead_kb={peak_kb - baseline_mem/1024:.1f}",
+   611→        ))
+   612→
+   613→        # Attack Graph memory
+   614→        gc.collect()
+   615→        engine = AttackGraphEngine()
+   616→        _, _, peak_kb, _ = timed_mem(engine.analyze, findings, "bench.local")
+   617→        suite.add(BenchResult(
+   618→            name="attack_graph_memory", finding_count=n,
+   619→            wall_ms=0, peak_mem_kb=peak_kb,
+   620→            notes=f"per_finding_kb={per_finding_kb:.2f}",
+   621→        ))
+   622→
+   623→        # Threat Intel memory
+   624→        gc.collect()
+   625→        engine = ThreatIntelEngine(enable_online=False)
+   626→        _, _, peak_kb, _ = timed_mem(engine.enrich_scan, findings, "bench.local")
+   627→        suite.add(BenchResult(
+   628→            name="threat_intel_memory", finding_count=n,
+   629→            wall_ms=0, peak_mem_kb=peak_kb,
+   630→            notes=f"per_finding_kb={per_finding_kb:.2f}",
+   631→        ))
+   632→
+   633→        # Full pipeline memory
+   634→        gc.collect()
+   635→        pipeline = IntelligencePipeline()
+   636→        _, _, peak_kb, _ = timed_mem(pipeline.analyze, findings)
+   637→        suite.add(BenchResult(
+   638→            name="full_pipeline_memory", finding_count=n,
+   639→            wall_ms=0, peak_mem_kb=peak_kb,
+   640→            notes=f"per_finding_kb={per_finding_kb:.2f}",
+   641→        ))
+   642→
+   643→        # JSON export memory
+   644→        data = make_scan_data(findings)
+   645→        path = os.path.join(tmpdir, f"mem_{n}.json")
+   646→        gc.collect()
+   647→        _, _, peak_kb, _ = timed_mem(export_json, data, path)
+   648→        suite.add(BenchResult(
+   649→            name="json_export_memory", finding_count=n,
+   650→            wall_ms=0, peak_mem_kb=peak_kb,
+   651→        ))
+   652→        if os.path.exists(path):
+   653→            os.remove(path)
+   654→
+   655→        # Growth rate: bytes per finding for JSON serialization
+   656→        gc.collect()
+   657→        tracemalloc.start()
+   658→        json_str = json.dumps(data, indent=2)
+   659→        _, peak_json = tracemalloc.get_traced_memory()
+   660→        tracemalloc.stop()
+   661→        json_size_kb = len(json_str.encode()) / 1024
+   662→        suite.add(BenchResult(
+   663→            name="json_serialization", finding_count=n,
+   664→            wall_ms=0, peak_mem_kb=peak_json / 1024,
+   665→            notes=f"output_size_kb={json_size_kb:.1f},bytes_per_finding={len(json_str.encode())/n:.1f}",
+   666→        ))
+   667→
+   668→        print(f"    n={n:>6} findings: completed")
+   669→
+   670→    all_results["memory_profiling"] = suite
+   671→
+   672→
+   673→# ── Benchmark: Concurrent Execution ───────────────────────────────────
+   674→
+   675→
+   676→def bench_concurrent_scaling(all_results: Dict[str, BenchSuite]) -> None:
+   677→    """Test concurrent execution scaling with varying worker counts."""
+   678→    print("\n" + "=" * 70)
+   679→    print("  BENCHMARK 7: Concurrent Execution Scaling")
+   680→    print("=" * 70)
+   681→
+   682→    from reconpro.ai_analyst import AIAnalystEngine
+   683→    from reconpro.attack_graph import AttackGraphEngine
+   684→    from reconpro.threat_intel import ThreatIntelEngine
+   685→
+   686→    suite = BenchSuite("concurrent_scaling")
+   687→    worker_counts = [1, 2, 4, 8]
+   688→    batch_sizes = [50, 200]
+   689→
+   690→    for batch_size in batch_sizes:
+   691→        for workers in worker_counts:
+   692→            # Simulate parallel analysis of multiple independent finding sets
+   693→            def _analyze_batch(findings_batch):
+   694→                engine = AIAnalystEngine()
+   695→                return engine.analyze_scan(findings_batch, "bench.local")
+   696→
+   697→            # Create independent batches
+   698→            all_batches = [generate_findings(batch_size) for _ in range(workers)]
+   699→
+   700→            t0 = time.perf_counter()
+   701→            with ThreadPoolExecutor(max_workers=workers) as executor:
+   702→                futures = [executor.submit(_analyze_batch, batch) for batch in all_batches]
+   703→                results = [f.result() for f in as_completed(futures)]
+   704→            t1 = time.perf_counter()
+   705→
+   706→            total_findings = batch_size * workers
+   707→            suite.add(BenchResult(
+   708→                name="ai_analyst_concurrent",
+   709→                finding_count=total_findings,
+   710→                wall_ms=(t1 - t0) * 1000,
+   711→                notes=f"workers={workers},batch_size={batch_size}",
+   712→            ))
+   713→
+   714→            # Threat intel concurrent
+   715→            def _enrich_batch(findings_batch):
+   716→                engine = ThreatIntelEngine(enable_online=False)
+   717→                return engine.enrich_scan(findings_batch, "bench.local")
+   718→
+   719→            all_batches2 = [generate_findings(batch_size) for _ in range(workers)]
+   720→            t0 = time.perf_counter()
+   721→            with ThreadPoolExecutor(max_workers=workers) as executor:
+   722→                futures = [executor.submit(_enrich_batch, batch) for batch in all_batches2]
+   723→                results = [f.result() for f in as_completed(futures)]
+   724→            t1 = time.perf_counter()
+   725→
+   726→            suite.add(BenchResult(
+   727→                name="threat_intel_concurrent",
+   728→                finding_count=total_findings,
+   729→                wall_ms=(t1 - t0) * 1000,
+   730→                notes=f"workers={workers},batch_size={batch_size}",
+   731→            ))
+   732→
+   733→            print(f"    workers={workers}, batch={batch_size}: completed")
+   734→
+   735→    # Scaling efficiency analysis
+   736→    print("    Computing scaling efficiency...")
+   737→    # Run sequential baseline for comparison
+   738→    for batch_size in [200]:
+   739→        batch = generate_findings(batch_size)
+   740→        engine = AIAnalystEngine()
+   741→        t0 = time.perf_counter()
+   742→        for _ in range(4):  # same total work as 4 workers x 1 batch
+   743→            engine.analyze_scan(batch, "bench.local")
+   744→        t1 = time.perf_counter()
+   745→        sequential_ms = (t1 - t0) * 1000
+   746→        suite.add(BenchResult(
+   747→            name="ai_analyst_sequential_baseline",
+   748→            finding_count=batch_size * 4,
+   749→            wall_ms=sequential_ms,
+   750→            notes=f"batch_size={batch_size},iterations=4",
+   751→        ))
+   752→
+   753→    all_results["concurrent_scaling"] = suite
+   754→
+   755→
+   756→# ── Main ───────────────────────────────────────────────────────────────
+   757→
+   758→
+   759→def main() -> None:
+   760→    """Run all benchmarks and save results."""
+   761→    print("=" * 70)
+   762→    print("  ReconPro v11 Enterprise — Performance Benchmark Suite")
+   763→    print(f"  Team 2: Performance Engineering")
+   764→    print(f"  Timestamp: {datetime.now(timezone.utc).isoformat()}")
+   765→    print(f"  Python: {sys.version}")
+   766→    print("=" * 70)
+   767→
+   768→    all_suites: Dict[str, BenchSuite] = {}
+   769→    overall_start = time.monotonic()
+   770→
+   771→    # Run all benchmark suites
+   772→    bench_report_generation(all_suites)
+   773→    bench_attack_graph(all_suites)
+   774→    bench_threat_intel(all_suites)
+   775→    bench_ai_analyst(all_suites)
+   776→    bench_intelligence_pipeline(all_suites)
+   777→    bench_memory_profiling(all_suites)
+   778→    bench_concurrent_scaling(all_suites)
+   779→
+   780→    overall_duration = time.monotonic() - overall_start
+   781→
+   782→    # Compile results
+   783→    output = {
+   784→        "metadata": {
+   785→            "timestamp": datetime.now(timezone.utc).isoformat(),
+   786→            "python_version": sys.version,
+   787→            "total_duration_s": round(overall_duration, 2),
+   788→            "benchmark_version": "v11.0",
+   789→            "team": "Team 2 - Performance Engineering",
+   790→        },
+   791→        "suites": {k: v.to_dict() for k, v in all_suites.items()},
+   792→    }
+   793→
+   794→    # Save JSON
+   795→    reports_dir = PROJECT_ROOT / "reports"
+   796→    reports_dir.mkdir(parents=True, exist_ok=True)
+   797→    json_path = reports_dir / "team2_benchmark_data.json"
+   798→    with open(json_path, "w") as f:
+   799→        json.dump(output, f, indent=2, default=str)
+   800→    print(f"\n  JSON results saved to: {json_path}")
+   801→
+   802→    # Print summary
+   803→    print("\n" + "=" * 70)
+   804→    print("  BENCHMARK SUMMARY")
+   805→    print("=" * 70)
+   806→    for suite_name, suite in all_suites.items():
+   807→        times = [r.wall_ms for r in suite.results if r.wall_ms > 0 and not r.error]
+   808→        if times:
+   809→            print(f"  {suite_name}: {len(suite.results)} tests, "
+   810→                  f"min={min(times):.1f}ms, max={max(times):.1f}ms, "
+   811→                  f"avg={sum(times)/len(times):.1f}ms")
+   812→    print(f"\n  Total benchmark duration: {overall_duration:.1f}s")
+   813→    print("=" * 70)
+   814→
+   815→    return output
+   816→
+   817→
+   818→if __name__ == "__main__":
+   819→    main()
+   820→
