@@ -282,3 +282,16 @@ def audit_scan(
             pass  # intelligence must never break the scan
 
     return audit_result
+
+
+# ── Auto-initialize intelligence pipeline hook ─────────────────────────
+# By default, every scan() and audit_scan() goes through the intelligence
+# pipeline.  Users can override with set_intelligence_hook(custom_func).
+# If intelligence_pipeline cannot import (missing deps), scans still work.
+try:
+    from .intelligence_pipeline import IntelligencePipeline
+
+    _default_pipeline = IntelligencePipeline()
+    set_intelligence_hook(_default_pipeline.process_result)
+except ImportError:
+    pass  # Intelligence pipeline not available — run without intelligence

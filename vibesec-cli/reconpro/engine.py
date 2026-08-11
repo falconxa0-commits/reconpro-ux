@@ -601,13 +601,20 @@ def scan(
         from reconpro.engine import scan
         result = scan("example.com")
     """
+    # Auto-wire intelligence pipeline
+    pipeline = None
+    try:
+        from .intelligence_pipeline import IntelligencePipeline
+        pipeline = IntelligencePipeline()
+    except ImportError:
+        pass
+
     engine = ScanEngine(
         concurrency=5,
         rate_limit=rate_limit,
         use_async=True,
+        intelligence_callback=pipeline.process_result if pipeline else None,
     )
-    # NOTE: intelligence_callback not wired for the module-level scan()
-    #       to keep the drop-in replacement backward compatible.
     return engine.scan_one(
         target=target,
         modules=modules,
@@ -626,13 +633,20 @@ def audit_scan(
 
     Runs local machine / project audit modules concurrently.
     """
+    # Auto-wire intelligence pipeline
+    pipeline = None
+    try:
+        from .intelligence_pipeline import IntelligencePipeline
+        pipeline = IntelligencePipeline()
+    except ImportError:
+        pass
+
     engine = ScanEngine(
         concurrency=5,
         rate_limit=10.0,
         use_async=True,
+        intelligence_callback=pipeline.process_result if pipeline else None,
     )
-    # NOTE: intelligence_callback not wired for the module-level audit_scan()
-    #       to keep the drop-in replacement backward compatible.
     return engine.scan_one(
         target=target,
         modules=modules,

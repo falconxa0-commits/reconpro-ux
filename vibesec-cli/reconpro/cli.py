@@ -481,6 +481,47 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("output", nargs="?", default="reconpro_report.sarif",
                      help="Output path (format auto-detected from extension)")
 
+    # ── INTELLIGENCE ──────────────────────────────────────────────
+    p = sub.add_parser("intelligence", help="Intelligence analysis: confidence, target profile, engineering score, recommendations")
+    p.add_argument("target", nargs="?", help="Target domain (uses last scan if omitted)")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ── SCORE ──────────────────────────────────────────────────────
+    p = sub.add_parser("score", help="Engineering score: architecture, security, reliability, performance dimensions")
+    p.add_argument("target", nargs="?", help="Target (uses last scan if omitted)")
+
+    # ── RECOMMEND ──────────────────────────────────────────────────
+    p = sub.add_parser("recommend", help="Prioritized fix recommendations from last scan")
+    p.add_argument("--target", help="Target (uses last scan if omitted)")
+    p.add_argument("--quick-wins", action="store_true", help="Show only quick wins")
+
+    # ── LEARN ──────────────────────────────────────────────────────
+    p = sub.add_parser("learn", help="Learning system: scan history, module effectiveness, regressions")
+    p.add_argument("target", nargs="?", help="Target to show history for")
+    p.add_argument("--effectiveness", action="store_true", help="Show module effectiveness")
+    p.add_argument("--regressions", action="store_true", help="Detect regressions")
+
+    # ── PLAN ───────────────────────────────────────────────────────
+    p = sub.add_parser("plan", help="AI scan plan: optimal modules, order, and strategy for a target")
+    p.add_argument("target", help="Target to plan against")
+    p.add_argument("--modules", help="Comma-separated available modules (default: all)")
+
+    # ── VALIDATE ───────────────────────────────────────────────────
+    p = sub.add_parser("validate", help="Validate ReconPro code: syntax, imports, security, tests")
+    p.add_argument("--syntax", action="store_true", help="Check syntax only")
+    p.add_argument("--imports", action="store_true", help="Check imports only")
+    p.add_argument("--security", action="store_true", help="Security scan only")
+    p.add_argument("--tests", action="store_true", help="Run tests only")
+
+    # ── PROMPT-CHECK ───────────────────────────────────────────────
+    p = sub.add_parser("prompt-check", help="Test prompt injection defense on input text")
+    p.add_argument("text", help="Text to check for injection patterns")
+
+    # ── AUDIT-CODE ─────────────────────────────────────────────────
+    p = sub.add_parser("audit-code", help="Security audit: hardcoded secrets, eval/exec, unsafe patterns")
+    p.add_argument("--path", default=".", help="Path to audit (default: current dir)")
+    p.add_argument("--severity", help="Minimum severity: critical, high, medium, low")
+
     # ── zai (z.ai live stream) ──────────────────────────────────────────
     p = sub.add_parser("zai", help="z.ai live stream AI analysis — zero config, no API keys needed")
     p.add_argument("target", nargs="?", default="", help="Target to scan and analyze (optional: uses last scan if omitted)")
@@ -1127,6 +1168,360 @@ def main(argv: list[str] | None = None) -> None:
                                 all_modules=scan_args.all, timeout=scan_args.timeout,
                                 verify_tls=not scan_args.insecure, rate_limit=scan_args.rate_limit)
         _output_result(result, scan_args)
+        return
+
+    # ── INTELLIGENCE ──────────────────────────────────────────────
+    if cmd == "intelligence":
+        _banner(args)
+        from .intelligence_pipeline import IntelligencePipeline
+        from .history import get_latest
+        latest = get_latest()
+        if not latest and not getattr(args, "target", None):
+            console.print("  [yellow]No scan data. Run a scan first or provide a target.[/]")
+            sys.exit(1)
+        target = getattr(args, "target", None) or (latest.get("target") if latest else None)
+        if not target:
+            console.print("  [yellow]No target available.[/]")
+            sys.exit(1)
+        findings = latest.get("findings", []) if latest else []
+        if not findings:
+            console.print(f"  [bright_green]No findings for {target}. Target is clean.[/]")
+            return
+        pipeline = IntelligencePipeline()
+        # Build a ReconProResult-like object from dict data for the pipeline
+        from .scanner import ReconProResult
+        try:
+            report = _spinner_wrap(f"Running intelligence pipeline on {target}...",
+                                   pipeline.process_result, latest)
+            if getattr(args, "json", False):
+                print(json.dumps(report.to_dict(), indent=2, default=str))
+            else:
+                console.print(f"\n  [bold]Intelligence Report: [cyan]{report.target}[/][/]")
+                console.print(f"  Timestamp:   [dim]{report.timestamp}[/]")
+                console.print(f"  Findings:    [bold]{report.findings_count}[/]")
+                console.print(f"  Processed:   [dim]{report.processing_time_ms:.1f}ms[/]")
+                if report.target_intel:
+                    ti = report.target_intel
+                    console.print(f"\n  [bold]Target Intelligence:[/]")
+                    console.print(f"    App Type:       [cyan]{ti.get('app_type', '?')}[/]")
+                    console.print(f"    Overall Risk:   [red]{ti.get('overall_risk', 0):.2f}[/]")
+                    console.print(f"    Confidence:     [green]{ti.get('confidence', 0):.2f}[/]")
+                    console.print(f"    Critical:       [bright_red]{ti.get('critical_count', 0)}[/]  High: [red]{ti.get('high_count', 0)}[/]")
+                    if ti.get('attack_surface'):
+                        console.print(f"    Attack Surface:")
+                        for s in ti['attack_surface']:
+                            console.print(f"      [dim]• {s}[/]")
+                    if ti.get('suggested_next_actions'):
+                        console.print(f"    Next Actions:")
+                        for a in ti['suggested_next_actions'][:5]:
+                            console.print(f"      [bright_green]→ {a}[/]")
+                if report.engineering_report:
+                    er = report.engineering_report
+                    grade = er.get('grade', '?')
+                    gc = GRADE_COLORS.get(grade, 'white')
+                    console.print(f"\n  [bold]Engineering Score: [{gc}]{er.get('overall_score', 0)}/100 ({grade})[/{gc}][/]")
+                if report.confidence_scores:
+                    avg_conf = sum(f.get('confidence', 0) for f in report.confidence_scores) / max(len(report.confidence_scores), 1)
+                    console.print(f"  Avg Confidence:  [bold]{avg_conf:.2f}[/]")
+                    high_conf = [f for f in report.confidence_scores if f.get('confidence', 0) >= 0.8]
+                    console.print(f"  High Confidence: [green]{len(high_conf)}/{len(report.confidence_scores)} findings[/]")
+        except Exception as exc:
+            console.print(f"  [red]Intelligence pipeline error: {exc}[/]")
+        console.print()
+        return
+
+    # ── SCORE ────────────────────────────────────────────────────
+    if cmd == "score":
+        _banner(args)
+        from .engineering_score import EngineeringScorer
+        from .history import get_latest
+        latest = get_latest()
+        target = getattr(args, "target", None) or (latest.get("target") if latest else None)
+        if not latest or not target:
+            console.print("  [yellow]No scan data. Run a scan first or provide a target.[/]")
+            sys.exit(1)
+        findings = latest.get("findings", [])
+        if not findings:
+            console.print(f"  [bright_green]No findings for {target}. Score is 100/100 (A+).[/]")
+            return
+        scorer = EngineeringScorer()
+        report = _spinner_wrap(f"Scoring {target}...", scorer.score, target, findings, None)
+        rd = report.to_dict()
+        grade = rd['grade']
+        gc = GRADE_COLORS.get(grade, 'white')
+        console.print(f"\n  [bold]Engineering Score: [cyan]{rd['target']}[/][/]  [{gc}]{rd['overall_score']}/100 ({grade})[/{gc}]")
+        console.print(f"  Total findings: [bold]{rd['total_findings']}[/]")
+        console.print()
+        table = Table(border_style="dim", header_style="bold dim")
+        table.add_column("Dimension", style="bold", width=18)
+        table.add_column("Score", style="bold", width=8)
+        table.add_column("Findings", width=10)
+        table.add_column("Bar", width=30)
+        for dim_name, dim_data in rd['dimensions'].items():
+            sc = dim_data['score']
+            fc = dim_data['findings_count']
+            bar_w = 20
+            filled = int(sc / 100 * bar_w)
+            bar = "[bright_green]" + "█" * filled + "[/][dim]" + "░" * (bar_w - filled) + "[/]"
+            color = "green" if sc >= 80 else ("yellow" if sc >= 60 else "red")
+            table.add_row(dim_name.title(), f"[{color}]{sc:.1f}[/{color}]", str(fc), bar)
+            if dim_data.get('recommendations'):
+                for rec in dim_data['recommendations'][:2]:
+                    table.add_row("", "", "", f"[dim]→ {rec}[/]")
+        console.print(table)
+        console.print()
+        return
+
+    # ── RECOMMEND ────────────────────────────────────────────────
+    if cmd == "recommend":
+        _banner(args)
+        from .recommendation_engine import RecommendationEngine
+        from .history import get_latest
+        latest = get_latest()
+        target = getattr(args, "target", None) or (latest.get("target") if latest else None)
+        if not latest or not target:
+            console.print("  [yellow]No scan data. Run a scan first or provide a target.[/]")
+            sys.exit(1)
+        findings = latest.get("findings", [])
+        if not findings:
+            console.print(f"  [bright_green]No findings for {target}. Nothing to recommend.[/]")
+            return
+        engine = RecommendationEngine()
+        report = _spinner_wrap(f"Generating recommendations for {target}...", engine.recommend, findings, target)
+        quick_wins_only = getattr(args, "quick_wins", False)
+        if quick_wins_only:
+            wins = report.quick_wins
+            if not wins:
+                console.print(f"  [dim]No quick wins found for {target}.[/]")
+            else:
+                console.print(f"\n  [bold bright_green]Quick Wins for {target}:[/]")
+                for w in wins:
+                    sev = w.get('severity', 'info')
+                    c = SEV_COLORS.get(sev, 'white')
+                    console.print(f"  [{c}]{sev.upper():8}[/{c}]  [bold]{w.get('category', '')}[/]: {w.get('summary', '')}")
+                    for step in w.get('steps', [])[:3]:
+                        console.print(f"           [bright_green]→ {step}[/]")
+        else:
+            rd = report.to_dict()
+            console.print(f"\n  [bold]Recommendations for [cyan]{rd['target']}[/][/]")
+            console.print(f"  Findings: [bold]{rd['total_findings']}[/]  Quick Wins: [bright_green]{len(rd['quick_wins'])}[/]  Long-term: [yellow]{len(rd['long_term_fixes'])}[/]")
+            console.print(f"  Est. Total Hours: [bold]{rd['estimated_total_hours']}[/]  Risk Reduction: [bold]{rd['overall_risk_reduction']:.0%}[/]")
+            if rd['quick_wins']:
+                console.print(f"\n  [bold bright_green]⚡ Quick Wins:[/]")
+                for w in rd['quick_wins']:
+                    console.print(f"    [bright_green]• {w.get('category', '')}[/]: {w.get('summary', '')}")
+            if rd['category_summary']:
+                console.print(f"\n  [bold]Category Summary:[/]")
+                for cat, info in rd['category_summary'].items():
+                    sev = info.get('max_severity', 'info')
+                    c = SEV_COLORS.get(sev, 'white')
+                    console.print(f"    [{c}]{sev.upper():8}[/{c}]  {cat}: {info.get('count', 0)} finding(s) — {info.get('summary', '')}")
+        console.print()
+        return
+
+    # ── LEARN ────────────────────────────────────────────────────
+    if cmd == "learn":
+        _banner(args)
+        from .learning_system import LearningSystem
+        ls = LearningSystem()
+        target = getattr(args, "target", None)
+        show_effectiveness = getattr(args, "effectiveness", False)
+        show_regressions = getattr(args, "regressions", False)
+
+        if show_effectiveness:
+            eff = ls.get_scan_effectiveness()
+            console.print(f"\n  [bold]Module Effectiveness[/]  [dim]({eff['total_scans']} total scans)[/]")
+            if eff['module_rankings']:
+                table = Table(border_style="dim", header_style="bold dim")
+                table.add_column("Module", style="cyan", width=18)
+                table.add_column("Runs", width=8)
+                table.add_column("Total Findings", width=16)
+                table.add_column("Avg Findings", width=14)
+                for m in eff['module_rankings']:
+                    table.add_row(m['module'], str(m['runs']), str(m['total_findings']), str(m['avg_findings']))
+                console.print(table)
+            else:
+                console.print("  [dim]No module data yet. Run some scans first.[/]")
+            console.print()
+            return
+
+        if show_regressions:
+            if not target:
+                console.print("  [yellow]Usage: reconpro learn <target> --regressions[/]")
+                sys.exit(1)
+            latest = get_latest()
+            if not latest:
+                console.print("  [yellow]No scan data. Run a scan first.[/]")
+                sys.exit(1)
+            findings = latest.get('findings', [])
+            regs = ls.detect_regressions(target, findings)
+            if not regs:
+                console.print(f"  [bright_green]No regressions detected for {target}.[/]")
+            else:
+                console.print(f"\n  [bold bright_red]Regressions detected for {target}: {len(regs)} new issue(s)[/]")
+                for r in regs:
+                    sev = r.get('severity', 'info')
+                    c = SEV_COLORS.get(sev, 'white')
+                    console.print(f"  [{c}]{sev.upper():8}[/{c}]  [bold]{r.get('category', '')}[/]: {r.get('title', '')}")
+            console.print()
+            return
+
+        # Default: show target history
+        if not target:
+            console.print("  [dim]Usage: reconpro learn <target>  or  reconpro learn --effectiveness[/]")
+            sys.exit(1)
+        history = ls.get_target_history(target)
+        if history['scan_count'] == 0:
+            console.print(f"  [dim]No scan history for {target}.[/]")
+        else:
+            console.print(f"\n  [bold]Scan History: [cyan]{target}[/][/]")
+            console.print(f"  Total Scans: [bold]{history['scan_count']}[/]")
+            console.print(f"  Latest Score: [bold]{history['latest_score']}[/]")
+            console.print(f"  Categories: [dim]{', '.join(history['latest_categories']) or 'none'}[/]")
+            console.print(f"  Modules Used: [cyan]{', '.join(history['modules_used']) or 'none'}[/]")
+            if history['all_scores']:
+                scores = history['all_scores']
+                console.print(f"  Score Trend: [bold]{scores[0]}[/] → [bold]{scores[-1]}[/]  ({len(scores)} data points)")
+        console.print()
+        return
+
+    # ── PLAN ─────────────────────────────────────────────────────
+    if cmd == "plan":
+        _banner(args)
+        from .decision_engine import DecisionEngine
+        target = args.target
+        if not target:
+            console.print("  [yellow]Usage: reconpro plan <target>[/]")
+            sys.exit(1)
+        available = list(ALL_MODULES.keys())
+        if getattr(args, "modules", None):
+            available = [m.strip().lower() for m in args.modules.split(",")]
+        engine = DecisionEngine()
+        # Try to load learning data for better decisions.
+        try:
+            from .learning_system import LearningSystem
+            ls = LearningSystem()
+            learning = ls.get_scan_effectiveness()
+            plan = _spinner_wrap(f"Planning scan for {target}...", engine.plan_scan, target, available, learning)
+        except Exception:
+            plan = _spinner_wrap(f"Planning scan for {target}...", engine.plan_scan, target, available)
+        pd = plan.to_dict()
+        console.print(f"\n  [bold]Scan Plan: [cyan]{pd['target']}[/]  [dim]({pd['target_type']})[/][/]")
+        console.print(f"  Estimated Time: [bold]{pd['estimated_time']}s[/]")
+        console.print(f"  Modules to Run: [bold]{len(pd['modules_to_run'])}[/]")
+        if pd['skip_reasons']:
+            console.print(f"  [yellow]Skipped Modules:[/]")
+            for mod, reason in pd['skip_reasons'].items():
+                console.print(f"    [dim]✗ {mod}: {reason}[/]")
+        console.print(f"\n  [bold]Execution Order:[/]")
+        for i, mod in enumerate(pd['order'], 1):
+            retries = pd['retry_modules'].get(mod, 0)
+            retry_str = f" [dim](retries: {retries})[/]" if retries else ""
+            console.print(f"    [cyan]{i:2}.[/] {mod}{retry_str}")
+        if pd['throttle_flags']:
+            console.print(f"\n  Throttle Flags: [yellow]{', '.join(pd['throttle_flags'])}[/]")
+        console.print()
+        return
+
+    # ── VALIDATE ────────────────────────────────────────────────
+    if cmd == "validate":
+        _banner(args)
+        from .auto_validation import AutoValidator
+        validator = AutoValidator()
+        do_syntax = getattr(args, "syntax", False)
+        do_imports = getattr(args, "imports", False)
+        do_security = getattr(args, "security", False)
+        do_tests = getattr(args, "tests", False)
+        # If no specific check requested, run all.
+        run_all = not (do_syntax or do_imports or do_security or do_tests)
+        if run_all:
+            report = _spinner_wrap("Running full validation...", validator.run_all)
+            for check in report.checks:
+                status = "[bright_green]PASS[/]" if check.passed else "[bright_red]FAIL[/]"
+                console.print(f"  {status}  {check.name} [dim]({check.duration_ms:.0f}ms)[/]")
+                for detail in check.details[:5]:
+                    console.print(f"         [dim]{detail[:100]}[/]")
+            overall = "[bright_green]ALL PASSED[/]" if report.passed else "[bright_red]SOME CHECKS FAILED[/]"
+            console.print(f"\n  [bold]{overall}[/]  [dim]({report.total_duration_ms:.0f}ms total)[/]")
+        else:
+            if do_syntax:
+                r = _spinner_wrap("Checking syntax...", validator.validate_syntax)
+                status = "[bright_green]PASS[/]" if r.passed else "[bright_red]FAIL[/]"
+                console.print(f"  {status}  Syntax [dim]({r.duration_ms:.0f}ms)[/]")
+                for d in r.details[:5]:
+                    console.print(f"         [dim]{d[:100]}[/]")
+            if do_imports:
+                r = _spinner_wrap("Checking imports...", validator.validate_imports)
+                status = "[bright_green]PASS[/]" if r.passed else "[bright_red]FAIL[/]"
+                console.print(f"  {status}  Imports [dim]({r.duration_ms:.0f}ms)[/]")
+                for d in r.details[:5]:
+                    console.print(f"         [dim]{d[:100]}[/]")
+            if do_security:
+                r = _spinner_wrap("Checking security...", validator.validate_security)
+                status = "[bright_green]PASS[/]" if r.passed else "[bright_red]FAIL[/]"
+                console.print(f"  {status}  Security [dim]({r.duration_ms:.0f}ms)[/]")
+                for d in r.details[:10]:
+                    console.print(f"         {d[:120]}")
+            if do_tests:
+                r = _spinner_wrap("Running tests...", validator.validate_tests)
+                status = "[bright_green]PASS[/]" if r.passed else "[bright_red]FAIL[/]"
+                console.print(f"  {status}  Tests [dim]({r.duration_ms:.0f}ms)[/]")
+                for d in r.details[-10:]:
+                    console.print(f"         [dim]{d[:120]}[/]")
+        console.print()
+        return
+
+    # ── PROMPT-CHECK ────────────────────────────────────────────
+    if cmd == "prompt-check":
+        from .prompt_defense import PromptDefense, ThreatLevel
+        text = args.text
+        if not text:
+            console.print("  [yellow]Usage: reconpro prompt-check <text>[/]")
+            sys.exit(1)
+        defense = PromptDefense(sensitivity="high")
+        result = defense.sanitize_input(text)
+        if result.is_safe:
+            console.print(f"  [bright_green]✓ SAFE[/]  No injection patterns detected.")
+        else:
+            tl = result.threat_level.value
+            color = SEV_COLORS.get(tl, "red")
+            console.print(f"  [{color}]⚠ THREAT DETECTED: {tl.upper()}[/{color}]")
+            console.print(f"  Matched Patterns ({len(result.matched_patterns)}):")
+            for p_name in result.matched_patterns:
+                console.print(f"    [red]• {p_name}[/]")
+            if result.cleaned != text:
+                console.print(f"\n  [dim]Cleaned text available (control chars stripped).[/]")
+        console.print()
+        return
+
+    # ── AUDIT-CODE ──────────────────────────────────────────────
+    if cmd == "audit-code":
+        _banner(args)
+        from .security_audit import SecurityAuditor
+        auditor = SecurityAuditor()
+        path = getattr(args, "path", ".")
+        min_severity = getattr(args, "severity", None)
+        report = _spinner_wrap(f"Auditing {path}...", auditor.audit_codebase, path)
+        if report.total_findings == 0:
+            console.print(f"\n  [bright_green]No security issues found. {report.files_scanned} file(s) scanned.[/]")
+        else:
+            sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+            min_val = sev_order.get(min_severity.lower(), 4) if min_severity else 4
+            filtered = [f for f in report.findings if sev_order.get(f.severity.value, 4) <= min_val]
+            if not filtered:
+                console.print(f"\n  [bright_green]No findings at or above '{min_severity}' severity. {report.files_scanned} file(s) scanned.[/]")
+            else:
+                console.print(f"\n  [bold]Security Audit: [cyan]{path}[/]  ({report.files_scanned} files)[/]")
+                for sev_name, count in report.severity_counts.items():
+                    c = SEV_COLORS.get(sev_name, 'white')
+                    console.print(f"  [{c}]{sev_name.upper():8}[/{c}]  {count}")
+                console.print()
+                for f in sorted(filtered, key=lambda x: sev_order.get(x.severity.value, 4))[:30]:
+                    c = SEV_COLORS.get(f.severity.value, 'white')
+                    console.print(f"  [{c}]{f.severity.value.upper():8}[/{c}]  [cyan]{f.file}[/]:{f.line}  {f.description}")
+                    if f.evidence:
+                        console.print(f"           [dim]{f.evidence[:100]}[/]")
+        console.print()
         return
 
     # ── ZAI (z.ai live stream) ──────────────────────────────────────
