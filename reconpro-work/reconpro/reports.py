@@ -742,10 +742,10 @@ def generate_html_report(data: Dict[str, Any], output_path: str = "") -> str:
 
     # Version
     try:
-        from . import __version__ as _v
+        from .constants import __version__ as _v
         version_str = _v
     except Exception:
-        version_str = "7.0.0"
+        version_str = "unknown"
 
     # Theme colors
     grade_color = _report_theme.grade_color(grade)

@@ -1,0 +1,1122 @@
+     1→"""ReconPro Age III — Repository Memory System.
+     2→
+     3→Persistent meta-knowledge store about scanned repositories and codebases.
+     4→
+     5→This module is COMPLEMENTARY to ``memory.py`` and ``knowledge_graph.py``:
+     6→  - ``memory.py``            → security scan findings, credentials, attack graphs
+     7→  - ``knowledge_graph.py``  → entity-relationship graphs of network assets
+     8→  - ``history.py``          → time-series of raw scan results
+     9→  - ``repository_memory.py``→ engineering decisions, ADR references,
+    10→                             performance baselines, architecture notes,
+    11→                             tech-stack observations, and other META-KNOWLEDGE
+    12→                             about the codebase itself.
+    13→
+    14→Persistence: JSON at RECONPRO_HOME/memory/repository_memory.json
+    15→
+    16→Zero external dependencies.  Pure Python.  Thread-safe.
+    17→"""
+    18→from __future__ import annotations
+    19→
+    20→import fnmatch
+    21→import json
+    22→import logging
+    23→import os
+    24→import threading
+    25→import time
+    26→from collections import defaultdict
+    27→from dataclasses import asdict, dataclass, field, is_dataclass
+    28→from datetime import datetime, timedelta, timezone
+    29→from pathlib import Path
+    30→from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
+    31→
+    32→from .constants import MEMORY_DIR, RECONPRO_HOME
+    33→
+    34→# ─── Logger ────────────────────────────────────────────────────────────
+    35→
+    36→logger = logging.getLogger("reconpro.repository_memory")
+    37→
+    38→# ─── Storage path ──────────────────────────────────────────────────────
+    39→
+    40→REPOSITORY_MEMORY_FILE: Path = MEMORY_DIR / "repository_memory.json"
+    41→
+    42→# ─── Default confidence for facts without an explicit value ────────────
+    43→
+    44→DEFAULT_CONFIDENCE: float = 0.8
+    45→
+    46→# ─── Expiration sentinel: None means never expires ─────────────────────
+    47→
+    48→_NEVER_EXPIRES: Optional[float] = None
+    49→
+    50→
+    51→# ======================================================================
+    52→#  EngineeringFact — the atomic unit of repository knowledge
+    53→# ======================================================================
+    54→
+    55→
+    56→@dataclass
+    57→class EngineeringFact:
+    58→    """A single piece of meta-knowledge about a repository.
+    59→
+    60→    Attributes:
+    61→        key:        Dot-path or slash-path identifier (e.g.
+    62→                    ``"arch/auth-decision"``, ``"perf/baseline/api-latency"``).
+    63→        value:      The stored value — any JSON-serialisable object.
+    64→        timestamp:  Unix epoch seconds when the fact was recorded.
+    65→        source:     Provenance tag (module name, agent id, "manual", etc.).
+    66→        tags:       Frozen set of classification tags for indexing.
+    67→        confidence: 0.0 – 1.0 certainty.  Facts below a query threshold are
+    68→                    excluded from results.
+    69→        expires:    Unix epoch seconds after which the fact is stale, or
+    70→                    ``None`` for permanent facts.
+    71→    """
+    72→
+    73→    key: str
+    74→    value: Any
+    75→    timestamp: float = field(default_factory=time.time)
+    76→    source: str = ""
+    77→    tags: FrozenSet[str] = field(default_factory=frozenset)
+    78→    confidence: float = DEFAULT_CONFIDENCE
+    79→    expires: Optional[float] = None
+    80→
+    81→    def is_expired(self, now: Optional[float] = None) -> bool:
+    82→        """Return ``True`` if this fact has passed its expiration."""
+    83→        if self.expires is None:
+    84→            return False
+    85→        check_time: float = now if now is not None else time.time()
+    86→        return check_time > self.expires
+    87→
+    88→    def to_dict(self) -> Dict[str, Any]:
+    89→        """Serialize to a JSON-safe dictionary."""
+    90→        d: Dict[str, Any] = {
+    91→            "key": self.key,
+    92→            "value": self.value,
+    93→            "timestamp": self.timestamp,
+    94→            "source": self.source,
+    95→            "tags": sorted(self.tags),
+    96→            "confidence": self.confidence,
+    97→            "expires": self.expires,
+    98→        }
+    99→        return d
+   100→
+   101→    @classmethod
+   102→    def from_dict(cls, data: Dict[str, Any]) -> EngineeringFact:
+   103→        """Deserialize from a dictionary (e.g. loaded from JSON)."""
+   104→        tags_raw = data.get("tags", [])
+   105→        if isinstance(tags_raw, (list, tuple, set)):
+   106→            tags = frozenset(str(t) for t in tags_raw)
+   107→        else:
+   108→            tags = frozenset()
+   109→        return cls(
+   110→            key=str(data["key"]),
+   111→            value=data["value"],
+   112→            timestamp=float(data.get("timestamp", time.time())),
+   113→            source=str(data.get("source", "")),
+   114→            tags=tags,
+   115→            confidence=float(data.get("confidence", DEFAULT_CONFIDENCE)),
+   116→            expires=data.get("expires"),  # keep None as-is
+   117→        )
+   118→
+   119→
+   120→# ======================================================================
+   121→#  MemoryIndex — fast multi-axes lookup
+   122→# ======================================================================
+   123→
+   124→
+   125→class MemoryIndex:
+   126→    """In-memory inverted index over :class:`EngineeringFact` entries.
+   127→
+   128→    Maintains three axes:
+   129→      * **tag index**  — fact keys by tag
+   130→      * **time index**  — fact keys by ISO-date bucket (``YYYY-MM-DD``)
+   131→      * **source index** — fact keys by source string
+   132→
+   133→    The index is rebuilt from the fact store on demand (lazy) or when
+   134→    :meth:`rebuild` is called explicitly.
+   135→    """
+   136→
+   137→    def __init__(self) -> None:
+   138→        self._tag_index: Dict[str, Set[str]] = defaultdict(set)
+   139→        self._time_index: Dict[str, Set[str]] = defaultdict(set)
+   140→        self._source_index: Dict[str, Set[str]] = defaultdict(set)
+   141→        self._key_set: Set[str] = set()
+   142→        self._dirty: bool = True
+   143→
+   144→    # ── Mutation ─────────────────────────────────────────────────────
+   145→
+   146→    def add(self, fact: EngineeringFact) -> None:
+   147→        """Register a single fact in all index axes."""
+   148→        self._key_set.add(fact.key)
+   149→        for tag in fact.tags:
+   150→            self._tag_index[tag].add(fact.key)
+   151→        date_bucket = self._date_bucket(fact.timestamp)
+   152→        self._time_index[date_bucket].add(fact.key)
+   153→        if fact.source:
+   154→            self._source_index[fact.source].add(fact.key)
+   155→
+   156→    def remove(self, fact: EngineeringFact) -> None:
+   157→        """Remove a single fact from all index axes."""
+   158→        self._key_set.discard(fact.key)
+   159→        for tag in fact.tags:
+   160→            bucket = self._tag_index.get(tag)
+   161→            if bucket is not None:
+   162→                bucket.discard(fact.key)
+   163→                if not bucket:
+   164→                    del self._tag_index[tag]
+   165→        date_bucket = self._date_bucket(fact.timestamp)
+   166→        bucket = self._time_index.get(date_bucket)
+   167→        if bucket is not None:
+   168→            bucket.discard(fact.key)
+   169→            if not bucket:
+   170→                del self._time_index[date_bucket]
+   171→        if fact.source:
+   172→            bucket = self._source_index.get(fact.source)
+   173→            if bucket is not None:
+   174→                bucket.discard(fact.key)
+   175→                if not bucket:
+   176→                    del self._source_index[fact.source]
+   177→
+   178→    def clear(self) -> None:
+   179→        """Wipe all index data."""
+   180→        self._tag_index.clear()
+   181→        self._time_index.clear()
+   182→        self._source_index.clear()
+   183→        self._key_set.clear()
+   184→        self._dirty = True
+   185→
+   186→    # ── Lookup ───────────────────────────────────────────────────────
+   187→
+   188→    def by_tag(self, tag: str) -> Set[str]:
+   189→        """Return fact keys indexed under *tag*."""
+   190→        return set(self._tag_index.get(tag, set()))
+   191→
+   192→    def by_tags(self, tags: Iterable[str]) -> Set[str]:
+   193→        """Return fact keys that have ALL of the given *tags* (intersection)."""
+   194→        tag_list = list(tags)
+   195→        if not tag_list:
+   196→            return set()
+   197→        result: Optional[Set[str]] = None
+   198→        for tag in tag_list:
+   199→            keys = self._tag_index.get(tag, set())
+   200→            if result is None:
+   201→                result = set(keys)
+   202→            else:
+   203→                result &= keys
+   204→            if not result:
+   205→                return set()
+   206→        return result or set()
+   207→
+   208→    def by_time_range(self, start: float, end: float) -> Set[str]:
+   209→        """Return fact keys whose timestamp falls in [start, end]."""
+   210→        start_bucket = self._date_bucket(start)
+   211→        end_bucket = self._date_bucket(end)
+   212→        result: Set[str] = set()
+   213→        for bucket, keys in self._time_index.items():
+   214→            if start_bucket <= bucket <= end_bucket:
+   215→                result |= keys
+   216→        return result
+   217→
+   218→    def by_source(self, source: str) -> Set[str]:
+   219→        """Return fact keys from a specific *source*."""
+   220→        return set(self._source_index.get(source, set()))
+   221→
+   222→    def all_keys(self) -> Set[str]:
+   223→        """Return every known fact key."""
+   224→        return set(self._key_set)
+   225→
+   226→    # ── Rebuild ──────────────────────────────────────────────────────
+   227→
+   228→    def rebuild(self, facts: Dict[str, EngineeringFact]) -> None:
+   229→        """Rebuild the entire index from a fact dictionary."""
+   230→        self.clear()
+   231→        for fact in facts.values():
+   232→            self.add(fact)
+   233→        self._dirty = False
+   234→
+   235→    @property
+   236→    def dirty(self) -> bool:
+   237→        """Whether the index is out of sync with the fact store."""
+   238→        return self._dirty
+   239→
+   240→    # ── Internals ────────────────────────────────────────────────────
+   241→
+   242→    @staticmethod
+   243→    def _date_bucket(timestamp: float) -> str:
+   244→        """Convert a unix timestamp to an ISO date string for bucketing."""
+   245→        try:
+   246→            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+   247→            return dt.strftime("%Y-%m-%d")
+   248→        except (OSError, ValueError, OverflowError):
+   249→            return "1970-01-01"
+   250→
+   251→
+   252→# ======================================================================
+   253→#  MemoryQuery — composable query builder
+   254→# ======================================================================
+   255→
+   256→
+   257→class MemoryQuery:
+   258→    """Fluent query builder for :class:`RepositoryMemory` searches.
+   259→
+   260→    Usage::
+   261→
+   262→        results = (
+   263→            MemoryQuery()
+   264→            .with_tags({"auth", "decision"})
+   265→            .with_confidence(min_conf=0.7)
+   266→            .with_time_range(start_ts, end_ts)
+   267→            .build()
+   268→        )
+   269→        facts = memory.search(query=results)
+   270→
+   271→    Queries support AND / OR / NOT combinatorics via the class methods.
+   272→    """
+   273→
+   274→    def __init__(self) -> None:
+   275→        # Positive filters (all must match — AND semantics)
+   276→        self._tags: Set[str] = set()
+   277→        self._sources: Set[str] = set()
+   278→        self._key_pattern: Optional[str] = None
+   279→        self._min_confidence: float = 0.0
+   280→        self._max_confidence: float = 1.0
+   281→        self._time_start: Optional[float] = None
+   282→        self._time_end: Optional[float] = None
+   283→        self._text_query: Optional[str] = None
+   284→        self._exclude_tags: Set[str] = set()
+   285→        self._exclude_sources: Set[str] = set()
+   286→        self._exclude_keys: Set[str] = set()
+   287→
+   288→    # ── Fluent setters (return self for chaining) ───────────────────
+   289→
+   290→    def with_tags(self, tags: Iterable[str]) -> MemoryQuery:
+   291→        """Require ALL of *tags* to be present on matching facts."""
+   292→        self._tags.update(tags)
+   293→        return self
+   294→
+   295→    def with_any_tag(self, tags: Iterable[str]) -> MemoryQuery:
+   296→        """Require at least ONE of *tags* to be present (OR within AND).
+   297→
+   298→        Stored internally as a special marker; evaluated at query time.
+   299→        """
+   300→        # We use a private attribute to signal "any-tag" mode.
+   301→        # If _any_tags is set, the regular _tags AND semantics still apply,
+   302→        # but the any-tags subset is OR-checked separately.
+   303→        if not hasattr(self, "_any_tags"):
+   304→            self._any_tags: Set[str] = set()
+   305→        self._any_tags.update(tags)
+   306→        return self
+   307→
+   308→    def with_sources(self, sources: Iterable[str]) -> MemoryQuery:
+   309→        """Restrict to facts from any of the given *sources*."""
+   310→        self._sources.update(sources)
+   311→        return self
+   312→
+   313→    def with_key_pattern(self, pattern: str) -> MemoryQuery:
+   314→        """Shell-glob pattern matched against fact keys (fnmatch)."""
+   315→        self._key_pattern = pattern
+   316→        return self
+   317→
+   318→    def with_confidence(
+   319→        self,
+   320→        min_conf: float = 0.0,
+   321→        max_conf: float = 1.0,
+   322→    ) -> MemoryQuery:
+   323→        """Filter by confidence range [min_conf, max_conf]."""
+   324→        self._min_confidence = max(0.0, min(1.0, min_conf))
+   325→        self._max_confidence = max(0.0, min(1.0, max_conf))
+   326→        return self
+   327→
+   328→    def with_time_range(
+   329→        self, start: Optional[float] = None, end: Optional[float] = None
+   330→    ) -> MemoryQuery:
+   331→        """Restrict to facts recorded between *start* and *end* (unix epoch).
+   332→
+   333→        Either bound may be ``None`` to leave it open.
+   334→        """
+   335→        self._time_start = start
+   336→        self._time_end = end
+   337→        return self
+   338→
+   339→    def with_text(self, query_text: str) -> MemoryQuery:
+   340→        """Full-text search substring (case-insensitive) across values.
+   341→
+   342→        The text is matched against the JSON-serialised representation of
+   343→        each fact's ``value`` field.
+   344→        """
+   345→        self._text_query = query_text
+   346→        return self
+   347→
+   348→    def without_tags(self, tags: Iterable[str]) -> MemoryQuery:
+   349→        """Exclude facts that have ANY of the given *tags* (NOT)."""
+   350→        self._exclude_tags.update(tags)
+   351→        return self
+   352→
+   353→    def without_sources(self, sources: Iterable[str]) -> MemoryQuery:
+   354→        """Exclude facts from any of the given *sources* (NOT)."""
+   355→        self._exclude_sources.update(sources)
+   356→        return self
+   357→
+   358→    def without_keys(self, keys: Iterable[str]) -> MemoryQuery:
+   359→        """Exclude facts with any of the given exact *keys*."""
+   360→        self._exclude_keys.update(keys)
+   361→        return self
+   362→
+   363→    # ── Combinators ──────────────────────────────────────────────────
+   364→
+   365→    @classmethod
+   366→    def and_(cls, *queries: MemoryQuery) -> MemoryQuery:
+   367→        """Create a new query that ANDs the constraints of all *queries*.
+   368→
+   369→        Tags and sources from all queries are unioned (since each query's
+   370→        own filters are already AND within themselves).  The tightest
+   371→        confidence/time bounds win.
+   372→        """
+   373→        combined = cls()
+   374→        for q in queries:
+   375→            combined._tags |= q._tags
+   376→            combined._sources |= q._sources
+   377→            combined._exclude_tags |= q._exclude_tags
+   378→            combined._exclude_sources |= q._exclude_sources
+   379→            combined._exclude_keys |= q._exclude_keys
+   380→            combined._min_confidence = max(combined._min_confidence, q._min_confidence)
+   381→            combined._max_confidence = min(combined._max_confidence, q._max_confidence)
+   382→            if q._time_start is not None:
+   383→                if combined._time_start is None or q._time_start > combined._time_start:
+   384→                    combined._time_start = q._time_start
+   385→            if q._time_end is not None:
+   386→                if combined._time_end is None or q._time_end < combined._time_end:
+   387→                    combined._time_end = q._time_end
+   388→            if q._key_pattern and not combined._key_pattern:
+   389→                combined._key_pattern = q._key_pattern
+   390→            if q._text_query and not combined._text_query:
+   391→                combined._text_query = q._text_query
+   392→            # any_tags
+   393→            if hasattr(q, "_any_tags") and q._any_tags:
+   394→                if not hasattr(combined, "_any_tags"):
+   395→                    combined._any_tags = set()
+   396→                combined._any_tags |= q._any_tags
+   397→        return combined
+   398→
+   399→    @classmethod
+   400→    def or_(cls, *queries: MemoryQuery) -> MemoryQuery:
+   401→        """Create a new query whose filters are the LOOSEST of all *queries*.
+   402→
+   403→        This is useful for building an OR-style search: the caller runs
+   404→        each sub-query independently and unions the results.  This helper
+   405→        returns a query with relaxed constraints so that a single pass
+   406→        captures the superset.
+   407→        """
+   408→        combined = cls()
+   409→        for q in queries:
+   410→            # For OR, we keep the loosest bounds
+   411→            combined._min_confidence = min(combined._min_confidence, q._min_confidence)
+   412→            combined._max_confidence = max(combined._max_confidence, q._max_confidence)
+   413→            if q._time_start is not None:
+   414→                if combined._time_start is None or q._time_start < combined._time_start:
+   415→                    combined._time_start = q._time_start
+   416→            if q._time_end is not None:
+   417→                if combined._time_end is None or q._time_end > combined._time_end:
+   418→                    combined._time_end = q._time_end
+   419→        # OR semantics: collect all include-tags as any_tags
+   420→        for q in queries:
+   421→            if q._tags:
+   422→                if not hasattr(combined, "_any_tags"):
+   423→                    combined._any_tags = set()
+   424→                combined._any_tags |= q._tags
+   425→        # OR semantics: collect all exclude-tags as intersection (keep only
+   426→        # those excluded by ALL sub-queries)
+   427→        if queries:
+   428→            first_exclude = queries[0]._exclude_tags
+   429→            for q in queries[1:]:
+   430→                first_exclude = first_exclude & q._exclude_tags
+   431→            combined._exclude_tags = first_exclude
+   432→        return combined
+   433→
+   434→    @classmethod
+   435→    def not_(cls, query: MemoryQuery) -> MemoryQuery:
+   436→        """Invert a query: its positive tag/source constraints become exclusions.
+   437→
+   438→        Confidence and time ranges are left open (``0.0–1.0`` and
+   439→        ``None–None``) since inverting them would be semantically
+   440→        ambiguous.
+   441→        """
+   442→        inverted = cls()
+   443→        inverted._exclude_tags = query._tags.copy()
+   444→        inverted._exclude_sources = query._sources.copy()
+   445→        if query._key_pattern:
+   446→            inverted._key_pattern = None  # can't negate a glob
+   447→        return inverted
+   448→
+   449→    # ── Serialisation ────────────────────────────────────────────────
+   450→
+   451→    def to_dict(self) -> Dict[str, Any]:
+   452→        """Serialise the query to a JSON-safe dictionary."""
+   453→        d: Dict[str, Any] = {
+   454→            "tags": sorted(self._tags),
+   455→            "sources": sorted(self._sources),
+   456→            "key_pattern": self._key_pattern,
+   457→            "min_confidence": self._min_confidence,
+   458→            "max_confidence": self._max_confidence,
+   459→            "time_start": self._time_start,
+   460→            "time_end": self._time_end,
+   461→            "text_query": self._text_query,
+   462→            "exclude_tags": sorted(self._exclude_tags),
+   463→            "exclude_sources": sorted(self._exclude_sources),
+   464→            "exclude_keys": sorted(self._exclude_keys),
+   465→        }
+   466→        if hasattr(self, "_any_tags"):
+   467→            d["any_tags"] = sorted(self._any_tags)
+   468→        return d
+   469→
+   470→    # ── Matching ─────────────────────────────────────────────────────
+   471→
+   472→    def matches(self, fact: EngineeringFact) -> bool:
+   473→        """Return ``True`` if *fact* satisfies all query constraints."""
+   474→        # Tag AND filter
+   475→        if self._tags and not self._tags.issubset(fact.tags):
+   476→            return False
+   477→
+   478→        # Any-tag OR filter
+   479→        if hasattr(self, "_any_tags") and self._any_tags:
+   480→            if not self._any_tags & fact.tags:
+   481→                return False
+   482→
+   483→        # Source filter
+   484→        if self._sources and fact.source not in self._sources:
+   485→            return False
+   486→
+   487→        # Key pattern
+   488→        if self._key_pattern is not None:
+   489→            if not fnmatch.fnmatch(fact.key, self._key_pattern):
+   490→                return False
+   491→
+   492→        # Confidence range
+   493→        if not (self._min_confidence <= fact.confidence <= self._max_confidence):
+   494→            return False
+   495→
+   496→        # Time range
+   497→        if self._time_start is not None and fact.timestamp < self._time_start:
+   498→            return False
+   499→        if self._time_end is not None and fact.timestamp > self._time_end:
+   500→            return False
+   501→
+   502→        # Text query
+   503→        if self._text_query is not None:
+   504→            text_blob = json.dumps(fact.value, default=str).lower()
+   505→            if self._text_query.lower() not in text_blob:
+   506→                return False
+   507→
+   508→        # Exclusion filters (NOT)
+   509→        if self._exclude_tags and self._exclude_tags & fact.tags:
+   510→            return False
+   511→        if self._exclude_sources and fact.source in self._exclude_sources:
+   512→            return False
+   513→        if self._exclude_keys and fact.key in self._exclude_keys:
+   514→            return False
+   515→
+   516→        return True
+   517→
+   518→    def __repr__(self) -> str:
+   519→        parts: List[str] = []
+   520→        if self._tags:
+   521→            parts.append(f"tags={sorted(self._tags)!r}")
+   522→        if hasattr(self, "_any_tags") and self._any_tags:
+   523→            parts.append(f"any_tags={sorted(self._any_tags)!r}")
+   524→        if self._sources:
+   525→            parts.append(f"sources={sorted(self._sources)!r}")
+   526→        if self._key_pattern:
+   527→            parts.append(f"key_pattern={self._key_pattern!r}")
+   528→        if self._min_confidence > 0.0 or self._max_confidence < 1.0:
+   529→            parts.append(
+   530→                f"conf=[{self._min_confidence}, {self._max_confidence}]"
+   531→            )
+   532→        if self._time_start is not None or self._time_end is not None:
+   533→            parts.append(f"time=[{self._time_start}, {self._time_end}]")
+   534→        if self._text_query:
+   535→            parts.append(f"text={self._text_query!r}")
+   536→        if self._exclude_tags:
+   537→            parts.append(f"exclude_tags={sorted(self._exclude_tags)!r}")
+   538→        return f"MemoryQuery({', '.join(parts)})"
+   539→
+   540→
+   541→# ======================================================================
+   542→#  Snapshot — point-in-time capture
+   543→# ======================================================================
+   544→
+   545→
+   546→@dataclass
+   547→class MemorySnapshot:
+   548→    """An immutable point-in-time capture of repository memory.
+   549→
+   550→    Snapshots are plain dictionaries keyed by fact key, with values being
+   551→    the serialised :class:`EngineeringFact` dicts.  They can be compared
+   552→    with :meth:`RepositoryMemory.diff_snapshots`.
+   553→    """
+   554→
+   555→    id: str
+   556→    created_at: float
+   557→    facts: Dict[str, Dict[str, Any]]
+   558→    fact_count: int
+   559→    total_bytes: int
+   560→
+   561→
+   562→def _size_of_dict(d: Dict[str, Any]) -> int:
+   563→    """Approximate byte-size of a dict when JSON-serialised."""
+   564→    return len(json.dumps(d, default=str, separators=(",", ":")))
+   565→
+   566→
+   567→# ======================================================================
+   568→#  RepositoryMemory — the main entry point
+   569→# ======================================================================
+   570→
+   571→
+   572→class RepositoryMemory:
+   573→    """Persistent repository meta-knowledge store.
+   574→
+   575→    Stores engineering facts about scanned repositories and codebases:
+   576→    Architecture Decision Records, performance baselines, tech-stack
+   577→    observations, infrastructure notes, and similar meta-knowledge.
+   578→
+   579→    This is COMPLEMENTARY to ``memory.UnifiedMemoryStore`` which stores
+   580→    security scan data.  Repository memory stores knowledge ABOUT the
+   581→    target codebase itself.
+   582→
+   583→    Thread-safe via a reentrant lock.
+   584→    """
+   585→
+   586→    def __init__(self, persist_path: Optional[Path] = None) -> None:
+   587→        self._path: Path = persist_path or REPOSITORY_MEMORY_FILE
+   588→        self._lock = threading.RLock()
+   589→        self._facts: Dict[str, EngineeringFact] = {}
+   590→        self._index = MemoryIndex()
+   591→        self._loaded: bool = False
+   592→
+   593→    # ── Persistence ──────────────────────────────────────────────────
+   594→
+   595→    def _ensure_dir(self) -> None:
+   596→        """Create the parent directory if it doesn't exist."""
+   597→        try:
+   598→            self._path.parent.mkdir(parents=True, exist_ok=True)
+   599→        except OSError as exc:
+   600→            logger.error("Cannot create directory %s: %s", self._path.parent, exc)
+   601→            raise
+   602→
+   603→    def load(self) -> None:
+   604→        """Load facts from disk.  Idempotent — safe to call multiple times.
+   605→
+   606→        If the file doesn't exist, starts with an empty store.
+   607→        """
+   608→        with self._lock:
+   609→            if self._loaded:
+   610→                return
+   611→            self._ensure_dir()
+   612→            if not self._path.exists():
+   613→                logger.debug("No repository memory file at %s — starting fresh.", self._path)
+   614→                self._loaded = True
+   615→                return
+   616→            try:
+   617→                raw = self._path.read_text(encoding="utf-8")
+   618→                data = json.loads(raw) if raw.strip() else {}
+   619→            except (json.JSONDecodeError, OSError) as exc:
+   620→                logger.warning(
+   621→                    "Corrupt repository memory file %s: %s — starting fresh.",
+   622→                    self._path, exc,
+   623→                )
+   624→                data = {}
+   625→
+   626→            count = 0
+   627→            for key, fact_dict in data.items():
+   628→                if not isinstance(fact_dict, dict) or "key" not in fact_dict:
+   629→                    logger.debug("Skipping invalid fact entry: %s", key)
+   630→                    continue
+   631→                try:
+   632→                    fact = EngineeringFact.from_dict(fact_dict)
+   633→                    if fact.is_expired():
+   634→                        logger.debug("Skipping expired fact: %s", fact.key)
+   635→                        continue
+   636→                    self._facts[fact.key] = fact
+   637→                    count += 1
+   638→                except (KeyError, TypeError, ValueError) as exc:
+   639→                    logger.debug("Skipping malformed fact %s: %s", key, exc)
+   640→
+   641→            self._index.rebuild(self._facts)
+   642→            self._loaded = True
+   643→            logger.info(
+   644→                "Loaded %d repository facts from %s", count, self._path
+   645→            )
+   646→
+   647→    def save(self) -> None:
+   648→        """Flush all in-memory facts to disk.
+   649→
+   650→        Expired facts are pruned before writing.
+   651→        """
+   652→        with self._lock:
+   653→            self._ensure_dir()
+   654→            self._prune_expired()
+   655→            data: Dict[str, Dict[str, Any]] = {}
+   656→            for key, fact in self._facts.items():
+   657→                data[key] = fact.to_dict()
+   658→            try:
+   659→                tmp_path = self._path.with_suffix(".tmp")
+   660→                tmp_path.write_text(
+   661→                    json.dumps(data, indent=2, default=str, ensure_ascii=False),
+   662→                    encoding="utf-8",
+   663→                )
+   664→                # Atomic rename
+   665→                tmp_path.replace(self._path)
+   666→                logger.debug(
+   667→                    "Saved %d repository facts to %s", len(data), self._path
+   668→                )
+   669→            except OSError as exc:
+   670→                logger.error("Failed to save repository memory: %s", exc)
+   671→                raise
+   672→
+   673→    def _ensure_loaded(self) -> None:
+   674→        """Lazy-load if not already loaded."""
+   675→        if not self._loaded:
+   676→            self.load()
+   677→
+   678→    def _prune_expired(self) -> int:
+   679→        """Remove expired facts.  Returns count of pruned entries."""
+   680→        now = time.time()
+   681→        expired_keys = [
+   682→            k for k, f in self._facts.items() if f.is_expired(now)
+   683→        ]
+   684→        for key in expired_keys:
+   685→            self._index.remove(self._facts[key])
+   686→            del self._facts[key]
+   687→        if expired_keys:
+   688→            logger.debug("Pruned %d expired facts.", len(expired_keys))
+   689→        return len(expired_keys)
+   690→
+   691→    # ── Core CRUD ────────────────────────────────────────────────────
+   692→
+   693→    def remember(
+   694→        self,
+   695→        key: str,
+   696→        value: Any,
+   697→        metadata: Optional[Dict[str, Any]] = None,
+   698→    ) -> EngineeringFact:
+   699→        """Store a fact about the repository.
+   700→
+   701→        Args:
+   702→            key:      Unique identifier (dot/slash path recommended).
+   703→            value:    Any JSON-serialisable value.
+   704→            metadata: Optional dict with keys:
+   705→                      ``source`` (str), ``tags`` (list[str]),
+   706→                      ``confidence`` (float 0–1),
+   707→                      ``expires`` (float unix timestamp or None),
+   708→                      ``timestamp`` (float unix timestamp).
+   709→
+   710→        Returns:
+   711→            The created :class:`EngineeringFact`.
+   712→        """
+   713→        with self._lock:
+   714→            self._ensure_loaded()
+   715→            meta = metadata or {}
+   716→
+   717→            # If the key already exists, remove old index entries
+   718→            if key in self._facts:
+   719→                self._index.remove(self._facts[key])
+   720→
+   721→            tags_raw = meta.get("tags", [])
+   722→            if isinstance(tags_raw, str):
+   723→                tags_raw = [tags_raw]
+   724→            tags = frozenset(str(t) for t in tags_raw)
+   725→
+   726→            fact = EngineeringFact(
+   727→                key=key,
+   728→                value=value,
+   729→                timestamp=float(meta.get("timestamp", time.time())),
+   730→                source=str(meta.get("source", "")),
+   731→                tags=tags,
+   732→                confidence=float(meta.get("confidence", DEFAULT_CONFIDENCE)),
+   733→                expires=meta.get("expires"),
+   734→            )
+   735→
+   736→            self._facts[key] = fact
+   737→            self._index.add(fact)
+   738→            logger.debug("Remembered fact: %s", key)
+   739→            return fact
+   740→
+   741→    def recall(self, key: str) -> Optional[EngineeringFact]:
+   742→        """Retrieve a single fact by exact key.
+   743→
+   744→        Returns ``None`` if the key doesn't exist or the fact is expired.
+   745→        """
+   746→        with self._lock:
+   747→            self._ensure_loaded()
+   748→            fact = self._facts.get(key)
+   749→            if fact is None:
+   750→                return None
+   751→            if fact.is_expired():
+   752→                self._index.remove(fact)
+   753→                del self._facts[key]
+   754→                return None
+   755→            return fact
+   756→
+   757→    def recall_pattern(self, pattern_glob: str) -> List[EngineeringFact]:
+   758→        """Find facts whose keys match a shell glob *pattern_glob*.
+   759→
+   760→        Uses ``fnmatch`` for matching.  Returns facts sorted by key.
+   761→        Expired facts are excluded.
+   762→        """
+   763→        with self._lock:
+   764→            self._ensure_loaded()
+   765→            now = time.time()
+   766→            results: List[EngineeringFact] = []
+   767→            for key, fact in self._facts.items():
+   768→                if fnmatch.fnmatch(key, pattern_glob) and not fact.is_expired(now):
+   769→                    results.append(fact)
+   770→            results.sort(key=lambda f: f.key)
+   771→            return results
+   772→
+   773→    def forget(self, key: str) -> bool:
+   774→        """Remove a fact by exact key.
+   775→
+   776→        Returns ``True`` if the fact existed and was removed,
+   777→        ``False`` if it wasn't found.
+   778→        """
+   779→        with self._lock:
+   780→            self._ensure_loaded()
+   781→            fact = self._facts.pop(key, None)
+   782→            if fact is None:
+   783→                return False
+   784→            self._index.remove(fact)
+   785→            logger.debug("Forgot fact: %s", key)
+   786→            return True
+   787→
+   788→    # ── Search ───────────────────────────────────────────────────────
+   789→
+   790→    def search(
+   791→        self,
+   792→        query_text: Optional[str] = None,
+   793→        query: Optional[MemoryQuery] = None,
+   794→        limit: int = 100,
+   795→    ) -> List[EngineeringFact]:
+   796→        """Search facts.
+   797→
+   798→        Args:
+   799→            query_text: Free-text substring searched across fact keys and
+   800→                        JSON-serialised values (case-insensitive).  Used when
+   801→                        *query* is ``None``.
+   802→            query:      A :class:`MemoryQuery` object for structured search.
+   803→            limit:      Maximum results to return.
+   804→
+   805→        Returns:
+   806→            Matching facts sorted by confidence descending, then timestamp
+   807→            descending (most recent first).
+   808→        """
+   809→        with self._lock:
+   810→            self._ensure_loaded()
+   811→            now = time.time()
+   812→
+   813→            # Build a MemoryQuery from query_text if no query object given
+   814→            if query is None and query_text is not None:
+   815→                query = MemoryQuery().with_text(query_text)
+   816→
+   817→            if query is None:
+   818→                # No filters — return all non-expired facts
+   819→                results = [
+   820→                    f for f in self._facts.values() if not f.is_expired(now)
+   821→                ]
+   822→            else:
+   823→                results = [
+   824→                    f
+   825→                    for f in self._facts.values()
+   826→                    if not f.is_expired(now) and query.matches(f)
+   827→                ]
+   828→
+   829→            # Sort: confidence desc, then timestamp desc
+   830→            results.sort(key=lambda f: (f.confidence, f.timestamp), reverse=True)
+   831→            return results[:limit]
+   832→
+   833→    # ── Snapshots ────────────────────────────────────────────────────
+   834→
+   835→    def snapshot(self, label: str = "") -> MemorySnapshot:
+   836→        """Create a point-in-time snapshot of all current (non-expired) facts.
+   837→
+   838→        Args:
+   839→            label: Optional human-readable label stored in the snapshot id.
+   840→
+   841→        Returns:
+   842→            A :class:`MemorySnapshot` containing copies of all facts.
+   843→        """
+   844→        with self._lock:
+   845→            self._ensure_loaded()
+   846→            now = time.time()
+   847→            facts_copy: Dict[str, Dict[str, Any]] = {}
+   848→            for key, fact in self._facts.items():
+   849→                if not fact.is_expired(now):
+   850→                    facts_copy[key] = fact.to_dict()
+   851→
+   852→            snap_id = f"snap_{int(now * 1000)}"
+   853→            if label:
+   854→                snap_id = f"{snap_id}_{label}"
+   855→
+   856→            total_bytes = _size_of_dict(facts_copy)
+   857→            return MemorySnapshot(
+   858→                id=snap_id,
+   859→                created_at=now,
+   860→                facts=facts_copy,
+   861→                fact_count=len(facts_copy),
+   862→                total_bytes=total_bytes,
+   863→            )
+   864→
+   865→    @staticmethod
+   866→    def diff_snapshots(
+   867→        snap_a: MemorySnapshot, snap_b: MemorySnapshot,
+   868→    ) -> Dict[str, Any]:
+   869→        """Compare two snapshots and return a structured diff.
+   870→
+   871→        Args:
+   872→            snap_a: The earlier snapshot.
+   873→            snap_b: The later snapshot.
+   874→
+   875→        Returns:
+   876→            A dict with keys:
+   877→              ``added``    — keys present in B but not A
+   878→              ``removed``  — keys present in A but not B
+   879→              ``modified`` — keys present in both but with different values
+   880→              ``unchanged``— keys present in both with identical values
+   881→              ``stats``    — summary counts
+   882→        """
+   883→        keys_a = set(snap_a.facts.keys())
+   884→        keys_b = set(snap_b.facts.keys())
+   885→
+   886→        added = sorted(keys_b - keys_a)
+   887→        removed = sorted(keys_a - keys_b)
+   888→        common = keys_a & keys_b
+   889→
+   890→        modified: List[str] = []
+   891→        unchanged: List[str] = []
+   892→        for key in sorted(common):
+   893→            val_a = json.dumps(
+   894→                snap_a.facts[key]["value"], sort_keys=True, default=str
+   895→            )
+   896→            val_b = json.dumps(
+   897→                snap_b.facts[key]["value"], sort_keys=True, default=str
+   898→            )
+   899→            if val_a != val_b:
+   900→                modified.append(key)
+   901→            else:
+   902→                unchanged.append(key)
+   903→
+   904→        return {
+   905→            "snapshot_a": {
+   906→                "id": snap_a.id,
+   907→                "created_at": snap_a.created_at,
+   908→                "fact_count": snap_a.fact_count,
+   909→            },
+   910→            "snapshot_b": {
+   911→                "id": snap_b.id,
+   912→                "created_at": snap_b.created_at,
+   913→                "fact_count": snap_b.fact_count,
+   914→            },
+   915→            "added": added,
+   916→            "removed": removed,
+   917→            "modified": modified,
+   918→            "unchanged": unchanged,
+   919→            "stats": {
+   920→                "added_count": len(added),
+   921→                "removed_count": len(removed),
+   922→                "modified_count": len(modified),
+   923→                "unchanged_count": len(unchanged),
+   924→                "net_change": len(added) - len(removed),
+   925→            },
+   926→        }
+   927→
+   928→    # ── Statistics ───────────────────────────────────────────────────
+   929→
+   930→    def get_stats(self) -> Dict[str, Any]:
+   931→        """Return summary statistics about the memory store.
+   932→
+   933→        Includes:
+   934→          - ``total_facts`` — count of non-expired facts
+   935→          - ``expired_facts`` — count of expired (but not yet pruned) facts
+   936→          - ``total_bytes`` — approximate JSON size of all facts
+   937→          - ``tag_distribution`` — tag → count mapping
+   938→          - ``source_distribution`` — source → count mapping
+   939→          - ``age_distribution`` — bucketed age ranges (in seconds)
+   940→          - ``confidence_stats`` — min, max, average confidence
+   941→          - ``oldest_fact`` — timestamp of the oldest fact
+   942→          - ``newest_fact`` — timestamp of the newest fact
+   943→        """
+   944→        with self._lock:
+   945→            self._ensure_loaded()
+   946→            now = time.time()
+   947→
+   948→            active_facts: List[EngineeringFact] = []
+   949→            expired_count = 0
+   950→            tag_dist: Dict[str, int] = defaultdict(int)
+   951→            source_dist: Dict[str, int] = defaultdict(int)
+   952→
+   953→            for fact in self._facts.values():
+   954→                if fact.is_expired(now):
+   955→                    expired_count += 1
+   956→                    continue
+   957→                active_facts.append(fact)
+   958→                for tag in fact.tags:
+   959→                    tag_dist[tag] += 1
+   960→                if fact.source:
+   961→                    source_dist[fact.source] += 1
+   962→
+   963→            # Age distribution buckets (seconds)
+   964→            age_buckets: Dict[str, int] = {
+   965→                "<1h": 0,
+   966→                "1h-24h": 0,
+   967→                "1d-7d": 0,
+   968→                "7d-30d": 0,
+   969→                ">30d": 0,
+   970→            }
+   971→            for fact in active_facts:
+   972→                age = now - fact.timestamp
+   973→                if age < 3600:
+   974→                    age_buckets["<1h"] += 1
+   975→                elif age < 86400:
+   976→                    age_buckets["1h-24h"] += 1
+   977→                elif age < 604800:
+   978→                    age_buckets["1d-7d"] += 1
+   979→                elif age < 2592000:
+   980→                    age_buckets["7d-30d"] += 1
+   981→                else:
+   982→                    age_buckets[">30d"] += 1
+   983→
+   984→            # Confidence stats
+   985→            if active_facts:
+   986→                confs = [f.confidence for f in active_facts]
+   987→                conf_min = min(confs)
+   988→                conf_max = max(confs)
+   989→                conf_avg = sum(confs) / len(confs)
+   990→            else:
+   991→                conf_min = 0.0
+   992→                conf_max = 0.0
+   993→                conf_avg = 0.0
+   994→
+   995→            # Oldest / newest
+   996→            oldest: Optional[float] = None
+   997→            newest: Optional[float] = None
+   998→            for fact in active_facts:
+   999→                if oldest is None or fact.timestamp < oldest:
+  1000→                    oldest = fact.timestamp
+  1001→                if newest is None or fact.timestamp > newest:
+  1002→                    newest = fact.timestamp
+  1003→
+  1004→            # Total bytes
+  1005→            all_data = {k: f.to_dict() for k, f in self._facts.items()}
+  1006→            total_bytes = _size_of_dict(all_data)
+  1007→
+  1008→            return {
+  1009→                "total_facts": len(active_facts),
+  1010→                "expired_facts": expired_count,
+  1011→                "total_bytes": total_bytes,
+  1012→                "tag_distribution": dict(sorted(tag_dist.items())),
+  1013→                "source_distribution": dict(sorted(source_dist.items())),
+  1014→                "age_distribution": age_buckets,
+  1015→                "confidence_stats": {
+  1016→                    "min": round(conf_min, 3),
+  1017→                    "max": round(conf_max, 3),
+  1018→                    "avg": round(conf_avg, 3),
+  1019→                },
+  1020→                "oldest_fact": oldest,
+  1021→                "newest_fact": newest,
+  1022→            }
+  1023→
+  1024→    # ── Bulk operations ──────────────────────────────────────────────
+  1025→
+  1026→    def recall_by_tag(self, tag: str) -> List[EngineeringFact]:
+  1027→        """Retrieve all facts tagged with *tag*.
+  1028→
+  1029→        Uses the index for O(1) tag lookup rather than scanning all facts.
+  1030→        """
+  1031→        with self._lock:
+  1032→            self._ensure_loaded()
+  1033→            now = time.time()
+  1034→            keys = self._index.by_tag(tag)
+  1035→            results = [
+  1036→                self._facts[k]
+  1037→                for k in keys
+  1038→                if k in self._facts and not self._facts[k].is_expired(now)
+  1039→            ]
+  1040→            results.sort(key=lambda f: f.timestamp, reverse=True)
+  1041→            return results
+  1042→
+  1043→    def recall_by_source(self, source: str) -> List[EngineeringFact]:
+  1044→        """Retrieve all facts from a specific *source*.
+  1045→
+  1046→        Uses the index for fast source-based lookup.
+  1047→        """
+  1048→        with self._lock:
+  1049→            self._ensure_loaded()
+  1050→            now = time.time()
+  1051→            keys = self._index.by_source(source)
+  1052→            results = [
+  1053→                self._facts[k]
+  1054→                for k in keys
+  1055→                if k in self._facts and not self._facts[k].is_expired(now)
+  1056→            ]
+  1057→            results.sort(key=lambda f: f.timestamp, reverse=True)
+  1058→            return results
+  1059→
+  1060→    def recall_by_time_range(
+  1061→        self, start: float, end: float
+  1062→    ) -> List[EngineeringFact]:
+  1063→        """Retrieve all facts recorded between *start* and *end* (unix epoch).
+  1064→        """
+  1065→        with self._lock:
+  1066→            self._ensure_loaded()
+  1067→            now = time.time()
+  1068→            keys = self._index.by_time_range(start, end)
+  1069→            results = [
+  1070→                self._facts[k]
+  1071→                for k in keys
+  1072→                if k in self._facts
+  1073→                and not self._facts[k].is_expired(now)
+  1074→                and start <= self._facts[k].timestamp <= end
+  1075→            ]
+  1076→            results.sort(key=lambda f: f.timestamp, reverse=True)
+  1077→            return results
+  1078→
+  1079→    def clear(self) -> int:
+  1080→        """Remove all facts.  Returns the count of removed entries.
+  1081→
+  1082→        Does NOT affect the on-disk file until :meth:`save` is called.
+  1083→        """
+  1084→        with self._lock:
+  1085→            self._ensure_loaded()
+  1086→            count = len(self._facts)
+  1087→            self._facts.clear()
+  1088→            self._index.clear()
+  1089→            logger.info("Cleared %d repository facts.", count)
+  1090→            return count
+  1091→
+  1092→    def all_keys(self) -> List[str]:
+  1093→        """Return all non-expired fact keys, sorted."""
+  1094→        with self._lock:
+  1095→            self._ensure_loaded()
+  1096→            now = time.time()
+  1097→            return sorted(
+  1098→                k for k, f in self._facts.items() if not f.is_expired(now)
+  1099→            )
+  1100→
+  1101→    def count(self) -> int:
+  1102→        """Return count of non-expired facts."""
+  1103→        with self._lock:
+  1104→            self._ensure_loaded()
+  1105→            now = time.time()
+  1106→            return sum(1 for f in self._facts.values() if not f.is_expired(now))
+  1107→
+  1108→    def __len__(self) -> int:
+  1109→        return self.count()
+  1110→
+  1111→    def __contains__(self, key: str) -> bool:
+  1112→        with self._lock:
+  1113→            self._ensure_loaded()
+  1114→            fact = self._facts.get(key)
+  1115→            if fact is None:
+  1116→                return False
+  1117→            if fact.is_expired():
+  1118→                self._index.remove(fact)
+  1119→                del self._facts[key]
+  1120→                return False
+  1121→            return True
+  1122→

@@ -11,6 +11,8 @@ Zero external dependencies — stdlib only.
 
 from __future__ import annotations
 
+from .constants import __version__
+
 import hashlib
 import ipaddress
 import json
@@ -32,7 +34,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 # Constants & APT Group Database
 # ---------------------------------------------------------------------------
 
-__version__ = "9.2.0"
 __module_name__ = "attribution"
 
 MITRE_TACTICS = {

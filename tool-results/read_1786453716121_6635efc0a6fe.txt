@@ -1,0 +1,1740 @@
+     1→"""ReconPro v11 — Engineering Recommendation Engine.
+     2→
+     3→Generates autonomous engineering (non-security) recommendations from diagnostic
+     4→data, drift reports, test results, performance metrics, and operational
+     5→findings.  This module is complementary to the AI Analyst (which handles
+     6→security-specific recommendations) and focuses exclusively on code quality,
+     7→testing, performance, and operational engineering improvements.
+     8→
+     9→Pure Python.  Zero external dependencies.
+    10→
+    11→Exports:
+    12→    Recommendation           – individual recommendation dataclass
+    13→    RecommendationStore      – JSON-backed persistent store
+    14→    RecommendationEngine     – core rule-based generation + dedup + aging
+    15→    EngineeringRecommender   – high-level facade combining everything
+    16→"""
+    17→
+    18→from __future__ import annotations
+    19→
+    20→import hashlib
+    21→import json
+    22→import logging
+    23→import os
+    24→import re
+    25→import time
+    26→from dataclasses import dataclass, field
+    27→from datetime import datetime, timezone
+    28→from pathlib import Path
+    29→from typing import Any, Dict, List, Optional, Set, Tuple
+    30→
+    31→from .constants import MEMORY_DIR, RECONPRO_HOME, SEVERITY_LEVELS, VALID_SEVERITIES
+    32→
+    33→
+    34→logger = logging.getLogger(__name__)
+    35→
+    36→
+    37→# ═══════════════════════════════════════════════════════════════════════════
+    38→# Constants
+    39→# ═══════════════════════════════════════════════════════════════════════════
+    40→
+    41→RECOMMENDATIONS_FILE: Path = MEMORY_DIR / "recommendations.json"
+    42→
+    43→VALID_CATEGORIES: frozenset[str] = frozenset({
+    44→    "diagnostics",
+    45→    "drift",
+    46→    "testing",
+    47→    "performance",
+    48→    "engineering",
+    49→    "operational",
+    50→    "code_quality",
+    51→    "reliability",
+    52→    "maintainability",
+    53→})
+    54→
+    55→VALID_EFFORTS: frozenset[str] = frozenset({
+    56→    "trivial",
+    57→    "small",
+    58→    "medium",
+    59→    "large",
+    60→    "epic",
+    61→})
+    62→
+    63→# Effort estimate numeric mapping for priority scoring.
+    64→_EFFORT_SCORE: Dict[str, float] = {
+    65→    "trivial": 1.0,
+    66→    "small": 2.0,
+    67→    "medium": 3.0,
+    68→    "large": 5.0,
+    69→    "epic": 8.0,
+    70→}
+    71→
+    72→# Severity numeric mapping (lower value = higher severity, matches constants.py).
+    73→_SEVERITY_SCORE: Dict[str, float] = {
+    74→    "critical": 10.0,
+    75→    "high": 8.0,
+    76→    "medium": 5.0,
+    77→    "low": 2.0,
+    78→    "info": 0.5,
+    79→}
+    80→
+    81→# How many days before a recommendation is considered "stale" and gets
+    82→# an automatic severity boost.
+    83→_STALE_DAYS: int = 14
+    84→
+    85→# How many days before a recommendation is "very stale" and gets a bigger boost.
+    86→_VERY_STALE_DAYS: int = 30
+    87→
+    88→# Maximum recommendations to keep (oldest dismissed ones are pruned).
+    89→_MAX_STORED: int = 500
+    90→
+    91→# Deduplication similarity threshold (0.0 – 1.0). Two recommendations whose
+    92→# titles have a Jaccard similarity above this are considered duplicates.
+    93→_DEDUP_THRESHOLD: float = 0.65
+    94→
+    95→
+    96→# ═══════════════════════════════════════════════════════════════════════════
+    97→# Data Model
+    98→# ═══════════════════════════════════════════════════════════════════════════
+    99→
+   100→
+   101→@dataclass
+   102→class Recommendation:
+   103→    """A single engineering recommendation.
+   104→
+   105→    Attributes:
+   106→        id:              Unique SHA-256 based identifier.
+   107→        title:           Short human-readable title.
+   108→        description:     Detailed explanation of the recommendation.
+   109→        severity:        One of critical/high/medium/low/info.
+   110→        category:        Engineering category (diagnostics, testing, etc.).
+   111→        effort_estimate: How much work to address (trivial/small/medium/large/epic).
+   112→        affected_files:  List of file paths or module names affected.
+   113→        suggested_fix:   Concrete action to take.
+   114→        evidence:        Why this recommendation was generated.
+   115→        confidence:      0.0 – 1.0 confidence in the recommendation.
+   116→        created_at:      ISO-8601 UTC timestamp of creation.
+   117→        dismissed:       Whether the user has dismissed this recommendation.
+   118→        dismissed_reason: Optional reason for dismissal.
+   119→        priority_score:  Computed score (severity * 10 + confidence * 10 - effort * 2).
+   120→        source:          Which input generated this (diagnostics, drift, etc.).
+   121→    """
+   122→
+   123→    id: str = ""
+   124→    title: str = ""
+   125→    description: str = ""
+   126→    severity: str = "medium"
+   127→    category: str = "engineering"
+   128→    effort_estimate: str = "small"
+   129→    affected_files: List[str] = field(default_factory=list)
+   130→    suggested_fix: str = ""
+   131→    evidence: str = ""
+   132→    confidence: float = 0.7
+   133→    created_at: str = ""
+   134→    dismissed: bool = False
+   135→    dismissed_reason: str = ""
+   136→    priority_score: float = 0.0
+   137→    source: str = ""
+   138→
+   139→    def __post_init__(self) -> None:
+   140→        """Derive the ID if not provided and normalise fields."""
+   141→        if not self.created_at:
+   142→            self.created_at = datetime.now(timezone.utc).isoformat()
+   143→        if not self.id:
+   144→            self.id = self._generate_id()
+   145→        # Normalise severity
+   146→        self.severity = self.severity.lower()
+   147→        if self.severity not in VALID_SEVERITIES:
+   148→            self.severity = "medium"
+   149→        # Normalise category
+   150→        self.category = self.category.lower()
+   151→        # Clamp confidence
+   152→        self.confidence = max(0.0, min(1.0, self.confidence))
+   153→        # Clamp effort
+   154→        self.effort_estimate = self.effort_estimate.lower()
+   155→        if self.effort_estimate not in VALID_EFFORTS:
+   156→            self.effort_estimate = "small"
+   157→        # Compute priority score
+   158→        self.priority_score = self._compute_priority()
+   159→
+   160→    def _generate_id(self) -> str:
+   161→        """Generate a deterministic SHA-256 ID from title + category + source."""
+   162→        payload = f"{self.title}|{self.category}|{self.source}|{self.affected_files}"
+   163→        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+   164→
+   165→    def _compute_priority(self) -> float:
+   166→        """Compute priority score: higher = more urgent.
+   167→
+   168→        Formula: severity_weight * 10 + confidence * 10 - effort_weight * 2
+   169→        Range approximately: -14 to +108
+   170→        """
+   171→        sev = _SEVERITY_SCORE.get(self.severity, 5.0)
+   172→        eff = _EFFORT_SCORE.get(self.effort_estimate, 3.0)
+   173→        return round(sev * 10.0 + self.confidence * 10.0 - eff * 2.0, 2)
+   174→
+   175→    def to_dict(self) -> Dict[str, Any]:
+   176→        """Serialise to a plain dict suitable for JSON persistence."""
+   177→        return {
+   178→            "id": self.id,
+   179→            "title": self.title,
+   180→            "description": self.description,
+   181→            "severity": self.severity,
+   182→            "category": self.category,
+   183→            "effort_estimate": self.effort_estimate,
+   184→            "affected_files": list(self.affected_files),
+   185→            "suggested_fix": self.suggested_fix,
+   186→            "evidence": self.evidence,
+   187→            "confidence": self.confidence,
+   188→            "created_at": self.created_at,
+   189→            "dismissed": self.dismissed,
+   190→            "dismissed_reason": self.dismissed_reason,
+   191→            "priority_score": self.priority_score,
+   192→            "source": self.source,
+   193→        }
+   194→
+   195→    @classmethod
+   196→    def from_dict(cls, data: Dict[str, Any]) -> Recommendation:
+   197→        """Deserialise from a dict (typically loaded from JSON)."""
+   198→        return cls(
+   199→            id=data.get("id", ""),
+   200→            title=data.get("title", ""),
+   201→            description=data.get("description", ""),
+   202→            severity=data.get("severity", "medium"),
+   203→            category=data.get("category", "engineering"),
+   204→            effort_estimate=data.get("effort_estimate", "small"),
+   205→            affected_files=data.get("affected_files", []),
+   206→            suggested_fix=data.get("suggested_fix", ""),
+   207→            evidence=data.get("evidence", ""),
+   208→            confidence=data.get("confidence", 0.7),
+   209→            created_at=data.get("created_at", ""),
+   210→            dismissed=data.get("dismissed", False),
+   211→            dismissed_reason=data.get("dismissed_reason", ""),
+   212→            priority_score=data.get("priority_score", 0.0),
+   213→            source=data.get("source", ""),
+   214→        )
+   215→
+   216→
+   217→# ═══════════════════════════════════════════════════════════════════════════
+   218→# RecommendationStore — Persistent JSON Storage
+   219→# ═══════════════════════════════════════════════════════════════════════════
+   220→
+   221→
+   222→class RecommendationStore:
+   223→    """Persistent JSON-backed storage for recommendations.
+   224→
+   225→    Stores all recommendations (active and dismissed) in
+   226→    ``RECONPRO_HOME/memory/recommendations.json``.
+   227→    """
+   228→
+   229→    def __init__(self, path: Optional[Path] = None) -> None:
+   230→        self._path: Path = path or RECOMMENDATIONS_FILE
+   231→        self._recommendations: Dict[str, Recommendation] = {}
+   232→        self._load()
+   233→
+   234→    # ── Persistence ─────────────────────────────────────────────────────
+   235→
+   236→    def _load(self) -> None:
+   237→        """Load recommendations from the JSON file."""
+   238→        if not self._path.exists():
+   239→            self._recommendations = {}
+   240→            return
+   241→        try:
+   242→            with open(self._path, "r", encoding="utf-8") as fh:
+   243→                data = json.load(fh)
+   244→            if not isinstance(data, dict):
+   245→                logger.warning("Recommendation store: expected dict, got %s", type(data).__name__)
+   246→                self._recommendations = {}
+   247→                return
+   248→            for rec_id, rec_data in data.items():
+   249→                try:
+   250→                    self._recommendations[rec_id] = Recommendation.from_dict(rec_data)
+   251→                except Exception as exc:
+   252→                    logger.warning("Failed to load recommendation %s: %s", rec_id, exc)
+   253→        except (json.JSONDecodeError, OSError) as exc:
+   254→            logger.warning("Failed to load recommendation store: %s", exc)
+   255→            self._recommendations = {}
+   256→
+   257→    def _save(self) -> None:
+   258→        """Persist recommendations to the JSON file."""
+   259→        try:
+   260→            self._path.parent.mkdir(parents=True, exist_ok=True)
+   261→            data = {rid: rec.to_dict() for rid, rec in self._recommendations.items()}
+   262→            with open(self._path, "w", encoding="utf-8") as fh:
+   263→                json.dump(data, fh, indent=2, default=str)
+   264→        except OSError as exc:
+   265→            logger.error("Failed to save recommendation store: %s", exc)
+   266→
+   267→    # ── CRUD ────────────────────────────────────────────────────────────
+   268→
+   269→    def add(self, recommendation: Recommendation) -> bool:
+   270→        """Add a recommendation. Returns True if it was newly added."""
+   271→        if not recommendation.id:
+   272→            return False
+   273→        # Don't overwrite existing non-dismissed recommendations.
+   274→        existing = self._recommendations.get(recommendation.id)
+   275→        if existing is not None and not existing.dismissed:
+   276→            return False
+   277→        self._recommendations[recommendation.id] = recommendation
+   278→        self._prune_if_needed()
+   279→        self._save()
+   280→        return True
+   281→
+   282→    def get(self, rec_id: str) -> Optional[Recommendation]:
+   283→        """Retrieve a recommendation by ID."""
+   284→        return self._recommendations.get(rec_id)
+   285→
+   286→    def get_all(self) -> List[Recommendation]:
+   287→        """Return all stored recommendations."""
+   288→        return list(self._recommendations.values())
+   289→
+   290→    def get_active(self) -> List[Recommendation]:
+   291→        """Return only non-dismissed recommendations, sorted by priority desc."""
+   292→        active = [r for r in self._recommendations.values() if not r.dismissed]
+   293→        active.sort(key=lambda r: r.priority_score, reverse=True)
+   294→        return active
+   295→
+   296→    def get_dismissed(self) -> List[Recommendation]:
+   297→        """Return only dismissed recommendations."""
+   298→        return [r for r in self._recommendations.values() if r.dismissed]
+   299→
+   300→    def dismiss(self, rec_id: str, reason: str = "") -> bool:
+   301→        """Mark a recommendation as dismissed."""
+   302→        rec = self._recommendations.get(rec_id)
+   303→        if rec is None:
+   304→            return False
+   305→        rec.dismissed = True
+   306→        rec.dismissed_reason = reason
+   307→        self._save()
+   308→        return True
+   309→
+   310→    def restore(self, rec_id: str) -> bool:
+   311→        """Un-dismiss a recommendation."""
+   312→        rec = self._recommendations.get(rec_id)
+   313→        if rec is None:
+   314→            return False
+   315→        rec.dismissed = False
+   316→        rec.dismissed_reason = ""
+   317→        self._save()
+   318→        return True
+   319→
+   320→    def remove(self, rec_id: str) -> bool:
+   321→        """Delete a recommendation entirely from the store."""
+   322→        if rec_id in self._recommendations:
+   323→            del self._recommendations[rec_id]
+   324→            self._save()
+   325→            return True
+   326→        return False
+   327→
+   328→    def clear_dismissed(self) -> int:
+   329→        """Remove all dismissed recommendations. Returns count removed."""
+   330→        to_remove = [rid for rid, r in self._recommendations.items() if r.dismissed]
+   331→        for rid in to_remove:
+   332→            del self._recommendations[rid]
+   333→        if to_remove:
+   334→            self._save()
+   335→        return len(to_remove)
+   336→
+   337→    def count(self) -> int:
+   338→        """Total number of stored recommendations."""
+   339→        return len(self._recommendations)
+   340→
+   341→    def active_count(self) -> int:
+   342→        """Number of non-dismissed recommendations."""
+   343→        return sum(1 for r in self._recommendations.values() if not r.dismissed)
+   344→
+   345→    # ── Filtering ───────────────────────────────────────────────────────
+   346→
+   347→    def filter_by_severity(self, severity: str) -> List[Recommendation]:
+   348→        """Return active recommendations matching a severity level."""
+   349→        sev = severity.lower()
+   350→        return [r for r in self.get_active() if r.severity == sev]
+   351→
+   352→    def filter_by_category(self, category: str) -> List[Recommendation]:
+   353→        """Return active recommendations matching a category."""
+   354→        cat = category.lower()
+   355→        return [r for r in self.get_active() if r.category == cat]
+   356→
+   357→    def filter_by_source(self, source: str) -> List[Recommendation]:
+   358→        """Return active recommendations from a specific source."""
+   359→        return [r for r in self.get_active() if r.source == source]
+   360→
+   361→    def search(self, query: str) -> List[Recommendation]:
+   362→        """Full-text search across title, description, and evidence."""
+   363→        q = query.lower()
+   364→        results: List[Recommendation] = []
+   365→        for r in self.get_active():
+   366→            if (q in r.title.lower()
+   367→                    or q in r.description.lower()
+   368→                    or q in r.evidence.lower()
+   369→                    or q in r.suggested_fix.lower()):
+   370→                results.append(r)
+   371→        return results
+   372→
+   373→    # ── Pruning ─────────────────────────────────────────────────────────
+   374→
+   375→    def _prune_if_needed(self) -> None:
+   376→        """Remove oldest dismissed entries when store exceeds _MAX_STORED."""
+   377→        if len(self._recommendations) <= _MAX_STORED:
+   378→            return
+   379→        # Sort dismissed by created_at ascending, remove oldest first.
+   380→        dismissed = [
+   381→            (rid, r) for rid, r in self._recommendations.items() if r.dismissed
+   382→        ]
+   383→        dismissed.sort(key=lambda pair: pair[1].created_at)
+   384→        to_remove = len(self._recommendations) - _MAX_STORED
+   385→        for i in range(min(to_remove, len(dismissed))):
+   386→            del self._recommendations[dismissed[i][0]]
+   387→
+   388→
+   389→# ═══════════════════════════════════════════════════════════════════════════
+   390→# RecommendationEngine — Core Rule-Based Generation
+   391→# ═══════════════════════════════════════════════════════════════════════════
+   392→
+   393→
+   394→class RecommendationEngine:
+   395→    """Core rule-based recommendation generation engine.
+   396→
+   397→    Responsibilities:
+   398→    - Rule-based recommendation generation (if X then recommend Y)
+   399→    - Priority scoring based on severity + effort + impact
+   400→    - Deduplication of similar recommendations via Jaccard similarity
+   401→    - Aging: old recommendations get escalated severity
+   402→    """
+   403→
+   404→    def __init__(self, store: Optional[RecommendationStore] = None) -> None:
+   405→        self.store: RecommendationStore = store or RecommendationStore()
+   406→
+   407→    # ── Jaccard Similarity for Deduplication ────────────────────────────
+   408→
+   409→    @staticmethod
+   410→    def _tokenise(text: str) -> Set[str]:
+   411→        """Split text into a set of lowercase word tokens."""
+   412→        return set(re.findall(r"\b\w+\b", text.lower()))
+   413→
+   414→    def _jaccard(self, a: str, b: str) -> float:
+   415→        """Compute Jaccard similarity between two strings."""
+   416→        tokens_a = self._tokenise(a)
+   417→        tokens_b = self._tokenise(b)
+   418→        if not tokens_a or not tokens_b:
+   419→            return 0.0
+   420→        intersection = tokens_a & tokens_b
+   421→        union = tokens_a | tokens_b
+   422→        return len(intersection) / len(union)
+   423→
+   424→    def _is_duplicate(
+   425→        self, candidate: Recommendation, existing: List[Recommendation]
+   426→    ) -> bool:
+   427→        """Check if *candidate* duplicates any *existing* recommendation."""
+   428→        for ex in existing:
+   429→            # Same category is required for a duplicate match.
+   430→            if ex.category != candidate.category:
+   431→                continue
+   432→            if ex.dismissed:
+   433→                continue
+   434→            # Compare by title similarity and affected files overlap.
+   435→            title_sim = self._jaccard(candidate.title, ex.title)
+   436→            if title_sim >= _DEDUP_THRESHOLD:
+   437→                return True
+   438→            # Also check if they affect the same files with similar titles.
+   439→            if (candidate.affected_files and ex.affected_files
+   440→                    and set(candidate.affected_files) & set(ex.affected_files)
+   441→                    and title_sim >= 0.4):
+   442→                return True
+   443→        return False
+   444→
+   445→    # ── Aging / Escalation ──────────────────────────────────────────────
+   446→
+   447→    @staticmethod
+   448→    def _age_recommendation(rec: Recommendation) -> Recommendation:
+   449→        """Escalate severity of old recommendations.
+   450→
+   451→        - After _STALE_DAYS: boost severity by one level.
+   452→        - After _VERY_STALE_DAYS: boost severity by two levels.
+   453→        Returns a *new* Recommendation with updated fields.
+   454→        """
+   455→        now = datetime.now(timezone.utc)
+   456→        try:
+   457→            created = datetime.fromisoformat(rec.created_at)
+   458→            if created.tzinfo is None:
+   459→                created = created.replace(tzinfo=timezone.utc)
+   460→        except (ValueError, TypeError):
+   461→            return rec
+   462→
+   463→        age_days = (now - created).total_seconds() / 86400.0
+   464→
+   465→        if age_days >= _VERY_STALE_DAYS:
+   466→            new_sev = RecommendationEngine._escalate_severity(rec.severity, steps=2)
+   467→        elif age_days >= _STALE_DAYS:
+   468→            new_sev = RecommendationEngine._escalate_severity(rec.severity, steps=1)
+   469→        else:
+   470→            return rec
+   471→
+   472→        if new_sev == rec.severity:
+   473→            return rec
+   474→
+   475→        # Build a new Recommendation with the escalated severity.
+   476→        updated = Recommendation(
+   477→            id=rec.id,
+   478→            title=rec.title,
+   479→            description=rec.description,
+   480→            severity=new_sev,
+   481→            category=rec.category,
+   482→            effort_estimate=rec.effort_estimate,
+   483→            affected_files=rec.affected_files,
+   484→            suggested_fix=rec.suggested_fix,
+   485→            evidence=rec.evidence,
+   486→            confidence=rec.confidence,
+   487→            created_at=rec.created_at,
+   488→            dismissed=rec.dismissed,
+   489→            dismissed_reason=rec.dismissed_reason,
+   490→            source=rec.source,
+   491→        )
+   492→        return updated
+   493→
+   494→    @staticmethod
+   495→    def _escalate_severity(current: str, steps: int = 1) -> str:
+   496→        """Move severity *steps* levels higher (more severe).
+   497→
+   498→        Order: info -> low -> medium -> high -> critical
+   499→        """
+   500→        order = ["info", "low", "medium", "high", "critical"]
+   501→        current = current.lower()
+   502→        try:
+   503→            idx = order.index(current)
+   504→        except ValueError:
+   505→            return current
+   506→        new_idx = min(idx + steps, len(order) - 1)
+   507→        return order[new_idx]
+   508→
+   509→    # ── Add with Dedup + Persist ────────────────────────────────────────
+   510→
+   511→    def _add_recommendations(self, recommendations: List[Recommendation]) -> int:
+   512→        """Add recommendations to the store, skipping duplicates.
+   513→
+   514→        Returns the number of newly added recommendations.
+   515→        """
+   516→        active = self.store.get_active()
+   517→        # Also age existing recommendations while we're here.
+   518→        for i, rec in enumerate(active):
+   519→            aged = self._age_recommendation(rec)
+   520→            if aged.id != rec.id or aged.severity != rec.severity:
+   521→                self.store._recommendations[aged.id] = aged
+   522→
+   523→        added = 0
+   524→        for rec in recommendations:
+   525→            if not self._is_duplicate(rec, active):
+   526→                if self.store.add(rec):
+   527→                    added += 1
+   528→                    active.append(rec)  # Update active list for intra-batch dedup
+   529→        return added
+   530→
+   531→    # ═══════════════════════════════════════════════════════════════════
+   532→    # Recommendation Generation Rules
+   533→    # ═══════════════════════════════════════════════════════════════════
+   534→
+   535→    def generate_from_diagnostics(self, diag_results: Dict[str, Any]) -> List[Recommendation]:
+   536→        """Generate engineering recommendations from diagnostic check results.
+   537→
+   538→        Expected input shape (from diagnostics.run_diagnostics):
+   539→            {
+   540→                "timestamp": str,
+   541→                "total_checks": int,
+   542→                "passed": int,
+   543→                "failed": int,
+   544→                "checks": [
+   545→                    {"label": str, "status": "ok"|"error", "value": Any, "error": str}
+   546→                ]
+   547→            }
+   548→        """
+   549→        recommendations: List[Recommendation] = []
+   550→        if not diag_results or "checks" not in diag_results:
+   551→            return recommendations
+   552→
+   553→        checks = diag_results.get("checks", [])
+   554→        failed_checks = [c for c in checks if c.get("status") == "error"]
+   555→
+   556→        if not failed_checks:
+   557→            return recommendations
+   558→
+   559→        # ── Broken module registry ──────────────────────────────────────
+   560→        registry_check = next(
+   561→            (c for c in failed_checks if c.get("label") == "module_registry"), None
+   562→        )
+   563→        if registry_check:
+   564→            value = registry_check.get("value", {})
+   565→            broken = value.get("broken", []) if isinstance(value, dict) else []
+   566→            recommendations.append(Recommendation(
+   567→                title=f"Fix {len(broken)} broken module runners",
+   568→                description=(
+   569→                    f"The module registry has {len(broken)} module(s) with broken or "
+   570→                    f"non-callable runners: {broken}. This prevents these modules from "
+   571→                    f"being executed during scans."
+   572→                ),
+   573→                severity="high" if len(broken) >= 3 else "medium",
+   574→                category="diagnostics",
+   575→                effort_estimate="small",
+   576→                affected_files=[f"module:{m}" for m in broken],
+   577→                suggested_fix=(
+   578→                    "Verify that all module files exist and their runner functions are "
+   579→                    "properly defined. Reinstall ReconPro if files are missing."
+   580→                ),
+   581→                evidence=f"module_registry check failed: {registry_check.get('error', '')}",
+   582→                confidence=0.95,
+   583→                source="diagnostics",
+   584→            ))
+   585→
+   586→        # ── Disk space low ─────────────────────────────────────────────
+   587→        disk_check = next(
+   588→            (c for c in failed_checks if c.get("label") == "disk_space"), None
+   589→        )
+   590→        if disk_check:
+   591→            recommendations.append(Recommendation(
+   592→                title="Insufficient disk space for scan data",
+   593→                description=(
+   594→                    "Disk space is critically low. Scan data storage, history files, "
+   595→                    "and drift snapshots may fail to persist. This can cause data loss "
+   596→                    "and prevent scan completion."
+   597→                ),
+   598→                severity="high",
+   599→                category="operational",
+   600→                effort_estimate="small",
+   601→                affected_files=[],
+   602→                suggested_fix=(
+   603→                    "Free up disk space by cleaning old scan history, pruning drift "
+   604→                    "snapshots, or expanding the storage volume."
+   605→                ),
+   606→                evidence=f"disk_space check failed: {disk_check.get('error', '')}",
+   607→                confidence=0.9,
+   608→                source="diagnostics",
+   609→            ))
+   610→
+   611→        # ── Network unreachable ────────────────────────────────────────
+   612→        network_check = next(
+   613→            (c for c in failed_checks if c.get("label") == "network_dns"), None
+   614→        )
+   615→        if network_check:
+   616→            recommendations.append(Recommendation(
+   617→                title="Network connectivity unavailable",
+   618→                description=(
+   619→                    "DNS resolution failed, indicating network connectivity issues. "
+   620→                    "All remote scanning modules require network access to function."
+   621→                ),
+   622→                severity="high",
+   623→                category="operational",
+   624→                effort_estimate="trivial",
+   625→                affected_files=[],
+   626→                suggested_fix=(
+   627→                    "Verify network connectivity, DNS configuration, and firewall rules. "
+   628→                    "Check if a proxy is required."
+   629→                ),
+   630→                evidence=f"network_dns check failed: {network_check.get('error', '')}",
+   631→                confidence=0.95,
+   632→                source="diagnostics",
+   633→            ))
+   634→
+   635→        # ── SSL certificate verification failure ───────────────────────
+   636→        ssl_check = next(
+   637→            (c for c in failed_checks if c.get("label") == "ssl_certificate"), None
+   638→        )
+   639→        if ssl_check:
+   640→            recommendations.append(Recommendation(
+   641→                title="SSL certificate verification broken",
+   642→                description=(
+   643→                    "The system cannot verify SSL certificates. This may indicate "
+   644→                    "missing CA certificates, incorrect system time, or corporate "
+   645→                    "proxy interference with TLS."
+   646→                ),
+   647→                severity="medium",
+   648→                category="operational",
+   649→                effort_estimate="small",
+   650→                affected_files=[],
+   651→                suggested_fix=(
+   652→                    "Install CA certificate bundles, verify system clock is correct, "
+   653→                    "and check if corporate proxy is intercepting HTTPS traffic."
+   654→                ),
+   655→                evidence=f"ssl_certificate check failed: {ssl_check.get('error', '')}",
+   656→                confidence=0.85,
+   657→                source="diagnostics",
+   658→            ))
+   659→
+   660→        # ── Plugin directory missing ────────────────────────────────────
+   661→        plugin_check = next(
+   662→            (c for c in failed_checks if c.get("label") == "plugin_directory"), None
+   663→        )
+   664→        if plugin_check:
+   665→            recommendations.append(Recommendation(
+   666→                title="Plugin directory is missing or inaccessible",
+   667→                description=(
+   668→                    "The plugin directory does not exist or is not accessible. "
+   669→                    "Custom plugins cannot be loaded until this is resolved."
+   670→                ),
+   671→                severity="low",
+   672→                category="operational",
+   673→                effort_estimate="trivial",
+   674→                affected_files=[],
+   675→                suggested_fix=(
+   676→                    "Create the plugin directory at ~/.reconpro/plugins/ and ensure "
+   677→                    "appropriate read/write permissions."
+   678→                ),
+   679→                evidence=f"plugin_directory check failed: {plugin_check.get('error', '')}",
+   680→                confidence=0.9,
+   681→                source="diagnostics",
+   682→            ))
+   683→
+   684→        # ── Scan history missing ────────────────────────────────────────
+   685→        history_check = next(
+   686→            (c for c in failed_checks if c.get("label") == "scan_history"), None
+   687→        )
+   688→        if history_check:
+   689→            recommendations.append(Recommendation(
+   690→                title="Scan history directory is missing",
+   691→                description=(
+   692→                    "The scan history directory does not exist. Scan results cannot "
+   693→                    "be persisted, which means historical comparison and trend "
+   694→                    "analysis features will not work."
+   695→                ),
+   696→                severity="medium",
+   697→                category="operational",
+   698→                effort_estimate="trivial",
+   699→                affected_files=[],
+   700→                suggested_fix=(
+   701→                    "Create the scan history directory at ~/.reconpro/scans/. "
+   702→                    "It will be auto-created on the next scan, but creating it now "
+   703→                    "enables immediate functionality."
+   704→                ),
+   705→                evidence=f"scan_history check failed: {history_check.get('error', '')}",
+   706→                confidence=0.9,
+   707→                source="diagnostics",
+   708→            ))
+   709→
+   710→        # ── Memory check issues ─────────────────────────────────────────
+   711→        memory_check = next(
+   712→            (c for c in failed_checks if c.get("label") == "memory"), None
+   713→        )
+   714→        if memory_check:
+   715→            recommendations.append(Recommendation(
+   716→                title="Memory resource information unavailable",
+   717→                description=(
+   718→                    "Could not determine system memory availability. This may "
+   719→                    "affect the ability to detect resource constraints during "
+   720→                    "large-scale scans."
+   721→                ),
+   722→                severity="low",
+   723→                category="operational",
+   724→                effort_estimate="trivial",
+   725→                affected_files=[],
+   726→                suggested_fix=(
+   727→                    "Install the 'resource' module (Unix) or 'psutil' package for "
+   728→                    "enhanced memory monitoring."
+   729→                ),
+   730→                evidence=f"memory check failed: {memory_check.get('error', '')}",
+   731→                confidence=0.7,
+   732→                source="diagnostics",
+   733→            ))
+   734→
+   735→        # ── Configuration issues ────────────────────────────────────────
+   736→        config_check = next(
+   737→            (c for c in failed_checks if c.get("label") == "configuration"), None
+   738→        )
+   739→        if config_check:
+   740→            recommendations.append(Recommendation(
+   741→                title="Configuration file issues detected",
+   742→                description=(
+   743→                    "Problems detected with the ReconPro configuration file. "
+   744→                    "Default settings will be used, which may not match your "
+   745→                    "operational requirements."
+   746→                ),
+   747→                severity="medium",
+   748→                category="operational",
+   749→                effort_estimate="small",
+   750→                affected_files=["config.json"],
+   751→                suggested_fix=(
+   752→                    "Review and fix the configuration file at ~/.reconpro/config.json. "
+   753→                    "Ensure valid JSON syntax."
+   754→                ),
+   755→                evidence=f"configuration check failed: {config_check.get('error', '')}",
+   756→                confidence=0.85,
+   757→                source="diagnostics",
+   758→            ))
+   759→
+   760→        # ── Generic: multiple failures ─────────────────────────────────
+   761→        if len(failed_checks) >= 5 and len(recommendations) < 3:
+   762→            failed_labels = [c.get("label", "unknown") for c in failed_checks]
+   763→            recommendations.append(Recommendation(
+   764→                title=f"System health degraded: {len(failed_checks)} checks failed",
+   765→                description=(
+   766→                    f"A significant number of diagnostic checks are failing: "
+   767→                    f"{', '.join(failed_labels)}. This indicates a systemic issue "
+   768→                    f"that may affect scan reliability."
+   769→                ),
+   770→                severity="high",
+   771→                category="diagnostics",
+   772→                effort_estimate="medium",
+   773→                affected_files=[],
+   774→                suggested_fix=(
+   775→                    "Run 'reconpro diagnose' for a full report and address each "
+   776→                    "failing check systematically."
+   777→                ),
+   778→                evidence=f"Failed checks: {', '.join(failed_labels)}",
+   779→                confidence=0.95,
+   780→                source="diagnostics",
+   781→            ))
+   782→
+   783→        return recommendations
+   784→
+   785→    def generate_from_drift(self, drift_report: Dict[str, Any]) -> List[Recommendation]:
+   786→        """Generate engineering recommendations from a drift detection report.
+   787→
+   788→        Expected input shape (from drift_monitor.check_for_drift):
+   789→            {
+   790→                "target": str,
+   791→                "drift_detected": bool,
+   792→                "drift_event_count": int,
+   793→                "previous_timestamp": str,
+   794→                "current_timestamp": str,
+   795→                "drift_events": [{
+   796→                    "timestamp": str,
+   797→                    "field_changed": str,
+   798→                    "old_value": str,
+   799→                    "new_value": str,
+   800→                    "severity": str,
+   801→                    "risk_impact": str,
+   802→                }],
+   803→                "risk_score": float,
+   804→            }
+   805→        """
+   806→        recommendations: List[Recommendation] = []
+   807→        if not drift_report or not drift_report.get("drift_detected", False):
+   808→            return recommendations
+   809→
+   810→        target = drift_report.get("target", "unknown")
+   811→        events = drift_report.get("drift_events", [])
+   812→        risk_score = drift_report.get("risk_score", 0.0)
+   813→
+   814→        if not events:
+   815→            return recommendations
+   816→
+   817→        # Group events by category for aggregate analysis.
+   818→        by_category: Dict[str, List[Dict[str, Any]]] = {}
+   819→        for evt in events:
+   820→            cat = evt.get("field_changed", "UNKNOWN")
+   821→            by_category.setdefault(cat, []).append(evt)
+   822→
+   823→        # ── Security header removal ─────────────────────────────────────
+   824→        security_removals = [
+   825→            e for e in events
+   826→            if "security_header_removed" in e.get("field_changed", "")
+   827→        ]
+   828→        if security_removals:
+   829→            headers_removed = [
+   830→                e.get("field_changed", "").replace("security_header_removed:", "")
+   831→                for e in security_removals
+   832→            ]
+   833→            recommendations.append(Recommendation(
+   834→                title=f"Security headers removed on {target}",
+   835→                description=(
+   836→                    f"{len(headers_removed)} security header(s) were removed from {target}: "
+   837→                    f"{', '.join(headers_removed)}. This reduces the security posture "
+   838→                    f"and may indicate a deployment regression or misconfiguration."
+   839→                ),
+   840→                severity="high" if len(headers_removed) >= 2 else "medium",
+   841→                category="drift",
+   842→                effort_estimate="small",
+   843→                affected_files=[target],
+   844→                suggested_fix=(
+   845→                    f"Verify deployment pipeline for {target}. Ensure security headers "
+   846→                    f"are configured in the web server or reverse proxy configuration. "
+   847→                    f"Consider adding header enforcement to CI/CD checks."
+   848→                ),
+   849→                evidence=f"Drift events: {json.dumps([e.get('field_changed', '') for e in security_removals])}",
+   850→                confidence=0.9,
+   851→                source="drift",
+   852→            ))
+   853→
+   854→        # ── Technology stack changes ────────────────────────────────────
+   855→        tech_events = by_category.get("TECH_CHANGE", [])
+   856→        if tech_events:
+   857→            tech_changes = []
+   858→            for e in tech_events:
+   859→                if "added" in e.get("risk_impact", "").lower():
+   860→                    tech_changes.append(f"+{e.get('new_value', '')}")
+   861→                elif "removed" in e.get("risk_impact", "").lower():
+   862→                    tech_changes.append(f"-{e.get('old_value', '')}")
+   863→                else:
+   864→                    tech_changes.append(
+   865→                        f"{e.get('old_value', '')} -> {e.get('new_value', '')}"
+   866→                    )
+   867→
+   868→            recommendations.append(Recommendation(
+   869→                title=f"Technology stack changed on {target}",
+   870→                description=(
+   871→                    f"The technology stack of {target} has changed: "
+   872→                    f"{', '.join(tech_changes)}. Technology changes may introduce "
+   873→                    f"new attack surfaces or remove existing security controls."
+   874→                ),
+   875→                severity="medium",
+   876→                category="drift",
+   877→                effort_estimate="small",
+   878→                affected_files=[target],
+   879→                suggested_fix=(
+   880→                    "Review the technology changes for security implications. Update "
+   881→                    "scan profiles and detection signatures if new technologies "
+   882→                    "require different testing approaches."
+   883→                ),
+   884→                evidence=f"Technology drift: {json.dumps(tech_changes)}",
+   885→                confidence=0.85,
+   886→                source="drift",
+   887→            ))
+   888→
+   889→        # ── New open ports ──────────────────────────────────────────────
+   890→        port_events = by_category.get("PORT_CHANGE", [])
+   891→        new_ports = [
+   892→            e for e in port_events
+   893→            if "added" in e.get("risk_impact", "").lower()
+   894→        ]
+   895→        if new_ports:
+   896→            port_nums = [e.get("new_value", "") for e in new_ports]
+   897→            recommendations.append(Recommendation(
+   898→                title=f"New ports opened on {target}",
+   899→                description=(
+   900→                    f"{len(new_ports)} new port(s) detected on {target}: "
+   901→                    f"{', '.join(port_nums)}. New ports increase the attack surface "
+   902→                    f"and should be inventoried and assessed."
+   903→                ),
+   904→                severity="high",
+   905→                category="drift",
+   906→                effort_estimate="small",
+   907→                affected_files=[target],
+   908→                suggested_fix=(
+   909→                    f"Inventory the new ports on {target}. Verify they are intended "
+   910→                    f"and properly firewalled. Run a service scan to identify the "
+   911→                    f"applications listening on these ports."
+   912→                ),
+   913→                evidence=f"New ports: {', '.join(port_nums)}",
+   914→                confidence=0.9,
+   915→                source="drift",
+   916→            ))
+   917→
+   918→        # ── TLS certificate change ─────────────────────────────────────
+   919→        cert_events = by_category.get("CERT_CHANGE", [])
+   920→        if cert_events:
+   921→            recommendations.append(Recommendation(
+   922→                title=f"TLS certificate changed on {target}",
+   923→                description=(
+   924→                    f"The TLS certificate for {target} has changed. This could be "
+   925→                    f"a legitimate renewal or could indicate a certificate authority "
+   926→                    f"compromise or man-in-the-middle setup."
+   927→                ),
+   928→                severity="medium",
+   929→                category="drift",
+   930→                effort_estimate="small",
+   931→                affected_files=[target],
+   932→                suggested_fix=(
+   933→                    f"Verify the new certificate for {target} is from a trusted CA. "
+   934→                    f"Check certificate transparency logs and verify with the target's "
+   935→                    f"IT team that the change was intentional."
+   936→                ),
+   937→                evidence=f"Certificate drift events: {len(cert_events)}",
+   938→                confidence=0.75,
+   939→                source="drift",
+   940→            ))
+   941→
+   942→        # ── DNS record changes ──────────────────────────────────────────
+   943→        dns_events = by_category.get("DNS_CHANGE", [])
+   944→        if dns_events:
+   945→            recommendations.append(Recommendation(
+   946→                title=f"DNS configuration changed on {target}",
+   947→                description=(
+   948→                    f"{len(dns_events)} DNS record change(s) detected for {target}. "
+   949→                    f"DNS changes can affect service availability, email routing, "
+   950→                    f"and content delivery."
+   951→                ),
+   952→                severity="medium",
+   953→                category="drift",
+   954→                effort_estimate="small",
+   955→                affected_files=[target],
+   956→                suggested_fix=(
+   957→                    f"Review DNS changes for {target}. Ensure MX records are "
+   958→                    f"intentional (affects email delivery). Verify SPF/DKIM/DMARC "
+   959→                    f"records are still properly configured."
+   960→                ),
+   961→                evidence=f"DNS events: {json.dumps([e.get('field_changed', '') for e in dns_events])}",
+   962→                confidence=0.85,
+   963→                source="drift",
+   964→            ))
+   965→
+   966→        # ── High volume drift ───────────────────────────────────────────
+   967→        if len(events) >= 10:
+   968→            recommendations.append(Recommendation(
+   969→                title=f"High volume infrastructure drift on {target} ({len(events)} changes)",
+   970→                description=(
+   971→                    f"An unusually large number of infrastructure changes ({len(events)}) "
+   972→                    f"detected on {target} since the last snapshot. This may indicate "
+   973→                    f"a major deployment, infrastructure migration, or potential compromise."
+   974→                ),
+   975→                severity="high" if risk_score >= 70 else "medium",
+   976→                category="drift",
+   977→                effort_estimate="medium",
+   978→                affected_files=[target],
+   979→                suggested_fix=(
+   980→                    f"Correlate the drift events with known deployment schedules for "
+   981→                    f"{target}. If no deployment is planned, investigate for potential "
+   982→                    f"unauthorized infrastructure changes."
+   983→                ),
+   984→                evidence=f"Drift count: {len(events)}, risk_score: {risk_score}",
+   985→                confidence=0.8,
+   986→                source="drift",
+   987→            ))
+   988→
+   989→        # ── Status code regression ─────────────────────────────────────
+   990→        status_events = by_category.get("STATUS_CHANGE", [])
+   991→        for evt in status_events:
+   992→            old_code = evt.get("old_value", "")
+   993→            new_code = evt.get("new_value", "")
+   994→            try:
+   995→                new_int = int(new_code)
+   996→            except (ValueError, TypeError):
+   997→                continue
+   998→            if new_int >= 500:
+   999→                recommendations.append(Recommendation(
+  1000→                    title=f"HTTP 5xx errors detected on {target}",
+  1001→                    description=(
+  1002→                        f"The HTTP status code for {target} changed from {old_code} to "
+  1003→                        f"{new_code}, indicating a server error. This may be a transient "
+  1004→                        f"issue or a deployment problem."
+  1005→                    ),
+  1006→                    severity="high",
+  1007→                    category="drift",
+  1008→                    effort_estimate="trivial",
+  1009→                    affected_files=[target],
+  1010→                    suggested_fix=(
+  1011→                        f"Check the application logs and server health for {target}. "
+  1012→                        f"Verify recent deployments haven't introduced errors."
+  1013→                    ),
+  1014→                    evidence=f"Status change: {old_code} -> {new_code}",
+  1015→                    confidence=0.9,
+  1016→                    source="drift",
+  1017→                ))
+  1018→
+  1019→        return recommendations
+  1020→
+  1021→    def generate_from_test_results(self, test_results: Dict[str, Any]) -> List[Recommendation]:
+  1022→        """Generate engineering recommendations from test suite results.
+  1023→
+  1024→        Expected input shape:
+  1025→            {
+  1026→                "total": int,
+  1027→                "passed": int,
+  1028→                "failed": int,
+  1029→                "skipped": int,
+  1030→                "errors": int,
+  1031→                "duration_s": float,
+  1032→                "failures": [
+  1033→                    {
+  1034→                        "test_name": str,
+  1035→                        "error_message": str,
+  1036→                        "file": str,
+  1037→                    }
+  1038→                ],
+  1039→            }
+  1040→        """
+  1041→        recommendations: List[Recommendation] = []
+  1042→        if not test_results:
+  1043→            return recommendations
+  1044→
+  1045→        total = test_results.get("total", 0)
+  1046→        passed = test_results.get("passed", 0)
+  1047→        failed = test_results.get("failed", 0)
+  1048→        errors = test_results.get("errors", 0)
+  1049→        skipped = test_results.get("skipped", 0)
+  1050→        duration = test_results.get("duration_s", 0.0)
+  1051→        failures = test_results.get("failures", [])
+  1052→
+  1053→        if total == 0:
+  1054→            return recommendations
+  1055→
+  1056→        pass_rate = passed / total
+  1057→
+  1058→        # ── Low pass rate ───────────────────────────────────────────────
+  1059→        if pass_rate < 0.8 and total >= 5:
+  1060→            recommendations.append(Recommendation(
+  1061→                title=f"Low test pass rate: {pass_rate:.1%} ({passed}/{total})",
+  1062→                description=(
+  1063→                    f"The test suite has a pass rate of {pass_rate:.1%}, which is below "
+  1064→                    f"the 80% threshold. {failed} test(s) failed and {errors} encountered "
+  1065→                    f"errors. This indicates code quality or test stability issues."
+  1066→                ),
+  1067→                severity="high" if pass_rate < 0.5 else "medium",
+  1068→                category="testing",
+  1069→                effort_estimate="large",
+  1070→                affected_files=list({f.get("file", "") for f in failures if f.get("file")}),
+  1071→                suggested_fix=(
+  1072→                    "Prioritise fixing failing tests. Categorise failures into: "
+  1073→                    "(1) genuine code bugs, (2) flaky tests needing stabilisation, "
+  1074→                    "(3) outdated tests needing updates."
+  1075→                ),
+  1076→                evidence=f"pass_rate={pass_rate:.1%}, failed={failed}, errors={errors}",
+  1077→                confidence=0.95,
+  1078→                source="testing",
+  1079→            ))
+  1080→
+  1081→        # ── Test errors (distinct from failures) ───────────────────────
+  1082→        if errors > 0:
+  1083→            recommendations.append(Recommendation(
+  1084→                title=f"{errors} test error(s) detected in test suite",
+  1085→                description=(
+  1086→                    f"{errors} test(s) encountered errors (not assertions failures, but "
+  1087→                    f"uncaught exceptions). This typically indicates missing fixtures, "
+  1088→                    f"import errors, or environment configuration issues."
+  1089→                ),
+  1090→                severity="medium",
+  1091→                category="testing",
+  1092→                effort_estimate="medium",
+  1093→                affected_files=[
+  1094→                    f.get("file", "") for f in failures
+  1095→                    if f.get("file") and "error" in f.get("error_message", "").lower()
+  1096→                ],
+  1097→                suggested_fix=(
+  1098→                    "Investigate test errors for missing imports, fixture issues, or "
+  1099→                    "environment dependencies. Ensure tests are self-contained."
+  1100→                ),
+  1101→                evidence=f"errors={errors}",
+  1102→                confidence=0.9,
+  1103→                source="testing",
+  1104→            ))
+  1105→
+  1106→        # ── High skip rate ──────────────────────────────────────────────
+  1107→        if total >= 10 and skipped / total > 0.2:
+  1108→            recommendations.append(Recommendation(
+  1109→                title=f"High test skip rate: {skipped}/{total} ({skipped/total:.1%})",
+  1110→                description=(
+  1111→                    f"{skipped} out of {total} tests are being skipped. Skipped tests "
+  1112→                    f"reduce coverage and may mask regressions. Common causes include "
+  1113→                    f"missing dependencies, platform-specific conditions, or stale tests."
+  1114→                ),
+  1115→                severity="low",
+  1116→                category="testing",
+  1117→                effort_estimate="medium",
+  1118→                affected_files=[],
+  1119→                suggested_fix=(
+  1120→                    "Review skipped tests and either: (1) fix them if they test "
+  1121→                    "important functionality, (2) remove them if obsolete, or "
+  1122→                    "(3) document the skip reason if intentional."
+  1123→                ),
+  1124→                evidence=f"skipped={skipped}, total={total}",
+  1125→                confidence=0.8,
+  1126→                source="testing",
+  1127→            ))
+  1128→
+  1129→        # ── Slow test suite ─────────────────────────────────────────────
+  1130→        if duration > 30.0:
+  1131→            recommendations.append(Recommendation(
+  1132→                title=f"Test suite is slow: {duration:.1f}s total runtime",
+  1133→                description=(
+  1134→                    f"The test suite took {duration:.1f}s to complete. Slow tests "
+  1135→                    f"reduce developer productivity and discourage frequent testing. "
+  1136→                    f"Tests taking more than 30s should be investigated."
+  1137→                ),
+  1138→                severity="low",
+  1139→                category="performance",
+  1140→                effort_estimate="medium",
+  1141→                affected_files=[],
+  1142→                suggested_fix=(
+  1143→                    "Profile the test suite to identify slow tests. Common fixes: "
+  1144→                    "mock external I/O, reduce sleep/timing waits, parallelise "
+  1145→                    "independent tests, or move slow integration tests to a "
+  1146→                    "separate CI pipeline."
+  1147→                ),
+  1148→                evidence=f"duration_s={duration:.1f}",
+  1149→                confidence=0.85,
+  1150→                source="testing",
+  1151→            ))
+  1152→
+  1153→        # ── Repeated failure patterns ───────────────────────────────────
+  1154→        if failures:
+  1155→            # Group by file to identify problematic modules.
+  1156→            file_counts: Dict[str, int] = {}
+  1157→            for f in failures:
+  1158→                fname = f.get("file", "unknown")
+  1159→                file_counts[fname] = file_counts.get(fname, 0) + 1
+  1160→
+  1161→            for fname, count in file_counts.items():
+  1162→                if count >= 3 and fname != "unknown":
+  1163→                    recommendations.append(Recommendation(
+  1164→                        title=f"Multiple test failures in {fname} ({count} failures)",
+  1165→                        description=(
+  1166→                            f"{count} tests failed in {fname}, suggesting a systemic issue "
+  1167→                            f"in this module. This could be a broken function, missing "
+  1168→                            f"dependency, or widespread API change."
+  1169→                        ),
+  1170→                        severity="high",
+  1171→                        category="testing",
+  1172→                        effort_estimate="medium",
+  1173→                        affected_files=[fname],
+  1174→                        suggested_fix=(
+  1175→                            f"Review all failing tests in {fname} for a common root cause. "
+  1176→                            f"Check if a recent change to the module broke the expected API."
+  1177→                        ),
+  1178→                        evidence=f"file={fname}, failure_count={count}",
+  1179→                        confidence=0.9,
+  1180→                        source="testing",
+  1181→                    ))
+  1182→
+  1183→        return recommendations
+  1184→
+  1185→    def generate_from_performance(self, perf_data: Dict[str, Any]) -> List[Recommendation]:
+  1186→        """Generate engineering recommendations from performance metrics.
+  1187→
+  1188→        Expected input shape:
+  1189→            {
+  1190→                "scan_duration_s": float,
+  1191→                "module_timings": {
+  1192→                    "module_name": {"duration_s": float, "findings_count": int}
+  1193→                },
+  1194→                "memory_peak_mb": float,
+  1195→                "request_count": int,
+  1196→                "error_count": int,
+  1197→                "timeout_count": int,
+  1198→            }
+  1199→        """
+  1200→        recommendations: List[Recommendation] = []
+  1201→        if not perf_data:
+  1202→            return recommendations
+  1203→
+  1204→        total_duration = perf_data.get("scan_duration_s", 0.0)
+  1205→        module_timings = perf_data.get("module_timings", {})
+  1206→        memory_peak = perf_data.get("memory_peak_mb", 0.0)
+  1207→        request_count = perf_data.get("request_count", 0)
+  1208→        error_count = perf_data.get("error_count", 0)
+  1209→        timeout_count = perf_data.get("timeout_count", 0)
+  1210→
+  1211→        # ── High error rate ─────────────────────────────────────────────
+  1212→        if request_count > 0 and error_count / request_count > 0.1:
+  1213→            error_rate = error_count / request_count
+  1214→            recommendations.append(Recommendation(
+  1215→                title=f"High request error rate: {error_rate:.1%}",
+  1216→                description=(
+  1217→                    f"{error_count} out of {request_count} requests failed ({error_rate:.1%}). "
+  1218→                    f"High error rates degrade scan quality and may indicate "
+  1219→                    f"target instability, rate limiting, or network issues."
+  1220→                ),
+  1221→                severity="high" if error_rate > 0.3 else "medium",
+  1222→                category="performance",
+  1223→                effort_estimate="small",
+  1224→                affected_files=[],
+  1225→                suggested_fix=(
+  1226→                    "Check if the target is rate-limiting requests. Consider increasing "
+  1227→                    "the timeout, reducing concurrency, or adding retry logic with "
+  1228→                    "exponential backoff."
+  1229→                ),
+  1230→                evidence=f"errors={error_count}, requests={request_count}, rate={error_rate:.1%}",
+  1231→                confidence=0.9,
+  1232→                source="performance",
+  1233→            ))
+  1234→
+  1235→        # ── High timeout rate ───────────────────────────────────────────
+  1236→        if request_count > 0 and timeout_count / request_count > 0.05:
+  1237→            timeout_rate = timeout_count / request_count
+  1238→            recommendations.append(Recommendation(
+  1239→                title=f"High request timeout rate: {timeout_rate:.1%}",
+  1240→                description=(
+  1241→                    f"{timeout_count} out of {request_count} requests timed out "
+  1242→                    f"({timeout_rate:.1%}). This suggests the target or network is "
+  1243→                    f"slow to respond, or the timeout is set too aggressively."
+  1244→                ),
+  1245→                severity="medium",
+  1246→                category="performance",
+  1247→                effort_estimate="small",
+  1248→                affected_files=[],
+  1249→                suggested_fix=(
+  1250→                    "Increase the request timeout from the current value. For slow "
+  1251→                    f"targets, consider a timeout of 15-30s. Also check if the "
+  1252→                    f"network path has high latency."
+  1253→                ),
+  1254→                evidence=f"timeouts={timeout_count}, requests={request_count}",
+  1255→                confidence=0.85,
+  1256→                source="performance",
+  1257→            ))
+  1258→
+  1259→        # ── Slow modules ────────────────────────────────────────────────
+  1260→        if module_timings:
+  1261→            slow_modules: List[Tuple[str, float]] = []
+  1262→            for mod_name, mod_data in module_timings.items():
+  1263→                dur = mod_data.get("duration_s", 0.0) if isinstance(mod_data, dict) else 0.0
+  1264→                if dur > 10.0:
+  1265→                    slow_modules.append((mod_name, dur))
+  1266→
+  1267→            if slow_modules:
+  1268→                slow_modules.sort(key=lambda x: x[1], reverse=True)
+  1269→                for mod_name, dur in slow_modules[:3]:  # Top 3 slowest
+  1270→                    findings = 0
+  1271→                    if isinstance(module_timings.get(mod_name), dict):
+  1272→                        findings = module_timings[mod_name].get("findings_count", 0)
+  1273→                    efficiency = "low" if findings < 5 and dur > 30.0 else "moderate"
+  1274→                    recommendations.append(Recommendation(
+  1275→                        title=f"Slow module: {mod_name} took {dur:.1f}s",
+  1276→                        description=(
+  1277→                            f"Module '{mod_name}' took {dur:.1f}s and produced "
+  1278→                            f"{findings} finding(s). Efficiency is {efficiency}. "
+  1279→                            f"This module dominates scan time."
+  1280→                        ),
+  1281→                        severity="medium" if efficiency == "low" else "low",
+  1282→                        category="performance",
+  1283→                        effort_estimate="medium",
+  1284→                        affected_files=[f"module:{mod_name}"],
+  1285→                        suggested_fix=(
+  1286→                            f"Profile '{mod_name}' to identify bottlenecks. Consider: "
+  1287→                            f"(1) reducing the scope of checks, (2) parallelising "
+  1288→                            f"independent operations, (3) caching repeated lookups."
+  1289→                        ),
+  1290→                        evidence=f"module={mod_name}, duration={dur:.1f}s, findings={findings}",
+  1291→                        confidence=0.8,
+  1292→                        source="performance",
+  1293→                    ))
+  1294→
+  1295→        # ── High memory usage ───────────────────────────────────────────
+  1296→        if memory_peak > 500.0:
+  1297→            recommendations.append(Recommendation(
+  1298→                title=f"High memory usage: {memory_peak:.0f}MB peak",
+  1299→                description=(
+  1300→                    f"Peak memory usage reached {memory_peak:.0f}MB during the scan. "
+  1301→                    f"High memory usage can cause OOM kills on constrained systems "
+  1302→                    f"and limits the ability to scan large targets."
+  1303→                ),
+  1304→                severity="medium" if memory_peak > 1000 else "low",
+  1305→                category="performance",
+  1306→                effort_estimate="large",
+  1307→                affected_files=[],
+  1308→                suggested_fix=(
+  1309→                    "Profile memory usage to identify the largest consumers. Common "
+  1310→                    "fixes: (1) stream large responses instead of buffering, "
+  1311→                    "(2) limit the number of concurrent requests, (3) release "
+  1312→                    "references to processed data promptly."
+  1313→                ),
+  1314→                evidence=f"memory_peak_mb={memory_peak:.0f}",
+  1315→                confidence=0.8,
+  1316→                source="performance",
+  1317→            ))
+  1318→
+  1319→        # ── Overall scan duration ───────────────────────────────────────
+  1320→        if total_duration > 300.0:
+  1321→            recommendations.append(Recommendation(
+  1322→                title=f"Long scan duration: {total_duration:.0f}s ({total_duration/60:.1f}min)",
+  1323→                description=(
+  1324→                    f"The total scan took {total_duration:.0f}s. Long scan times "
+  1325→                    f"reduce operational agility and may exceed timeout budgets."
+  1326→                ),
+  1327→                severity="medium",
+  1328→                category="performance",
+  1329→                effort_estimate="medium",
+  1330→                affected_files=[],
+  1331→                suggested_fix=(
+  1332→                    "Consider: (1) running only essential modules, (2) increasing "
+  1333→                    "worker concurrency, (3) using the 'blitz' mode for faster "
+  1334→                    "scans, (4) parallelising independent module execution."
+  1335→                ),
+  1336→                evidence=f"scan_duration_s={total_duration:.0f}",
+  1337→                confidence=0.75,
+  1338→                source="performance",
+  1339→            ))
+  1340→
+  1341→        return recommendations
+  1342→
+  1343→    def generate_from_security(self, sec_findings: Dict[str, Any]) -> List[Recommendation]:
+  1344→        """Generate engineering recommendations from security findings.
+  1345→
+  1346→        NOTE: This is NOT about generating security remediation advice (that's
+  1347→        the AI Analyst's job). This generates ENGINEERING recommendations about
+  1348→        the scan infrastructure, tooling, and process based on security findings.
+  1349→
+  1350→        Expected input shape:
+  1351→            {
+  1352→                "total_findings": int,
+  1353→                "false_positive_rate": float,
+  1354→                "scan_coverage_pct": float,
+  1355→                "modules_run": [str],
+  1356→                "findings_by_severity": {"critical": int, "high": int, ...},
+  1357→                "cross_validation_rate": float,
+  1358→            }
+  1359→        """
+  1360→        recommendations: List[Recommendation] = []
+  1361→        if not sec_findings:
+  1362→            return recommendations
+  1363→
+  1364→        total = sec_findings.get("total_findings", 0)
+  1365→        fp_rate = sec_findings.get("false_positive_rate", 0.0)
+  1366→        coverage = sec_findings.get("scan_coverage_pct", 100.0)
+  1367→        modules_run = sec_findings.get("modules_run", [])
+  1368→        by_severity = sec_findings.get("findings_by_severity", {})
+  1369→        cv_rate = sec_findings.get("cross_validation_rate", 100.0)
+  1370→
+  1371→        # ── High false positive rate ────────────────────────────────────
+  1372→        if fp_rate > 0.3 and total >= 10:
+  1373→            recommendations.append(Recommendation(
+  1374→                title=f"High false positive rate: {fp_rate:.1%}",
+  1375→                description=(
+  1376→                    f"{fp_rate:.1%} of findings appear to be false positives. High FP "
+  1377→                    f"rates waste analyst time, reduce trust in the tool, and may "
+  1378→                    f"cause real issues to be overlooked."
+  1379→                ),
+  1380→                severity="high" if fp_rate > 0.5 else "medium",
+  1381→                category="code_quality",
+  1382→                effort_estimate="large",
+  1383→                affected_files=[],
+  1384→                suggested_fix=(
+  1385→                    "Review and improve detection signatures in the modules producing "
+  1386→                    "false positives. Consider adding confirmation checks, tuning "
+  1387→                    "thresholds, or implementing Bayesian confidence scoring."
+  1388→                ),
+  1389→                evidence=f"fp_rate={fp_rate:.1%}, total_findings={total}",
+  1390→                confidence=0.8,
+  1391→                source="security",
+  1392→            ))
+  1393→
+  1394→        # ── Low cross-validation rate ──────────────────────────────────
+  1395→        if cv_rate < 70.0:
+  1396→            recommendations.append(Recommendation(
+  1397→                title=f"Low cross-validation rate: {cv_rate:.1%}",
+  1398→                description=(
+  1399→                    f"Only {cv_rate:.1%} of findings could be independently verified. "
+  1400→                    f"Low validation rates suggest detection logic may be producing "
+  1401→                    f"unverifiable or unreliable results."
+  1402→                ),
+  1403→                severity="medium",
+  1404→                category="code_quality",
+  1405→                effort_estimate="medium",
+  1406→                affected_files=[],
+  1407→                suggested_fix=(
+  1408→                    "Improve detection signatures to produce verifiable evidence. "
+  1409→                    "Ensure findings include specific, checkable indicators rather "
+  1410→                    "than vague descriptions."
+  1411→                ),
+  1412→                evidence=f"cross_validation_rate={cv_rate:.1%}",
+  1413→                confidence=0.85,
+  1414→                source="security",
+  1415→            ))
+  1416→
+  1417→        # ── Limited module coverage ─────────────────────────────────────
+  1418→        if len(modules_run) < 5:
+  1419→            recommendations.append(Recommendation(
+  1420→                title=f"Limited scan coverage: only {len(modules_run)} module(s) run",
+  1421→                description=(
+  1422→                    f"Only {len(modules_run)} module(s) were executed: "
+  1423→                    f"{', '.join(modules_run)}. This provides incomplete coverage "
+  1424→                    f"and may miss important findings."
+  1425→                ),
+  1426→                severity="medium",
+  1427→                category="testing",
+  1428→                effort_estimate="trivial",
+  1429→                affected_files=[],
+  1430→                suggested_fix=(
+  1431→                    "Run a broader scan using more modules. Consider 'reconpro scan --all' "
+  1432→                    "or select modules relevant to the target's technology stack."
+  1433→                ),
+  1434→                evidence=f"modules_run={modules_run}",
+  1435→                confidence=0.9,
+  1436→                source="security",
+  1437→            ))
+  1438→
+  1439→        # ── No critical/high findings but low coverage ──────────────────
+  1440→        critical_count = by_severity.get("critical", 0)
+  1441→        high_count = by_severity.get("high", 0)
+  1442→        if critical_count == 0 and high_count == 0 and coverage < 50.0:
+  1443→            recommendations.append(Recommendation(
+  1444→                title=f"No critical findings but scan coverage is only {coverage:.0f}%",
+  1445→                description=(
+  1446→                    f"No critical or high-severity findings were detected, but scan "
+  1447→                    f"coverage is only {coverage:.0f}%. The absence of findings may "
+  1448→                    f"simply reflect incomplete testing rather than a secure target."
+  1449→                ),
+  1450→                severity="medium",
+  1451→                category="testing",
+  1452→                effort_estimate="small",
+  1453→                affected_files=[],
+  1454→                suggested_fix=(
+  1455→                    "Increase scan coverage before concluding the target is secure. "
+  1456→                    "Run additional modules and verify all major attack surfaces "
+  1457→                    "have been tested."
+  1458→                ),
+  1459→                evidence=f"coverage={coverage:.0f}%, critical=0, high=0",
+  1460→                confidence=0.8,
+  1461→                source="security",
+  1462→            ))
+  1463→
+  1464→        # ── Many info/low findings with no actionable ones ──────────────
+  1465→        info_count = by_severity.get("info", 0)
+  1466→        low_count = by_severity.get("low", 0)
+  1467→        if total >= 20 and (info_count + low_count) / total > 0.8:
+  1468→            recommendations.append(Recommendation(
+  1469→                title=f"Scan produced mostly low-value findings ({(info_count + low_count)/total:.0%} info/low)",
+  1470→                description=(
+  1471→                    f"{info_count + low_count} out of {total} findings are info or low "
+  1472→                    f"severity. While thoroughness is good, the signal-to-noise ratio "
+  1473→                    f"is very low, suggesting the scan profile may need tuning."
+  1474→                ),
+  1475→                severity="low",
+  1476→                category="code_quality",
+  1477→                effort_estimate="medium",
+  1478→                affected_files=[],
+  1479→                suggested_fix=(
+  1480→                    "Adjust detection thresholds to reduce noise. Consider implementing "
+  1481→                    "finding importance scoring to surface only actionable results. "
+  1482→                    "Review module sensitivity settings."
+  1483→                ),
+  1484→                evidence=(
+  1485→                    f"info={info_count}, low={low_count}, total={total}, "
+  1486→                    f"noise_ratio={(info_count + low_count) / total:.1%}"
+  1487→                ),
+  1488→                confidence=0.75,
+  1489→                source="security",
+  1490→            ))
+  1491→
+  1492→        return recommendations
+  1493→
+  1494→
+  1495→# ═══════════════════════════════════════════════════════════════════════════
+  1496→# EngineeringRecommender — High-Level Facade
+  1497→# ═══════════════════════════════════════════════════════════════════════════
+  1498→
+  1499→
+  1500→class EngineeringRecommender:
+  1501→    """High-level facade for the engineering recommendation system.
+  1502→
+  1503→    Combines the RecommendationEngine and RecommendationStore into a
+  1504→    convenient API that matches the interface specified in the task.
+  1505→    """
+  1506→
+  1507→    def __init__(self, store_path: Optional[Path] = None) -> None:
+  1508→        self._store = RecommendationStore(path=store_path)
+  1509→        self._engine = RecommendationEngine(store=self._store)
+  1510→
+  1511→    def recommend_from_diagnostics(self, diag_results: Dict[str, Any]) -> List[Recommendation]:
+  1512→        """Generate and store engineering recommendations from diagnostic results.
+  1513→
+  1514→        Parameters
+  1515→        ----------
+  1516→        diag_results : dict
+  1517→            Output from ``diagnostics.run_diagnostics()``.
+  1518→
+  1519→        Returns
+  1520→        -------
+  1521→        list[Recommendation]
+  1522→            The newly generated recommendations.
+  1523→        """
+  1524→        recs = self._engine.generate_from_diagnostics(diag_results)
+  1525→        added = self._engine._add_recommendations(recs)
+  1526→        logger.info(
+  1527→            "Diagnostics recommendations: %d generated, %d newly added",
+  1528→            len(recs), added,
+  1529→        )
+  1530→        return recs
+  1531→
+  1532→    def recommend_from_drift(self, drift_report: Dict[str, Any]) -> List[Recommendation]:
+  1533→        """Generate and store engineering recommendations from a drift report.
+  1534→
+  1535→        Parameters
+  1536→        ----------
+  1537→        drift_report : dict
+  1538→            Output from ``drift_monitor.check_for_drift()``.
+  1539→
+  1540→        Returns
+  1541→        -------
+  1542→        list[Recommendation]
+  1543→            The newly generated recommendations.
+  1544→        """
+  1545→        recs = self._engine.generate_from_drift(drift_report)
+  1546→        added = self._engine._add_recommendations(recs)
+  1547→        logger.info(
+  1548→            "Drift recommendations: %d generated, %d newly added",
+  1549→            len(recs), added,
+  1550→        )
+  1551→        return recs
+  1552→
+  1553→    def recommend_from_test_results(self, test_results: Dict[str, Any]) -> List[Recommendation]:
+  1554→        """Generate and store engineering recommendations from test results.
+  1555→
+  1556→        Parameters
+  1557→        ----------
+  1558→        test_results : dict
+  1559→            Test suite results with total, passed, failed, etc.
+  1560→
+  1561→        Returns
+  1562→        -------
+  1563→        list[Recommendation]
+  1564→            The newly generated recommendations.
+  1565→        """
+  1566→        recs = self._engine.generate_from_test_results(test_results)
+  1567→        added = self._engine._add_recommendations(recs)
+  1568→        logger.info(
+  1569→            "Test recommendations: %d generated, %d newly added",
+  1570→            len(recs), added,
+  1571→        )
+  1572→        return recs
+  1573→
+  1574→    def recommend_from_performance(self, perf_data: Dict[str, Any]) -> List[Recommendation]:
+  1575→        """Generate and store engineering recommendations from performance data.
+  1576→
+  1577→        Parameters
+  1578→        ----------
+  1579→        perf_data : dict
+  1580→            Performance metrics from a scan run.
+  1581→
+  1582→        Returns
+  1583→        -------
+  1584→        list[Recommendation]
+  1585→            The newly generated recommendations.
+  1586→        """
+  1587→        recs = self._engine.generate_from_performance(perf_data)
+  1588→        added = self._engine._add_recommendations(recs)
+  1589→        logger.info(
+  1590→            "Performance recommendations: %d generated, %d newly added",
+  1591→            len(recs), added,
+  1592→        )
+  1593→        return recs
+  1594→
+  1595→    def recommend_from_security(self, sec_findings: Dict[str, Any]) -> List[Recommendation]:
+  1596→        """Generate and store engineering recommendations from security findings.
+  1597→
+  1598→        NOTE: This generates ENGINEERING recommendations about scan quality
+  1599→        and tooling, NOT security remediation advice.
+  1600→
+  1601→        Parameters
+  1602→        ----------
+  1603→        sec_findings : dict
+  1604→            Aggregated security findings metadata.
+  1605→
+  1606→        Returns
+  1607→        -------
+  1608→        list[Recommendation]
+  1609→            The newly generated recommendations.
+  1610→        """
+  1611→        recs = self._engine.generate_from_security(sec_findings)
+  1612→        added = self._engine._add_recommendations(recs)
+  1613→        logger.info(
+  1614→            "Security engineering recommendations: %d generated, %d newly added",
+  1615→            len(recs), added,
+  1616→        )
+  1617→        return recs
+  1618→
+  1619→    def get_all_recommendations(self) -> List[Recommendation]:
+  1620→        """Return all active recommendations, sorted by priority (highest first)."""
+  1621→        return self._store.get_active()
+  1622→
+  1623→    def dismiss_recommendation(self, rec_id: str, reason: str = "") -> bool:
+  1624→        """Mark a recommendation as dismissed.
+  1625→
+  1626→        Parameters
+  1627→        ----------
+  1628→        rec_id : str
+  1629→            The recommendation ID to dismiss.
+  1630→        reason : str
+  1631→            Optional reason for dismissal.
+  1632→
+  1633→        Returns
+  1634→        -------
+  1635→        bool
+  1636→            True if the recommendation was found and dismissed.
+  1637→        """
+  1638→        success = self._store.dismiss(rec_id, reason)
+  1639→        if success:
+  1640→            logger.info("Dismissed recommendation %s: %s", rec_id, reason or "(no reason)")
+  1641→        else:
+  1642→            logger.warning("Cannot dismiss recommendation %s: not found", rec_id)
+  1643→        return success
+  1644→
+  1645→    def get_recommendation_stats(self) -> Dict[str, Any]:
+  1646→        """Return statistics about current recommendations.
+  1647→
+  1648→        Returns
+  1649→        -------
+  1650→        dict
+  1651→            Statistics including counts by severity, category, source, and age.
+  1652→        """
+  1653→        active = self._store.get_active()
+  1654→        dismissed = self._store.get_dismissed()
+  1655→        all_recs = self._store.get_all()
+  1656→
+  1657→        # Count by severity
+  1658→        by_severity: Dict[str, int] = {}
+  1659→        for r in active:
+  1660→            by_severity[r.severity] = by_severity.get(r.severity, 0) + 1
+  1661→
+  1662→        # Count by category
+  1663→        by_category: Dict[str, int] = {}
+  1664→        for r in active:
+  1665→            by_category[r.category] = by_category.get(r.category, 0) + 1
+  1666→
+  1667→        # Count by source
+  1668→        by_source: Dict[str, int] = {}
+  1669→        for r in active:
+  1670→            by_source[r.source] = by_source.get(r.source, 0) + 1
+  1671→
+  1672→        # Count by effort
+  1673→        by_effort: Dict[str, int] = {}
+  1674→        for r in active:
+  1675→            by_effort[r.effort_estimate] = by_effort.get(r.effort_estimate, 0) + 1
+  1676→
+  1677→        # Age analysis
+  1678→        now = datetime.now(timezone.utc)
+  1679→        age_buckets: Dict[str, int] = {"fresh": 0, "stale": 0, "very_stale": 0}
+  1680→        for r in active:
+  1681→            try:
+  1682→                created = datetime.fromisoformat(r.created_at)
+  1683→                if created.tzinfo is None:
+  1684→                    created = created.replace(tzinfo=timezone.utc)
+  1685→                age_days = (now - created).total_seconds() / 86400.0
+  1686→                if age_days >= _VERY_STALE_DAYS:
+  1687→                    age_buckets["very_stale"] += 1
+  1688→                elif age_days >= _STALE_DAYS:
+  1689→                    age_buckets["stale"] += 1
+  1690→                else:
+  1691→                    age_buckets["fresh"] += 1
+  1692→            except (ValueError, TypeError):
+  1693→                age_buckets["fresh"] += 1
+  1694→
+  1695→        # Average confidence
+  1696→        avg_confidence = 0.0
+  1697→        if active:
+  1698→            avg_confidence = sum(r.confidence for r in active) / len(active)
+  1699→
+  1700→        # Average priority
+  1701→        avg_priority = 0.0
+  1702→        if active:
+  1703→            avg_priority = sum(r.priority_score for r in active) / len(active)
+  1704→
+  1705→        return {
+  1706→            "total": len(all_recs),
+  1707→            "active": len(active),
+  1708→            "dismissed": len(dismissed),
+  1709→            "by_severity": by_severity,
+  1710→            "by_category": by_category,
+  1711→            "by_source": by_source,
+  1712→            "by_effort": by_effort,
+  1713→            "age_distribution": age_buckets,
+  1714→            "average_confidence": round(avg_confidence, 3),
+  1715→            "average_priority": round(avg_priority, 2),
+  1716→            "highest_priority": active[0].priority_score if active else 0.0,
+  1717→            "highest_priority_title": active[0].title if active else "",
+  1718→        }
+  1719→
+  1720→
+  1721→# ═══════════════════════════════════════════════════════════════════════════
+  1722→# Module-Level Convenience API
+  1723→# ═══════════════════════════════════════════════════════════════════════════
+  1724→
+  1725→_global_recommender: Optional[EngineeringRecommender] = None
+  1726→
+  1727→
+  1728→def get_recommender() -> EngineeringRecommender:
+  1729→    """Return the global EngineeringRecommender instance (creates one if needed)."""
+  1730→    global _global_recommender
+  1731→    if _global_recommender is None:
+  1732→        _global_recommender = EngineeringRecommender()
+  1733→    return _global_recommender
+  1734→
+  1735→
+  1736→def reset_recommender() -> None:
+  1737→    """Reset the global recommender so the next call creates a fresh one."""
+  1738→    global _global_recommender
+  1739→    _global_recommender = None
+  1740→

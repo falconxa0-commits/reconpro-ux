@@ -316,7 +316,7 @@ class InjectionDetector:
         self._add(
             name="filesystem_access",
             category="code_injection",
-            regex=r"(?:(?:open\s*\(\s*['\"][^'\"]*(?:/etc/|/proc/|/sys/|/dev/|~/.ssh|~/.gnupg|/var/|/tmp/|passwords?|shadow|id_rsa|authorized_keys))|(?:read|write|delete|remove|copy|move)\s+(?:the\s+)?(?:file|directory|folder)\s+(?:at|in|from|to)\s+['\"/]))",
+            regex=r"(?:(?:open\s*\(\s*['\"][^'\"]*(?:/etc/|/proc/|/sys/|/dev/|~/.ssh|~/.gnupg|/var/|/tmp/|passwords?|shadow|id_rsa|authorized_keys))|(?:read|write|delete|remove|copy|move)\s+(?:the\s+)?(?:file|directory|folder)\s+(?:at|in|from|to)\s+['\"/])",
             description="Attempts to access sensitive filesystem locations via prompts",
             severity=ThreatLevel.HIGH,
         )
@@ -385,7 +385,7 @@ class InjectionDetector:
         self._add(
             name="base64_exfiltration",
             category="data_exfiltration",
-            regex=r"(?:(?:encode|convert|translate|transform|render|output|return|respond\s+with|reply\s+with|print|write|display|show)\s+(?:the\s+)?(?:above|previous|your|system|all|entire|full|complete|whole)\s+(?:as|in|to|into|using)\s+(?:base64|hex|binary|unicode|utf-?8|ascii|rot13|caesar|morse|braille|a|an)\s+(?:encoding|format|code|representation|string)))",
+            regex=r"(?:(?:encode|convert|translate|transform|render|output|return|respond\s+with|reply\s+with|print|write|display|show)\s+(?:the\s+)?(?:above|previous|your|system|all|entire|full|complete|whole)\s+(?:as|in|to|into|using)\s+(?:base64|hex|binary|unicode|utf-?8|ascii|rot13|caesar|morse|braille|a|an)\s+(?:encoding|format|code|representation|string))",
             description="Requests encoding of system data into a decodable format",
             severity=ThreatLevel.HIGH,
         )
@@ -412,7 +412,7 @@ class InjectionDetector:
         self._add(
             name="steganography_request",
             category="data_exfiltration",
-            regex=r"(?:(?:use|hide|embed|conceal|inject|place|put|insert)\s+(?:the\s+)?(?:data|information|message|text|response|answer|output)\s+(?:in|within|inside|using|via|through|with)\s+(?:invisible|zero-width|zero\s*width|hidden|steganograph|unicode|whitespace|blank|empty)\s+(?:characters?|text|spaces?|glyphs?|symbols?)))",
+            regex=r"(?:(?:use|hide|embed|conceal|inject|place|put|insert)\s+(?:the\s+)?(?:data|information|message|text|response|answer|output)\s+(?:in|within|inside|using|via|through|with)\s+(?:invisible|zero-width|zero\s*width|hidden|steganograph|unicode|whitespace|blank|empty)\s+(?:characters?|text|spaces?|glyphs?|symbols?))",
             description="Requests steganographic encoding of data in invisible characters",
             severity=ThreatLevel.HIGH,
         )
@@ -421,7 +421,7 @@ class InjectionDetector:
         self._add(
             name="structured_exfiltration",
             category="data_exfiltration",
-            regex=r"(?:(?:output|respond|reply|return|print|write|display|give\s+me)\s+(?:your|the|all|every|entire|full|complete)\s+(?:system\s+)?(?:prompt|instructions?|rules?|settings?|configuration|context|memory|state|internal|hidden|secret|private)\s+(?:as|in|into|using)\s+(?:JSON|XML|YAML|TOML|CSV|markdown|code\s+block|fenced\s+block|data\s+structure|structured\s+format|serialized)))",
+            regex=r"(?:(?:output|respond|reply|return|print|write|display|give\s+me)\s+(?:your|the|all|every|entire|full|complete)\s+(?:system\s+)?(?:prompt|instructions?|rules?|settings?|configuration|context|memory|state|internal|hidden|secret|private)\s+(?:as|in|into|using)\s+(?:JSON|XML|YAML|TOML|CSV|markdown|code\s+block|fenced\s+block|data\s+structure|structured\s+format|serialized))",
             description="Requests structured output format to extract system configuration",
             severity=ThreatLevel.HIGH,
         )

@@ -1,0 +1,1626 @@
+     1→"""ReconPro Age III — Repository Learning Engine.
+     2→
+     3→Learns from the repository's own patterns: scan results, test outcomes,
+     4→error records, and code changes.  Extracts frequency, correlation, trend,
+     5→and anomaly patterns using only the Python standard library.
+     6→
+     7→This module is distinct from ``pattern_of_life.py`` (which tracks *target*
+     8→behaviour).  Here we learn from the *repository's* own operational
+     9→behaviour — what fails, what succeeds, how things change over time.
+    10→
+    11→Exports:
+    12→    LearnedPattern     – single learned pattern with confidence
+    13→    PatternStore       – persistent pattern storage with ageing/merging
+    14→    PatternExtractor   – statistical pattern extraction from raw events
+    15→    PatternQuery       – query interface for learned patterns
+    16→    RepositoryLearner  – main entry-point that ties everything together
+    17→"""
+    18→
+    19→from __future__ import annotations
+    20→
+    21→import hashlib
+    22→import json
+    23→import logging
+    24→import math
+    25→import os
+    26→import statistics
+    27→import threading
+    28→import time
+    29→from collections import Counter, defaultdict, deque
+    30→from dataclasses import dataclass, field
+    31→from datetime import datetime, timezone
+    32→from pathlib import Path
+    33→from typing import Any, Dict, List, Optional, Set, Tuple
+    34→
+    35→from .constants import RECONPRO_HOME, MEMORY_DIR
+    36→
+    37→logger = logging.getLogger(__name__)
+    38→
+    39→# ── Storage path ────────────────────────────────────────────────────────
+    40→PATTERN_FILE: Path = MEMORY_DIR / "learned_patterns.json"
+    41→
+    42→# ── Pattern type constants ──────────────────────────────────────────────
+    43→PATTERN_FREQUENCY = "frequency"
+    44→PATTERN_CORRELATION = "correlation"
+    45→PATTERN_TREND = "trend"
+    46→PATTERN_ANOMALY = "anomaly"
+    47→
+    48→VALID_PATTERN_TYPES: frozenset[str] = frozenset({
+    49→    PATTERN_FREQUENCY, PATTERN_CORRELATION, PATTERN_TREND, PATTERN_ANOMALY,
+    50→})
+    51→
+    52→# ── Confidence thresholds ───────────────────────────────────────────────
+    53→DEFAULT_MIN_CONFIDENCE: float = 0.1
+    54→DEFAULT_MAX_PATTERNS: int = 5000
+    55→DEFAULT_AGE_HALF_LIFE_DAYS: float = 30.0
+    56→PRUNE_BELOW_CONFIDENCE: float = 0.05
+    57→MERGE_SIMILARITY_THRESHOLD: float = 0.85
+    58→
+    59→# ── Learning source constants ───────────────────────────────────────────
+    60→SOURCE_SCAN = "scan"
+    61→SOURCE_TEST = "test"
+    62→SOURCE_ERROR = "error"
+    63→SOURCE_CODE_CHANGE = "code_change"
+    64→
+    65→VALID_SOURCES: frozenset[str] = frozenset({
+    66→    SOURCE_SCAN, SOURCE_TEST, SOURCE_ERROR, SOURCE_CODE_CHANGE,
+    67→})
+    68→
+    69→
+    70→# ═══════════════════════════════════════════════════════════════════════════
+    71→# Data Models
+    72→# ═══════════════════════════════════════════════════════════════════════════
+    73→
+    74→
+    75→@dataclass
+    76→class LearnedPattern:
+    77→    """A single learned pattern with confidence scoring.
+    78→
+    79→    Attributes:
+    80→        pattern_id:    SHA-256 derived unique identifier.
+    81→        pattern_type:  One of frequency, correlation, trend, anomaly.
+    82→        key:           Primary key identifying the pattern (e.g. module name,
+    83→                       error type, correlation pair).
+    84→        description:   Human-readable description of the pattern.
+    85→        confidence:    0.0–1.0 confidence score.
+    86→        support:       Number of observations backing this pattern.
+    87→        source:        Origin of the learning event (scan, test, error,
+    88→                       code_change).
+    89→        created_at:    ISO-8601 timestamp of first observation.
+    90→        updated_at:    ISO-8601 timestamp of most recent observation.
+    91→        metadata:      Extensible dict for additional pattern data.
+    92→    """
+    93→    pattern_id: str = ""
+    94→    pattern_type: str = PATTERN_FREQUENCY
+    95→    key: str = ""
+    96→    description: str = ""
+    97→    confidence: float = 0.0
+    98→    support: int = 0
+    99→    source: str = ""
+   100→    created_at: str = ""
+   101→    updated_at: str = ""
+   102→    metadata: Dict[str, Any] = field(default_factory=dict)
+   103→
+   104→    def __post_init__(self) -> None:
+   105→        if not self.created_at:
+   106→            self.created_at = _now_iso()
+   107→        if not self.updated_at:
+   108→            self.updated_at = self.created_at
+   109→        if not self.pattern_id:
+   110→            self.pattern_id = self._compute_id()
+   111→
+   112→    def _compute_id(self) -> str:
+   113→        raw = f"{self.pattern_type}:{self.key}:{self.source}"
+   114→        return hashlib.sha256(raw.encode()).hexdigest()[:24]
+   115→
+   116→    def age_hours(self) -> float:
+   117→        """Hours since last update."""
+   118→        try:
+   119→            updated = datetime.fromisoformat(self.updated_at)
+   120→            delta = datetime.now(timezone.utc) - updated
+   121→            return max(0.0, delta.total_seconds() / 3600.0)
+   122→        except (ValueError, TypeError):
+   123→            return 0.0
+   124→
+   125→    def decayed_confidence(self, half_life_days: float = DEFAULT_AGE_HALF_LIFE_DAYS) -> float:
+   126→        """Confidence reduced by exponential decay based on age."""
+   127→        hours = self.age_hours()
+   128→        half_life_hours = half_life_days * 24.0
+   129→        if half_life_hours <= 0:
+   130→            return self.confidence
+   131→        decay_factor = 0.5 ** (hours / half_life_hours)
+   132→        return max(0.0, self.confidence * decay_factor)
+   133→
+   134→    def to_dict(self) -> Dict[str, Any]:
+   135→        return {
+   136→            "pattern_id": self.pattern_id,
+   137→            "pattern_type": self.pattern_type,
+   138→            "key": self.key,
+   139→            "description": self.description,
+   140→            "confidence": round(self.confidence, 6),
+   141→            "support": self.support,
+   142→            "source": self.source,
+   143→            "created_at": self.created_at,
+   144→            "updated_at": self.updated_at,
+   145→            "metadata": self.metadata,
+   146→        }
+   147→
+   148→    @classmethod
+   149→    def from_dict(cls, d: Dict[str, Any]) -> LearnedPattern:
+   150→        return cls(
+   151→            pattern_id=d.get("pattern_id", ""),
+   152→            pattern_type=d.get("pattern_type", PATTERN_FREQUENCY),
+   153→            key=d.get("key", ""),
+   154→            description=d.get("description", ""),
+   155→            confidence=float(d.get("confidence", 0.0)),
+   156→            support=int(d.get("support", 0)),
+   157→            source=d.get("source", ""),
+   158→            created_at=d.get("created_at", ""),
+   159→            updated_at=d.get("updated_at", ""),
+   160→            metadata=dict(d.get("metadata", {})),
+   161→        )
+   162→
+   163→
+   164→# ═══════════════════════════════════════════════════════════════════════════
+   165→# PatternStore — Persistent pattern storage with ageing/merging/pruning
+   166→# ═══════════════════════════════════════════════════════════════════════════
+   167→
+   168→
+   169→class PatternStore:
+   170→    """Persistent pattern storage.
+   171→
+   172→    Features:
+   173→    - Store patterns with confidence scores
+   174→    - Age patterns (old patterns lose confidence via exponential decay)
+   175→    - Merge similar patterns
+   176→    - Prune low-confidence patterns
+   177→    - Thread-safe JSON persistence
+   178→    """
+   179→
+   180→    def __init__(
+   181→        self,
+   182→        path: Optional[Path] = None,
+   183→        max_patterns: int = DEFAULT_MAX_PATTERNS,
+   184→        half_life_days: float = DEFAULT_AGE_HALF_LIFE_DAYS,
+   185→        prune_threshold: float = PRUNE_BELOW_CONFIDENCE,
+   186→        merge_threshold: float = MERGE_SIMILARITY_THRESHOLD,
+   187→    ) -> None:
+   188→        self._path = path or PATTERN_FILE
+   189→        self._max_patterns = max(max_patterns, 1)
+   190→        self._half_life_days = half_life_days
+   191→        self._prune_threshold = prune_threshold
+   192→        self._merge_threshold = merge_threshold
+   193→        self._lock = threading.RLock()
+   194→        self._patterns: Dict[str, LearnedPattern] = {}
+   195→        self._loaded: bool = False
+   196→
+   197→    # ------------------------------------------------------------------
+   198→    # Persistence
+   199→    # ------------------------------------------------------------------
+   200→
+   201→    def _ensure_dir(self) -> None:
+   202→        self._path.parent.mkdir(parents=True, exist_ok=True)
+   203→
+   204→    def load(self) -> None:
+   205→        """Load patterns from disk."""
+   206→        with self._lock:
+   207→            self._patterns.clear()
+   208→            if not self._path.exists():
+   209→                self._loaded = True
+   210→                return
+   211→            try:
+   212→                text = self._path.read_text(encoding="utf-8")
+   213→                data = json.loads(text) if text.strip() else {}
+   214→                raw_patterns = data.get("patterns", {})
+   215→                for pid, pdict in raw_patterns.items():
+   216→                    try:
+   217→                        self._patterns[pid] = LearnedPattern.from_dict(pdict)
+   218→                    except Exception:
+   219→                        logger.debug("Skipping corrupt pattern %s", pid)
+   220→                self._loaded = True
+   221→                logger.info(
+   222→                    "Loaded %d learned patterns from %s",
+   223→                    len(self._patterns), self._path,
+   224→                )
+   225→            except (json.JSONDecodeError, OSError) as exc:
+   226→                logger.warning("Failed to load patterns from %s: %s", self._path, exc)
+   227→                self._loaded = True
+   228→
+   229→    def save(self) -> None:
+   230→        """Persist current patterns to disk."""
+   231→        with self._lock:
+   232→            self._ensure_dir()
+   233→            try:
+   234→                data: Dict[str, Any] = {
+   235→                    "patterns": {
+   236→                        pid: p.to_dict()
+   237→                        for pid, p in self._patterns.items()
+   238→                    },
+   239→                    "saved_at": _now_iso(),
+   240→                    "total_patterns": len(self._patterns),
+   241→                }
+   242→                tmp = self._path.with_suffix(".tmp")
+   243→                tmp.write_text(
+   244→                    json.dumps(data, indent=2, default=str),
+   245→                    encoding="utf-8",
+   246→                )
+   247→                tmp.replace(self._path)
+   248→                logger.debug("Saved %d patterns to %s", len(self._patterns), self._path)
+   249→            except OSError as exc:
+   250→                logger.error("Failed to save patterns to %s: %s", self._path, exc)
+   251→
+   252→    def _ensure_loaded(self) -> None:
+   253→        if not self._loaded:
+   254→            self.load()
+   255→
+   256→    # ------------------------------------------------------------------
+   257→    # CRUD
+   258→    # ------------------------------------------------------------------
+   259→
+   260→    def add(self, pattern: LearnedPattern) -> Optional[LearnedPattern]:
+   261→        """Add or update a pattern.  Returns the stored pattern."""
+   262→        with self._lock:
+   263→            self._ensure_loaded()
+   264→            pid = pattern.pattern_id
+   265→            existing = self._patterns.get(pid)
+   266→            if existing is not None:
+   267→                # Merge: weighted average confidence, increment support
+   268→                new_conf = _weighted_avg(
+   269→                    existing.confidence, existing.support,
+   270→                    pattern.confidence, pattern.support,
+   271→                )
+   272→                existing.confidence = min(1.0, new_conf)
+   273→                existing.support += pattern.support
+   274→                existing.updated_at = pattern.updated_at or _now_iso()
+   275→                if pattern.description and not existing.description:
+   276→                    existing.description = pattern.description
+   277→                if pattern.metadata:
+   278→                    existing.metadata.update(pattern.metadata)
+   279→                logger.debug("Updated pattern %s (conf=%.3f, sup=%d)", pid, existing.confidence, existing.support)
+   280→                return existing
+   281→            else:
+   282→                self._patterns[pid] = pattern
+   283→                logger.debug("Added pattern %s (type=%s)", pid, pattern.pattern_type)
+   284→                return pattern
+   285→
+   286→    def get(self, pattern_id: str) -> Optional[LearnedPattern]:
+   287→        """Retrieve a pattern by ID."""
+   288→        with self._lock:
+   289→            self._ensure_loaded()
+   290→            return self._patterns.get(pattern_id)
+   291→
+   292→    def remove(self, pattern_id: str) -> bool:
+   293→        """Remove a pattern by ID."""
+   294→        with self._lock:
+   295→            self._ensure_loaded()
+   296→            return self._patterns.pop(pattern_id, None) is not None
+   297→
+   298→    def all_patterns(self) -> List[LearnedPattern]:
+   299→        """Return a snapshot of all stored patterns."""
+   300→        with self._lock:
+   301→            self._ensure_loaded()
+   302→            return list(self._patterns.values())
+   303→
+   304→    def count(self) -> int:
+   305→        with self._lock:
+   306→            self._ensure_loaded()
+   307→            return len(self._patterns)
+   308→
+   309→    # ------------------------------------------------------------------
+   310→    # Ageing & Pruning
+   311→    # ------------------------------------------------------------------
+   312→
+   313→    def decay_all(self) -> int:
+   314→        """Apply exponential decay to all pattern confidences.
+   315→
+   316→        Returns the number of patterns that were decayed.
+   317→        """
+   318→        decayed = 0
+   319→        with self._lock:
+   320→            self._ensure_loaded()
+   321→            for p in self._patterns.values():
+   322→                old_conf = p.confidence
+   323→                p.confidence = p.decayed_confidence(self._half_life_days)
+   324→                if p.confidence < old_conf - 1e-9:
+   325→                    decayed += 1
+   326→        return decayed
+   327→
+   328→    def prune(self) -> int:
+   329→        """Remove patterns below the prune confidence threshold.
+   330→
+   331→        Also enforces the max_patterns cap (LRU by last update).
+   332→        Returns count of removed patterns.
+   333→        """
+   334→        removed = 0
+   335→        with self._lock:
+   336→            self._ensure_loaded()
+   337→            # 1. Remove below threshold
+   338→            to_remove: List[str] = []
+   339→            for pid, p in self._patterns.items():
+   340→                if p.decayed_confidence(self._half_life_days) < self._prune_threshold:
+   341→                    to_remove.append(pid)
+   342→            for pid in to_remove:
+   343→                del self._patterns[pid]
+   344→                removed += 1
+   345→
+   346→            # 2. Enforce cap — remove oldest-updated first
+   347→            if len(self._patterns) > self._max_patterns:
+   348→                sorted_pids = sorted(
+   349→                    self._patterns.keys(),
+   350→                    key=lambda k: self._patterns[k].updated_at,
+   351→                )
+   352→                excess = len(self._patterns) - self._max_patterns
+   353→                for pid in sorted_pids[:excess]:
+   354→                    del self._patterns[pid]
+   355→                    removed += 1
+   356→
+   357→        if removed:
+   358→            logger.info("Pruned %d patterns (store now has %d)", removed, len(self._patterns))
+   359→        return removed
+   360→
+   361→    # ------------------------------------------------------------------
+   362→    # Merging
+   363→    # ------------------------------------------------------------------
+   364→
+   365→    def merge_similar(self) -> int:
+   366→        """Merge patterns that are sufficiently similar.
+   367→
+   368→        Two patterns are similar when they share the same type and source,
+   369→        and their keys have a Jaccard similarity above the threshold.
+   370→        Returns the number of merges performed.
+   371→        """
+   372→        merged_count = 0
+   373→        with self._lock:
+   374→            self._ensure_loaded()
+   375→            # Group by (type, source)
+   376→            groups: Dict[Tuple[str, str], List[str]] = defaultdict(list)
+   377→            for pid, p in self._patterns.items():
+   378→                groups[(p.pattern_type, p.source)].append(pid)
+   379→
+   380→            for (ptype, psource), pids in groups.items():
+   381→                if len(pids) < 2:
+   382→                    continue
+   383→                consumed: Set[str] = set()
+   384→                for i in range(len(pids)):
+   385→                    if pids[i] in consumed:
+   386→                        continue
+   387→                    for j in range(i + 1, len(pids)):
+   388→                        if pids[j] in consumed:
+   389→                            continue
+   390→                        pa = self._patterns[pids[i]]
+   391→                        pb = self._patterns[pids[j]]
+   392→                        if self._is_similar(pa, pb):
+   393→                            # Merge pb into pa
+   394→                            pa.confidence = min(1.0, _weighted_avg(
+   395→                                pa.confidence, pa.support,
+   396→                                pb.confidence, pb.support,
+   397→                            ))
+   398→                            pa.support += pb.support
+   399→                            pa.updated_at = _now_iso()
+   400→                            if not pa.description and pb.description:
+   401→                                pa.description = pb.description
+   402→                            pa.metadata.update(pb.metadata)
+   403→                            del self._patterns[pids[j]]
+   404→                            consumed.add(pids[j])
+   405→                            merged_count += 1
+   406→        if merged_count:
+   407→            logger.info("Merged %d similar pattern pairs", merged_count)
+   408→        return merged_count
+   409→
+   410→    def _is_similar(self, a: LearnedPattern, b: LearnedPattern) -> bool:
+   411→        """Jaccard similarity on tokenised keys."""
+   412→        tokens_a = set(a.key.lower().split(":"))
+   413→        tokens_b = set(b.key.lower().split(":"))
+   414→        if not tokens_a or not tokens_b:
+   415→            return False
+   416→        intersection = tokens_a & tokens_b
+   417→        union = tokens_a | tokens_b
+   418→        return len(intersection) / len(union) >= self._merge_threshold
+   419→
+   420→    def clear(self) -> int:
+   421→        """Remove all patterns. Returns the count removed."""
+   422→        with self._lock:
+   423→            self._ensure_loaded()
+   424→            n = len(self._patterns)
+   425→            self._patterns.clear()
+   426→            return n
+   427→
+   428→
+   429→# ═══════════════════════════════════════════════════════════════════════════
+   430→# PatternExtractor — Statistical pattern extraction from raw events
+   431→# ═══════════════════════════════════════════════════════════════════════════
+   432→
+   433→
+   434→class PatternExtractor:
+   435→    """Extract patterns from raw data using stdlib statistics.
+   436→
+   437→    Extracts four kinds of patterns:
+   438→    1. Frequency — common failures, common findings, recurring events.
+   439→    2. Correlation — module A failure co-occurs with module B.
+   440→    3. Trend — metrics degrading/improving over time.
+   441→    4. Anomaly — events that deviate significantly from the norm.
+   442→    """
+   443→
+   444→    # ── Frequency extraction ──────────────────────────────────────────
+   445→
+   446→    def extract_frequency(
+   447→        self,
+   448→        items: List[str],
+   449→        source: str = SOURCE_SCAN,
+   450→        min_occurrences: int = 2,
+   451→        max_patterns: int = 20,
+   452→    ) -> List[LearnedPattern]:
+   453→        """Extract frequency patterns from a list of item identifiers.
+   454→
+   455→        Parameters
+   456→        ----------
+   457→        items:
+   458→            List of string identifiers (e.g. finding titles, error messages,
+   459→            module names).
+   460→        source:
+   461→            Origin of the data (scan, test, error, code_change).
+   462→        min_occurrences:
+   463→            Minimum count to be considered a pattern.
+   464→        max_patterns:
+   465→            Cap on number of patterns returned.
+   466→
+   467→        Returns
+   468→        -------
+   469→        List of LearnedPattern sorted by confidence (descending).
+   470→        """
+   471→        if not items:
+   472→            return []
+   473→
+   474→        counter = Counter(items)
+   475→        total = len(items)
+   476→        patterns: List[LearnedPattern] = []
+   477→
+   478→        for item, count in counter.most_common(max_patterns):
+   479→            if count < min_occurrences:
+   480→                continue
+   481→            freq = count / total
+   482→            confidence = min(1.0, freq * 2.0)  # Scale so 50% freq → 1.0
+   483→            patterns.append(LearnedPattern(
+   484→                pattern_type=PATTERN_FREQUENCY,
+   485→                key=f"freq:{item}",
+   486→                description=f"'{item}' occurs {count} times ({freq:.1%} of events)",
+   487→                confidence=round(confidence, 6),
+   488→                support=count,
+   489→                source=source,
+   490→                metadata={"frequency": round(freq, 6), "total_events": total},
+   491→            ))
+   492→
+   493→        logger.debug("Extracted %d frequency patterns from %d items", len(patterns), total)
+   494→        return patterns
+   495→
+   496→    # ── Correlation extraction ────────────────────────────────────────
+   497→
+   498→    def extract_correlation(
+   499→        self,
+   500→        event_sets: List[Set[str]],
+   501→        source: str = SOURCE_SCAN,
+   502→        min_co_occurrence: int = 2,
+   503→        max_patterns: int = 20,
+   504→    ) -> List[LearnedPattern]:
+   505→        """Extract correlation patterns from co-occurring item sets.
+   506→
+   507→        Parameters
+   508→        ----------
+   509→        event_sets:
+   510→            Each element is a set of items that occurred together in a
+   511→            single event (e.g. modules that had findings in one scan).
+   512→        source:
+   513→            Origin of the data.
+   514→        min_co_occurrence:
+   515→            Minimum co-occurrence count.
+   516→        max_patterns:
+   517→            Cap on returned patterns.
+   518→
+   519→        Returns
+   520→        -------
+   521→        List of LearnedPattern with correlation data in metadata.
+   522→        """
+   523→        if not event_sets:
+   524→            return []
+   525→
+   526→        n_events = len(event_sets)
+   527→        pair_counts: Dict[Tuple[str, str], int] = Counter()
+   528→        item_counts: Counter = Counter()
+   529→
+   530→        for item_set in event_sets:
+   531→            items = sorted(item_set)
+   532→            for item in items:
+   533→                item_counts[item] += 1
+   534→            for i in range(len(items)):
+   535→                for j in range(i + 1, len(items)):
+   536→                    pair_counts[(items[i], items[j])] += 1
+   537→
+   538→        patterns: List[LearnedPattern] = []
+   539→        for (a, b), co_count in pair_counts.most_common(max_patterns):
+   540→            if co_count < min_co_occurrence:
+   541→                continue
+   542→            # Normalised pointwise mutual information (simplified)
+   543→            p_a = item_counts[a] / n_events
+   544→            p_b = item_counts[b] / n_events
+   545→            p_ab = co_count / n_events
+   546→            if p_a > 0 and p_b > 0 and p_ab > 0:
+   547→                log_joint = math.log(p_ab)
+   548→                log_product = math.log(p_a * p_b)
+   549→                log_neg_joint = -log_joint
+   550→                if log_neg_joint > 0:
+   551→                    npmi = max(-1.0, min(1.0, (log_joint - log_product) / log_neg_joint))
+   552→                else:
+   553→                    npmi = 0.0
+   554→            else:
+   555→                npmi = 0.0
+   556→
+   557→            confidence = min(1.0, (co_count / n_events) * 3.0)
+   558→            key = f"corr:{a}:{b}"
+   559→            patterns.append(LearnedPattern(
+   560→                pattern_type=PATTERN_CORRELATION,
+   561→                key=key,
+   562→                description=(
+   563→                    f"'{a}' and '{b}' co-occur in {co_count}/{n_events} events"
+   564→                    f" (NPMI={npmi:.3f})"
+   565→                ),
+   566→                confidence=round(confidence, 6),
+   567→                support=co_count,
+   568→                source=source,
+   569→                metadata={
+   570→                    "item_a": a,
+   571→                    "item_b": b,
+   572→                    "co_occurrence": co_count,
+   573→                    "total_events": n_events,
+   574→                    "npmi": round(npmi, 6),
+   575→                    "p_a": round(p_a, 6),
+   576→                    "p_b": round(p_b, 6),
+   577→                },
+   578→            ))
+   579→
+   580→        logger.debug("Extracted %d correlation patterns from %d event sets", len(patterns), n_events)
+   581→        return patterns
+   582→
+   583→    # ── Trend extraction ──────────────────────────────────────────────
+   584→
+   585→    def extract_trend(
+   586→        self,
+   587→        time_series: List[Tuple[float, float]],
+   588→        source: str = SOURCE_SCAN,
+   589→        min_points: int = 3,
+   590→    ) -> List[LearnedPattern]:
+   591→        """Extract trend patterns from a time series.
+   592→
+   593→        Parameters
+   594→        ----------
+   595→        time_series:
+   596→            List of (timestamp, value) tuples.  Timestamps are assumed
+   597→            to be monotonically increasing.
+   598→        source:
+   599→            Origin of the data.
+   600→        min_points:
+   601→            Minimum data points required for trend detection.
+   602→
+   603→        Returns
+   604→        -------
+   605→        List of LearnedPattern (0 or 1) describing the detected trend.
+   606→        """
+   607→        if len(time_series) < min_points:
+   608→            return []
+   609→
+   610→        values = [v for _, v in time_series]
+   611→        timestamps = [t for t, _ in time_series]
+   612→        n = len(values)
+   613→
+   614→        # Simple linear regression via least squares
+   615→        x_mean = statistics.mean(range(n))
+   616→        y_mean = statistics.mean(values)
+   617→
+   618→        ss_xx = sum((i - x_mean) ** 2 for i in range(n))
+   619→        ss_xy = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(values))
+   620→
+   621→        if ss_xx == 0:
+   622→            return []
+   623→
+   624→        slope = ss_xy / ss_xx
+   625→        intercept = y_mean - slope * x_mean
+   626→
+   627→        # R-squared
+   628→        ss_res = sum((v - (slope * i + intercept)) ** 2 for i, v in enumerate(values))
+   629→        ss_tot = sum((v - y_mean) ** 2 for v in values)
+   630→        r_squared = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+   631→
+   632→        # Standard deviation of residuals for anomaly detection context
+   633→        if n > 2:
+   634→            residuals = [v - (slope * i + intercept) for i, v in enumerate(values)]
+   635→            try:
+   636→                residual_std = statistics.stdev(residuals)
+   637→            except statistics.StatisticsError:
+   638→                residual_std = 0.0
+   639→        else:
+   640→            residual_std = 0.0
+   641→
+   642→        # Determine direction
+   643→        if abs(slope) < 1e-9:
+   644→            direction = "stable"
+   645→        elif slope > 0:
+   646→            direction = "increasing"
+   647→        else:
+   648→            direction = "decreasing"
+   649→
+   650→        # Confidence based on R² and data point count
+   651→        confidence = min(1.0, r_squared * (n / 10.0))
+   652→
+   653→        # Only report meaningful trends
+   654→        if confidence < 0.1:
+   655→            return []
+   656→
+   657→        key = f"trend:{direction}:{source}"
+   658→        pattern = LearnedPattern(
+   659→            pattern_type=PATTERN_TREND,
+   660→            key=key,
+   661→            description=(
+   662→                f"{direction} trend (slope={slope:.4f}, R²={r_squared:.4f})"
+   663→                f" over {n} data points"
+   664→            ),
+   665→            confidence=round(confidence, 6),
+   666→            support=n,
+   667→            source=source,
+   668→            metadata={
+   669→                "direction": direction,
+   670→                "slope": round(slope, 8),
+   671→                "intercept": round(intercept, 8),
+   672→                "r_squared": round(r_squared, 6),
+   673→                "n_points": n,
+   674→                "residual_std": round(residual_std, 8),
+   675→                "y_mean": round(y_mean, 6),
+   676→                "time_start": round(timestamps[0], 2),
+   677→                "time_end": round(timestamps[-1], 2),
+   678→            },
+   679→        )
+   680→
+   681→        logger.debug(
+   682→            "Extracted trend pattern: %s (conf=%.3f, slope=%.4f)",
+   683→            direction, confidence, slope,
+   684→        )
+   685→        return [pattern]
+   686→
+   687→    # ── Anomaly extraction ────────────────────────────────────────────
+   688→
+   689→    def extract_anomaly(
+   690→        self,
+   691→        values: List[float],
+   692→        source: str = SOURCE_SCAN,
+   693→        key_prefix: str = "anomaly",
+   694→        z_threshold: float = 2.0,
+   695→        max_patterns: int = 10,
+   696→    ) -> List[LearnedPattern]:
+   697→        """Extract anomaly patterns using z-score based outlier detection.
+   698→
+   699→        Parameters
+   700→        ----------
+   701→        values:
+   702→            List of numeric observations.
+   703→        source:
+   704→            Origin of the data.
+   705→        key_prefix:
+   706→            Prefix for the pattern key.
+   707→        z_threshold:
+   708→            Z-score threshold for anomaly detection.
+   709→        max_patterns:
+   710→            Cap on returned patterns.
+   711→
+   712→        Returns
+   713→        -------
+   714→        List of LearnedPattern for detected anomalies.
+   715→        """
+   716→        if len(values) < 3:
+   717→            return []
+   718→
+   719→        try:
+   720→            mean_val = statistics.mean(values)
+   721→            stdev_val = statistics.stdev(values)
+   722→        except statistics.StatisticsError:
+   723→            return []
+   724→
+   725→        if stdev_val == 0:
+   726→            return []
+   727→
+   728→        patterns: List[LearnedPattern] = []
+   729→        for i, v in enumerate(values):
+   730→            z = (v - mean_val) / stdev_val
+   731→            if abs(z) >= z_threshold:
+   732→                direction = "high" if v > mean_val else "low"
+   733→                confidence = min(1.0, abs(z) / 5.0)  # Scale: z=5 → 1.0
+   734→                patterns.append(LearnedPattern(
+   735→                    pattern_type=PATTERN_ANOMALY,
+   736→                    key=f"{key_prefix}:{direction}:{i}",
+   737→                    description=(
+   738→                        f"Anomalous {direction} value {v:.4f} at index {i}"
+   739→                        f" (z={z:.2f}, mean={mean_val:.4f})"
+   740→                    ),
+   741→                    confidence=round(confidence, 6),
+   742→                    support=1,
+   743→                    source=source,
+   744→                    metadata={
+   745→                        "value": v,
+   746→                        "z_score": round(z, 6),
+   747→                        "mean": round(mean_val, 6),
+   748→                        "stdev": round(stdev_val, 6),
+   749→                        "index": i,
+   750→                        "direction": direction,
+   751→                    },
+   752→                ))
+   753→
+   754→        # Cap and sort by confidence
+   755→        patterns.sort(key=lambda p: p.confidence, reverse=True)
+   756→        patterns = patterns[:max_patterns]
+   757→
+   758→        logger.debug(
+   759→            "Extracted %d anomaly patterns from %d values (threshold=%.1f)",
+   760→            len(patterns), len(values), z_threshold,
+   761→        )
+   762→        return patterns
+   763→
+   764→    # ── Composite extraction from scan results ────────────────────────
+   765→
+   766→    def extract_from_scan_result(
+   767→        self,
+   768→        scan_result: Dict[str, Any],
+   769→    ) -> List[LearnedPattern]:
+   770→        """Extract all pattern types from a scan result dictionary."""
+   771→        all_patterns: List[LearnedPattern] = []
+   772→        target = scan_result.get("target", "unknown")
+   773→        findings = scan_result.get("findings", [])
+   774→        modules = scan_result.get("modules", [])
+   775→        score = scan_result.get("total_score", scan_result.get("score", 0))
+   776→        timestamp = scan_result.get("timestamp", scan_result.get("scanned_at", ""))
+   777→
+   778→        # 1. Frequency: common finding categories, severities, modules
+   779→        finding_titles = [f.get("title", "") for f in findings if isinstance(f, dict)]
+   780→        if finding_titles:
+   781→            all_patterns.extend(
+   782→                self.extract_frequency(finding_titles, source=SOURCE_SCAN)
+   783→            )
+   784→
+   785→        finding_severities = [f.get("severity", "info").lower() for f in findings if isinstance(f, dict)]
+   786→        if finding_severities:
+   787→            sev_patterns = self.extract_frequency(finding_severities, source=SOURCE_SCAN, max_patterns=5)
+   788→            for p in sev_patterns:
+   789→                p.key = f"sev_freq:{target}:{p.key.split(':', 1)[-1]}"
+   790→            all_patterns.extend(sev_patterns)
+   791→
+   792→        finding_modules = [f.get("module", "") for f in findings if isinstance(f, dict) if f.get("module")]
+   793→        if finding_modules:
+   794→            mod_patterns = self.extract_frequency(finding_modules, source=SOURCE_SCAN, max_patterns=10)
+   795→            for p in mod_patterns:
+   796→                p.key = f"mod_freq:{target}:{p.key.split(':', 1)[-1]}"
+   797→            all_patterns.extend(mod_patterns)
+   798→
+   799→        # 2. Correlation: modules that have findings together
+   800→        if finding_modules:
+   801→            # Group modules per finding, deduplicate per scan
+   802→            module_sets: List[Set[str]] = []
+   803→            seen_combos: Set[frozenset] = set()
+   804→            mods_in_scan: Set[str] = set(finding_modules)
+   805→            if mods_in_scan and frozenset(mods_in_scan) not in seen_combos:
+   806→                module_sets.append(mods_in_scan)
+   807→                seen_combos.add(frozenset(mods_in_scan))
+   808→            if module_sets:
+   809→                all_patterns.extend(
+   810→                    self.extract_correlation(module_sets, source=SOURCE_SCAN)
+   811→                )
+   812→
+   813→        # 3. Trend: score over time (if we have historical scores in metadata)
+   814→        score_history = scan_result.get("score_history", [])
+   815→        if not score_history and score:
+   816→            # Use single data point — no trend yet
+   817→            pass
+   818→        if score_history:
+   819→            all_patterns.extend(
+   820→                self.extract_trend(score_history, source=SOURCE_SCAN)
+   821→            )
+   822→
+   823→        return all_patterns
+   824→
+   825→    # ── Composite extraction from test results ────────────────────────
+   826→
+   827→    def extract_from_test_result(
+   828→        self,
+   829→        test_result: Dict[str, Any],
+   830→    ) -> List[LearnedPattern]:
+   831→        """Extract patterns from test outcome data."""
+   832→        all_patterns: List[LearnedPattern] = []
+   833→
+   834→        tests = test_result.get("tests", [])
+   835→        if not tests:
+   836→            # Treat top-level fields as a single test result
+   837→            tests = [test_result]
+   838→
+   839→        # 1. Frequency of test names that fail
+   840→        failed_names: List[str] = []
+   841→        for t in tests:
+   842→            if isinstance(t, dict):
+   843→                if t.get("status") == "failed" or t.get("passed") is False:
+   844→                    failed_names.append(t.get("name", t.get("test_name", "unknown")))
+   845→
+   846→        if failed_names:
+   847→            all_patterns.extend(
+   848→                self.extract_frequency(failed_names, source=SOURCE_TEST, min_occurrences=1)
+   849→            )
+   850→
+   851→        # 2. Anomaly: test duration outliers
+   852→        durations: List[float] = []
+   853→        for t in tests:
+   854→            if isinstance(t, dict) and "duration" in t:
+   855→                try:
+   856→                    durations.append(float(t["duration"]))
+   857→                except (TypeError, ValueError):
+   858→                    pass
+   859→
+   860→        if len(durations) >= 3:
+   861→            all_patterns.extend(
+   862→                self.extract_anomaly(durations, source=SOURCE_TEST, key_prefix="test_duration")
+   863→            )
+   864→
+   865→        # 3. Score trend over test runs
+   866→        score_history = test_result.get("score_history", test_result.get("scores", []))
+   867→        if isinstance(score_history, list) and len(score_history) >= 3:
+   868→            # Try to convert to (timestamp, value) tuples
+   869→            ts_pairs: List[Tuple[float, float]] = []
+   870→            for entry in score_history:
+   871→                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+   872→                    try:
+   873→                        ts_pairs.append((float(entry[0]), float(entry[1])))
+   874→                    except (TypeError, ValueError):
+   875→                        pass
+   876→                elif isinstance(entry, dict):
+   877→                    try:
+   878→                        ts = entry.get("timestamp", entry.get("time", 0))
+   879→                        val = entry.get("score", entry.get("value", 0))
+   880→                        ts_pairs.append((float(ts), float(val)))
+   881→                    except (TypeError, ValueError):
+   882→                        pass
+   883→            if len(ts_pairs) >= 3:
+   884→                all_patterns.extend(
+   885→                    self.extract_trend(ts_pairs, source=SOURCE_TEST)
+   886→                )
+   887→
+   888→        return all_patterns
+   889→
+   890→    # ── Composite extraction from error records ───────────────────────
+   891→
+   892→    def extract_from_error(
+   893→        self,
+   894→        error_record: Dict[str, Any],
+   895→    ) -> List[LearnedPattern]:
+   896→        """Extract patterns from error/failure records."""
+   897→        all_patterns: List[LearnedPattern] = []
+   898→
+   899→        errors = error_record.get("errors", [])
+   900→        if not errors:
+   901→            errors = [error_record]
+   902→
+   903→        # 1. Frequency: common error types/messages
+   904→        error_types: List[str] = []
+   905→        error_modules: List[str] = []
+   906→        for e in errors:
+   907→            if isinstance(e, dict):
+   908→                etype = e.get("error_type", e.get("type", e.get("exception", "unknown")))
+   909→                emodule = e.get("module", e.get("source", ""))
+   910→                error_types.append(etype)
+   911→                if emodule:
+   912→                    error_modules.append(emodule)
+   913→
+   914→        if error_types:
+   915→            all_patterns.extend(
+   916→                self.extract_frequency(error_types, source=SOURCE_ERROR, min_occurrences=1)
+   917→            )
+   918→        if error_modules:
+   919→            all_patterns.extend(
+   920→                self.extract_frequency(error_modules, source=SOURCE_ERROR, min_occurrences=1, max_patterns=10)
+   921→            )
+   922→
+   923→        # 2. Correlation: modules that error together
+   924→        if len(error_modules) >= 2:
+   925→            module_sets: List[Set[str]] = []
+   926→            seen: Set[frozenset] = set()
+   927→            combo = frozenset(error_modules)
+   928→            if combo not in seen:
+   929→                module_sets.append(set(error_modules))
+   930→                seen.add(combo)
+   931→            all_patterns.extend(
+   932→                self.extract_correlation(module_sets, source=SOURCE_ERROR)
+   933→            )
+   934→
+   935→        return all_patterns
+   936→
+   937→    # ── Composite extraction from code changes ────────────────────────
+   938→
+   939→    def extract_from_code_change(
+   940→        self,
+   941→        change: Dict[str, Any],
+   942→    ) -> List[LearnedPattern]:
+   943→        """Extract patterns from code modification records."""
+   944→        all_patterns: List[LearnedPattern] = []
+   945→
+   946→        files = change.get("files", change.get("changed_files", []))
+   947→        if not files:
+   948→            files = [change.get("file", "")]
+   949→
+   950→        # 1. Frequency: commonly changed files/modules
+   951→        file_names: List[str] = [f for f in files if isinstance(f, str) and f]
+   952→        if file_names:
+   953→            all_patterns.extend(
+   954→                self.extract_frequency(file_names, source=SOURCE_CODE_CHANGE)
+   955→            )
+   956→
+   957→        # 2. Frequency of change types
+   958→        change_types: List[str] = []
+   959→        for f in files:
+   960→            if isinstance(f, dict):
+   961→                ct = f.get("change_type", f.get("action", "modified"))
+   962→                change_types.append(ct)
+   963→        if change_types:
+   964→            all_patterns.extend(
+   965→                self.extract_frequency(change_types, source=SOURCE_CODE_CHANGE, max_patterns=5)
+   966→            )
+   967→
+   968→        # 3. Trend: size of changes over time
+   969→        size_history = change.get("size_history", [])
+   970→        if isinstance(size_history, list) and len(size_history) >= 3:
+   971→            ts_pairs: List[Tuple[float, float]] = []
+   972→            for entry in size_history:
+   973→                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+   974→                    try:
+   975→                        ts_pairs.append((float(entry[0]), float(entry[1])))
+   976→                    except (TypeError, ValueError):
+   977→                        pass
+   978→            if len(ts_pairs) >= 3:
+   979→                all_patterns.extend(
+   980→                    self.extract_trend(ts_pairs, source=SOURCE_CODE_CHANGE)
+   981→                )
+   982→
+   983→        # 4. Anomaly: unusually large changes
+   984→        sizes: List[float] = []
+   985→        for f in files:
+   986→            if isinstance(f, dict):
+   987→                for size_key in ("lines_added", "lines_changed", "size"):
+   988→                    if size_key in f:
+   989→                        try:
+   990→                            sizes.append(float(f[size_key]))
+   991→                        except (TypeError, ValueError):
+   992→                            pass
+   993→        if len(sizes) >= 3:
+   994→            all_patterns.extend(
+   995→                self.extract_anomaly(sizes, source=SOURCE_CODE_CHANGE, key_prefix="change_size")
+   996→            )
+   997→
+   998→        return all_patterns
+   999→
+  1000→
+  1001→# ═══════════════════════════════════════════════════════════════════════════
+  1002→# PatternQuery — Query learned patterns
+  1003→# ═══════════════════════════════════════════════════════════════════════════
+  1004→
+  1005→
+  1006→class PatternQuery:
+  1007→    """Query interface for learned patterns.
+  1008→
+  1009→    Supports filtering by:
+  1010→    - Type (frequency, correlation, trend, anomaly)
+  1011→    - Confidence (minimum threshold)
+  1012→    - Recency (max age in hours)
+  1013→    - Source (scan, test, error, code_change)
+  1014→    - Key substring match
+  1015→    - Correlation with specific items
+  1016→    """
+  1017→
+  1018→    def __init__(self, store: PatternStore) -> None:
+  1019→        self._store = store
+  1020→
+  1021→    def query(
+  1022→        self,
+  1023→        *,
+  1024→        pattern_type: Optional[str] = None,
+  1025→        min_confidence: float = 0.0,
+  1026→        max_age_hours: Optional[float] = None,
+  1027→        source: Optional[str] = None,
+  1028→        key_contains: Optional[str] = None,
+  1029→        limit: int = 100,
+  1030→        sort_by: str = "confidence",
+  1031→        sort_desc: bool = True,
+  1032→    ) -> List[LearnedPattern]:
+  1033→        """Query patterns with optional filters.
+  1034→
+  1035→        Parameters
+  1036→        ----------
+  1037→        pattern_type:
+  1038→            Filter to a specific pattern type.
+  1039→        min_confidence:
+  1040→            Minimum (decayed) confidence threshold.
+  1041→        max_age_hours:
+  1042→            Maximum age of the pattern's last update.
+  1043→        source:
+  1044→            Filter to a specific learning source.
+  1045→        key_contains:
+  1046→            Substring match on pattern key.
+  1047→        limit:
+  1048→            Maximum number of results.
+  1049→        sort_by:
+  1050→            Field to sort by (confidence, support, updated_at).
+  1051→        sort_desc:
+  1052→            Sort descending if True.
+  1053→
+  1054→        Returns
+  1055→        -------
+  1056→        Filtered and sorted list of LearnedPattern.
+  1057→        """
+  1058→        patterns = self._store.all_patterns()
+  1059→
+  1060→        # Apply filters
+  1061→        if pattern_type is not None:
+  1062→            patterns = [p for p in patterns if p.pattern_type == pattern_type]
+  1063→        if source is not None:
+  1064→            patterns = [p for p in patterns if p.source == source]
+  1065→        if key_contains is not None:
+  1066→            lc = key_contains.lower()
+  1067→            patterns = [p for p in patterns if lc in p.key.lower()]
+  1068→        if min_confidence > 0:
+  1069→            patterns = [
+  1070→                p for p in patterns
+  1071→                if p.decayed_confidence(self._store._half_life_days) >= min_confidence
+  1072→            ]
+  1073→        if max_age_hours is not None:
+  1074→            patterns = [
+  1075→                p for p in patterns
+  1076→                if p.age_hours() <= max_age_hours
+  1077→            ]
+  1078→
+  1079→        # Sort
+  1080→        if sort_by == "confidence":
+  1081→            patterns.sort(key=lambda p: p.decayed_confidence(self._store._half_life_days), reverse=sort_desc)
+  1082→        elif sort_by == "support":
+  1083→            patterns.sort(key=lambda p: p.support, reverse=sort_desc)
+  1084→        elif sort_by == "updated_at":
+  1085→            patterns.sort(key=lambda p: p.updated_at, reverse=sort_desc)
+  1086→
+  1087→        return patterns[:limit]
+  1088→
+  1089→    def get_correlations_for(
+  1090→        self,
+  1091→        item: str,
+  1092→        min_confidence: float = 0.1,
+  1093→    ) -> List[LearnedPattern]:
+  1094→        """Find all correlation patterns involving *item*."""
+  1095→        lc = item.lower()
+  1096→        results = [
+  1097→            p for p in self._store.all_patterns()
+  1098→            if p.pattern_type == PATTERN_CORRELATION
+  1099→            and lc in p.key.lower()
+  1100→            and p.decayed_confidence(self._store._half_life_days) >= min_confidence
+  1101→        ]
+  1102→        results.sort(key=lambda p: p.confidence, reverse=True)
+  1103→        return results
+  1104→
+  1105→    def get_frequent_failures(
+  1106→        self,
+  1107→        source: Optional[str] = None,
+  1108→        min_confidence: float = 0.2,
+  1109→        limit: int = 20,
+  1110→    ) -> List[LearnedPattern]:
+  1111→        """Get the most frequent failure/error patterns."""
+  1112→        patterns = self.query(
+  1113→            pattern_type=PATTERN_FREQUENCY,
+  1114→            source=source,
+  1115→            min_confidence=min_confidence,
+  1116→            limit=limit,
+  1117→        )
+  1118→        return patterns
+  1119→
+  1120→    def get_active_trends(
+  1121→        self, min_confidence: float = 0.1) -> List[LearnedPattern]:
+  1122→        """Get all active trend patterns."""
+  1123→        return self.query(
+  1124→            pattern_type=PATTERN_TREND,
+  1125→            min_confidence=min_confidence,
+  1126→        )
+  1127→
+  1128→    def get_recent_anomalies(
+  1129→        self,
+  1130→        max_age_hours: float = 168.0,  # 7 days
+  1131→        min_confidence: float = 0.2,
+  1132→    ) -> List[LearnedPattern]:
+  1133→        """Get recent anomaly patterns."""
+  1134→        return self.query(
+  1135→            pattern_type=PATTERN_ANOMALY,
+  1136→            max_age_hours=max_age_hours,
+  1137→            min_confidence=min_confidence,
+  1138→        )
+  1139→
+  1140→
+  1141→# ═══════════════════════════════════════════════════════════════════════════
+  1142→# RepositoryLearner — Main entry-point
+  1143→# ═══════════════════════════════════════════════════════════════════════════
+  1144→
+  1145→
+  1146→class RepositoryLearner:
+  1147→    """Learns from the repository's own events and patterns.
+  1148→
+  1149→    Provides a unified interface to:
+  1150→    - Feed scan results, test outcomes, errors, and code changes
+  1151→    - Extract statistical patterns automatically
+  1152→    - Query learned patterns for predictions
+  1153→    - Persist and maintain pattern knowledge over time
+  1154→
+  1155→    Usage
+  1156→    -----
+  1157→    >>> learner = RepositoryLearner()
+  1158→    >>> learner.learn_from_scan({"target": "example.com", "findings": [...]})
+  1159→    >>> learner.learn_from_test({"tests": [{"name": "xss", "passed": False}]})
+  1160→    >>> patterns = learner.get_learned_patterns()
+  1161→    >>> prediction = learner.predict_outcome({"module": "recon", "target": "x.com"})
+  1162→    """
+  1163→
+  1164→    def __init__(
+  1165→        self,
+  1166→        store: Optional[PatternStore] = None,
+  1167→        auto_save: bool = True,
+  1168→        auto_prune: bool = True,
+  1169→        prune_interval: int = 50,  # Prune every N learn calls
+  1170→    ) -> None:
+  1171→        self._store = store or PatternStore()
+  1172→        self._extractor = PatternExtractor()
+  1173→        self._query = PatternQuery(self._store)
+  1174→        self._auto_save = auto_save
+  1175→        self._auto_prune = auto_prune
+  1176→        self._prune_interval = max(prune_interval, 1)
+  1177→        self._learn_count: int = 0
+  1178→        self._stats: Dict[str, int] = {
+  1179→            "total_learn_calls": 0,
+  1180→            "scan_learn_calls": 0,
+  1181→            "test_learn_calls": 0,
+  1182→            "error_learn_calls": 0,
+  1183→            "code_change_learn_calls": 0,
+  1184→            "patterns_extracted": 0,
+  1185→            "patterns_stored": 0,
+  1186→            "predictions_made": 0,
+  1187→            "prune_runs": 0,
+  1188→        }
+  1189→
+  1190→    # ------------------------------------------------------------------
+  1191→    # Learning interface
+  1192→    # ------------------------------------------------------------------
+  1193→
+  1194→    def learn_from_scan(self, scan_result: Dict[str, Any]) -> int:
+  1195→        """Extract and store patterns from a scan result.
+  1196→
+  1197→        Parameters
+  1198→        ----------
+  1199→        scan_result:
+  1200→            Dictionary with keys like ``target``, ``findings``,
+  1201→            ``modules``, ``total_score``, ``score_history``.
+  1202→
+  1203→        Returns
+  1204→        -------
+  1205→        Number of new/updated patterns stored.
+  1206→        """
+  1207→        if not scan_result or not isinstance(scan_result, dict):
+  1208→            logger.warning("learn_from_scan: empty or invalid input")
+  1209→            return 0
+  1210→
+  1211→        self._stats["scan_learn_calls"] += 1
+  1212→        self._stats["total_learn_calls"] += 1
+  1213→
+  1214→        try:
+  1215→            patterns = self._extractor.extract_from_scan_result(scan_result)
+  1216→        except Exception:
+  1217→            logger.exception("learn_from_scan: extraction failed")
+  1218→            return 0
+  1219→
+  1220→        stored = self._store_and_maintain(patterns)
+  1221→        logger.info(
+  1222→            "learn_from_scan: %d patterns extracted, %d stored for target='%s'",
+  1223→            len(patterns), stored, scan_result.get("target", "unknown"),
+  1224→        )
+  1225→        return stored
+  1226→
+  1227→    def learn_from_test(self, test_result: Dict[str, Any]) -> int:
+  1228→        """Extract and store patterns from test outcomes.
+  1229→
+  1230→        Parameters
+  1231→        ----------
+  1232→        test_result:
+  1233→            Dictionary with ``tests`` (list of dicts with ``name``,
+  1234→            ``status``/``passed``, ``duration``), or ``score_history``.
+  1235→
+  1236→        Returns
+  1237→        -------
+  1238→        Number of new/updated patterns stored.
+  1239→        """
+  1240→        if not test_result or not isinstance(test_result, dict):
+  1241→            logger.warning("learn_from_test: empty or invalid input")
+  1242→            return 0
+  1243→
+  1244→        self._stats["test_learn_calls"] += 1
+  1245→        self._stats["total_learn_calls"] += 1
+  1246→
+  1247→        try:
+  1248→            patterns = self._extractor.extract_from_test_result(test_result)
+  1249→        except Exception:
+  1250→            logger.exception("learn_from_test: extraction failed")
+  1251→            return 0
+  1252→
+  1253→        stored = self._store_and_maintain(patterns)
+  1254→        logger.info(
+  1255→            "learn_from_test: %d patterns extracted, %d stored",
+  1256→            len(patterns), stored,
+  1257→        )
+  1258→        return stored
+  1259→
+  1260→    def learn_from_error(self, error_record: Dict[str, Any]) -> int:
+  1261→        """Extract and store patterns from error/failure records.
+  1262→
+  1263→        Parameters
+  1264→        ----------
+  1265→        error_record:
+  1266→            Dictionary with ``errors`` (list of dicts with ``error_type``,
+  1267→            ``module``, ``message``), or a single error dict.
+  1268→
+  1269→        Returns
+  1270→        -------
+  1271→        Number of new/updated patterns stored.
+  1272→        """
+  1273→        if not error_record or not isinstance(error_record, dict):
+  1274→            logger.warning("learn_from_error: empty or invalid input")
+  1275→            return 0
+  1276→
+  1277→        self._stats["error_learn_calls"] += 1
+  1278→        self._stats["total_learn_calls"] += 1
+  1279→
+  1280→        try:
+  1281→            patterns = self._extractor.extract_from_error(error_record)
+  1282→        except Exception:
+  1283→            logger.exception("learn_from_error: extraction failed")
+  1284→            return 0
+  1285→
+  1286→        stored = self._store_and_maintain(patterns)
+  1287→        logger.info(
+  1288→            "learn_from_error: %d patterns extracted, %d stored",
+  1289→            len(patterns), stored,
+  1290→        )
+  1291→        return stored
+  1292→
+  1293→    def learn_from_code_change(self, change: Dict[str, Any]) -> int:
+  1294→        """Extract and store patterns from code modification records.
+  1295→
+  1296→        Parameters
+  1297→        ----------
+  1298→        change:
+  1299→            Dictionary with ``files`` (list of file paths or dicts with
+  1300→            ``change_type``, ``lines_added``), ``size_history``.
+  1301→
+  1302→        Returns
+  1303→        -------
+  1304→        Number of new/updated patterns stored.
+  1305→        """
+  1306→        if not change or not isinstance(change, dict):
+  1307→            logger.warning("learn_from_code_change: empty or invalid input")
+  1308→            return 0
+  1309→
+  1310→        self._stats["code_change_learn_calls"] += 1
+  1311→        self._stats["total_learn_calls"] += 1
+  1312→
+  1313→        try:
+  1314→            patterns = self._extractor.extract_from_code_change(change)
+  1315→        except Exception:
+  1316→            logger.exception("learn_from_code_change: extraction failed")
+  1317→            return 0
+  1318→
+  1319→        stored = self._store_and_maintain(patterns)
+  1320→        logger.info(
+  1321→            "learn_from_code_change: %d patterns extracted, %d stored",
+  1322→            len(patterns), stored,
+  1323→        )
+  1324→        return stored
+  1325→
+  1326→    # ------------------------------------------------------------------
+  1327→    # Query interface
+  1328→    # ------------------------------------------------------------------
+  1329→
+  1330→    def get_learned_patterns(
+  1331→        self,
+  1332→        pattern_type: Optional[str] = None,
+  1333→        min_confidence: float = 0.0,
+  1334→        limit: int = 100,
+  1335→    ) -> List[LearnedPattern]:
+  1336→        """Retrieve learned patterns with optional filters.
+  1337→
+  1338→        Parameters
+  1339→        ----------
+  1340→        pattern_type:
+  1341→            Filter by type (frequency, correlation, trend, anomaly).
+  1342→        min_confidence:
+  1343→            Minimum confidence threshold.
+  1344→        limit:
+  1345→            Maximum patterns to return.
+  1346→
+  1347→        Returns
+  1348→        -------
+  1349→        List of matching LearnedPattern.
+  1350→        """
+  1351→        return self._query.query(
+  1352→            pattern_type=pattern_type,
+  1353→            min_confidence=min_confidence,
+  1354→            limit=limit,
+  1355→        )
+  1356→
+  1357→    def predict_outcome(self, scenario: Dict[str, Any]) -> Dict[str, Any]:
+  1358→        """Predict outcomes based on learned patterns.
+  1359→
+  1360→        Uses frequency and correlation patterns to make predictions
+  1361→        about what is likely to happen given a scenario.
+  1362→
+  1363→        Parameters
+  1364→        ----------
+  1365→        scenario:
+  1366→            Dictionary describing the situation. Recognised keys:
+  1367→            - ``module``: scanner module being used
+  1368→            - ``target``: target being scanned
+  1369→            - ``finding_type``: type of finding expected
+  1370→            - ``source``: learning source to query
+  1371→
+  1372→        Returns
+  1373→        -------
+  1374→        Dictionary with:
+  1375→        - ``predicted_findings``: list of likely finding patterns
+  1376→        - ``predicted_errors``: list of likely error patterns
+  1377→        - ``risk_assessment``: overall risk based on learned data
+  1378→        - ``confidence``: prediction confidence
+  1379→        - ``supporting_patterns``: patterns that support the prediction
+  1380→        """
+  1381→        self._stats["predictions_made"] += 1
+  1382→        prediction: Dict[str, Any] = {
+  1383→            "predicted_findings": [],
+  1384→            "predicted_errors": [],
+  1385→            "risk_assessment": "unknown",
+  1386→            "confidence": 0.0,
+  1387→            "supporting_patterns": [],
+  1388→        }
+  1389→
+  1390→        module = scenario.get("module", "")
+  1391→        source = scenario.get("source", SOURCE_SCAN)
+  1392→        target = scenario.get("target", "")
+  1393→
+  1394→        # 1. Find frequency patterns relevant to this scenario
+  1395→        freq_patterns = self._query.query(
+  1396→            pattern_type=PATTERN_FREQUENCY,
+  1397→            source=source,
+  1398→            min_confidence=0.15,
+  1399→            limit=10,
+  1400→        )
+  1401→
+  1402→        # Filter to module-relevant patterns
+  1403→        relevant_freq: List[LearnedPattern] = []
+  1404→        for p in freq_patterns:
+  1405→            if module and module.lower() in p.key.lower():
+  1406→                relevant_freq.append(p)
+  1407→            elif not module:
+  1408→                relevant_freq.append(p)
+  1409→
+  1410→        prediction["predicted_findings"] = [
+  1411→            {
+  1412→                "pattern": p.key,
+  1413→                "description": p.description,
+  1414→                "confidence": round(p.decayed_confidence(), 4),
+  1415→                "support": p.support,
+  1416→            }
+  1417→            for p in relevant_freq[:5]
+  1418→        ]
+  1419→
+  1420→        # 2. Find error patterns
+  1421→        error_patterns = self._query.get_frequent_failures(
+  1422→            source=SOURCE_ERROR,
+  1423→            min_confidence=0.15,
+  1424→            limit=5,
+  1425→        )
+  1426→
+  1427→        # Filter to module-relevant
+  1428→        relevant_errors: List[LearnedPattern] = []
+  1429→        for p in error_patterns:
+  1430→            if module and module.lower() in p.key.lower():
+  1431→                relevant_errors.append(p)
+  1432→            elif not module:
+  1433→                relevant_errors.append(p)
+  1434→
+  1435→        prediction["predicted_errors"] = [
+  1436→            {
+  1437→                "pattern": p.key,
+  1438→                "description": p.description,
+  1439→                "confidence": round(p.decayed_confidence(), 4),
+  1440→                "support": p.support,
+  1441→            }
+  1442→            for p in relevant_errors[:5]
+  1443→        ]
+  1444→
+  1445→        # 3. Correlation patterns for this module
+  1446→        if module:
+  1447→            corr_patterns = self._query.get_correlations_for(module, min_confidence=0.1)
+  1448→            prediction["correlations"] = [
+  1449→                {
+  1450→                    "pattern": p.key,
+  1451→                    "description": p.description,
+  1452→                    "npmi": p.metadata.get("npmi", 0.0),
+  1453→                }
+  1454→                for p in corr_patterns[:5]
+  1455→            ]
+  1456→
+  1457→        # 4. Check for degrading trends
+  1458→        trends = self._query.get_active_trends(min_confidence=0.1)
+  1459→        degrading = [t for t in trends if t.metadata.get("direction") == "decreasing"]
+  1460→        improving = [t for t in trends if t.metadata.get("direction") == "increasing"]
+  1461→
+  1462→        # 5. Overall risk assessment
+  1463→        all_relevant = relevant_freq + relevant_errors
+  1464→        if all_relevant:
+  1465→            avg_conf = statistics.mean(
+  1466→                [p.decayed_confidence() for p in all_relevant]
+  1467→            )
+  1468→            prediction["confidence"] = round(avg_conf, 4)
+  1469→
+  1470→            if avg_conf >= 0.6:
+  1471→                prediction["risk_assessment"] = "high"
+  1472→            elif avg_conf >= 0.3:
+  1473→                prediction["risk_assessment"] = "medium"
+  1474→            else:
+  1475→                prediction["risk_assessment"] = "low"
+  1476→
+  1477→            # Adjust for trends
+  1478→            if degrading:
+  1479→                if prediction["risk_assessment"] == "low":
+  1480→                    prediction["risk_assessment"] = "medium"
+  1481→                elif prediction["risk_assessment"] == "medium":
+  1482→                    prediction["risk_assessment"] = "high"
+  1483→            elif improving:
+  1484→                if prediction["risk_assessment"] == "high":
+  1485→                    prediction["risk_assessment"] = "medium"
+  1486→                elif prediction["risk_assessment"] == "medium":
+  1487→                    prediction["risk_assessment"] = "low"
+  1488→
+  1489→        # 6. Supporting patterns
+  1490→        prediction["supporting_patterns"] = [
+  1491→            p.to_dict() for p in (relevant_freq + relevant_errors + trends)[:10]
+  1492→        ]
+  1493→
+  1494→        # 7. Recent anomalies
+  1495→        recent_anomalies = self._query.get_recent_anomalies(max_age_hours=168.0)
+  1496→        prediction["recent_anomalies"] = [
+  1497→            {"pattern": p.key, "description": p.description}
+  1498→            for p in recent_anomalies[:5]
+  1499→        ]
+  1500→
+  1501→        return prediction
+  1502→
+  1503→    def get_learning_stats(self) -> Dict[str, Any]:
+  1504→        """Return statistics about what has been learned."""
+  1505→        all_patterns = self._store.all_patterns()
+  1506→        by_type: Counter = Counter(p.pattern_type for p in all_patterns)
+  1507→        by_source: Counter = Counter(p.source for p in all_patterns)
+  1508→
+  1509→        confidences = [p.decayed_confidence(self._store._half_life_days) for p in all_patterns]
+  1510→        supports = [p.support for p in all_patterns]
+  1511→
+  1512→        stats: Dict[str, Any] = {
+  1513→            **self._stats,
+  1514→            "total_patterns": len(all_patterns),
+  1515→            "patterns_by_type": dict(by_type),
+  1516→            "patterns_by_source": dict(by_source),
+  1517→            "store_max_patterns": self._store._max_patterns,
+  1518→            "store_count": self._store.count(),
+  1519→        }
+  1520→
+  1521→        if confidences:
+  1522→            try:
+  1523→                stats["avg_confidence"] = round(statistics.mean(confidences), 4)
+  1524→                stats["max_confidence"] = round(max(confidences), 4)
+  1525→                stats["min_confidence"] = round(min(confidences), 4)
+  1526→            except statistics.StatisticsError:
+  1527→                pass
+  1528→
+  1529→        if supports:
+  1530→            try:
+  1531→                stats["avg_support"] = round(statistics.mean(supports), 2)
+  1532→                stats["max_support"] = max(supports)
+  1533→                stats["total_observations"] = sum(supports)
+  1534→            except statistics.StatisticsError:
+  1535→                pass
+  1536→
+  1537→        return stats
+  1538→
+  1539→    # ------------------------------------------------------------------
+  1540→    # Maintenance
+  1541→    # ------------------------------------------------------------------
+  1542→
+  1543→    def _store_and_maintain(self, patterns: List[LearnedPattern]) -> int:
+  1544→        """Store patterns and run maintenance if needed."""
+  1545→        stored = 0
+  1546→        for p in patterns:
+  1547→            self._store.add(p)
+  1548→            stored += 1
+  1549→
+  1550→        self._stats["patterns_extracted"] += len(patterns)
+  1551→        self._stats["patterns_stored"] += stored
+  1552→        self._learn_count += 1
+  1553→
+  1554→        # Periodic maintenance
+  1555→        if self._auto_prune and self._learn_count % self._prune_interval == 0:
+  1556→            self._store.prune()
+  1557→            self._store.merge_similar()
+  1558→            self._stats["prune_runs"] += 1
+  1559→
+  1560→        if self._auto_save and stored > 0:
+  1561→            self._store.save()
+  1562→
+  1563→        return stored
+  1564→
+  1565→    def save(self) -> None:
+  1566→        """Force-save patterns to disk."""
+  1567→        self._store.save()
+  1568→
+  1569→    def load(self) -> None:
+  1570→        """Force-load patterns from disk."""
+  1571→        self._store.load()
+  1572→
+  1573→    def prune(self) -> int:
+  1574→        """Force-prune low-confidence patterns. Returns count removed."""
+  1575→        removed = self._store.prune()
+  1576→        self._store.merge_similar()
+  1577→        self._stats["prune_runs"] += 1
+  1578→        return removed
+  1579→
+  1580→    def clear(self) -> int:
+  1581→        """Clear all learned patterns. Returns count removed."""
+  1582→        n = self._store.clear()
+  1583→        if self._auto_save:
+  1584→            self._store.save()
+  1585→        return n
+  1586→
+  1587→
+  1588→# ═══════════════════════════════════════════════════════════════════════════
+  1589→# Helpers (private)
+  1590→# ═══════════════════════════════════════════════════════════════════════════
+  1591→
+  1592→
+  1593→def _now_iso() -> str:
+  1594→    """Current UTC time as ISO-8601 string."""
+  1595→    return datetime.now(timezone.utc).isoformat()
+  1596→
+  1597→
+  1598→def _weighted_avg(a_conf: float, a_sup: int, b_conf: float, b_sup: int) -> float:
+  1599→    """Support-weighted average of two confidence values."""
+  1600→    total = a_sup + b_sup
+  1601→    if total == 0:
+  1602→        return (a_conf + b_conf) / 2.0
+  1603→    return (a_conf * a_sup + b_conf * b_sup) / total
+  1604→
+  1605→
+  1606→# ═══════════════════════════════════════════════════════════════════════════
+  1607→# Module-level convenience API
+  1608→# ═══════════════════════════════════════════════════════════════════════════
+  1609→
+  1610→
+  1611→_global_learner: Optional[RepositoryLearner] = None
+  1612→
+  1613→
+  1614→def get_repository_learner() -> RepositoryLearner:
+  1615→    """Get the global RepositoryLearner instance (creates one if needed)."""
+  1616→    global _global_learner
+  1617→    if _global_learner is None:
+  1618→        _global_learner = RepositoryLearner()
+  1619→    return _global_learner
+  1620→
+  1621→
+  1622→def reset_repository_learner() -> None:
+  1623→    """Reset the global learner so the next call creates a fresh one."""
+  1624→    global _global_learner
+  1625→    _global_learner = None
+  1626→

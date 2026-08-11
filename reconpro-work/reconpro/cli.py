@@ -233,7 +233,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="reconpro",
         description=(
-            "ReconPro Nexus v10 — Async Engine. Evasion. Swarm. Knowledge Graph. 40+ Subcommands.\n"
+            "ReconPro Nexus v11 — Async Engine. Evasion. Swarm. Knowledge Graph. 40+ Subcommands.\n"
             "The next-gen security platform with AI agent, swarm, and attack-path chaining.\n\n"
             "Quick Start:  reconpro nexus           (mind-blowing agent TUI)\n"
             "AI Agent:     reconpro agent <goal>   (LLM-powered, 18 tools)\n"
@@ -603,7 +603,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
 
     # ── rate (v9.2.0 Module Rating System) ──────────────────────
-    p = sub.add_parser("rate", help="Rate all v9.2.0 modules against industry tools /100")
+    p = sub.add_parser("rate", help="Rate all v11 modules against industry tools /100")
     p.add_argument("--module", "-m", type=str, default=None,
                      help="Rate a specific module (e.g. dead-drop, quantum-fingerprint)")
     p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
@@ -629,6 +629,45 @@ def main(argv: list[str] | None = None) -> None:
                      help="Show usage examples")
     p.add_argument("--quick-start", action="store_true",
                      help="Show quick-start guide")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    # ── Engineering Commands (Age III) ────────────────────────
+    p = sub.add_parser("engineering", help="Run full engineering pipeline (health, drift, quality gates)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+    p.add_argument("--repo", type=str, default=".", help="Repository path to analyze")
+
+    p = sub.add_parser("validate", help="Run auto-validation pipeline (syntax, imports, types, security, perf)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+    p.add_argument("--repo", type=str, default=".", help="Repository path to validate")
+
+    p = sub.add_parser("benchmark-engineering", help="Run engineering benchmarks with regression detection")
+    p.add_argument("--quick", action="store_true", help="Quick benchmark subset")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    p = sub.add_parser("recommendations", help="View engineering recommendations")
+    p.add_argument("--all", action="store_true", help="Show all including dismissed")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+    p.add_argument("--dismiss", type=str, default=None, help="Dismiss a recommendation by ID")
+
+    p = sub.add_parser("memory", help="Repository memory — store, recall, search engineering facts")
+    p.add_argument("--recall", type=str, default=None, help="Recall a fact by key")
+    p.add_argument("--search", type=str, default=None, help="Search facts by text")
+    p.add_argument("--stats", action="store_true", help="Show memory statistics")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    p = sub.add_parser("digital-twin", help="Digital twin — capture state, simulate changes, detect anomalies")
+    p.add_argument("--capture", action="store_true", help="Capture current system state")
+    p.add_argument("--anomaly", action="store_true", help="Detect anomalies vs baseline")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    p = sub.add_parser("auto-fix", help="Propose fixes for detected issues")
+    p.add_argument("--apply", action="store_true", help="Apply approved fixes (dry-run by default)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    p = sub.add_parser("regression", help="Regression intelligence — detect and report regressions")
+    p.add_argument("--baseline", action="store_true", help="Capture new baseline")
+    p.add_argument("--detect", action="store_true", help="Detect regressions vs baseline")
+    p.add_argument("--report", action="store_true", help="Generate regression report")
     p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
 
     # ── Parse ─────────────────────────────────────────────────────
@@ -1985,6 +2024,199 @@ def main(argv: list[str] | None = None) -> None:
         # Default: show quick-start
         text = render_quick_start()
         console.print(text)
+        return
+
+    # ── Engineering Commands (Age III) ────────────────────────
+    if cmd == "engineering":
+        _banner(args)
+        from .engineering_workflow import ContinuousEngineeringOrchestrator
+        import json as _json
+        repo = getattr(args, "repo", ".")
+        console.print(f"\n  [bold]Running full engineering pipeline on [cyan]{repo}[/]...[/]")
+        orchestrator = ContinuousEngineeringOrchestrator()
+        result = orchestrator.run_full_cycle(repo)
+        if getattr(args, "json_output", False):
+            console.print(_json.dumps(result.to_dict(), indent=2, default=str))
+        else:
+            console.print(Panel(
+                f"Status: [bold]{result.overall_status.upper()}[/bold]\n"
+                f"Stages: {result.stages_run}/{result.total_stages}\n"
+                f"Duration: {result.total_duration:.2f}s\n"
+                f"Failures: {sum(1 for s in result.stage_results.values() if s.status == 'fail')}",
+                title="[bold]ENGINEERING PIPELINE[/bold]",
+                border_style="bright_cyan",
+            ))
+        return
+
+    if cmd == "validate":
+        _banner(args)
+        from .auto_validation import ValidationPipeline
+        import json as _json
+        repo = getattr(args, "repo", ".")
+        console.print(f"\n  [bold]Running validation pipeline on [cyan]{repo}[/]...[/]")
+        pipeline = ValidationPipeline(repo)
+        report = pipeline.validate_full()
+        if getattr(args, "json_output", False):
+            console.print(_json.dumps(report.to_dict(), indent=2, default=str))
+        else:
+            console.print(Panel(
+                f"Status: [bold]{report.summary()}[/bold]\n"
+                f"Stages: {len(report.stage_results)}\n"
+                f"Total findings: {len(report.all_findings)}",
+                title="[bold]VALIDATION[/bold]",
+                border_style="bright_cyan",
+            ))
+        return
+
+    if cmd == "benchmark-engineering":
+        _banner(args)
+        from .benchmark_automation import BenchmarkAutomation
+        import json as _json
+        console.print("\n  [bold]Running engineering benchmarks...[/]")
+        ba = BenchmarkAutomation()
+        if getattr(args, "quick", False):
+            results = ba.run_quick_benchmark()
+        else:
+            results = ba.run_full_benchmark()
+        report = ba.generate_benchmark_report()
+        if getattr(args, "json_output", False):
+            console.print(_json.dumps(results, indent=2, default=str))
+        else:
+            console.print(Panel(report, title="[bold]BENCHMARKS[/bold]", border_style="bright_cyan"))
+        return
+
+    if cmd == "recommendations":
+        _banner(args)
+        from .engineering_recommendations import get_recommender
+        import json as _json
+        recommender = get_recommender()
+        dismiss_id = getattr(args, "dismiss", None)
+        if dismiss_id:
+            recommender.dismiss_recommendation(dismiss_id)
+            console.print(f"  [green]Dismissed recommendation {dismiss_id}[/]")
+            return
+        show_all = getattr(args, "all", False)
+        recs = recommender.get_all_recommendations()
+        if getattr(args, "json_output", False):
+            console.print(_json.dumps([r.to_dict() for r in recs], indent=2, default=str))
+        else:
+            active = [r for r in recs if not r.dismissed] if not show_all else recs
+            if not active:
+                console.print("\n  [green]No recommendations. Everything looks good.[/]")
+            else:
+                for r in active[:20]:
+                    sev_color = "red" if r.severity == "critical" else "yellow" if r.severity == "high" else "green"
+                    console.print(f"  [{sev_color}]{r.severity.upper()}[/{sev_color}] {r.title}")
+                    if r.affected_files:
+                        console.print(f"    [dim]Files: {', '.join(r.affected_files[:3])}[/]")
+                console.print(f"\n  [dim]Total: {len(active)} recommendations[/]")
+        return
+
+    if cmd == "memory":
+        _banner(args)
+        from .repository_memory import RepositoryMemory
+        import json as _json
+        mem = RepositoryMemory()
+        recall_key = getattr(args, "recall", None)
+        search_text = getattr(args, "search", None)
+        if recall_key:
+            fact = mem.recall(recall_key)
+            if fact:
+                console.print(f"  [cyan]{recall_key}[/]: {fact.value}")
+            else:
+                console.print(f"  [dim]No fact found for key: {recall_key}[/]")
+            return
+        if search_text:
+            facts = mem.search(search_text)
+            for f in facts[:20]:
+                console.print(f"  [cyan]{f.key}[/]: {str(f.value)[:100]}")
+            console.print(f"\n  [dim]Found {len(facts)} facts matching '{search_text}'[/]")
+            return
+        if getattr(args, "stats", False):
+            stats = mem.get_stats()
+            if getattr(args, "json_output", False):
+                console.print(_json.dumps(stats, indent=2, default=str))
+            else:
+                table = Table(border_style="dim", header_style="bold", title="Repository Memory Stats")
+                table.add_column("Metric", style="cyan")
+                table.add_column("Value", justify="right")
+                for k, v in stats.items():
+                    table.add_row(str(k), str(v))
+                console.print(table)
+            return
+        console.print("  Use: reconpro memory --recall KEY | --search TEXT | --stats")
+        return
+
+    if cmd == "digital-twin":
+        _banner(args)
+        from .digital_twin import DigitalTwin
+        import json as _json
+        twin = DigitalTwin()
+        if getattr(args, "capture", False):
+            console.print("\n  [bold]Capturing system state...[/]")
+            state = twin.capture_state()
+            twin.persist()
+            console.print(f"  [green]State captured and persisted.[/]")
+            console.print(f"  Components: {len(state.components)}")
+            console.print(f"  Overall status: {state.overall_status}")
+            return
+        if getattr(args, "anomaly", False):
+            console.print("\n  [bold]Detecting anomalies...[/]")
+            anomalies = twin.detect_anomaly()
+            if anomalies:
+                for a in anomalies[:20]:
+                    console.print(f"  [yellow]ANOMALY[/]: {a}")
+            else:
+                console.print("  [green]No anomalies detected.[/]")
+            return
+        console.print("  Use: reconpro digital-twin --capture | --anomaly")
+        return
+
+    if cmd == "auto-fix":
+        _banner(args)
+        from .auto_fix import AutoFixEngine
+        import json as _json
+        console.print("\n  [bold]Analyzing for auto-fix proposals...[/]")
+        engine = AutoFixEngine()
+        proposals = engine.get_fix_history()
+        if getattr(args, "json_output", False):
+            console.print(_json.dumps([p.to_dict() for p in proposals], indent=2, default=str))
+        else:
+            if proposals:
+                for p in proposals[:20]:
+                    sev_color = "red" if p.risk_level == "CRITICAL" else "yellow" if p.risk_level == "HIGH" else "green"
+                    console.print(f"  [{sev_color}]{p.risk_level}[/{sev_color}] {p.title}")
+                    console.print(f"    [dim]File: {p.affected_file} | Confidence: {p.confidence:.0%}[/]")
+                console.print(f"\n  [dim]Total: {len(proposals)} proposals | Use --apply to apply approved fixes[/]")
+            else:
+                console.print("  [green]No fix proposals. Run engineering pipeline first.[/]")
+        return
+
+    if cmd == "regression":
+        _banner(args)
+        from .regression_intelligence import RegressionIntelligence
+        import json as _json
+        ri = RegressionIntelligence()
+        if getattr(args, "baseline", False):
+            console.print("\n  [bold]Capturing regression baseline...[/]")
+            ri.capture_baseline()
+            console.print("  [green]Baseline captured.[/]")
+            return
+        if getattr(args, "detect", False):
+            console.print("\n  [bold]Detecting regressions...[/]")
+            regressions = ri.detect_regression()
+            if regressions:
+                for r in regressions[:20]:
+                    console.print(f"  [red]REGRESSION[/]: {r.description}")
+                console.print(f"\n  [dim]Total: {len(regressions)} regressions detected[/]")
+            else:
+                console.print("  [green]No regressions detected.[/]")
+            return
+        if getattr(args, "report", False):
+            report = ri.generate_regression_report()
+            console.print(Panel(report, title="[bold]REGRESSION REPORT[/bold]", border_style="bright_cyan"))
+            return
+        console.print("  Use: reconpro regression --baseline | --detect | --report")
         return
 
     # ── No args ─────────────────────────────────────────────────────

@@ -1,0 +1,1695 @@
+     1→"""ReconPro v11.0.0 — Regression Intelligence System.
+     2→
+     3→Provides intelligent regression detection and management for the ReconPro
+     4→platform.  This is the *intelligence layer* that sits above the specific
+     5→test suites in ``tests/test_regression_v11.py`` and
+     6→``tests/test_security_regression.py``.
+     7→
+     8→Core responsibilities:
+     9→    - Capture and version performance/behaviour baselines
+    10→    - Detect regressions by comparing current results against baselines
+    11→    - Classify regressions (performance, correctness, API, behaviour)
+    12→    - Assess impact severity
+    13→    - Track regression history and analyse trends
+    14→    - Generate comprehensive regression reports
+    15→
+    16→Persistence:
+    17→    - Baselines:  RECONPRO_HOME/memory/regression_baseline.json
+    18→    - History:    RECONPRO_HOME/memory/regression_history.json
+    19→
+    20→Zero external dependencies — pure Python + stdlib only.
+    21→"""
+    22→
+    23→from __future__ import annotations
+    24→
+    25→import json
+    26→import logging
+    27→import math
+    28→import os
+    29→import statistics
+    30→import uuid
+    31→from dataclasses import dataclass, field, asdict
+    32→from datetime import datetime, timezone
+    33→from enum import Enum
+    34→from pathlib import Path
+    35→from typing import Any, Dict, List, Optional, Set, Tuple
+    36→
+    37→from reconpro.constants import RECONPRO_HOME, MEMORY_DIR, SEVERITY_LEVELS
+    38→
+    39→# ── Module paths ──────────────────────────────────────────────────────────
+    40→
+    41→_BASELINE_PATH: Path = MEMORY_DIR / "regression_baseline.json"
+    42→_HISTORY_PATH: Path = MEMORY_DIR / "regression_history.json"
+    43→
+    44→logger = logging.getLogger("reconpro.regression_intelligence")
+    45→
+    46→# ── Enumerations ─────────────────────────────────────────────────────────
+    47→
+    48→
+    49→class RegressionType(str, Enum):
+    50→    """Classification of regression types."""
+    51→    PERFORMANCE = "performance"
+    52→    CORRECTNESS = "correctness"
+    53→    API = "api"
+    54→    BEHAVIOUR = "behaviour"
+    55→
+    56→
+    57→class RegressionSeverity(str, Enum):
+    58→    """Impact severity levels for detected regressions."""
+    59→    CRITICAL = "critical"
+    60→    HIGH = "high"
+    61→    MEDIUM = "medium"
+    62→    LOW = "low"
+    63→    INFO = "info"
+    64→
+    65→
+    66→class RegressionStatus(str, Enum):
+    67→    """Lifecycle status of a regression record."""
+    68→    DETECTED = "detected"
+    69→    CONFIRMED = "confirmed"
+    70→    INVESTIGATING = "investigating"
+    71→    FIXED = "fixed"
+    72→    WONTFIX = "wontfix"
+    73→    FALSE_POSITIVE = "false_positive"
+    74→
+    75→
+    76→# ── Data Classes ─────────────────────────────────────────────────────────
+    77→
+    78→
+    79→@dataclass
+    80→class RegressionRecord:
+    81→    """Immutable record of a single detected regression.
+    82→
+    83→    Attributes:
+    84→        id: Unique identifier (UUID4).
+    85→        type: Classification (performance, correctness, api, behaviour).
+    86→        description: Human-readable description of the regression.
+    87→        baseline_value: The expected/baseline value.
+    88→        current_value: The observed current value.
+    89→        delta: Absolute difference |current - baseline|.
+    90→        severity: Impact severity.
+    91→        affected_component: Module, function, or subsystem affected.
+    92→        detected_at: ISO-8601 timestamp of detection.
+    93→        status: Current lifecycle status.
+    94→        evidence: Dict of supporting evidence (metrics, stack traces, etc.).
+    95→    """
+    96→    id: str = ""
+    97→    type: RegressionType = RegressionType.PERFORMANCE
+    98→    description: str = ""
+    99→    baseline_value: Any = None
+   100→    current_value: Any = None
+   101→    delta: float = 0.0
+   102→    severity: RegressionSeverity = RegressionSeverity.MEDIUM
+   103→    affected_component: str = ""
+   104→    detected_at: str = ""
+   105→    status: RegressionStatus = RegressionStatus.DETECTED
+   106→    evidence: Dict[str, Any] = field(default_factory=dict)
+   107→
+   108→    def __post_init__(self) -> None:
+   109→        if not self.id:
+   110→            self.id = uuid.uuid4().hex[:12]
+   111→        if not self.detected_at:
+   112→            self.detected_at = datetime.now(timezone.utc).isoformat()
+   113→
+   114→    def to_dict(self) -> Dict[str, Any]:
+   115→        """Serialize to a JSON-compatible dict."""
+   116→        return {
+   117→            "id": self.id,
+   118→            "type": self.type.value if isinstance(self.type, RegressionType) else self.type,
+   119→            "description": self.description,
+   120→            "baseline_value": self.baseline_value,
+   121→            "current_value": self.current_value,
+   122→            "delta": self.delta,
+   123→            "severity": self.severity.value if isinstance(self.severity, RegressionSeverity) else self.severity,
+   124→            "affected_component": self.affected_component,
+   125→            "detected_at": self.detected_at,
+   126→            "status": self.status.value if isinstance(self.status, RegressionStatus) else self.status,
+   127→            "evidence": self.evidence,
+   128→        }
+   129→
+   130→    @classmethod
+   131→    def from_dict(cls, data: Dict[str, Any]) -> "RegressionRecord":
+   132→        """Deserialize from a dict, converting enum strings back."""
+   133→        type_val = data.get("type", "performance")
+   134→        if isinstance(type_val, str):
+   135→            type_val = RegressionType(type_val)
+   136→
+   137→        sev_val = data.get("severity", "medium")
+   138→        if isinstance(sev_val, str):
+   139→            sev_val = RegressionSeverity(sev_val)
+   140→
+   141→        status_val = data.get("status", "detected")
+   142→        if isinstance(status_val, str):
+   143→            status_val = RegressionStatus(status_val)
+   144→
+   145→        return cls(
+   146→            id=data.get("id", ""),
+   147→            type=type_val,
+   148→            description=data.get("description", ""),
+   149→            baseline_value=data.get("baseline_value"),
+   150→            current_value=data.get("current_value"),
+   151→            delta=float(data.get("delta", 0.0)),
+   152→            severity=sev_val,
+   153→            affected_component=data.get("affected_component", ""),
+   154→            detected_at=data.get("detected_at", ""),
+   155→            status=status_val,
+   156→            evidence=data.get("evidence", {}),
+   157→        )
+   158→
+   159→
+   160→# ── BaselineManager ──────────────────────────────────────────────────────
+   161→
+   162→
+   163→class BaselineManager:
+   164→    """Manages regression baselines with versioning and persistence.
+   165→
+   166→    Stores baselines at ``RECONPRO_HOME/memory/regression_baseline.json``.
+   167→    Each baseline entry is versioned by timestamp and can be compared,
+   168→    exported, and imported.
+   169→
+   170→    Usage::
+   171→
+   172→        bm = BaselineManager()
+   173→        bm.capture("score_bounds", {"min": 0, "max": 100})
+   174→        bm.capture("module_count", {"remote": 25, "local": 3})
+   175→        baseline = bm.get("score_bounds")
+   176→        bm.export("/tmp/baselines.json")
+   177→    """
+   178→
+   179→    def __init__(self, storage_path: Optional[Path] = None) -> None:
+   180→        self._path = storage_path or _BASELINE_PATH
+   181→        self._baselines: Dict[str, List[Dict[str, Any]]] = {}
+   182→        self._ensure_dir()
+   183→        self._load()
+   184→
+   185→    def _ensure_dir(self) -> None:
+   186→        """Ensure the memory directory exists."""
+   187→        self._path.parent.mkdir(parents=True, exist_ok=True)
+   188→
+   189→    def _load(self) -> None:
+   190→        """Load baselines from disk."""
+   191→        if self._path.exists():
+   192→            try:
+   193→                with open(self._path, "r", encoding="utf-8") as fh:
+   194→                    self._baselines = json.load(fh)
+   195→                logger.debug("Loaded %d baseline keys from %s",
+   196→                              len(self._baselines), self._path)
+   197→            except (json.JSONDecodeError, OSError) as exc:
+   198→                logger.warning("Failed to load baselines: %s", exc)
+   199→                self._baselines = {}
+   200→
+   201→    def _save(self) -> None:
+   202→        """Persist baselines to disk."""
+   203→        try:
+   204→            self._ensure_dir()
+   205→            with open(self._path, "w", encoding="utf-8") as fh:
+   206→                json.dump(self._baselines, fh, indent=2, default=str)
+   207→            logger.debug("Saved %d baseline keys to %s",
+   208→                          len(self._baselines), self._path)
+   209→        except OSError as exc:
+   210→            logger.error("Failed to save baselines: %s", exc)
+   211→
+   212→    # ── Public API ──────────────────────────────────────────────────────
+   213→
+   214→    def capture(
+   215→        self,
+   216→        key: str,
+   217→        value: Any,
+   218→        label: str = "",
+   219→        metadata: Optional[Dict[str, Any]] = None,
+   220→    ) -> Dict[str, Any]:
+   221→        """Capture a baseline measurement under *key*.
+   222→
+   223→        Args:
+   224→            key: Unique baseline identifier (e.g. ``"score_bounds"``).
+   225→            value: The baseline value (dict, list, number, string).
+   226→            label: Optional human-readable label.
+   227→            metadata: Optional extra context.
+   228→
+   229→        Returns:
+   230→            The stored baseline entry dict.
+   231→        """
+   232→        entry: Dict[str, Any] = {
+   233→            "key": key,
+   234→            "value": value,
+   235→            "label": label,
+   236→            "metadata": metadata or {},
+   237→            "captured_at": datetime.now(timezone.utc).isoformat(),
+   238→            "version": len(self._baselines.get(key, [])) + 1,
+   239→        }
+   240→        self._baselines.setdefault(key, []).append(entry)
+   241→        self._save()
+   242→        logger.info("Captured baseline '%s' v%d", key, entry["version"])
+   243→        return entry
+   244→
+   245→    def get(self, key: str, version: Optional[int] = None) -> Optional[Any]:
+   246→        """Retrieve a baseline value.
+   247→
+   248→        Args:
+   249→            key: Baseline identifier.
+   250→            version: Specific version (latest if None).
+   251→
+   252→        Returns:
+   253→            The baseline value, or None if not found.
+   254→        """
+   255→        entries = self._baselines.get(key)
+   256→        if not entries:
+   257→            return None
+   258→        if version is not None:
+   259→            for e in entries:
+   260→                if e.get("version") == version:
+   261→                    return e.get("value")
+   262→            return None
+   263→        return entries[-1].get("value")
+   264→
+   265→    def get_entry(self, key: str, version: Optional[int] = None) -> Optional[Dict[str, Any]]:
+   266→        """Retrieve a full baseline entry (including metadata).
+   267→
+   268→        Args:
+   269→            key: Baseline identifier.
+   270→            version: Specific version (latest if None).
+   271→
+   272→        Returns:
+   273→            The full baseline entry dict, or None.
+   274→        """
+   275→        entries = self._baselines.get(key)
+   276→        if not entries:
+   277→            return None
+   278→        if version is not None:
+   279→            for e in entries:
+   280→                if e.get("version") == version:
+   281→                    return e
+   282→            return None
+   283→        return entries[-1]
+   284→
+   285→    def list_keys(self) -> List[str]:
+   286→        """Return all baseline keys."""
+   287→        return sorted(self._baselines.keys())
+   288→
+   289→    def versions(self, key: str) -> int:
+   290→        """Return the number of versions for *key*."""
+   291→        return len(self._baselines.get(key, []))
+   292→
+   293→    def compare_versions(
+   294→        self, key: str, v_a: int, v_b: int
+   295→    ) -> Optional[Dict[str, Any]]:
+   296→        """Compare two versions of the same baseline.
+   297→
+   298→        Returns a dict with ``version_a``, ``version_b``, ``value_a``,
+   299→        ``value_b``, and ``same`` (bool).
+   300→        """
+   301→        val_a = self.get(key, v_a)
+   302→        val_b = self.get(key, v_b)
+   303→        if val_a is None or val_b is None:
+   304→            return None
+   305→        return {
+   306→            "key": key,
+   307→            "version_a": v_a,
+   308→            "version_b": v_b,
+   309→            "value_a": val_a,
+   310→            "value_b": val_b,
+   311→            "same": val_a == val_b,
+   312→        }
+   313→
+   314→    def compare_to_latest(
+   315→        self, key: str, current_value: Any
+   316→    ) -> Optional[Dict[str, Any]]:
+   317→        """Compare a *current_value* against the latest baseline for *key*.
+   318→
+   319→        Returns a dict with ``baseline``, ``current``, ``same``, and
+   320→        ``entry`` metadata.
+   321→        """
+   322→        latest = self.get_entry(key)
+   323→        if latest is None:
+   324→            return None
+   325→        baseline_value = latest.get("value")
+   326→        return {
+   327→            "key": key,
+   328→            "baseline": baseline_value,
+   329→            "current": current_value,
+   330→            "same": baseline_value == current_value,
+   331→            "entry": latest,
+   332→        }
+   333→
+   334→    def export(self, path: str) -> str:
+   335→        """Export all baselines to a JSON file.
+   336→
+   337→        Args:
+   338→            path: Destination file path.
+   339→
+   340→        Returns:
+   341→            The absolute path written.
+   342→        """
+   343→        abs_path = os.path.abspath(path)
+   344→        os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
+   345→        with open(abs_path, "w", encoding="utf-8") as fh:
+   346→            json.dump(self._baselines, fh, indent=2, default=str)
+   347→        logger.info("Exported %d baseline keys to %s",
+   348→                    len(self._baselines), abs_path)
+   349→        return abs_path
+   350→
+   351→    def import_baseline(self, path: str, overwrite: bool = False) -> int:
+   352→        """Import baselines from a JSON file.
+   353→
+   354→        Args:
+   355→            path: Source file path.
+   356→            overwrite: Replace existing keys if True, merge otherwise.
+   357→
+   358→        Returns:
+   359→            Number of keys imported.
+   360→        """
+   361→        with open(path, "r", encoding="utf-8") as fh:
+   362→            incoming = json.load(fh)
+   363→
+   364→        count = 0
+   365→        for key, entries in incoming.items():
+   366→            if overwrite or key not in self._baselines:
+   367→                self._baselines[key] = entries
+   368→                count += 1
+   369→            else:
+   370→                # Merge: append new versions
+   371→                for e in entries:
+   372→                    e_ver = e.get("version", 0)
+   373→                    existing_vers = {ex.get("version") for ex in self._baselines[key]}
+   374→                    if e_ver not in existing_vers:
+   375→                        self._baselines[key].append(e)
+   376→                        count += 1
+   377→        self._save()
+   378→        logger.info("Imported %d baseline keys from %s", count, path)
+   379→        return count
+   380→
+   381→    def remove(self, key: str) -> bool:
+   382→        """Remove a baseline key entirely."""
+   383→        if key in self._baselines:
+   384→            del self._baselines[key]
+   385→            self._save()
+   386→            return True
+   387→        return False
+   388→
+   389→    def clear(self) -> int:
+   390→        """Remove all baselines. Returns count of removed keys."""
+   391→        count = len(self._baselines)
+   392→        self._baselines.clear()
+   393→        self._save()
+   394→        return count
+   395→
+   396→    @property
+   397→    def all_baselines(self) -> Dict[str, List[Dict[str, Any]]]:
+   398→        """Return the full baseline dict (read-only copy semantics)."""
+   399→        return dict(self._baselines)
+   400→
+   401→
+   402→# ── RegressionDetector ──────────────────────────────────────────────────
+   403→
+   404→
+   405→class RegressionDetector:
+   406→    """Detection algorithms for identifying regressions.
+   407→
+   408→    Provides multiple detection strategies:
+   409→        - **Performance regression**: Threshold-based (absolute % and
+   410→          absolute value)
+   411→        - **Correctness regression**: Test failure pattern detection
+   412→        - **API regression**: Interface signature changes
+   413→        - **Statistical regression**: Trend analysis using stdlib
+   414→          ``statistics``
+   415→
+   416→    All detectors return ``RegressionRecord`` objects or empty lists.
+   417→    """
+   418→
+   419→    # Default detection thresholds
+   420→    DEFAULT_PERF_PERCENT_THRESHOLD: float = 10.0  # 10% degradation
+   421→    DEFAULT_PERF_ABSOLUTE_THRESHOLD: float = 5.0
+   422→    DEFAULT_STAT_MIN_SAMPLES: int = 5
+   423→    DEFAULT_STAT_Z_THRESHOLD: float = 2.0
+   424→
+   425→    def __init__(
+   426→        self,
+   427→        perf_percent: Optional[float] = None,
+   428→        perf_absolute: Optional[float] = None,
+   429→        stat_min_samples: Optional[int] = None,
+   430→        stat_z_threshold: Optional[float] = None,
+   431→    ) -> None:
+   432→        self._perf_percent = (
+   433→            perf_percent if perf_percent is not None
+   434→            else self.DEFAULT_PERF_PERCENT_THRESHOLD
+   435→        )
+   436→        self._perf_absolute = (
+   437→            perf_absolute if perf_absolute is not None
+   438→            else self.DEFAULT_PERF_ABSOLUTE_THRESHOLD
+   439→        )
+   440→        self._stat_min_samples = (
+   441→            stat_min_samples if stat_min_samples is not None
+   442→            else self.DEFAULT_STAT_MIN_SAMPLES
+   443→        )
+   444→        self._stat_z_threshold = (
+   445→            stat_z_threshold if stat_z_threshold is not None
+   446→            else self.DEFAULT_STAT_Z_THRESHOLD
+   447→        )
+   448→
+   449→    # ── Performance Detection ──────────────────────────────────────────
+   450→
+   451→    def detect_performance_regressions(
+   452→        self,
+   453→        baselines: Dict[str, float],
+   454→        current: Dict[str, float],
+   455→        component: str = "",
+   456→        percent_threshold: Optional[float] = None,
+   457→        absolute_threshold: Optional[float] = None,
+   458→    ) -> List[RegressionRecord]:
+   459→        """Detect performance regressions by comparing numeric metrics.
+   460→
+   461→        A performance regression is flagged when the current value exceeds
+   462→        the baseline by either:
+   463→            1. *percent_threshold* % (default 10%) of the baseline value, OR
+   464→            2. *absolute_threshold* (default 5.0) absolute units
+   465→
+   466→        Higher-is-worse metrics (e.g. latency, error rate): current > baseline
+   467→        is a regression.
+   468→        Lower-is-worse metrics (e.g. score, throughput): current < baseline
+   469→        is a regression.  These should be stored as negative values in both
+   470→        *baselines* and *current*.
+   471→
+   472→        Args:
+   473→            baselines: Dict mapping metric_name -> baseline_value.
+   474→            current: Dict mapping metric_name -> current_value.
+   475→            component: Affected component name.
+   476→            percent_threshold: Override default % threshold.
+   477→            absolute_threshold: Override default absolute threshold.
+   478→
+   479→        Returns:
+   480→            List of RegressionRecord for each detected regression.
+   481→        """
+   482→        pct_thr = percent_threshold if percent_threshold is not None else self._perf_percent
+   483→        abs_thr = absolute_threshold if absolute_threshold is not None else self._perf_absolute
+   484→        regressions: List[RegressionRecord] = []
+   485→
+   486→        for metric, baseline_val in baselines.items():
+   487→            if metric not in current:
+   488→                continue
+   489→            cur_val = current[metric]
+   490→
+   491→            if not isinstance(baseline_val, (int, float)) or not isinstance(cur_val, (int, float)):
+   492→                continue
+   493→
+   494→            # Skip zero baselines for percentage calc
+   495→            if baseline_val == 0 and cur_val == 0:
+   496→                continue
+   497→
+   498→            delta = cur_val - baseline_val
+   499→            pct_change = abs(delta / baseline_val * 100) if baseline_val != 0 else float("inf")
+   500→
+   501→            is_regression = False
+   502→            if delta > 0 and baseline_val >= 0:
+   503→                # Higher-is-worse: current > baseline is bad
+   504→                is_regression = pct_change >= pct_thr or abs(delta) >= abs_thr
+   505→            elif delta < 0 and baseline_val < 0:
+   506→                # Lower-is-worse (negative convention): current < baseline
+   507→                # means cur is more negative = worse
+   508→                is_regression = pct_change >= pct_thr or abs(delta) >= abs_thr
+   509→
+   510→            if is_regression:
+   511→                severity = self._performance_severity(pct_change, delta)
+   512→                regressions.append(RegressionRecord(
+   513→                    type=RegressionType.PERFORMANCE,
+   514→                    description=(
+   515→                        f"Performance regression in '{metric}': "
+   516→                        f"baseline={baseline_val}, current={cur_val}, "
+   517→                        f"delta={delta:+.2f} ({pct_change:.1f}%)"
+   518→                    ),
+   519→                    baseline_value=baseline_val,
+   520→                    current_value=cur_val,
+   521→                    delta=delta,
+   522→                    severity=severity,
+   523→                    affected_component=component or metric,
+   524→                    evidence={
+   525→                        "metric": metric,
+   526→                        "percent_change": round(pct_change, 2),
+   527→                        "absolute_change": round(delta, 4),
+   528→                        "percent_threshold": pct_thr,
+   529→                        "absolute_threshold": abs_thr,
+   530→                    },
+   531→                ))
+   532→
+   533→        return regressions
+   534→
+   535→    def _performance_severity(
+   536→        self, percent_change: float, delta: float
+   537→    ) -> RegressionSeverity:
+   538→        """Map performance degradation magnitude to severity."""
+   539→        if percent_change >= 50 or abs(delta) >= 50:
+   540→            return RegressionSeverity.CRITICAL
+   541→        elif percent_change >= 25 or abs(delta) >= 20:
+   542→            return RegressionSeverity.HIGH
+   543→        elif percent_change >= 10 or abs(delta) >= 5:
+   544→            return RegressionSeverity.MEDIUM
+   545→        else:
+   546→            return RegressionSeverity.LOW
+   547→
+   548→    # ── Correctness Detection ──────────────────────────────────────────
+   549→
+   550→    def detect_correctness_regressions(
+   551→        self,
+   552→        baseline_results: Dict[str, bool],
+   553→        current_results: Dict[str, bool],
+   554→        component: str = "",
+   555→    ) -> List[RegressionRecord]:
+   556→        """Detect correctness regressions from pass/fail patterns.
+   557→
+   558→        A correctness regression occurs when a test or check that previously
+   559→        passed now fails.
+   560→
+   561→        Args:
+   562→            baseline_results: Dict mapping test_name -> True/False.
+   563→            current_results: Dict mapping test_name -> True/False.
+   564→            component: Affected component name.
+   565→
+   566→        Returns:
+   567→            List of RegressionRecord for newly-failing checks.
+   568→        """
+   569→        regressions: List[RegressionRecord] = []
+   570→
+   571→        for test_name, baseline_pass in baseline_results.items():
+   572→            if test_name not in current_results:
+   573→                continue
+   574→            current_pass = current_results[test_name]
+   575→            if baseline_pass and not current_pass:
+   576→                severity = RegressionSeverity.HIGH
+   577→                regressions.append(RegressionRecord(
+   578→                    type=RegressionType.CORRECTNESS,
+   579→                    description=(
+   580→                        f"Correctness regression: '{test_name}' "
+   581→                        f"previously passed, now fails"
+   582→                    ),
+   583→                    baseline_value=True,
+   584→                    current_value=False,
+   585→                    delta=1.0,
+   586→                    severity=severity,
+   587→                    affected_component=component or test_name,
+   588→                    evidence={
+   589→                        "test": test_name,
+   590→                        "baseline_passed": True,
+   591→                        "current_passed": False,
+   592→                    },
+   593→                ))
+   594→
+   595→        return regressions
+   596→
+   597→    # ── API Detection ──────────────────────────────────────────────────
+   598→
+   599→    def detect_api_regressions(
+   600→        self,
+   601→        baseline_api: Dict[str, Dict[str, Any]],
+   602→        current_api: Dict[str, Dict[str, Any]],
+   603→        component: str = "",
+   604→    ) -> List[RegressionRecord]:
+   605→        """Detect API regressions from interface signature changes.
+   606→
+   607→        Compares API signatures represented as dicts:
+   608→            ``{"func_name": {"params": [...], "return_type": "...", "exists": True}}``
+   609→
+   610→        Flags:
+   611→            - Functions removed (``exists: True -> False``)
+   612→            - Required parameters added
+   613→            - Return type changed
+   614→            - Functions removed entirely
+   615→
+   616→        Args:
+   617→            baseline_api: Baseline API signatures.
+   618→            current_api: Current API signatures.
+   619→            component: Affected component name.
+   620→
+   621→        Returns:
+   622→            List of RegressionRecord for API changes.
+   623→        """
+   624→        regressions: List[RegressionRecord] = []
+   625→
+   626→        for func_name, baseline_sig in baseline_api.items():
+   627→            if func_name not in current_api:
+   628→                regressions.append(RegressionRecord(
+   629→                    type=RegressionType.API,
+   630→                    description=f"API regression: '{func_name}' removed entirely",
+   631→                    baseline_value={"exists": True, **baseline_sig},
+   632→                    current_value=None,
+   633→                    delta=1.0,
+   634→                    severity=RegressionSeverity.CRITICAL,
+   635→                    affected_component=component or func_name,
+   636→                    evidence={"func": func_name, "change": "removed"},
+   637→                ))
+   638→                continue
+   639→
+   640→            cur_sig = current_api[func_name]
+   641→
+   642→            # Check if function was removed
+   643→            if baseline_sig.get("exists", True) and not cur_sig.get("exists", True):
+   644→                regressions.append(RegressionRecord(
+   645→                    type=RegressionType.API,
+   646→                    description=f"API regression: '{func_name}' marked as removed",
+   647→                    baseline_value=baseline_sig,
+   648→                    current_value=cur_sig,
+   649→                    delta=1.0,
+   650→                    severity=RegressionSeverity.CRITICAL,
+   651→                    affected_component=component or func_name,
+   652→                    evidence={"func": func_name, "change": "disabled"},
+   653→                ))
+   654→
+   655→            # Check for required parameters added
+   656→            base_params = set(baseline_sig.get("params", []))
+   657→            cur_params = set(cur_sig.get("params", []))
+   658→            new_required = cur_params - base_params
+   659→            optional_new = cur_sig.get("optional_params", set())
+   660→            new_required -= optional_new
+   661→
+   662→            if new_required:
+   663→                regressions.append(RegressionRecord(
+   664→                    type=RegressionType.API,
+   665→                    description=(
+   666→                        f"API regression: '{func_name}' gained required "
+   667→                        f"parameters: {sorted(new_required)}"
+   668→                    ),
+   669→                    baseline_value=sorted(base_params),
+   670→                    current_value=sorted(cur_params),
+   671→                    delta=float(len(new_required)),
+   672→                    severity=RegressionSeverity.HIGH,
+   673→                    affected_component=component or func_name,
+   674→                    evidence={
+   675→                        "func": func_name,
+   676→                        "change": "required_params_added",
+   677→                        "new_params": sorted(new_required),
+   678→                    },
+   679→                ))
+   680→
+   681→            # Check for return type changes
+   682→            base_return = baseline_sig.get("return_type", "")
+   683→            cur_return = cur_sig.get("return_type", "")
+   684→            if base_return and cur_return and base_return != cur_return:
+   685→                regressions.append(RegressionRecord(
+   686→                    type=RegressionType.API,
+   687→                    description=(
+   688→                        f"API regression: '{func_name}' return type changed "
+   689→                        f"from '{base_return}' to '{cur_return}'"
+   690→                    ),
+   691→                    baseline_value=base_return,
+   692→                    current_value=cur_return,
+   693→                    delta=1.0,
+   694→                    severity=RegressionSeverity.MEDIUM,
+   695→                    affected_component=component or func_name,
+   696→                    evidence={
+   697→                        "func": func_name,
+   698→                        "change": "return_type_changed",
+   699→                        "old": base_return,
+   700→                        "new": cur_return,
+   701→                    },
+   702→                ))
+   703→
+   704→        return regressions
+   705→
+   706→    # ── Statistical Detection ──────────────────────────────────────────
+   707→
+   708→    def detect_statistical_regressions(
+   709→        self,
+   710→        metric_name: str,
+   711→        values: List[float],
+   712→        new_value: float,
+   713→        component: str = "",
+   714→        min_samples: Optional[int] = None,
+   715→        z_threshold: Optional[float] = None,
+   716→    ) -> List[RegressionRecord]:
+   717→        """Detect statistical regressions using z-score analysis.
+   718→
+   719→        Builds a distribution from historical *values* and checks if
+   720→        *new_value* is an outlier beyond *z_threshold* standard deviations.
+   721→
+   722→        A regression is detected when the new value significantly deviates
+   723→        in the *worse* direction.  For positive-metrics (higher is worse,
+   724→        e.g. latency), deviations above are regressions.  The detector
+   725→        auto-detects direction by checking if the new value is above the
+   726→        mean (positive deviation = regression for higher-is-worse).
+   727→
+   728→        Args:
+   729→            metric_name: Name of the metric being checked.
+   730→            values: Historical values to build the distribution.
+   731→            new_value: The new value to check.
+   732→            component: Affected component name.
+   733→            min_samples: Minimum historical samples required (default 5).
+   734→            z_threshold: Z-score threshold (default 2.0).
+   735→
+   736→        Returns:
+   737→            List of RegressionRecord (0 or 1).
+   738→        """
+   739→        min_samp = min_samples if min_samples is not None else self._stat_min_samples
+   740→        z_thr = z_threshold if z_threshold is not None else self._stat_z_threshold
+   741→
+   742→        if len(values) < min_samp:
+   743→            return []
+   744→
+   745→        try:
+   746→            mean_val = statistics.mean(values)
+   747→            stdev = statistics.stdev(values) if len(values) > 1 else 0.0
+   748→        except (statistics.StatisticsError, ZeroDivisionError):
+   749→            return []
+   750→
+   751→        if stdev == 0:
+   752→            return []
+   753→
+   754→        z_score = (new_value - mean_val) / stdev
+   755→
+   756→        # Detect if this is a regression (significant deviation)
+   757→        is_regression = abs(z_score) >= z_thr
+   758→
+   759→        if not is_regression:
+   760→            return []
+   761→
+   762→        # Determine severity from z-score magnitude
+   763→        severity = self._statistical_severity(z_score)
+   764→
+   765→        direction = "above" if z_score > 0 else "below"
+   766→        regressions = [RegressionRecord(
+   767→            type=RegressionType.PERFORMANCE,
+   768→            description=(
+   769→                f"Statistical regression in '{metric_name}': "
+   770→                f"z-score={z_score:.2f} ({direction} mean), "
+   771→                f"mean={mean_val:.2f}, stdev={stdev:.2f}, "
+   772→                f"new={new_value:.2f}"
+   773→            ),
+   774→            baseline_value={"mean": round(mean_val, 4), "stdev": round(stdev, 4)},
+   775→            current_value=new_value,
+   776→            delta=z_score,
+   777→            severity=severity,
+   778→            affected_component=component or metric_name,
+   779→            evidence={
+   780→                "metric": metric_name,
+   781→                "z_score": round(z_score, 4),
+   782→                "mean": round(mean_val, 4),
+   783→                "stdev": round(stdev, 4),
+   784→                "sample_count": len(values),
+   785→                "z_threshold": z_thr,
+   786→                "direction": direction,
+   787→            },
+   788→        )]
+   789→
+   790→        return regressions
+   791→
+   792→    def _statistical_severity(self, z_score: float) -> RegressionSeverity:
+   793→        """Map z-score magnitude to severity."""
+   794→        abs_z = abs(z_score)
+   795→        if abs_z >= 4.0:
+   796→            return RegressionSeverity.CRITICAL
+   797→        elif abs_z >= 3.0:
+   798→            return RegressionSeverity.HIGH
+   799→        elif abs_z >= 2.0:
+   800→            return RegressionSeverity.MEDIUM
+   801→        else:
+   802→            return RegressionSeverity.LOW
+   803→
+   804→    # ── Behaviour Detection ────────────────────────────────────────────
+   805→
+   806→    def detect_behaviour_regressions(
+   807→        self,
+   808→        baseline_findings: List[Dict[str, Any]],
+   809→        current_findings: List[Dict[str, Any]],
+   810→        component: str = "",
+   811→    ) -> List[RegressionRecord]:
+   812→        """Detect behaviour regressions by comparing finding patterns.
+   813→
+   814→        Uses the delta engine's comparison logic to identify:
+   815→            - New findings of critical/high severity (new vulnerabilities)
+   816→            - Severity escalations on existing findings
+   817→            - Significant increase in total finding count
+   818→
+   819→        Args:
+   820→            baseline_findings: List of baseline finding dicts.
+   821→            current_findings: List of current finding dicts.
+   822→            component: Affected component name.
+   823→
+   824→        Returns:
+   825→            List of RegressionRecord for behavioural changes.
+   826→        """
+   827→        regressions: List[RegressionRecord] = []
+   828→
+   829→        baseline_by_title = {
+   830→            f.get("title", "") or "": f for f in baseline_findings
+   831→        }
+   832→        current_by_title = {
+   833→            f.get("title", "") or "": f for f in current_findings
+   834→        }
+   835→        baseline_titles = set(baseline_by_title.keys())
+   836→        current_titles = set(current_by_title.keys())
+   837→
+   838→        # New findings
+   839→        new_titles = current_titles - baseline_titles
+   840→        for title in sorted(new_titles):
+   841→            finding = current_by_title[title]
+   842→            sev = (finding.get("severity") or "").lower()
+   843→            if sev in ("critical", "high"):
+   844→                regressions.append(RegressionRecord(
+   845→                    type=RegressionType.BEHAVIOUR,
+   846→                    description=(
+   847→                        f"New {sev}-severity finding detected: '{title}'"
+   848→                    ),
+   849→                    baseline_value=None,
+   850→                    current_value=sev,
+   851→                    delta=1.0,
+   852→                    severity=(
+   853→                        RegressionSeverity.CRITICAL
+   854→                        if sev == "critical"
+   855→                        else RegressionSeverity.HIGH
+   856→                    ),
+   857→                    affected_component=component or finding.get("module", "unknown"),
+   858→                    evidence={
+   859→                        "finding": title,
+   860→                        "severity": sev,
+   861→                        "change": "new_finding",
+   862→                        "finding_data": finding,
+   863→                    },
+   864→                ))
+   865→
+   866→        # Severity escalations on persistent findings
+   867→        persistent_titles = baseline_titles & current_titles
+   868→        for title in sorted(t for t in persistent_titles if t is not None):
+   869→            base_sev = (baseline_by_title[title].get("severity") or "").lower()
+   870→            cur_sev = (current_by_title[title].get("severity") or "").lower()
+   871→            base_rank = SEVERITY_LEVELS.get(base_sev, 99)
+   872→            cur_rank = SEVERITY_LEVELS.get(cur_sev, 99)
+   873→            if cur_rank < base_rank:  # Lower number = higher severity = worse
+   874→                regressions.append(RegressionRecord(
+   875→                    type=RegressionType.BEHAVIOUR,
+   876→                    description=(
+   877→                        f"Severity escalation: '{title}' changed from "
+   878→                        f"{base_sev} to {cur_sev}"
+   879→                    ),
+   880→                    baseline_value=base_sev,
+   881→                    current_value=cur_sev,
+   882→                    delta=float(base_rank - cur_rank),
+   883→                    severity=(
+   884→                        RegressionSeverity.CRITICAL
+   885→                        if cur_sev == "critical"
+   886→                        else RegressionSeverity.HIGH
+   887→                    ),
+   888→                    affected_component=component or current_by_title[title].get("module", "unknown"),
+   889→                    evidence={
+   890→                        "finding": title,
+   891→                        "old_severity": base_sev,
+   892→                        "new_severity": cur_sev,
+   893→                        "change": "severity_escalation",
+   894→                    },
+   895→                ))
+   896→
+   897→        # Significant finding count increase
+   898→        base_count = len(baseline_findings)
+   899→        cur_count = len(current_findings)
+   900→        if base_count > 0:
+   901→            count_pct = (cur_count - base_count) / base_count * 100
+   902→            if count_pct >= 50 and (cur_count - base_count) >= 3:
+   903→                regressions.append(RegressionRecord(
+   904→                    type=RegressionType.BEHAVIOUR,
+   905→                    description=(
+   906→                        f"Finding count increased significantly: "
+   907→                        f"{base_count} -> {cur_count} (+{count_pct:.1f}%)"
+   908→                    ),
+   909→                    baseline_value=base_count,
+   910→                    current_value=cur_count,
+   911→                    delta=float(cur_count - base_count),
+   912→                    severity=RegressionSeverity.MEDIUM,
+   913→                    affected_component=component or "global",
+   914→                    evidence={
+   915→                        "change": "count_increase",
+   916→                        "baseline_count": base_count,
+   917→                        "current_count": cur_count,
+   918→                        "percent_change": round(count_pct, 2),
+   919→                    },
+   920→                ))
+   921→
+   922→        return regressions
+   923→
+   924→
+   925→# ── RegressionIntelligence ─────────────────────────────────────────────
+   926→
+   927→
+   928→class RegressionIntelligence:
+   929→    """Top-level regression intelligence orchestrator.
+   930→
+   931→    Combines ``BaselineManager`` and ``RegressionDetector`` into a unified
+   932→    API for baseline capture, regression detection, classification, impact
+   933→    assessment, history tracking, and report generation.
+   934→
+   935→    Usage::
+   936→
+   937→        ri = RegressionIntelligence()
+   938→        ri.capture_baseline("scan_results", my_scan_data)
+   939→
+   940→        regressions = ri.detect_regression(current_scan_data)
+   941→        for r in regressions:
+   942→            print(f"[{r.severity.value}] {r.description}")
+   943→
+   944→        report = ri.generate_regression_report()
+   945→        print(report)
+   946→    """
+   947→
+   948→    def __init__(
+   949→        self,
+   950→        baseline_path: Optional[Path] = None,
+   951→        history_path: Optional[Path] = None,
+   952→        perf_percent: Optional[float] = None,
+   953→        perf_absolute: Optional[float] = None,
+   954→    ) -> None:
+   955→        self._baseline_mgr = BaselineManager(
+   956→            storage_path=baseline_path or _BASELINE_PATH
+   957→        )
+   958→        self._history_path = history_path or _HISTORY_PATH
+   959→        self._history: List[RegressionRecord] = []
+   960→        self._detector = RegressionDetector(
+   961→            perf_percent=perf_percent,
+   962→            perf_absolute=perf_absolute,
+   963→        )
+   964→        self._load_history()
+   965→
+   966→    def _ensure_dir(self) -> None:
+   967→        self._history_path.parent.mkdir(parents=True, exist_ok=True)
+   968→
+   969→    def _load_history(self) -> None:
+   970→        """Load regression history from disk."""
+   971→        self._ensure_dir()
+   972→        if self._history_path.exists():
+   973→            try:
+   974→                with open(self._history_path, "r", encoding="utf-8") as fh:
+   975→                    raw = json.load(fh)
+   976→                self._history = [RegressionRecord.from_dict(r) for r in raw]
+   977→                logger.debug("Loaded %d regression history records", len(self._history))
+   978→            except (json.JSONDecodeError, OSError, TypeError) as exc:
+   979→                logger.warning("Failed to load regression history: %s", exc)
+   980→                self._history = []
+   981→
+   982→    def _save_history(self) -> None:
+   983→        """Persist regression history to disk."""
+   984→        try:
+   985→            self._ensure_dir()
+   986→            with open(self._history_path, "w", encoding="utf-8") as fh:
+   987→                json.dump(
+   988→                    [r.to_dict() for r in self._history],
+   989→                    fh,
+   990→                    indent=2,
+   991→                    default=str,
+   992→                )
+   993→            logger.debug("Saved %d regression history records", len(self._history))
+   994→        except OSError as exc:
+   995→            logger.error("Failed to save regression history: %s", exc)
+   996→
+   997→    # ── Baseline Capture ──────────────────────────────────────────────
+   998→
+   999→    def capture_baseline(
+  1000→        self,
+  1001→        key: str,
+  1002→        data: Dict[str, Any],
+  1003→        label: str = "",
+  1004→        metadata: Optional[Dict[str, Any]] = None,
+  1005→    ) -> Dict[str, Any]:
+  1006→        """Capture a performance/behavior baseline.
+  1007→
+  1008→        The baseline data should be a scan result dict or a metrics dict.
+  1009→        The system stores it under *key* for later comparison.
+  1010→
+  1011→        Args:
+  1012→            key: Unique baseline identifier.
+  1013→            data: Scan results or metrics to baseline.
+  1014→            label: Human-readable label.
+  1015→            metadata: Additional context.
+  1016→
+  1017→        Returns:
+  1018→            The stored baseline entry.
+  1019→        """
+  1020→        return self._baseline_mgr.capture(key, data, label=label, metadata=metadata)
+  1021→
+  1022→    # ── Regression Detection ──────────────────────────────────────────
+  1023→
+  1024→    def detect_regression(
+  1025→        self,
+  1026→        current_results: Dict[str, Any],
+  1027→        baseline_key: Optional[str] = None,
+  1028→        performance_metrics: Optional[Dict[str, float]] = None,
+  1029→        correctness_results: Optional[Dict[str, bool]] = None,
+  1030→        api_signatures: Optional[Dict[str, Dict[str, Any]]] = None,
+  1031→    ) -> List[RegressionRecord]:
+  1032→        """Run full regression detection against current results.
+  1033→
+  1034→        Compares *current_results* against the baseline stored at
+  1035→        *baseline_key* (or all baselines if None).
+  1036→
+  1037→        If specific metric dicts are provided, only those detectors run.
+  1038→        Otherwise, the system extracts metrics from the scan data dicts.
+  1039→
+  1040→        Args:
+  1041→            current_results: Current scan result or metric dict.
+  1042→            baseline_key: Specific baseline to compare against (None = all).
+  1043→            performance_metrics: Explicit perf metrics to check.
+  1044→            correctness_results: Explicit pass/fail results.
+  1045→            api_signatures: Explicit API signatures.
+  1046→
+  1047→        Returns:
+  1048→            List of detected RegressionRecord.
+  1049→        """
+  1050→        all_regressions: List[RegressionRecord] = []
+  1051→
+  1052→        # 1. Performance regression from scan data
+  1053→        if baseline_key is not None:
+  1054→            baseline_data = self._baseline_mgr.get(baseline_key)
+  1055→            if baseline_data and isinstance(baseline_data, dict) and isinstance(current_results, dict):
+  1056→                perf_regs = self._detect_scan_performance_regression(
+  1057→                    baseline_data, current_results
+  1058→                )
+  1059→                all_regressions.extend(perf_regs)
+  1060→
+  1061→                # Behaviour regressions from findings
+  1062→                behav_regs = self._detector.detect_behaviour_regressions(
+  1063→                    baseline_data.get("findings", []),
+  1064→                    current_results.get("findings", []),
+  1065→                    component=current_results.get("target", ""),
+  1066→                )
+  1067→                all_regressions.extend(behav_regs)
+  1068→
+  1069→        # 2. Explicit performance metrics
+  1070→        if performance_metrics:
+  1071→            baseline_metrics: Dict[str, float] = {}
+  1072→            keys_to_check = [baseline_key] if baseline_key else self._baseline_mgr.list_keys()
+  1073→            for bk in keys_to_check:
+  1074→                bv = self._baseline_mgr.get(bk)
+  1075→                if isinstance(bv, dict):
+  1076→                    for k, v in bv.items():
+  1077→                        if isinstance(v, (int, float)):
+  1078→                            baseline_metrics[k] = float(v)
+  1079→
+  1080→            if baseline_metrics:
+  1081→                perf_regs = self._detector.detect_performance_regressions(
+  1082→                    baseline_metrics, performance_metrics
+  1083→                )
+  1084→                all_regressions.extend(perf_regs)
+  1085→
+  1086→        # 3. Explicit correctness results
+  1087→        if correctness_results is not None:
+  1088→            baseline_correctness: Dict[str, bool] = {}
+  1089→            keys_to_check = [baseline_key] if baseline_key else self._baseline_mgr.list_keys()
+  1090→            for bk in keys_to_check:
+  1091→                bv = self._baseline_mgr.get(bk)
+  1092→                if isinstance(bv, dict):
+  1093→                    for k, v in bv.items():
+  1094→                        if isinstance(v, bool):
+  1095→                            baseline_correctness[k] = v
+  1096→
+  1097→            if baseline_correctness:
+  1098→                corr_regs = self._detector.detect_correctness_regressions(
+  1099→                    baseline_correctness, correctness_results
+  1100→                )
+  1101→                all_regressions.extend(corr_regs)
+  1102→
+  1103→        # 4. Explicit API signatures
+  1104→        if api_signatures is not None:
+  1105→            baseline_api: Dict[str, Dict[str, Any]] = {}
+  1106→            keys_to_check = [baseline_key] if baseline_key else self._baseline_mgr.list_keys()
+  1107→            for bk in keys_to_check:
+  1108→                bv = self._baseline_mgr.get(bk)
+  1109→                if isinstance(bv, dict):
+  1110→                    for k, v in bv.items():
+  1111→                        if isinstance(v, dict) and ("params" in v or "return_type" in v):
+  1112→                            baseline_api[k] = v
+  1113→
+  1114→            if baseline_api:
+  1115→                api_regs = self._detector.detect_api_regressions(
+  1116→                    baseline_api, api_signatures
+  1117→                )
+  1118→                all_regressions.extend(api_regs)
+  1119→
+  1120→        # Record all detected regressions in history
+  1121→        for reg in all_regressions:
+  1122→            self._history.append(reg)
+  1123→
+  1124→        if all_regressions:
+  1125→            self._save_history()
+  1126→            logger.warning("Detected %d regressions", len(all_regressions))
+  1127→        else:
+  1128→            logger.info("No regressions detected")
+  1129→
+  1130→        return all_regressions
+  1131→
+  1132→    def _detect_scan_performance_regression(
+  1133→        self,
+  1134→        baseline: Dict[str, Any],
+  1135→        current: Dict[str, Any],
+  1136→    ) -> List[RegressionRecord]:
+  1137→        """Detect performance regressions from scan result dicts."""
+  1138→        baseline_metrics: Dict[str, float] = {}
+  1139→        current_metrics: Dict[str, float] = {}
+  1140→
+  1141→        # Extract common numeric metrics from scan results
+  1142→        for metric_key in ("total_score", "findings_count", "scan_duration_ms"):
+  1143→            base_val = baseline.get(metric_key)
+  1144→            cur_val = current.get(metric_key)
+  1145→            if isinstance(base_val, (int, float)) and isinstance(cur_val, (int, float)):
+  1146→                baseline_metrics[metric_key] = float(base_val)
+  1147→                current_metrics[metric_key] = float(cur_val)
+  1148→
+  1149→        # Score is higher-is-better — invert so the detector's
+  1150→        # "higher is worse" semantics apply correctly.
+  1151→        # baseline 90 → inverted 10,  current 50 → inverted 50
+  1152→        # delta = 50 - 10 = 40 (positive = regression = correct)
+  1153→        if "total_score" in baseline_metrics and "total_score" in current_metrics:
+  1154→            baseline_metrics["total_score"] = 100.0 - baseline_metrics["total_score"]
+  1155→            current_metrics["total_score"] = 100.0 - current_metrics["total_score"]
+  1156→
+  1157→        # Severity counts — more critical/high is worse
+  1158→        base_sev = baseline.get("severity_counts", {})
+  1159→        cur_sev = current.get("severity_counts", {})
+  1160→        for sev in ("critical", "high"):
+  1161→            b_count = base_sev.get(sev, 0)
+  1162→            c_count = cur_sev.get(sev, 0)
+  1163→            if b_count > 0 or c_count > 0:
+  1164→                baseline_metrics[f"count_{sev}"] = float(b_count)
+  1165→                current_metrics[f"count_{sev}"] = float(c_count)
+  1166→
+  1167→        if not baseline_metrics:
+  1168→            return []
+  1169→
+  1170→        target = current.get("target", baseline.get("target", ""))
+  1171→        return self._detector.detect_performance_regressions(
+  1172→            baseline_metrics, current_metrics, component=target
+  1173→        )
+  1174→
+  1175→    # ── Classification ──────────────────────────────────────────────────
+  1176→
+  1177→    @staticmethod
+  1178→    def classify_regression(regression: RegressionRecord) -> Dict[str, Any]:
+  1179→        """Classify a regression and return a classification report.
+  1180→
+  1181→        Args:
+  1182→            regression: The RegressionRecord to classify.
+  1183→
+  1184→        Returns:
+  1185→            Dict with ``type``, ``subtype``, ``confidence``, and
+  1186→            ``recommendation``.
+  1187→        """
+  1188→        r = regression
+  1189→        reg_type = r.type.value if isinstance(r.type, RegressionType) else str(r.type)
+  1190→
+  1191→        classification: Dict[str, str] = {"type": reg_type}
+  1192→
+  1193→        # Subtype based on evidence
+  1194→        evidence = r.evidence
+  1195→        if reg_type == "performance":
+  1196→            metric = evidence.get("metric", "")
+  1197→            if "score" in metric:
+  1198→                classification["subtype"] = "score_degradation"
+  1199→                classification["recommendation"] = (
+  1200→                    "Review scoring algorithm changes; check for new "
+  1201→                    "findings or changed severity weights."
+  1202→                )
+  1203→            elif "latency" in metric or "duration" in metric or "time" in metric:
+  1204→                classification["subtype"] = "performance_slowdown"
+  1205→                classification["recommendation"] = (
+  1206→                    "Profile scan execution; identify bottlenecks in "
+  1207→                    "HTTP probes or module execution."
+  1208→                )
+  1209→            elif "count" in metric:
+  1210→                classification["subtype"] = "count_increase"
+  1211→                classification["recommendation"] = (
+  1212→                    "Investigate new vulnerabilities or changed detection "
+  1213→                    "rules producing more findings."
+  1214→                )
+  1215→            else:
+  1216→                classification["subtype"] = "metric_anomaly"
+  1217→                classification["recommendation"] = "Review metric definition and collection logic."
+  1218→        elif reg_type == "correctness":
+  1219→            test = evidence.get("test", "")
+  1220→            classification["subtype"] = "test_failure"
+  1221→            classification["recommendation"] = (
+  1222→                f"Debug failing test '{test}'; check for logic changes "
+  1223→                "or updated expected values."
+  1224→            )
+  1225→        elif reg_type == "api":
+  1226→            change = evidence.get("change", "")
+  1227→            if change == "removed":
+  1228→                classification["subtype"] = "api_removal"
+  1229→                classification["recommendation"] = "Restore function or update callers."
+  1230→            elif change == "required_params_added":
+  1231→                classification["subtype"] = "breaking_change"
+  1232→                classification["recommendation"] = "Make new parameters optional with defaults."
+  1233→            elif change == "return_type_changed":
+  1234→                classification["subtype"] = "type_change"
+  1235→                classification["recommendation"] = "Restore original return type or migrate callers."
+  1236→            else:
+  1237→                classification["subtype"] = "api_change"
+  1238→                classification["recommendation"] = "Review API documentation and callers."
+  1239→        elif reg_type == "behaviour":
+  1240→            change = evidence.get("change", "")
+  1241→            if change == "new_finding":
+  1242→                classification["subtype"] = "new_vulnerability"
+  1243→                classification["recommendation"] = "Investigate new finding; verify it is a true positive."
+  1244→            elif change == "severity_escalation":
+  1245→                classification["subtype"] = "escalation"
+  1246→                classification["recommendation"] = "Verify severity change is intentional."
+  1247→            elif change == "count_increase":
+  1248→                classification["subtype"] = "finding_count_spike"
+  1249→                classification["recommendation"] = "Review detection rules for false positives."
+  1250→            else:
+  1251→                classification["subtype"] = "behaviour_change"
+  1252→                classification["recommendation"] = "Review detection logic and expected behavior."
+  1253→        else:
+  1254→            classification["subtype"] = "unknown"
+  1255→            classification["recommendation"] = "Manual investigation required."
+  1256→
+  1257→        # Confidence score
+  1258→        delta = abs(r.delta)
+  1259→        if delta >= 1.0 or (isinstance(evidence.get("percent_change"), (int, float))
+  1260→                            and evidence["percent_change"] >= 25):
+  1261→            classification["confidence"] = "high"
+  1262→        elif delta >= 0.1:
+  1263→            classification["confidence"] = "medium"
+  1264→        else:
+  1265→            classification["confidence"] = "low"
+  1266→
+  1267→        return classification
+  1268→
+  1269→    # ── Impact Assessment ───────────────────────────────────────────────
+  1270→
+  1271→    @staticmethod
+  1272→    def assess_impact(regression: RegressionRecord) -> Dict[str, Any]:
+  1273→        """Assess the impact severity and business impact of a regression.
+  1274→
+  1275→        Args:
+  1276→            regression: The RegressionRecord to assess.
+  1277→
+  1278→        Returns:
+  1279→            Dict with ``severity``, ``business_impact``, ``scope``,
+  1280→            ``urgency``, and ``suggested_action``.
+  1281→        """
+  1282→        sev = regression.severity.value if isinstance(regression.severity, RegressionSeverity) else str(regression.severity)
+  1283→        reg_type = regression.type.value if isinstance(regression.type, RegressionType) else str(regression.type)
+  1284→
+  1285→        impact: Dict[str, Any] = {"severity": sev}
+  1286→
+  1287→        # Business impact mapping
+  1288→        business_impact_map = {
+  1289→            "critical": {
+  1290→                "level": "critical",
+  1291→                "description": "System functionality severely degraded. "
+  1292→                               "Immediate attention required.",
+  1293→                "scope": "enterprise",
+  1294→                "urgency": "immediate",
+  1295→                "suggested_action": "Block deployment; hotfix required.",
+  1296→            },
+  1297→            "high": {
+  1298→                "level": "high",
+  1299→                "description": "Significant degradation affecting key workflows.",
+  1300→                "scope": "team",
+  1301→                "urgency": "high",
+  1302→                "suggested_action": "Prioritise fix in next sprint; "
+  1303→                                   "consider reverting if widespread.",
+  1304→            },
+  1305→            "medium": {
+  1306→                "level": "medium",
+  1307→                "description": "Moderate impact; workaround may exist.",
+  1308→                "scope": "module",
+  1309→                "urgency": "medium",
+  1310→                "suggested_action": "Schedule fix; monitor for escalation.",
+  1311→            },
+  1312→            "low": {
+  1313→                "level": "low",
+  1314→                "description": "Minor impact; likely cosmetic or edge case.",
+  1315→                "scope": "component",
+  1316→                "urgency": "low",
+  1317→                "suggested_action": "Track in backlog; fix opportunistically.",
+  1318→            },
+  1319→            "info": {
+  1320→                "level": "informational",
+  1321→                "description": "No functional impact; informational only.",
+  1322→                "scope": "none",
+  1323→                "urgency": "none",
+  1324→                "suggested_action": "Document and monitor.",
+  1325→            },
+  1326→        }
+  1327→
+  1328→        biz = business_impact_map.get(sev, business_impact_map["info"])
+  1329→        impact["business_impact"] = biz["description"]
+  1330→        impact["scope"] = biz["scope"]
+  1331→        impact["urgency"] = biz["urgency"]
+  1332→        impact["suggested_action"] = biz["suggested_action"]
+  1333→
+  1334→        # Cross-severity adjustments by type
+  1335→        if reg_type == "correctness" and sev in ("low", "info"):
+  1336→            # Correctness failures are never truly low-impact
+  1337→            impact["severity"] = "medium"
+  1338→            impact["urgency"] = "medium"
+  1339→            impact["suggested_action"] = "Investigate test failure; may indicate deeper issue."
+  1340→
+  1341→        if reg_type == "api" and sev == "medium":
+  1342→            # API changes affect all callers
+  1343→            impact["scope"] = "team"
+  1344→            impact["suggested_action"] = "Audit callers for breakage; update documentation."
+  1345→
+  1346→        return impact
+  1347→
+  1348→    # ── History & Trends ──────────────────────────────────────────────
+  1349→
+  1350→    def get_regression_history(
+  1351→        self,
+  1352→        regression_type: Optional[RegressionType] = None,
+  1353→        severity: Optional[RegressionSeverity] = None,
+  1354→        status: Optional[RegressionStatus] = None,
+  1355→        component: Optional[str] = None,
+  1356→        limit: int = 100,
+  1357→    ) -> List[RegressionRecord]:
+  1358→        """Retrieve regression history with optional filters.
+  1359→
+  1360→        Args:
+  1361→            regression_type: Filter by type.
+  1362→            severity: Filter by severity.
+  1363→            status: Filter by status.
+  1364→            component: Filter by affected component (substring match).
+  1365→            limit: Maximum records to return.
+  1366→
+  1367→        Returns:
+  1368→            List of matching RegressionRecord, newest first.
+  1369→        """
+  1370→        results = self._history
+  1371→        if regression_type is not None:
+  1372→            results = [r for r in results if r.type == regression_type]
+  1373→        if severity is not None:
+  1374→            results = [r for r in results if r.severity == severity]
+  1375→        if status is not None:
+  1376→            results = [r for r in results if r.status == status]
+  1377→        if component is not None:
+  1378→            results = [
+  1379→                r for r in results
+  1380→                if component.lower() in r.affected_component.lower()
+  1381→            ]
+  1382→        # Sort by detection time, newest first
+  1383→        results.sort(key=lambda r: r.detected_at, reverse=True)
+  1384→        return results[:limit]
+  1385→
+  1386→    def get_regression_trends(self, days: int = 30) -> Dict[str, Any]:
+  1387→        """Analyse regression trends over time.
+  1388→
+  1389→        Returns a trends report with:
+  1390→            - ``total_regressions``: Count in period
+  1391→            - ``by_type``: Breakdown by RegressionType
+  1392→            - ``by_severity``: Breakdown by RegressionSeverity
+  1393→            - ``by_status``: Breakdown by RegressionStatus
+  1394→            - ``by_component``: Top affected components
+  1395→            - ``daily_counts``: Regression count per day
+  1396→            - ``severity_trend``: Trend direction for severity
+  1397→            - ``most_common_type``: Most frequent type
+  1398→            - ``resolution_rate``: % of fixed regressions
+  1399→
+  1400→        Args:
+  1401→            days: Analysis period in days.
+  1402→
+  1403→        Returns:
+  1404→            Trends report dict.
+  1405→        """
+  1406→        cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+  1407→
+  1408→        # Filter records by time
+  1409→        recent: List[RegressionRecord] = []
+  1410→        for r in self._history:
+  1411→            try:
+  1412→                dt = datetime.fromisoformat(r.detected_at.replace("Z", "+00:00"))
+  1413→                if dt.timestamp() >= cutoff:
+  1414→                    recent.append(r)
+  1415→            except (ValueError, AttributeError):
+  1416→                # Include records we can't parse (safer to include)
+  1417→                recent.append(r)
+  1418→
+  1419→        # Type breakdown
+  1420→        by_type: Dict[str, int] = {}
+  1421→        for r in recent:
+  1422→            key = r.type.value if isinstance(r.type, RegressionType) else str(r.type)
+  1423→            by_type[key] = by_type.get(key, 0) + 1
+  1424→
+  1425→        # Severity breakdown
+  1426→        by_severity: Dict[str, int] = {}
+  1427→        for r in recent:
+  1428→            key = r.severity.value if isinstance(r.severity, RegressionSeverity) else str(r.severity)
+  1429→            by_severity[key] = by_severity.get(key, 0) + 1
+  1430→
+  1431→        # Status breakdown
+  1432→        by_status: Dict[str, int] = {}
+  1433→        for r in recent:
+  1434→            key = r.status.value if isinstance(r.status, RegressionStatus) else str(r.status)
+  1435→            by_status[key] = by_status.get(key, 0) + 1
+  1436→
+  1437→        # Component breakdown
+  1438→        by_component: Dict[str, int] = {}
+  1439→        for r in recent:
+  1440→            comp = r.affected_component or "unknown"
+  1441→            by_component[comp] = by_component.get(comp, 0) + 1
+  1442→
+  1443→        # Daily counts
+  1444→        daily_counts: Dict[str, int] = {}
+  1445→        for r in recent:
+  1446→            try:
+  1447→                dt = datetime.fromisoformat(r.detected_at.replace("Z", "+00:00"))
+  1448→                day_str = dt.strftime("%Y-%m-%d")
+  1449→            except (ValueError, AttributeError):
+  1450→                day_str = "unknown"
+  1451→            daily_counts[day_str] = daily_counts.get(day_str, 0) + 1
+  1452→
+  1453→        # Most common type
+  1454→        most_common_type = max(by_type, key=by_type.get) if by_type else "none"
+  1455→
+  1456→        # Resolution rate
+  1457→        total = len(recent) or 1
+  1458→        fixed_count = by_status.get("fixed", 0)
+  1459→        resolution_rate = round(fixed_count / total * 100, 1)
+  1460→
+  1461→        # Severity trend (simple: compare recent week vs prior week)
+  1462→        week_ago = datetime.now(timezone.utc).timestamp() - 7 * 86400
+  1463→        recent_week: List[RegressionRecord] = []
+  1464→        prior_week: List[RegressionRecord] = []
+  1465→        for r in recent:
+  1466→            try:
+  1467→                dt = datetime.fromisoformat(r.detected_at.replace("Z", "+00:00"))
+  1468→                if dt.timestamp() >= week_ago:
+  1469→                    recent_week.append(r)
+  1470→                else:
+  1471→                    prior_week.append(r)
+  1472→            except (ValueError, AttributeError):
+  1473→                pass
+  1474→
+  1475→        severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+  1476→
+  1477→        def _avg_severity(records: List[RegressionRecord]) -> float:
+  1478→            if not records:
+  1479→                return 0.0
+  1480→            total_sev = sum(
+  1481→                severity_order.get(
+  1482→                    r.severity.value if isinstance(r.severity, RegressionSeverity) else str(r.severity), 0
+  1483→                )
+  1484→                for r in records
+  1485→            )
+  1486→            return total_sev / len(records)
+  1487→
+  1488→        recent_avg = _avg_severity(recent_week)
+  1489→        prior_avg = _avg_severity(prior_week)
+  1490→        if recent_avg > prior_avg + 0.1:
+  1491→            severity_trend = "worsening"
+  1492→        elif recent_avg < prior_avg - 0.1:
+  1493→            severity_trend = "improving"
+  1494→        else:
+  1495→            severity_trend = "stable"
+  1496→
+  1497→        return {
+  1498→            "period_days": days,
+  1499→            "total_regressions": len(recent),
+  1500→            "by_type": dict(sorted(by_type.items(), key=lambda x: x[1], reverse=True)),
+  1501→            "by_severity": dict(sorted(by_severity.items(), key=lambda x: x[1], reverse=True)),
+  1502→            "by_status": dict(sorted(by_status.items(), key=lambda x: x[1], reverse=True)),
+  1503→            "by_component": dict(sorted(by_component.items(), key=lambda x: x[1], reverse=True)),
+  1504→            "daily_counts": dict(sorted(daily_counts.items())),
+  1505→            "severity_trend": severity_trend,
+  1506→            "most_common_type": most_common_type,
+  1507→            "resolution_rate": resolution_rate,
+  1508→        }
+  1509→
+  1510→    # ── Report Generation ──────────────────────────────────────────────
+  1511→
+  1512→    def generate_regression_report(
+  1513→        self,
+  1514→        days: int = 30,
+  1515→        include_history: bool = True,
+  1516→        include_trends: bool = True,
+  1517→    ) -> str:
+  1518→        """Generate a comprehensive regression summary report.
+  1519→
+  1520→        Args:
+  1521→            days: Period to cover.
+  1522→            include_history: Include individual regression records.
+  1523→            include_trends: Include trend analysis.
+  1524→
+  1525→        Returns:
+  1526→            Markdown-formatted report string.
+  1527→        """
+  1528→        lines: List[str] = []
+  1529→
+  1530→        # Header
+  1531→        lines.append("# ReconPro Regression Intelligence Report")
+  1532→        lines.append(
+  1533→            f"*Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}*"
+  1534→        )
+  1535→        lines.append(f"*Period: last {days} days*")
+  1536→        lines.append("")
+  1537→
+  1538→        # Baseline summary
+  1539→        lines.append("## Baseline Summary")
+  1540→        keys = self._baseline_mgr.list_keys()
+  1541→        if keys:
+  1542→            lines.append(f"**{len(keys)}** baselines tracked:")
+  1543→            for key in keys:
+  1544→                versions = self._baseline_mgr.versions(key)
+  1545→                entry = self._baseline_mgr.get_entry(key)
+  1546→                label = entry.get("label", "") if entry else ""
+  1547→                label_part = f" ({label})" if label else ""
+  1548→                lines.append(f"- `{key}`: {versions} version(s){label_part}")
+  1549→        else:
+  1550→            lines.append("No baselines captured yet.")
+  1551→        lines.append("")
+  1552→
+  1553→        # Trends
+  1554→        if include_trends:
+  1555→            lines.append("## Trend Analysis")
+  1556→            trends = self.get_regression_trends(days)
+  1557→            lines.append(f"- **Total regressions:** {trends['total_regressions']}")
+  1558→            lines.append(f"- **Most common type:** {trends['most_common_type']}")
+  1559→            lines.append(f"- **Severity trend:** {trends['severity_trend']}")
+  1560→            lines.append(f"- **Resolution rate:** {trends['resolution_rate']}%")
+  1561→
+  1562→            if trends["by_type"]:
+  1563→                lines.append("")
+  1564→                lines.append("**By type:**")
+  1565→                for t, c in trends["by_type"].items():
+  1566→                    lines.append(f"  - {t}: {c}")
+  1567→
+  1568→            if trends["by_severity"]:
+  1569→                lines.append("")
+  1570→                lines.append("**By severity:**")
+  1571→                for s, c in trends["by_severity"].items():
+  1572→                    sev_icon = {"critical": "CRIT", "high": "HIGH",
+  1573→                                "medium": "MED", "low": "LOW", "info": "INFO"}.get(s, s)
+  1574→                    lines.append(f"  - [{sev_icon}] {s}: {c}")
+  1575→
+  1576→            if trends["by_status"]:
+  1577→                lines.append("")
+  1578→                lines.append("**By status:**")
+  1579→                for st, c in trends["by_status"].items():
+  1580→                    lines.append(f"  - {st}: {c}")
+  1581→
+  1582→            if trends["daily_counts"]:
+  1583→                lines.append("")
+  1584→                lines.append("**Daily counts:**")
+  1585→                for day, cnt in sorted(trends["daily_counts"].items()):
+  1586→                    bar = "#" * min(cnt, 40)
+  1587→                    lines.append(f"  - {day}: {cnt:>3} {bar}")
+  1588→            lines.append("")
+  1589→
+  1590→        # Individual regressions
+  1591→        if include_history:
+  1592→            lines.append("## Detected Regressions")
+  1593→            recent = self.get_regression_history(limit=50)
+  1594→            if recent:
+  1595→                for i, reg in enumerate(recent, 1):
+  1596→                    sev = reg.severity.value if isinstance(reg.severity, RegressionSeverity) else str(reg.severity)
+  1597→                    rtype = reg.type.value if isinstance(reg.type, RegressionType) else str(reg.type)
+  1598→                    lines.append(f"### {i}. [{sev.upper()}] {rtype}")
+  1599→                    lines.append(f"- **ID:** `{reg.id}`")
+  1600→                    lines.append(f"- **Component:** {reg.affected_component}")
+  1601→                    lines.append(f"- **Detected:** {reg.detected_at}")
+  1602→                    lines.append(f"- **Status:** {reg.status.value if isinstance(reg.status, RegressionStatus) else str(reg.status)}")
+  1603→                    lines.append(f"- **Description:** {reg.description}")
+  1604→                    if reg.evidence:
+  1605→                        ev_summary = json.dumps(reg.evidence, indent=2, default=str)[:300]
+  1606→                        lines.append(f"- **Evidence:** `{ev_summary}`")
+  1607→                    lines.append("")
+  1608→            else:
+  1609→                lines.append("No regressions detected in this period. All clear.")
+  1610→                lines.append("")
+  1611→
+  1612→        lines.append("---")
+  1613→        lines.append("*ReconPro v11.0.0 Regression Intelligence System*")
+  1614→
+  1615→        return "\n".join(lines)
+  1616→
+  1617→    # ── Status Management ───────────────────────────────────────────────
+  1618→
+  1619→    def update_regression_status(
+  1620→        self,
+  1621→        regression_id: str,
+  1622→        new_status: RegressionStatus,
+  1623→    ) -> bool:
+  1624→        """Update the status of a regression record.
+  1625→
+  1626→        Args:
+  1627→            regression_id: ID of the regression to update.
+  1628→            new_status: New status value.
+  1629→
+  1630→        Returns:
+  1631→            True if updated, False if not found.
+  1632→        """
+  1633→        for r in self._history:
+  1634→            if r.id == regression_id:
+  1635→                r.status = new_status
+  1636→                self._save_history()
+  1637→                logger.info(
+  1638→                    "Regression %s status updated to %s",
+  1639→                    regression_id, new_status.value,
+  1640→                )
+  1641→                return True
+  1642→        return False
+  1643→
+  1644→    def dismiss_regression(
+  1645→        self,
+  1646→        regression_id: str,
+  1647→        reason: str = "",
+  1648→    ) -> bool:
+  1649→        """Mark a regression as false positive.
+  1650→
+  1651→        Args:
+  1652→            regression_id: ID of the regression to dismiss.
+  1653→            reason: Optional reason for dismissal.
+  1654→
+  1655→        Returns:
+  1656→            True if dismissed, False if not found.
+  1657→        """
+  1658→        for r in self._history:
+  1659→            if r.id == regression_id:
+  1660→                r.status = RegressionStatus.FALSE_POSITIVE
+  1661→                if reason:
+  1662→                    r.evidence["dismissal_reason"] = reason
+  1663→                self._save_history()
+  1664→                logger.info("Regression %s dismissed: %s", regression_id, reason)
+  1665→                return True
+  1666→        return False
+  1667→
+  1668→
+  1669→# ── Convenience Exports ─────────────────────────────────────────────────
+  1670→
+  1671→def capture_baseline(
+  1672→    key: str,
+  1673→    data: Dict[str, Any],
+  1674→    label: str = "",
+  1675→    metadata: Optional[Dict[str, Any]] = None,
+  1676→) -> Dict[str, Any]:
+  1677→    """Convenience function: capture a baseline."""
+  1678→    ri = RegressionIntelligence()
+  1679→    return ri.capture_baseline(key, data, label=label, metadata=metadata)
+  1680→
+  1681→
+  1682→def detect_regressions(
+  1683→    current_results: Dict[str, Any],
+  1684→    baseline_key: Optional[str] = None,
+  1685→) -> List[RegressionRecord]:
+  1686→    """Convenience function: detect regressions."""
+  1687→    ri = RegressionIntelligence()
+  1688→    return ri.detect_regression(current_results, baseline_key=baseline_key)
+  1689→
+  1690→
+  1691→def regression_report(days: int = 30) -> str:
+  1692→    """Convenience function: generate a regression report."""
+  1693→    ri = RegressionIntelligence()
+  1694→    return ri.generate_regression_report(days=days)
+  1695→

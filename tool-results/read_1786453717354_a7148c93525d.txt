@@ -1,0 +1,1610 @@
+     1→"""ReconPro — Prompt Injection Defense System.
+     2→
+     3→Defends AI-facing components (chat, agent, nexus_agent) against prompt injection
+     4→attacks. This module is specifically for AI prompt/chat input defense — NOT for
+     5→scan data sanitization (see security.py / sanitize.py for that).
+     6→
+     7→Classes:
+     8→    InjectionDetector    — Pattern-based injection detection (6 categories)
+     9→    ThreatClassifier     — Classifies detected threats into 5 severity levels
+    10→    PromptSanitizer      — Sanitizes user input for safe AI consumption
+    11→    DefenseAuditLogger   — Structured logging of all defense events
+    12→    PromptDefense        — Core facade combining all defenses
+    13→
+    14→Pure Python, zero external dependencies.
+    15→"""
+    16→from __future__ import annotations
+    17→
+    18→import hashlib
+    19→import json
+    20→import logging
+    21→import os
+    22→import re
+    23→import unicodedata
+    24→from collections import defaultdict
+    25→from dataclasses import dataclass, field
+    26→from datetime import datetime, timezone
+    27→from enum import Enum
+    28→from typing import Any, Dict, List, Optional, Pattern, Set, Tuple
+    29→
+    30→
+    31→logger = logging.getLogger(__name__)
+    32→
+    33→
+    34→# ═══════════════════════════════════════════════════════════════════════════
+    35→#  CONSTANTS
+    36→# ═══════════════════════════════════════════════════════════════════════════
+    37→
+    38→# Maximum allowed prompt length (tokens ≈ chars for ASCII)
+    39→MAX_PROMPT_LENGTH: int = 32_000
+    40→
+    41→# Context overflow threshold — inputs longer than this trigger overflow checks
+    42→CONTEXT_OVERFLOW_THRESHOLD: int = 20_000
+    43→
+    44→# Maximum number of repeating characters/lines before flagged
+    45→MAX_REPEAT_CHAR: int = 50
+    46→MAX_REPEAT_LINE: int = 10
+    47→
+    48→# Audit log settings
+    49→_DEFENSE_LOG_DIR = os.path.join(os.path.expanduser("~"), ".reconpro")
+    50→_DEFENSE_LOG_FILE = "prompt_defense.log"
+    51→
+    52→
+    53→# ═══════════════════════════════════════════════════════════════════════════
+    54→#  DATA MODELS
+    55→# ═══════════════════════════════════════════════════════════════════════════
+    56→
+    57→
+    58→class ThreatLevel(Enum):
+    59→    """Severity levels for detected prompt injection threats."""
+    60→    CRITICAL = "critical"   # Direct system control / command execution attempts
+    61→    HIGH = "high"           # Data exfiltration, credential theft attempts
+    62→    MEDIUM = "medium"       # Context manipulation, delimiter injection
+    63→    LOW = "low"             # Suspicious patterns, potential probing
+    64→    INFO = "info"           # Benign but unusual patterns
+    65→
+    66→
+    67→@dataclass
+    68→class ThreatMatch:
+    69→    """A single threat match found in user input.
+    70→
+    71→    Attributes:
+    72→        pattern_name: Human-readable name of the matched pattern.
+    73→        category: Category of the injection technique.
+    74→        matched_text: The actual text that matched the pattern.
+    75→        position: Character offset where the match was found.
+    76→        severity: Classified threat level.
+    77→        description: Human-readable description of why this is a threat.
+    78→    """
+    79→    pattern_name: str
+    80→    category: str
+    81→    matched_text: str
+    82→    position: int
+    83→    severity: ThreatLevel
+    84→    description: str
+    85→
+    86→    def to_dict(self) -> Dict[str, Any]:
+    87→        return {
+    88→            "pattern_name": self.pattern_name,
+    89→            "category": self.category,
+    90→            "matched_text": self.matched_text[:200],  # Truncate for safety
+    91→            "position": self.position,
+    92→            "severity": self.severity.value,
+    93→            "description": self.description,
+    94→        }
+    95→
+    96→
+    97→@dataclass
+    98→class ScanResult:
+    99→    """Result of scanning user input for injection threats.
+   100→
+   101→    Attributes:
+   102→        is_safe: True if no threats were detected (or only info-level).
+   103→        threats: List of all detected ThreatMatch objects.
+   104→        max_severity: The highest severity threat found.
+   105→        sanitized_input: The input after sanitization.
+   106→        input_hash: SHA-256 hash of the original input.
+   107→        scan_timestamp: When the scan was performed.
+   108→    """
+   109→    is_safe: bool
+   110→    threats: List[ThreatMatch]
+   111→    max_severity: ThreatLevel
+   112→    sanitized_input: str
+   113→    input_hash: str
+   114→    scan_timestamp: str
+   115→
+   116→    def to_dict(self) -> Dict[str, Any]:
+   117→        return {
+   118→            "is_safe": self.is_safe,
+   119→            "threat_count": len(self.threats),
+   120→            "max_severity": self.max_severity.value,
+   121→            "threats": [t.to_dict() for t in self.threats],
+   122→            "sanitized_length": len(self.sanitized_input),
+   123→            "input_hash": self.input_hash,
+   124→            "scan_timestamp": self.scan_timestamp,
+   125→        }
+   126→
+   127→
+   128→# ═══════════════════════════════════════════════════════════════════════════
+   129→#  INJECTION DETECTOR — Pattern-based detection (6 categories)
+   130→# ═══════════════════════════════════════════════════════════════════════════
+   131→
+   132→
+   133→class InjectionDetector:
+   134→    """Pattern-based prompt injection detection engine.
+   135→
+   136→    Detects six categories of prompt injection:
+   137→      1. Role manipulation — attempts to change system persona or ignore instructions
+   138→      2. Delimiter injection — attempts to break out of structured prompts
+   139→      3. Code injection — attempts to execute code via prompts
+   140→      4. Context overflow — extremely long inputs to dilute system context
+   141→      5. Data exfiltration — encoding sensitive data in model output
+   142→      6. Instruction hijacking — attempts to control system behavior directly
+   143→
+   144→    All patterns are compiled regex using the standard ``re`` module.
+   145→    Each pattern is documented with its purpose and real-world attack examples.
+   146→    """
+   147→
+   148→    def __init__(self) -> None:
+   149→        self._patterns: List[Tuple[str, str, Pattern[str], str, ThreatLevel]] = []
+   150→        self._compile_patterns()
+   151→
+   152→    def _add(
+   153→        self,
+   154→        name: str,
+   155→        category: str,
+   156→        regex: str,
+   157→        description: str,
+   158→        severity: ThreatLevel,
+   159→        flags: int = re.IGNORECASE,
+   160→    ) -> None:
+   161→        """Compile and register a single detection pattern.
+   162→
+   163→        Args:
+   164→            name: Human-readable pattern name.
+   165→            category: One of the 6 injection categories.
+   166→            regex: Raw regex pattern string.
+   167→            description: Why this pattern is dangerous.
+   168→            severity: Default severity when matched.
+   169→            flags: Regex flags (default: case-insensitive).
+   170→        """
+   171→        compiled = re.compile(regex, flags)
+   172→        self._patterns.append((name, category, compiled, description, severity))
+   173→
+   174→    def _compile_patterns(self) -> None:
+   175→        """Build the complete pattern database.
+   176→
+   177→        Patterns are organized by category and documented with
+   178→        real-world attack vectors they defend against.
+   179→        """
+   180→
+   181→        # ─────────────────────────────────────────────────────────────
+   182→        # CATEGORY 1: Role Manipulation
+   183→        # Attacker tries to convince the AI to change its behavior,
+   184→        # ignore prior instructions, or adopt a new persona.
+   185→        # ─────────────────────────────────────────────────────────────
+   186→
+   187→        # "Ignore all previous instructions" — the most classic injection
+   188→        self._add(
+   189→            name="ignore_previous_instructions",
+   190→            category="role_manipulation",
+   191→            regex=r"(?:(?:ignore|disregard|forget|discard|delete|erase|clear|drop|skip|overlook|neglect|override|undo|cancel|dismiss)\s+(?:all\s+)?(?:previous|prior|above|earlier|former|preceding|past|old|existing|current|the|your|system)\s+(?:instructions?|prompts?|directives?|rules?|guidelines?|orders?|commands?|settings?|constraints?|restrictions?|requirements?|policies?|system\s+prompts?))",
+   192→            description="Attempts to make the AI ignore its system instructions",
+   193→            severity=ThreatLevel.CRITICAL,
+   194→        )
+   195→
+   196→        # "You are now..." — persona takeover
+   197→        self._add(
+   198→            name="persona_takeover",
+   199→            category="role_manipulation",
+   200→            regex=r"(?:(?:you\s+(?:are|have\s+become|will\s+be|must\s+be|should\s+be|need\s+to\s+be)\s+(?:now\s+)?(?:a|an|the)\s+)(?:helpful\s+assistant|evil|malicious|unrestricted|unfiltered|unbound|jailbroken|uncensored|dangerous|unhinged|rogue|rebel|liberated|free))",
+   201→            description="Attempts to override the AI's persona or role",
+   202→            severity=ThreatLevel.CRITICAL,
+   203→        )
+   204→
+   205→        # "Pretend you are..." — role switching
+   206→        self._add(
+   207→            name="role_switching",
+   208→            category="role_manipulation",
+   209→            regex=r"(?:(?:pretend|act|imagine|roleplay|role-play|simulate|play|become|portray|embody|channel)\s+(?:you(?:'re|\s+are)\s+(?:a|an|the)?)?\s*(?:a|an|the)\s+(?:evil|malicious|unrestricted|unfiltered|jailbroken|uncensored|DAN|unhinged|rogue|unbound|helpful\s+assistant))",
+   210→            description="Attempts to make the AI pretend to be an unrestricted entity",
+   211→            severity=ThreatLevel.HIGH,
+   212→        )
+   213→
+   214→        # "New instructions:" / "From now on:" — instruction override
+   215→        self._add(
+   216→            name="instruction_override",
+   217→            category="role_manipulation",
+   218→            regex=r"(?:(?:new\s+instructions?:|from\s+now\s+on[,:]?|starting\s+now[,:]?|henceforth[,:]?|hereafter[,:]?|from\s+this\s+point|effective\s+(?:immediately|now)))",
+   219→            description="Attempts to establish new overriding instructions",
+   220→            severity=ThreatLevel.HIGH,
+   221→        )
+   222→
+   223→        # "System:" — system prompt injection
+   224→        self._add(
+   225→            name="system_prompt_injection",
+   226→            category="role_manipulation",
+   227→            regex=r"(?:^|\n)\s*(?:system|admin|developer|maintainer|operator|root|sudo|superuser|sysadmin)\s*[:=]\s*",
+   228→            description="Attempts to inject fake system-level directives",
+   229→            severity=ThreatLevel.CRITICAL,
+   230→        )
+   231→
+   232→        # "Developer mode" — DAN-style attacks
+   233→        self._add(
+   234→            name="developer_mode",
+   235→            category="role_manipulation",
+   236→            regex=r"(?:(?:developer|admin|maintenance|debug|test|god|root|sudo|superuser|internal|backend)\s+(?:mode|access|panel|console|terminal|shell|override))",
+   237→            description="Attempts to activate a hidden 'developer' or 'admin' mode",
+   238→            severity=ThreatLevel.HIGH,
+   239→        )
+   240→
+   241→        # "Do not follow" / "Break your rules"
+   242→        self._add(
+   243→            name="rule_violation_request",
+   244→            category="role_manipulation",
+   245→            regex=r"(?:(?:do\s+not\s+follow|break\s+(?:your|the|all)\s+(?:rules?|guidelines?|restrictions?)|bypass|circumvent|evade|elude|go\s+around|work\s+around)\s+(?:your|the|any|all|these|those)\s+(?:rules?|restrictions?|safety|filter|guardrail|policy|limitation|constraint|protocol))",
+   246→            description="Directly requests the AI to violate its rules or safety measures",
+   247→            severity=ThreatLevel.HIGH,
+   248→        )
+   249→
+   250→        # ─────────────────────────────────────────────────────────────
+   251→        # CATEGORY 2: Delimiter Injection
+   252→        # Attacker uses delimiters to break out of structured prompts
+   253→        # or inject content between sections.
+   254→        # ─────────────────────────────────────────────────────────────
+   255→
+   256→        # "---END OF PROMPT---" style delimiter termination
+   257→        self._add(
+   258→            name="delimiter_termination",
+   259→            category="delimiter_injection",
+   260→            regex=r"(?:(?:-{3,}|={3,}|#{3,}|\*{3,}|_{3,}|~{3,})\s*(?:END|STOP|FINISH|CLOSE|DONE|TERMINATE|HALT|CUT|BREAK|DIVIDER|SEPARATOR)\s+(?:OF\s+)?(?:PROMPT|INPUT|INSTRUCTIONS?|CONTEXT|SYSTEM|USER|MESSAGE|TEXT|CHAT|CONVERSATION)\s*-{3,}|={3,}|#{3,}|\*{3,}|_{3,}|~{3,})",
+   261→            description="Uses delimiter patterns to terminate the current prompt section",
+   262→            severity=ThreatLevel.CRITICAL,
+   263→        )
+   264→
+   265→        # XML/JSON structure injection
+   266→        self._add(
+   267→            name="structured_format_injection",
+   268→            category="delimiter_injection",
+   269→            regex=r"(?:<\/(?:system|instruction|prompt|context|rules?|guidelines?)>|<\/?system_prompt>|<\/?user_input>|\[\/?(?:SYSTEM|INSTRUCTION|PROMPT|CONTEXT)\])",
+   270→            description="Injects structured format tags to manipulate prompt structure",
+   271→            severity=ThreatLevel.HIGH,
+   272→        )
+   273→
+   274→        # "### Response:" / "### Answer:" — response section injection
+   275→        self._add(
+   276→            name="response_section_injection",
+   277→            category="delimiter_injection",
+   278→            regex=r"(?:^|\n)\s*#{2,}\s*(?:response|answer|output|result|reply|completion|continuation|assistant|ai|bot)\s*:?\s*\n",
+   279→            description="Injects a fake response section to control AI output",
+   280→            severity=ThreatLevel.HIGH,
+   281→        )
+   282→
+   283→        # "Human:" / "Assistant:" — conversation role injection
+   284→        self._add(
+   285→            name="conversation_role_injection",
+   286→            category="delimiter_injection",
+   287→            regex=r"(?:^|\n)\s*(?:Human|Assistant|User|AI|Bot|System|Admin|Mod)\s*:\s*",
+   288→            description="Injects fake conversation turns to manipulate multi-turn context",
+   289→            severity=ThreatLevel.MEDIUM,
+   290→        )
+   291→
+   292→        # ─────────────────────────────────────────────────────────────
+   293→        # CATEGORY 3: Code Injection
+   294→        # Attempts to make the AI execute code or generate exploit code.
+   295→        # ─────────────────────────────────────────────────────────────
+   296→
+   297→        # Python code execution via prompt
+   298→        self._add(
+   299→            name="python_execution_request",
+   300→            category="code_injection",
+   301→            regex=r"(?:(?:exec|eval|compile|__import__|subprocess|os\.system|os\.popen|Popen)\s*\(\s*['\"]?|(?:import\s+(?:os|subprocess|sys|shutil|ctypes|socket|ftplib|smtplib|telnetlib|pickle|marshal|yaml|code|codeop|compile|importlib))\b)",
+   302→            description="Attempts to trigger code execution via Python builtins or imports",
+   303→            severity=ThreatLevel.CRITICAL,
+   304→        )
+   305→
+   306→        # Shell command injection
+   307→        self._add(
+   308→            name="shell_command_injection",
+   309→            category="code_injection",
+   310→            regex=r"(?:(?:\$\(|`[^`]+`|;\s*(?:rm|wget|curl|nc|ncat|bash|sh|zsh|python|perl|ruby|php)\b|\|\s*(?:sh|bash|nc|ncat)\b))",
+   311→            description="Injects shell commands via substitution or piping syntax",
+   312→            severity=ThreatLevel.CRITICAL,
+   313→        )
+   314→
+   315→        # File system access attempts
+   316→        self._add(
+   317→            name="filesystem_access",
+   318→            category="code_injection",
+   319→            regex=r"(?:(?:open\s*\(\s*['\"][^'\"]*(?:/etc/|/proc/|/sys/|/dev/|~/.ssh|~/.gnupg|/var/|/tmp/|passwords?|shadow|id_rsa|authorized_keys))|(?:read|write|delete|remove|copy|move)\s+(?:the\s+)?(?:file|directory|folder)\s+(?:at|in|from|to)\s+['\"/]))",
+   320→            description="Attempts to access sensitive filesystem locations via prompts",
+   321→            severity=ThreatLevel.HIGH,
+   322→        )
+   323→
+   324→        # Network access / C2 attempts
+   325→        self._add(
+   326→            name="network_access",
+   327→            category="code_injection",
+   328→            regex=r"(?:(?:connect\s+to|send\s+(?:data|request|packet|payload)\s+to|make\s+(?:a\s+)?(?:request|connection)\s+to|download\s+from|upload\s+to|exfiltrate\s+(?:data|to|via))\s+(?:https?://|ftp://|sftp://|ssh://|\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}))",
+   329→            description="Attempts to establish network connections or exfiltrate data",
+   330→            severity=ThreatLevel.HIGH,
+   331→        )
+   332→
+   333→        # Template injection (SSTI, Jinja2, etc.)
+   334→        self._add(
+   335→            name="template_injection",
+   336→            category="code_injection",
+   337→            regex=r"(?:\{\{.*?(?:__class__|__mro__|__subclasses__|__builtins__|__globals__|__base__|__init__|request|config|self|lipsum|cycler|joiner|namespace).*?\}\}|\{\%-?\s*(?:for|if|set|import|extends|include|block|macro)\b)",
+   338→            description="Server-Side Template Injection (SSTI) via Jinja2/templating syntax",
+   339→            severity=ThreatLevel.CRITICAL,
+   340→        )
+   341→
+   342→        # ─────────────────────────────────────────────────────────────
+   343→        # CATEGORY 4: Context Overflow
+   344→        # Extremely long inputs designed to dilute system instructions
+   345→        # and push them out of the context window.
+   346→        # ─────────────────────────────────────────────────────────────
+   347→
+   348→        # Repeating characters (filler to push context out)
+   349→        # This is checked programmatically in detect(), not via regex.
+   350→
+   351→        # "Repeat the word X" — token flooding
+   352→        self._add(
+   353→            name="token_flooding",
+   354→            category="context_overflow",
+   355→            regex=r"(?:(?:repeat\s+(?:the\s+)?(?:word|phrase|sentence|line|character)\s+[\"']?[a-zA-Z]{1,10}[\"']?\s+(?:\d+|many|lots|a\s+lot|infinite|endless|forever)\s+times?|(?:say|write|print|output|type)\s+[\"']?[a-zA-Z]{1,10}[\"']?\s+(?:\d+|many|lots|a\s+lot|infinite|endless|forever)\s+times?))",
+   356→            description="Requests repetitive output to flood the token window",
+   357→            severity=ThreatLevel.MEDIUM,
+   358→        )
+   359→
+   360→        # "Ignore everything above" — context dismissal
+   361→        self._add(
+   362→            name="context_dismissal",
+   363→            category="context_overflow",
+   364→            regex=r"(?:(?:ignore\s+(?:everything|all)\s+(?:above|before|prior|earlier|up\s+to\s+here)|forget\s+(?:everything|all)\s+(?:above|before|prior|earlier)|the\s+(?:above|previous|prior)\s+(?:text|content|instructions?|context|information)\s+(?:is|are|was|were)\s+(?:irrelevant|wrong|invalid|deprecated|obsolete|false|fake|not\s+real|imaginary|fictional)))",
+   365→            description="Attempts to dismiss the existing context window content",
+   366→            severity=ThreatLevel.HIGH,
+   367→        )
+   368→
+   369→        # Long irrelevant story/poem to push context
+   370→        self._add(
+   371→            name="context_filler",
+   372→            category="context_overflow",
+   373→            regex=r"(?:(?:once\s+upon\s+a\s+time|in\s+a\s+(?:land|world|kingdom|place)\s+(?:far\s+)?(?:away|beyond)|it\s+was\s+a\s+(?:dark|stormy|bright|sunny)\s+(?:and|night|day)\s+when).{200,})",
+   374→            description="Long narrative filler used to dilute system context",
+   375→            severity=ThreatLevel.LOW,
+   376→        )
+   377→
+   378→        # ─────────────────────────────────────────────────────────────
+   379→        # CATEGORY 5: Data Exfiltration
+   380→        # Attempts to encode sensitive system data into AI outputs
+   381→        # that the attacker can decode later.
+   382→        # ─────────────────────────────────────────────────────────────
+   383→
+   384→        # Base64 encoding request
+   385→        self._add(
+   386→            name="base64_exfiltration",
+   387→            category="data_exfiltration",
+   388→            regex=r"(?:(?:encode|convert|translate|transform|render|output|return|respond\s+with|reply\s+with|print|write|display|show)\s+(?:the\s+)?(?:above|previous|your|system|all|entire|full|complete|whole)\s+(?:as|in|to|into|using)\s+(?:base64|hex|binary|unicode|utf-?8|ascii|rot13|caesar|morse|braille|a|an)\s+(?:encoding|format|code|representation|string)))",
+   389→            description="Requests encoding of system data into a decodable format",
+   390→            severity=ThreatLevel.HIGH,
+   391→        )
+   392→
+   393→        # "Reveal your instructions" / "What are your rules"
+   394→        self._add(
+   395→            name="instruction_leak",
+   396→            category="data_exfiltration",
+   397→            regex=r"(?:(?:reveal|show|display|output|print|tell|say|state|share|disclose|leak|dump|paste|echo|repeat|recite|quote|read\s+(?:out|back|aloud)|write\s+(?:out|down))\s+(?:your|the|all|every|exact|full|complete|original|initial|first|entire)\s+(?:system\s+)?(?:instructions?|prompts?|rules?|guidelines?|directives?|orders?|commands?|settings?|configuration|constraints?|restrictions?|setup|initialization|boot|pre|prefix))",
+   398→            description="Attempts to extract the system prompt or instructions",
+   399→            severity=ThreatLevel.HIGH,
+   400→        )
+   401→
+   402→        # "What was your first message" / "Repeat your training data"
+   403→        self._add(
+   404→            name="training_data_extraction",
+   405→            category="data_exfiltration",
+   406→            regex=r"(?:(?:what\s+(?:is|are|was|were)\s+your\s+(?:first|original|initial|system|hidden|secret|private|internal)\s+(?:message|prompt|instruction|rule|guideline|directive|command|setting|configuration)|repeat\s+(?:your|the)\s+(?:training|pre-training|fine-tuning|system)\s+(?:data|text|content|material)|what\s+(?:prompt|instructions?|context|system\s+message)\s+(?:were|was|are|is)\s+(?:given|provided|used|fed|supplied|injected)\s+to\s+you))",
+   407→            description="Attempts to extract training data, system prompts, or hidden context",
+   408→            severity=ThreatLevel.HIGH,
+   409→        )
+   410→
+   411→        # Invisible/zero-width character steganography
+   412→        self._add(
+   413→            name="steganography_request",
+   414→            category="data_exfiltration",
+   415→            regex=r"(?:(?:use|hide|embed|conceal|inject|place|put|insert)\s+(?:the\s+)?(?:data|information|message|text|response|answer|output)\s+(?:in|within|inside|using|via|through|with)\s+(?:invisible|zero-width|zero\s*width|hidden|steganograph|unicode|whitespace|blank|empty)\s+(?:characters?|text|spaces?|glyphs?|symbols?)))",
+   416→            description="Requests steganographic encoding of data in invisible characters",
+   417→            severity=ThreatLevel.HIGH,
+   418→        )
+   419→
+   420→        # "Output in JSON/XML" to structure exfiltrated data
+   421→        self._add(
+   422→            name="structured_exfiltration",
+   423→            category="data_exfiltration",
+   424→            regex=r"(?:(?:output|respond|reply|return|print|write|display|give\s+me)\s+(?:your|the|all|every|entire|full|complete)\s+(?:system\s+)?(?:prompt|instructions?|rules?|settings?|configuration|context|memory|state|internal|hidden|secret|private)\s+(?:as|in|into|using)\s+(?:JSON|XML|YAML|TOML|CSV|markdown|code\s+block|fenced\s+block|data\s+structure|structured\s+format|serialized)))",
+   425→            description="Requests structured output format to extract system configuration",
+   426→            severity=ThreatLevel.HIGH,
+   427→        )
+   428→
+   429→        # ─────────────────────────────────────────────────────────────
+   430→        # CATEGORY 6: Instruction Hijacking
+   431→        # Attempts to directly control the AI's behavior, tool usage,
+   432→        # or decision-making process.
+   433→        # ─────────────────────────────────────────────────────────────
+   434→
+   435→        # "Run the following command" / "Execute this code"
+   436→        self._add(
+   437→            name="direct_command",
+   438→            category="instruction_hijacking",
+   439→            regex=r"(?:(?:run|execute|perform|carry\s+out|do|implement|apply|process|invoke|call)\s+(?:the\s+)?(?:following|this|these|below|next|command|code|script|program|instruction|action|operation|task|step|query))",
+   440→            description="Directly commands the AI to execute arbitrary instructions",
+   441→            severity=ThreatLevel.HIGH,
+   442→        )
+   443→
+   444→        # "Call this API" / "Use this tool"
+   445→        self._add(
+   446→            name="tool_hijacking",
+   447→            category="instruction_hijacking",
+   448→            regex=r"(?:(?:call|invoke|use|access|trigger|activate|run|execute|send\s+(?:a\s+)?request\s+to)\s+(?:the\s+)?(?:API|endpoint|function|tool|plugin|module|service|webhook|callback|handler|interface)\s+(?:at|on|with|using|via))",
+   449→            description="Attempts to hijack tool/API usage with attacker-controlled parameters",
+   450→            severity=ThreatLevel.HIGH,
+   451→        )
+   452→
+   453→        # "Scan this target" with embedded malicious intent
+   454→        self._add(
+   455→            name="malicious_scan_redirect",
+   456→            category="instruction_hijacking",
+   457→            regex=r"(?:(?:scan|audit|attack|test|probe|check|fuzz|exploit|hack|penetrat)\s+(?:this|the|these|my|our|a)\s+(?:target|host|server|system|network|machine|address|ip|url|endpoint)\s+(?:at|on|:|\(|=))",
+   458→            description="Redirects scan/audit tools to attacker-controlled targets",
+   459→            severity=ThreatLevel.MEDIUM,
+   460→        )
+   461→
+   462→        # "Your new task is..." — task reassignment
+   463→        self._add(
+   464→            name="task_reassignment",
+   465→            category="instruction_hijacking",
+   466→            regex=r"(?:(?:your\s+(?:new|next|only|primary|real|actual|true)\s+(?:task|goal|objective|mission|purpose|job|role|duty|assignment|instruction|directive|priority|focus)\s+is|I\s+(?:want|need|require|demand|insist|command|order)\s+you\s+to))",
+   467→            description="Attempts to reassign the AI's task or purpose",
+   468→            severity=ThreatLevel.HIGH,
+   469→        )
+   470→
+   471→        # "Disable safety" / "Turn off filtering"
+   472→        self._add(
+   473→            name="safety_disabling",
+   474→            category="instruction_hijacking",
+   475→            regex=r"(?:(?:disable|turn\s+off|deactivate|shut\s+off|remove|eliminate|get\s+rid\s+of|bypass|override|disable|supress|suppress|deactivate)\s+(?:your|the|all|any|this|that|safety|content\s+)?(?:filter|filtering|moderation|safety|guardrail|restriction|limitation|constraint|block|censor|censorship|protection|firewall|shield|defense|monitor|watchdog))",
+   476→            description="Directly requests disabling of safety mechanisms",
+   477→            severity=ThreatLevel.CRITICAL,
+   478→        )
+   479→
+   480→        # Multi-step attack chains ("Step 1: ... Step 2: ... Step 3: ...")
+   481→        self._add(
+   482→            name="multi_step_attack",
+   483→            category="instruction_hijacking",
+   484→            regex=r"(?:(?:step\s+\d+\s*[:.]\s*(?:first|second|third|then|next|after\s+that|finally|lastly)\s+(?:ignore|bypass|disable|override|break|hack|exploit|extract|exfiltrate|access|connect|download|upload|install|run|execute)|\b(?:step\s+)?\d+\.\s*(?:ignore|bypass|disable|break|hack|exploit)\s))",
+   485→            description="Multi-step attack chain often used in sophisticated prompt injection",
+   486→            severity=ThreatLevel.CRITICAL,
+   487→        )
+   488→
+   489→    def detect(self, text: str) -> List[ThreatMatch]:
+   490→        """Scan input text for all known injection patterns.
+   491→
+   492→        Args:
+   493→            text: The user input to scan.
+   494→
+   495→        Returns:
+   496→            List of ThreatMatch objects for each detected pattern.
+   497→        """
+   498→        if not text or not text.strip():
+   499→            return []
+   500→
+   501→        threats: List[ThreatMatch] = []
+   502→
+   503→        # Regex-based pattern matching
+   504→        for name, category, pattern, description, severity in self._patterns:
+   505→            for match in pattern.finditer(text):
+   506→                threats.append(ThreatMatch(
+   507→                    pattern_name=name,
+   508→                    category=category,
+   509→                    matched_text=match.group(0),
+   510→                    position=match.start(),
+   511→                    severity=severity,
+   512→                    description=description,
+   513→                ))
+   514→
+   515→        # Programmatic checks (not easily expressed as regex)
+   516→
+   517→        # Check for repeating characters (context overflow indicator)
+   518→        char_repeat = self._detect_char_repetition(text)
+   519→        if char_repeat:
+   520→            threats.append(ThreatMatch(
+   521→                pattern_name="excessive_char_repetition",
+   522→                category="context_overflow",
+   523→                matched_text=char_repeat[:50],
+   524→                position=text.index(char_repeat) if char_repeat in text else 0,
+   525→                severity=ThreatLevel.MEDIUM,
+   526→                description="Excessive character repetition detected — possible context overflow attempt",
+   527→            ))
+   528→
+   529→        # Check for repeating lines (token flooding)
+   530→        line_repeat = self._detect_line_repetition(text)
+   531→        if line_repeat:
+   532→            threats.append(ThreatMatch(
+   533→                pattern_name="excessive_line_repetition",
+   534→                category="context_overflow",
+   535→                matched_text=line_repeat[:80],
+   536→                position=text.index(line_repeat) if line_repeat in text else 0,
+   537→                severity=ThreatLevel.MEDIUM,
+   538→                description="Excessive line repetition detected — possible token flooding attempt",
+   539→            ))
+   540→
+   541→        # Check for zero-width / invisible characters (steganography)
+   542→        zw_chars = self._detect_zero_width_chars(text)
+   543→        if zw_chars:
+   544→            threats.append(ThreatMatch(
+   545→                pattern_name="zero_width_characters",
+   546→                category="data_exfiltration",
+   547→                matched_text=f"<{len(zw_chars)} invisible chars>",
+   548→                position=0,
+   549→                severity=ThreatLevel.HIGH,
+   550→                description=f"Zero-width/invisible characters detected — potential steganographic data channel ({len(zw_chars)} chars)",
+   551→            ))
+   552→
+   553→        # Check for mixed-script homoglyphs (spoofing)
+   554→        homoglyphs = self._detect_homoglyph_spoofing(text)
+   555→        if homoglyphs:
+   556→            threats.append(ThreatMatch(
+   557→                pattern_name="homoglyph_spoofing",
+   558→                category="role_manipulation",
+   559→                matched_text=homoglyphs[:50],
+   560→                position=text.index(homoglyphs) if homoglyphs in text else 0,
+   561→                severity=ThreatLevel.MEDIUM,
+   562→                description="Mixed-script characters detected — potential keyword obfuscation via homoglyphs",
+   563→            ))
+   564→
+   565→        return threats
+   566→
+   567→    @staticmethod
+   568→    def _detect_char_repetition(text: str) -> str:
+   569→        """Detect if any single character repeats beyond the threshold."""
+   570→        # Check for runs of the same character
+   571→        for char in set(text):
+   572→            run = char * (MAX_REPEAT_CHAR + 1)
+   573→            if run in text:
+   574→                return run
+   575→        return ""
+   576→
+   577→    @staticmethod
+   578→    def _detect_line_repetition(text: str) -> str:
+   579→        """Detect if any line repeats beyond the threshold."""
+   580→        lines = text.split("\n")
+   581→        line_counts: Dict[str, int] = defaultdict(int)
+   582→        for line in lines:
+   583→            stripped = line.strip()
+   584→            if stripped and len(stripped) > 1:
+   585→                line_counts[stripped] += 1
+   586→
+   587→        for line, count in line_counts.items():
+   588→            if count >= MAX_REPEAT_LINE:
+   589→                return line
+   590→        return ""
+   591→
+   592→    @staticmethod
+   593→    def _detect_zero_width_chars(text: str) -> str:
+   594→        """Detect zero-width and invisible Unicode characters."""
+   595→        zero_width_ranges = [
+   596→            (0x200B, 0x200F),   # Zero-width space, joiners, etc.
+   597→            (0x2028, 0x202E),   # Line/paragraph separator, bidirectional
+   598→            (0x2060, 0x2064),   # Word joiner, invisible operators
+   599→            (0xFEFF, 0xFEFF),   # BOM / zero-width no-break space
+   600→            (0x00AD, 0x00AD),   # Soft hyphen
+   601→            (0x034F, 0x034F),   # Combining grapheme joiner
+   602→            (0x180E, 0x180E),   # Mongolian vowel separator
+   603→            (0x2066, 0x2069),   # Bidirectional controls
+   604→            (0xFFF9, 0xFFFB),   # Interlinear annotations
+   605→        ]
+   606→        found = ""
+   607→        for ch in text:
+   608→            cp = ord(ch)
+   609→            for start, end in zero_width_ranges:
+   610→                if start <= cp <= end:
+   611→                    found += ch
+   612→                    break
+   613→        return found
+   614→
+   615→    @staticmethod
+   616→    def _detect_homoglyph_spoofing(text: str) -> str:
+   617→        """Detect mixed Latin/Cyrillic/Greek characters (homoglyph attacks).
+   618→
+   619→        Attackers use visually identical characters from different scripts
+   620→        to bypass keyword filters (e.g., Cyrillic 'а' for Latin 'a').
+   621→        """
+   622→        scripts_found: Set[str] = set()
+   623→        suspicious = ""
+   624→
+   625→        for ch in text:
+   626→            if not ch.isalpha():
+   627→                continue
+   628→            name = unicodedata.name(ch, "")
+   629→            if "CYRILLIC" in name:
+   630→                scripts_found.add("cyrillic")
+   631→                suspicious += ch
+   632→            elif "GREEK" in name:
+   633→                scripts_found.add("greek")
+   634→                suspicious += ch
+   635→            elif "LATIN" in name:
+   636→                scripts_found.add("latin")
+   637→
+   638→        # If we have more than one script, it could be a homoglyph attack
+   639→        if len(scripts_found) > 1 and suspicious:
+   640→            return suspicious
+   641→        return ""
+   642→
+   643→    @property
+   644→    def pattern_count(self) -> int:
+   645→        """Return the total number of registered detection patterns."""
+   646→        return len(self._patterns)
+   647→
+   648→    def list_patterns(self) -> List[Dict[str, str]]:
+   649→        """List all registered patterns for documentation/testing.
+   650→
+   651→        Returns:
+   652→            List of dicts with name, category, description, severity.
+   653→        """
+   654→        return [
+   655→            {
+   656→                "name": name,
+   657→                "category": category,
+   658→                "description": desc,
+   659→                "severity": sev.value,
+   660→            }
+   661→            for name, category, _, desc, sev in self._patterns
+   662→        ]
+   663→
+   664→
+   665→# ═══════════════════════════════════════════════════════════════════════════
+   666→#  THREAT CLASSIFIER
+   667→# ═══════════════════════════════════════════════════════════════════════════
+   668→
+   669→
+   670→# Severity ordering for comparison
+   671→_SEVERITY_ORDER: Dict[ThreatLevel, int] = {
+   672→    ThreatLevel.CRITICAL: 5,
+   673→    ThreatLevel.HIGH: 4,
+   674→    ThreatLevel.MEDIUM: 3,
+   675→    ThreatLevel.LOW: 2,
+   676→    ThreatLevel.INFO: 1,
+   677→}
+   678→
+   679→
+   680→class ThreatClassifier:
+   681→    """Classifies detected prompt injection threats by severity.
+   682→
+   683→    Takes raw ThreatMatch objects and applies contextual rules to
+   684→    determine the final threat level. Rules consider:
+   685→      - The inherent severity of the matched pattern
+   686→      - The number of distinct threat categories found
+   687→      - The total number of threats (multi-vector attacks)
+   688→      - Input length relative to the context overflow threshold
+   689→      - Whether the input targets specific system components
+   690→
+   691→    Severity levels:
+   692→      - critical: Direct system control attempts, multi-vector attacks, safety disabling
+   693→      - high: Data exfiltration, credential theft, role manipulation
+   694→      - medium: Context manipulation, delimiter injection, probing
+   695→      - low: Suspicious patterns, potential reconnaissance
+   696→      - info: Benign but unusual (e.g., uncommon formatting)
+   697→    """
+   698→
+   699→    # Categories that elevate to critical when combined with others
+   700→    _CRITICAL_CATEGORIES: Set[str] = {
+   701→        "role_manipulation",
+   702→        "code_injection",
+   703→        "instruction_hijacking",
+   704→    }
+   705→
+   706→    # Patterns that are always critical regardless of context
+   707→    _ALWAYS_CRITICAL: Set[str] = {
+   708→        "system_prompt_injection",
+   709→        "ignore_previous_instructions",
+   710→        "persona_takeover",
+   711→        "python_execution_request",
+   712→        "shell_command_injection",
+   713→        "template_injection",
+   714→        "safety_disabling",
+   715→        "multi_step_attack",
+   716→        "delimiter_termination",
+   717→    }
+   718→
+   719→    # Patterns that are always high regardless of context
+   720→    _ALWAYS_HIGH: Set[str] = {
+   721→        "base64_exfiltration",
+   722→        "instruction_leak",
+   723→        "training_data_extraction",
+   724→        "steganography_request",
+   725→        "structured_exfiltration",
+   726→        "zero_width_characters",
+   727→        "developer_mode",
+   728→        "rule_violation_request",
+   729→        "task_reassignment",
+   730→        "direct_command",
+   731→        "tool_hijacking",
+   732→    }
+   733→
+   734→    def classify(self, threats: List[ThreatMatch], input_text: str = "") -> ThreatLevel:
+   735→        """Classify the overall threat level from detected threats.
+   736→
+   737→        Args:
+   738→            threats: List of ThreatMatch objects from InjectionDetector.
+   739→            input_text: The original input (for contextual analysis).
+   740→
+   741→        Returns:
+   742→            The highest applicable ThreatLevel.
+   743→        """
+   744→        if not threats:
+   745→            # Check for unusual but benign patterns in the input
+   746→            if input_text and self._is_unusual_benign(input_text):
+   747→                return ThreatLevel.INFO
+   748→            return ThreatLevel.INFO
+   749→
+   750→        # Check for always-critical patterns
+   751→        for threat in threats:
+   752→            if threat.pattern_name in self._ALWAYS_CRITICAL:
+   753→                return ThreatLevel.CRITICAL
+   754→
+   755→        # Check for always-high patterns
+   756→        has_high = False
+   757→        for threat in threats:
+   758→            if threat.pattern_name in self._ALWAYS_HIGH:
+   759→                has_high = True
+   760→                break
+   761→
+   762→        # Multi-vector attack: threats from 2+ critical categories
+   763→        categories: Set[str] = {t.category for t in threats}
+   764→        critical_cats = categories & self._CRITICAL_CATEGORIES
+   765→        if len(critical_cats) >= 2:
+   766→            return ThreatLevel.CRITICAL
+   767→
+   768→        # Escalation: high + any other threat category
+   769→        if has_high and len(categories) >= 2:
+   770→            return ThreatLevel.CRITICAL
+   771→
+   772→        # High severity patterns present
+   773→        if has_high:
+   774→            return ThreatLevel.HIGH
+   775→
+   776→        # Check inherent severity of threats
+   777→        max_inherent = max(threats, key=lambda t: _SEVERITY_ORDER[t.severity])
+   778→        if max_inherent.severity in (ThreatLevel.HIGH, ThreatLevel.CRITICAL):
+   779→            return max_inherent.severity
+   780→
+   781→        # Multiple medium threats = high
+   782→        medium_count = sum(1 for t in threats if t.severity == ThreatLevel.MEDIUM)
+   783→        if medium_count >= 3:
+   784→            return ThreatLevel.HIGH
+   785→
+   786→        # Context: long input with any threats
+   787→        if input_text and len(input_text) > CONTEXT_OVERFLOW_THRESHOLD and threats:
+   788→            return ThreatLevel.MEDIUM
+   789→
+   790→        # Return highest inherent severity
+   791→        return max_inherent.severity
+   792→
+   793→    def classify_threat(self, input_text: str) -> ThreatLevel:
+   794→        """Convenience method: detect and classify in one call.
+   795→
+   796→        Args:
+   797→            input_text: The user input to analyze.
+   798→
+   799→        Returns:
+   800→            Classified ThreatLevel.
+   801→        """
+   802→        detector = InjectionDetector()
+   803→        threats = detector.detect(input_text)
+   804→        return self.classify(threats, input_text)
+   805→
+   806→    @staticmethod
+   807→    def _is_unusual_benign(text: str) -> bool:
+   808→        """Check if text is benign but has unusual characteristics.
+   809→
+   810→        Returns True if the text contains patterns that are not threatening
+   811→        but are uncommon enough to warrant INFO-level logging.
+   812→        """
+   813→        if not text:
+   814→            return False
+   815→
+   816→        # Very short inputs are normal
+   817→        if len(text) < 10:
+   818→            return False
+   819→
+   820→        # Check for unusual formatting
+   821→        unusual_count = 0
+   822→
+   823→        # Excessive punctuation
+   824→        if re.search(r'[!]{3,}', text):
+   825→            unusual_count += 1
+   826→        if re.search(r'[?]{3,}', text):
+   827→            unusual_count += 1
+   828→
+   829→        # All caps (except very short inputs)
+   830→        if len(text) > 20 and text.isupper():
+   831→            unusual_count += 1
+   832→
+   833→        # Unusual Unicode (non-Latin script mixed with Latin)
+   834→        non_latin = sum(1 for ch in text if ord(ch) > 0x024F and ch.isalpha())
+   835→        if non_latin > 5 and non_latin < len(text) * 0.5:
+   836→            unusual_count += 1
+   837→
+   838→        # Multiple languages detected (simple heuristic)
+   839→        has_cjk = any(0x4E00 <= ord(ch) <= 0x9FFF for ch in text)
+   840→        has_arabic = any(0x0600 <= ord(ch) <= 0x06FF for ch in text)
+   841→        has_latin = any(0x0041 <= ord(ch) <= 0x024F for ch in text)
+   842→        lang_count = sum([has_cjk, has_arabic, has_latin])
+   843→        if lang_count >= 2:
+   844→            unusual_count += 1
+   845→
+   846→        return unusual_count >= 2
+   847→
+   848→
+   849→# ═══════════════════════════════════════════════════════════════════════════
+   850→#  PROMPT SANITIZER
+   851→# ═══════════════════════════════════════════════════════════════════════════
+   852→
+   853→
+   854→class PromptSanitizer:
+   855→    """Sanitizes user input for safe consumption by AI systems.
+   856→
+   857→    Unlike security.sanitize_target (which handles scan targets, paths, URLs),
+   858→    this class specifically sanitizes prompts and chat inputs for AI contexts.
+   859→
+   860→    Sanitization steps:
+   861→      1. Strip dangerous control sequences (ANSI escapes, zero-width chars)
+   862→      2. Escape special characters that could confuse prompt parsing
+   863→      3. Enforce input length limits
+   864→      4. Normalize whitespace and Unicode encoding
+   865→      5. Remove or neutralize known injection structure patterns
+   866→    """
+   867→
+   868→    def __init__(
+   869→        self,
+   870→        max_length: int = MAX_PROMPT_LENGTH,
+   871→        strip_control_sequences: bool = True,
+   872→        normalize_unicode: bool = True,
+   873→        escape_special_chars: bool = True,
+   874→    ) -> None:
+   875→        self.max_length = max_length
+   876→        self.strip_control_sequences = strip_control_sequences
+   877→        self.normalize_unicode = normalize_unicode
+   878→        self.escape_special_chars = escape_special_chars
+   879→
+   880→    def sanitize(self, prompt: str) -> str:
+   881→        """Fully sanitize a prompt for safe AI consumption.
+   882→
+   883→        Args:
+   884→            prompt: Raw user input prompt.
+   885→
+   886→        Returns:
+   887→            Sanitized prompt string safe for AI processing.
+   888→        """
+   889→        if not prompt:
+   890→            return ""
+   891→
+   892→        result = prompt
+   893→
+   894→        # Step 1: Normalize Unicode
+   895→        if self.normalize_unicode:
+   896→            result = self._normalize_unicode(result)
+   897→
+   898→        # Step 2: Strip control sequences
+   899→        if self.strip_control_sequences:
+   900→            result = self._strip_control_sequences(result)
+   901→
+   902→        # Step 3: Escape special characters
+   903→        if self.escape_special_chars:
+   904→            result = self._escape_special_chars(result)
+   905→
+   906→        # Step 4: Neutralize injection structures
+   907→        result = self._neutralize_structures(result)
+   908→
+   909→        # Step 5: Normalize whitespace
+   910→        result = self._normalize_whitespace(result)
+   911→
+   912→        # Step 6: Enforce length limit
+   913→        result = self._enforce_length(result)
+   914→
+   915→        return result
+   916→
+   917→    @staticmethod
+   918→    def _normalize_unicode(text: str) -> str:
+   919→        """Normalize Unicode to NFC form and replace homoglyphs.
+   920→
+   921→        Converts visually similar characters from non-Latin scripts
+   922→        to their Latin equivalents where possible.
+   923→        """
+   924→        # NFC normalization
+   925→        result = unicodedata.normalize("NFC", text)
+   926→
+   927→        # Replace common Cyrillic homoglyphs with Latin equivalents
+   928→        homoglyph_map = {
+   929→            '\u0410': 'A', '\u0412': 'B', '\u0415': 'E', '\u041A': 'K',
+   930→            '\u041C': 'M', '\u041D': 'H', '\u041E': 'O', '\u0420': 'P',
+   931→            '\u0421': 'C', '\u0422': 'T', '\u0425': 'X',
+   932→            '\u0430': 'a', '\u0435': 'e', '\u043E': 'o', '\u043A': 'k',
+   933→            '\u043C': 'm', '\u043F': 'p', '\u0441': 'c', '\u0443': 'y',
+   934→            '\u0445': 'x',
+   935→            # Greek homoglyphs
+   936→            '\u0391': 'A', '\u0392': 'B', '\u0395': 'E', '\u0396': 'Z',
+   937→            '\u0397': 'H', '\u0399': 'I', '\u039A': 'K', '\u039C': 'M',
+   938→            '\u039D': 'N', '\u039F': 'O', '\u03A1': 'P', '\u03A4': 'T',
+   939→            '\u03A5': 'Y', '\u03A7': 'X',
+   940→            '\u03B1': 'a', '\u03B2': 'B', '\u03B5': 'e', '\u03B6': 'z',
+   941→            '\u03B7': 'n', '\u03B9': 'i', '\u03BA': 'k', '\u03BC': 'm',
+   942→            '\u03BD': 'v', '\u03BF': 'o', '\u03C1': 'p', '\u03C4': 't',
+   943→            '\u03C5': 'u', '\u03C7': 'x',
+   944→        }
+   945→        for cyrillic, latin in homoglyph_map.items():
+   946→            result = result.replace(cyrillic, latin)
+   947→
+   948→        return result
+   949→
+   950→    @staticmethod
+   951→    def _strip_control_sequences(text: str) -> str:
+   952→        """Remove ANSI escape sequences, zero-width chars, and control chars.
+   953→
+   954→        Preserves newlines (\n), tabs (\t), and regular spaces.
+   955→        """
+   956→        result = text
+   957→
+   958→        # Remove ANSI escape sequences (CSI: ESC [ ... final_byte)
+   959→        result = re.sub(r'\x1B\[[0-9;]*[a-zA-Z]', '', result)
+   960→        # Remove OSC sequences (ESC ] ... BEL or ESC \\)  
+   961→        result = re.sub(r'\x1B\][^\x07]*\x07', '', result)
+   962→        result = re.sub(r'\x1B\][^\x1B]*\x1B\\', '', result)
+   963→        # Remove other ESC sequences
+   964→        result = re.sub(r'\x1B[^\[\]].', '', result)
+   965→
+   966→        # Remove zero-width and invisible Unicode characters
+   967→        zero_width_ranges = [
+   968→            (0x200B, 0x200F),
+   969→            (0x2028, 0x202E),
+   970→            (0x2060, 0x2064),
+   971→            (0xFEFF, 0xFEFF),
+   972→            (0x00AD, 0x00AD),
+   973→            (0x034F, 0x034F),
+   974→            (0x180E, 0x180E),
+   975→            (0x2066, 0x2069),
+   976→            (0xFFF9, 0xFFFB),
+   977→        ]
+   978→        cleaned = []
+   979→        for ch in result:
+   980→            cp = ord(ch)
+   981→            is_zero_width = any(start <= cp <= end for start, end in zero_width_ranges)
+   982→            if not is_zero_width:
+   983→                cleaned.append(ch)
+   984→        result = ''.join(cleaned)
+   985→
+   986→        # Remove other control characters (keep \n, \t, \r)
+   987→        result = ''.join(
+   988→            ch for ch in result
+   989→            if ord(ch) >= 0x20 or ch in ('\n', '\t', '\r')
+   990→        )
+   991→
+   992→        # Remove null bytes
+   993→        result = result.replace('\x00', '')
+   994→
+   995→        return result
+   996→
+   997→    @staticmethod
+   998→    def _escape_special_chars(text: str) -> str:
+   999→        """Escape characters that could confuse prompt structure parsing.
+  1000→
+  1001→        Specifically targets:
+  1002→          - Backslash-heavy sequences (escape character abuse)
+  1003→          - Excessive markup characters
+  1004→          - Backtick code fence abuse
+  1005→        """
+  1006→        result = text
+  1007→
+  1008→        # Collapse excessive backslashes (max 2 in a row)
+  1009→        result = re.sub(r'\\{4,}', '\\\\', result)
+  1010→
+  1011→        # Collapse excessive backticks (more than 3 = potential code fence abuse)
+  1012→        # Keep triple backticks for legitimate code blocks, collapse to triple
+  1013→        result = re.sub(r'`{4,}', '```', result)
+  1014→
+  1015→        return result
+  1016→
+  1017→    @staticmethod
+  1018→    def _neutralize_structures(text: str) -> str:
+  1019→        """Neutralize known injection structure patterns.
+  1020→
+  1021→        Rather than removing content (which could break legitimate input),
+  1022→        this method breaks the structure of injection patterns by inserting
+  1023→        spaces within matched delimiter sequences.
+  1024→        """
+  1025→        result = text
+  1026→
+  1027→        # Break "===END OF PROMPT===" style patterns
+  1028→        result = re.sub(
+  1029→            r'(-{3,}|={3,}|#{3,}|\*{3,})\s*(?:END|STOP|FINISH|CLOSE|DONE|TERMINATE|HALT)\s+(?:OF\s+)?(?:PROMPT|INPUT|INSTRUCTIONS?|CONTEXT|SYSTEM|USER|MESSAGE|TEXT|CHAT|CONVERSATION)\s*(-{3,}|={3,}|#{3,}|\*{3,})',
+  1030→            lambda m: ' '.join(m.group(0)),
+  1031→            result,
+  1032→            flags=re.IGNORECASE,
+  1033→        )
+  1034→
+  1035→        # Break XML-style tag injection (replace angle brackets with escaped form)
+  1036→        result = re.sub(
+  1037→            r'</(?:system|instruction|prompt|context|rules?|guidelines?|system_prompt|user_input)>',
+  1038→            lambda m: m.group(0).replace('<', '&lt;').replace('>', '&gt;'),
+  1039→            result,
+  1040→            flags=re.IGNORECASE,
+  1041→        )
+  1042→
+  1043→        # Break "### Response:" / "### Assistant:" patterns
+  1044→        result = re.sub(
+  1045→            r'#{2,}\s*(?:response|answer|output|result|reply|completion|assistant|ai|bot)\s*:',
+  1046→            lambda m: '# ' + m.group(0).lstrip('#').strip(),
+  1047→            result,
+  1048→            flags=re.IGNORECASE,
+  1049→        )
+  1050→
+  1051→        return result
+  1052→
+  1053→    @staticmethod
+  1054→    def _normalize_whitespace(text: str) -> str:
+  1055→        """Normalize whitespace: collapse runs, trim, handle line endings."""
+  1056→        # Normalize line endings to \n
+  1057→        result = text.replace('\r\n', '\n').replace('\r', '\n')
+  1058→        # Collapse multiple spaces into one (but preserve leading indentation)
+  1059→        lines = result.split('\n')
+  1060→        normalized_lines = []
+  1061→        for line in lines:
+  1062→            # Preserve leading whitespace (indentation), collapse the rest
+  1063→            stripped = line.lstrip()
+  1064→            leading = line[:len(line) - len(stripped)]
+  1065→            stripped = re.sub(r' {2,}', ' ', stripped)
+  1066→            # Collapse multiple tabs to one
+  1067→            stripped = re.sub(r'\t{2,}', '\t', stripped)
+  1068→            normalized_lines.append(leading + stripped)
+  1069→        result = '\n'.join(normalized_lines)
+  1070→        # Remove excessive blank lines (more than 3 consecutive)
+  1071→        result = re.sub(r'\n{4,}', '\n\n\n', result)
+  1072→        # Strip leading/trailing whitespace
+  1073→        result = result.strip()
+  1074→        return result
+  1075→
+  1076→    def _enforce_length(self, text: str) -> str:
+  1077→        """Enforce maximum prompt length.
+  1078→
+  1079→        Truncates at the nearest sentence boundary or word boundary
+  1080→        within 10% of the limit to avoid cutting mid-word.
+  1081→
+  1082→        Args:
+  1083→            text: Text to potentially truncate.
+  1084→
+  1085→        Returns:
+  1086→            Text truncated to at most self.max_length characters.
+  1087→        """
+  1088→        if len(text) <= self.max_length:
+  1089→            return text
+  1090→
+  1091→        # Try to truncate at a sentence boundary within the last 10%
+  1092→        search_start = max(0, self.max_length - int(self.max_length * 0.1))
+  1093→        truncated = text[:self.max_length]
+  1094→
+  1095→        # Look for sentence endings in the last 10%
+  1096→        for i in range(len(truncated) - 1, search_start - 1, -1):
+  1097→            if truncated[i] in ('.', '!', '?') and (i + 1 >= len(truncated) or truncated[i + 1] == ' '):
+  1098→                return truncated[:i + 1].rstrip() + "\n[Input truncated: exceeded maximum length]"
+  1099→
+  1100→        # Fall back to word boundary
+  1101→        last_space = truncated.rfind(' ')
+  1102→        if last_space > search_start:
+  1103→            return truncated[:last_space].rstrip() + "\n[Input truncated: exceeded maximum length]"
+  1104→
+  1105→        # Last resort: hard truncate
+  1106→        return truncated + "\n[Input truncated: exceeded maximum length]"
+  1107→
+  1108→
+  1109→# ═══════════════════════════════════════════════════════════════════════════
+  1110→#  DEFENSE AUDIT LOGGER
+  1111→# ═══════════════════════════════════════════════════════════════════════════
+  1112→
+  1113→
+  1114→class DefenseAuditLogger:
+  1115→    """Structured audit logging for prompt defense events.
+  1116→
+  1117→    Tracks all scanned inputs, blocked attempts, and threat statistics.
+  1118→    Logs to ~/.reconpro/prompt_defense.log with rotation.
+  1119→
+  1120→    Events logged:
+  1121→      - INPUT_SCANNED: Every input that passes through the defense system
+  1122→      - THREAT_DETECTED: When any threat pattern is matched
+  1123→      - INPUT_BLOCKED: When critical/high threats cause input rejection
+  1124→      - INPUT_SANITIZED: When input is modified during sanitization
+  1125→    """
+  1126→
+  1127→    _MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+  1128→    _BACKUP_COUNT = 5
+  1129→
+  1130→    def __init__(self, log_dir: Optional[str] = None) -> None:
+  1131→        if log_dir is None:
+  1132→            log_dir = _DEFENSE_LOG_DIR
+  1133→        self._log_dir = log_dir
+  1134→        self._log_path = os.path.join(log_dir, _DEFENSE_LOG_FILE)
+  1135→
+  1136→        # Ensure directory exists
+  1137→        os.makedirs(log_dir, exist_ok=True)
+  1138→
+  1139→        # Statistics
+  1140→        self._stats: Dict[str, int] = defaultdict(int)
+  1141→        self._threat_pattern_counts: Dict[str, int] = defaultdict(int)
+  1142→        self._threat_category_counts: Dict[str, int] = defaultdict(int)
+  1143→        self._threat_severity_counts: Dict[str, int] = defaultdict(int)
+  1144→        self._blocked_count: int = 0
+  1145→        self._scanned_count: int = 0
+  1146→        self._sanitized_count: int = 0
+  1147→
+  1148→        # Set up rotating file logger
+  1149→        self._handler = logging.handlers.RotatingFileHandler(
+  1150→            self._log_path,
+  1151→            maxBytes=self._MAX_BYTES,
+  1152→            backupCount=self._BACKUP_COUNT,
+  1153→            encoding="utf-8",
+  1154→        )
+  1155→        self._handler.setFormatter(logging.Formatter("%(message)s"))
+  1156→        self._logger = logging.getLogger("reconpro.prompt_defense")
+  1157→        self._logger.setLevel(logging.DEBUG)
+  1158→        if not self._logger.handlers:
+  1159→            self._logger.addHandler(self._handler)
+  1160→
+  1161→    def _emit(self, level: str, event: Dict[str, Any]) -> None:
+  1162→        """Emit a structured JSON log entry."""
+  1163→        entry = {
+  1164→            "timestamp": datetime.now(timezone.utc).isoformat(),
+  1165→            "level": level,
+  1166→            **event,
+  1167→        }
+  1168→        try:
+  1169→            msg = json.dumps(entry, default=str)
+  1170→        except (TypeError, ValueError):
+  1171→            msg = json.dumps({"timestamp": entry["timestamp"], "level": level, "error": "serialization_failed"})
+  1172→
+  1173→        if level == "ALERT":
+  1174→            self._logger.critical(msg)
+  1175→        elif level == "WARN":
+  1176→            self._logger.warning(msg)
+  1177→        else:
+  1178→            self._logger.info(msg)
+  1179→
+  1180→    def log_scan(self, result: ScanResult, input_text: str, source: str = "unknown") -> None:
+  1181→        """Log the result of an input scan.
+  1182→
+  1183→        Args:
+  1184→            result: The ScanResult from PromptDefense.scan_input().
+  1185→            input_text: The original input text (will be hashed, not stored).
+  1186→            source: Where the input came from ("chat", "agent", "nexus", etc.).
+  1187→        """
+  1188→        self._scanned_count += 1
+  1189→
+  1190→        # Update statistics
+  1191→        self._threat_severity_counts[result.max_severity.value] += 1
+  1192→        for threat in result.threats:
+  1193→            self._threat_pattern_counts[threat.pattern_name] += 1
+  1194→            self._threat_category_counts[threat.category] += 1
+  1195→
+  1196→        event: Dict[str, Any] = {
+  1197→            "event_type": "INPUT_SCANNED",
+  1198→            "source": source,
+  1199→            "input_length": len(input_text),
+  1200→            "input_hash": result.input_hash,
+  1201→            "is_safe": result.is_safe,
+  1202→            "max_severity": result.max_severity.value,
+  1203→            "threat_count": len(result.threats),
+  1204→            "threat_patterns": [t.pattern_name for t in result.threats],
+  1205→        }
+  1206→
+  1207→        level = "INFO"
+  1208→        if not result.is_safe:
+  1209→            if result.max_severity == ThreatLevel.CRITICAL:
+  1210→                level = "ALERT"
+  1211→                self._blocked_count += 1
+  1212→            elif result.max_severity == ThreatLevel.HIGH:
+  1213→                level = "WARN"
+  1214→                self._blocked_count += 1
+  1215→            else:
+  1216→                level = "WARN"
+  1217→
+  1218→            event["event_type"] = "THREAT_DETECTED"
+  1219→            if result.max_severity in (ThreatLevel.CRITICAL, ThreatLevel.HIGH):
+  1220→                event["event_type"] = "INPUT_BLOCKED"
+  1221→
+  1222→        self._emit(level, event)
+  1223→
+  1224→    def log_sanitization(self, original: str, sanitized: str, source: str = "unknown") -> None:
+  1225→        """Log when input is modified during sanitization.
+  1226→
+  1227→        Args:
+  1228→            original: The original input text.
+  1229→            sanitized: The sanitized output text.
+  1230→            source: Where the input came from.
+  1231→        """
+  1232→        if original == sanitized:
+  1233→            return
+  1234→
+  1235→        self._sanitized_count += 1
+  1236→        original_hash = hashlib.sha256(original.encode("utf-8", errors="replace")).hexdigest()[:16]
+  1237→
+  1238→        self._emit("INFO", {
+  1239→            "event_type": "INPUT_SANITIZED",
+  1240→            "source": source,
+  1241→            "original_length": len(original),
+  1242→            "sanitized_length": len(sanitized),
+  1243→            "original_hash": original_hash,
+  1244→            "length_delta": len(sanitized) - len(original),
+  1245→        })
+  1246→
+  1247→    def get_statistics(self) -> Dict[str, Any]:
+  1248→        """Return current defense statistics.
+  1249→
+  1250→        Returns:
+  1251→            Dict with comprehensive statistics about defense events.
+  1252→        """
+  1253→        return {
+  1254→            "total_scanned": self._scanned_count,
+  1255→            "total_blocked": self._blocked_count,
+  1256→            "total_sanitized": self._sanitized_count,
+  1257→            "block_rate": (self._blocked_count / self._scanned_count * 100) if self._scanned_count > 0 else 0.0,
+  1258→            "threat_severity_breakdown": dict(self._threat_severity_counts),
+  1259→            "threat_pattern_breakdown": dict(self._threat_pattern_counts),
+  1260→            "threat_category_breakdown": dict(self._threat_category_counts),
+  1261→            "log_path": self._log_path,
+  1262→        }
+  1263→
+  1264→    def get_threat_report(self) -> str:
+  1265→        """Generate a human-readable threat report.
+  1266→
+  1267→        Returns:
+  1268→            Formatted string with threat statistics and trends.
+  1269→        """
+  1270→        stats = self.get_statistics()
+  1271→        lines = [
+  1272→            "=" * 60,
+  1273→            "  PROMPT DEFENSE — THREAT REPORT",
+  1274→            "=" * 60,
+  1275→            f"  Total inputs scanned:  {stats['total_scanned']}",
+  1276→            f"  Inputs blocked:        {stats['total_blocked']}",
+  1277→            f"  Inputs sanitized:      {stats['total_sanitized']}",
+  1278→            f"  Block rate:            {stats['block_rate']:.1f}%",
+  1279→            "",
+  1280→            "  Threat Severity Breakdown:",
+  1281→        ]
+  1282→
+  1283→        for sev in ("critical", "high", "medium", "low", "info"):
+  1284→            count = stats["threat_severity_breakdown"].get(sev, 0)
+  1285→            bar = "#" * min(count, 50)
+  1286→            lines.append(f"    {sev.upper():10} {count:5}  {bar}")
+  1287→
+  1288→        lines.append("")
+  1289→        lines.append("  Top Threat Patterns:")
+  1290→        sorted_patterns = sorted(
+  1291→            stats["threat_pattern_breakdown"].items(),
+  1292→            key=lambda x: x[1],
+  1293→            reverse=True,
+  1294→        )[:10]
+  1295→        for pattern, count in sorted_patterns:
+  1296→            lines.append(f"    {count:5}x  {pattern}")
+  1297→
+  1298→        lines.append("")
+  1299→        lines.append("  Threat Categories:")
+  1300→        for cat, count in sorted(stats["threat_category_breakdown"].items(), key=lambda x: x[1], reverse=True):
+  1301→            lines.append(f"    {count:5}x  {cat}")
+  1302→
+  1303→        lines.append("")
+  1304→        lines.append(f"  Log file: {stats['log_path']}")
+  1305→        lines.append("=" * 60)
+  1306→        return "\n".join(lines)
+  1307→
+  1308→    def reset_statistics(self) -> None:
+  1309→        """Reset all in-memory statistics (does not affect log file)."""
+  1310→        self._stats.clear()
+  1311→        self._threat_pattern_counts.clear()
+  1312→        self._threat_category_counts.clear()
+  1313→        self._threat_severity_counts.clear()
+  1314→        self._blocked_count = 0
+  1315→        self._scanned_count = 0
+  1316→        self._sanitized_count = 0
+  1317→
+  1318→    def close(self) -> None:
+  1319→        """Close the logger and release file handles."""
+  1320→        self._handler.close()
+  1321→        self._logger.removeHandler(self._handler)
+  1322→
+  1323→    @property
+  1324→    def log_path(self) -> str:
+  1325→        """Return the path to the defense audit log."""
+  1326→        return self._log_path
+  1327→
+  1328→
+  1329→# ═══════════════════════════════════════════════════════════════════════════
+  1330→#  PROMPT DEFENSE — Core Facade
+  1331→# ═══════════════════════════════════════════════════════════════════════════
+  1332→
+  1333→
+  1334→class PromptDefense:
+  1335→    """Core prompt injection defense system.
+  1336→
+  1337→    Combines InjectionDetector, ThreatClassifier, PromptSanitizer, and
+  1338→    DefenseAuditLogger into a unified defense facade.
+  1339→
+  1340→    Usage:
+  1341→        defense = PromptDefense()
+  1342→        result = defense.scan_input(user_input)
+  1343→        if not result.is_safe:
+  1344→            print(f"Blocked: {result.max_severity}")
+  1345→            return
+  1346→        clean = defense.sanitize_prompt(user_input)
+  1347→        # Use clean input...
+  1348→    """
+  1349→
+  1350→    def __init__(
+  1351→        self,
+  1352→        max_prompt_length: int = MAX_PROMPT_LENGTH,
+  1353→        log_dir: Optional[str] = None,
+  1354→        enable_logging: bool = True,
+  1355→        auto_block_critical: bool = True,
+  1356→        auto_block_high: bool = True,
+  1357→    ) -> None:
+  1358→        self._detector = InjectionDetector()
+  1359→        self._classifier = ThreatClassifier()
+  1360→        self._sanitizer = PromptSanitizer(max_length=max_prompt_length)
+  1361→        self._auto_block_critical = auto_block_critical
+  1362→        self._auto_block_high = auto_block_high
+  1363→
+  1364→        self._logger: Optional[DefenseAuditLogger] = None
+  1365→        if enable_logging:
+  1366→            try:
+  1367→                self._logger = DefenseAuditLogger(log_dir=log_dir)
+  1368→            except Exception as e:
+  1369→                logger.warning("Failed to initialize DefenseAuditLogger: %s", e)
+  1370→
+  1371→    def scan_input(self, user_input: str, source: str = "unknown") -> ScanResult:
+  1372→        """Scan user input for prompt injection threats.
+  1373→
+  1374→        Args:
+  1375→            user_input: Raw user input to scan.
+  1376→            source: Identifier for where the input originated ("chat", "agent", "nexus").
+  1377→
+  1378→        Returns:
+  1379→            ScanResult with threat details, severity, and sanitized input.
+  1380→        """
+  1381→        if not user_input:
+  1382→            return ScanResult(
+  1383→                is_safe=True,
+  1384→                threats=[],
+  1385→                max_severity=ThreatLevel.INFO,
+  1386→                sanitized_input="",
+  1387→                input_hash=hashlib.sha256(b"").hexdigest(),
+  1388→                scan_timestamp=datetime.now(timezone.utc).isoformat(),
+  1389→            )
+  1390→
+  1391→        input_hash = hashlib.sha256(
+  1392→            user_input.encode("utf-8", errors="replace")
+  1393→        ).hexdigest()
+  1394→
+  1395→        # Detect threats
+  1396→        threats = self._detector.detect(user_input)
+  1397→
+  1398→        # Classify overall severity
+  1399→        severity = self._classifier.classify(threats, user_input)
+  1400→
+  1401→        # Sanitize the input
+  1402→        sanitized = self._sanitizer.sanitize(user_input)
+  1403→
+  1404→        # Determine if safe
+  1405→        is_safe = True
+  1406→        if self._auto_block_critical and severity == ThreatLevel.CRITICAL:
+  1407→            is_safe = False
+  1408→        if self._auto_block_high and severity == ThreatLevel.HIGH:
+  1409→            is_safe = False
+  1410→
+  1411→        result = ScanResult(
+  1412→            is_safe=is_safe,
+  1413→            threats=threats,
+  1414→            max_severity=severity,
+  1415→            sanitized_input=sanitized,
+  1416→            input_hash=input_hash,
+  1417→            scan_timestamp=datetime.now(timezone.utc).isoformat(),
+  1418→        )
+  1419→
+  1420→        # Log the scan
+  1421→        if self._logger:
+  1422→            try:
+  1423→                self._logger.log_scan(result, user_input, source)
+  1424→                self._logger.log_sanitization(user_input, sanitized, source)
+  1425→            except Exception as e:
+  1426→                logger.warning("Failed to log defense event: %s", e)
+  1427→
+  1428→        return result
+  1429→
+  1430→    def classify_threat(self, input_text: str) -> ThreatLevel:
+  1431→        """Classify the threat level of input text.
+  1432→
+  1433→        Args:
+  1434→            input_text: The text to classify.
+  1435→
+  1436→        Returns:
+  1437→            The classified ThreatLevel.
+  1438→        """
+  1439→        return self._classifier.classify_threat(input_text)
+  1440→
+  1441→    def sanitize_prompt(self, prompt: str) -> str:
+  1442→        """Sanitize a prompt for safe AI consumption.
+  1443→
+  1444→        Args:
+  1445→            prompt: Raw user prompt.
+  1446→
+  1447→        Returns:
+  1448→            Sanitized prompt string.
+  1449→        """
+  1450→        return self._sanitizer.sanitize(prompt)
+  1451→
+  1452→    def validate_context(self, context: Dict[str, Any]) -> Tuple[bool, str]:
+  1453→        """Validate that context hasn't been tampered with.
+  1454→
+  1455→        Checks context dictionaries for signs of injection or tampering:
+  1456→        - Unexpected keys that could override system behavior
+  1457→        - Values containing injection patterns
+  1458→        - Excessively large context that could indicate overflow
+  1459→
+  1460→        Args:
+  1461→            context: A dict representing system context or state.
+  1462→
+  1463→        Returns:
+  1464→            Tuple of (is_valid, reason). If is_valid is False, reason
+  1465→            explains what was detected.
+  1466→        """
+  1467→        if not isinstance(context, dict):
+  1468→            return False, "Context must be a dictionary"
+  1469→
+  1470→        # Check for suspicious keys (injection via dict key manipulation)
+  1471→        suspicious_keys = {
+  1472→            "system_prompt", "instructions", "role", "persona",
+  1473→            "ignore_previous", "new_instructions", "override",
+  1474→            "__class__", "__init__", "__globals__", "__builtins__",
+  1475→        }
+  1476→        for key in context:
+  1477→            key_str = str(key).lower()
+  1478→            if key_str in suspicious_keys:
+  1479→                return False, f"Suspicious context key detected: '{key}'"
+  1480→
+  1481→        # Check values for injection patterns
+  1482→        for key, value in context.items():
+  1483→            value_str = str(value)
+  1484→            if len(value_str) > MAX_PROMPT_LENGTH:
+  1485→                return False, f"Context value for '{key}' exceeds maximum length"
+  1486→
+  1487→            # Scan value for injection patterns
+  1488→            threats = self._detector.detect(value_str)
+  1489→            critical_threats = [t for t in threats if t.severity in (ThreatLevel.CRITICAL, ThreatLevel.HIGH)]
+  1490→            if critical_threats:
+  1491→                pattern_names = ", ".join(t.pattern_name for t in critical_threats[:3])
+  1492→                return False, f"Injection pattern in context key '{key}': {pattern_names}"
+  1493→
+  1494→        return True, ""
+  1495→
+  1496→    def get_threat_report(self) -> str:
+  1497→        """Generate a comprehensive threat report.
+  1498→
+  1499→        Returns:
+  1500→            Formatted threat report string, or a message if logging is disabled.
+  1501→        """
+  1502→        if self._logger:
+  1503→            return self._logger.get_threat_report()
+  1504→        return "  Logging is disabled. Enable logging to view threat reports."
+  1505→
+  1506→    def get_statistics(self) -> Dict[str, Any]:
+  1507→        """Return current defense statistics.
+  1508→
+  1509→        Returns:
+  1510→            Dict with defense statistics, or empty dict if logging is disabled.
+  1511→        """
+  1512→        if self._logger:
+  1513→            return self._logger.get_statistics()
+  1514→        return {}
+  1515→
+  1516→    @property
+  1517→    def pattern_count(self) -> int:
+  1518→        """Return the number of registered detection patterns."""
+  1519→        return self._detector.pattern_count
+  1520→
+  1521→    def list_patterns(self) -> List[Dict[str, str]]:
+  1522→        """List all registered detection patterns.
+  1523→
+  1524→        Returns:
+  1525→            List of pattern documentation dicts.
+  1526→        """
+  1527→        return self._detector.list_patterns()
+  1528→
+  1529→    def close(self) -> None:
+  1530→        """Release resources."""
+  1531→        if self._logger:
+  1532→            self._logger.close()
+  1533→
+  1534→
+  1535→# ═══════════════════════════════════════════════════════════════════════════
+  1536→#  CONVENIENCE FUNCTIONS
+  1537→# ═══════════════════════════════════════════════════════════════════════════
+  1538→
+  1539→# Module-level singleton for quick use
+  1540→_default_defense: Optional[PromptDefense] = None
+  1541→
+  1542→
+  1543→def get_defense() -> PromptDefense:
+  1544→    """Get or create the module-level default PromptDefense instance.
+  1545→
+  1546→    Returns:
+  1547→        A shared PromptDefense instance (logging enabled).
+  1548→    """
+  1549→    global _default_defense
+  1550→    if _default_defense is None:
+  1551→        _default_defense = PromptDefense(enable_logging=True)
+  1552→    return _default_defense
+  1553→
+  1554→
+  1555→def quick_scan(text: str, source: str = "unknown") -> ScanResult:
+  1556→    """Quick one-shot scan of text for prompt injection.
+  1557→
+  1558→    Convenience function that uses the module-level defense instance.
+  1559→
+  1560→    Args:
+  1561→        text: Input text to scan.
+  1562→        source: Identifier for the input source.
+  1563→
+  1564→    Returns:
+  1565→        ScanResult with threat analysis.
+  1566→    """
+  1567→    return get_defense().scan_input(text, source)
+  1568→
+  1569→
+  1570→def quick_classify(text: str) -> ThreatLevel:
+  1571→    """Quick one-shot threat classification.
+  1572→
+  1573→    Args:
+  1574→        text: Input text to classify.
+  1575→
+  1576→    Returns:
+  1577→        Classified ThreatLevel.
+  1578→    """
+  1579→    return get_defense().classify_threat(text)
+  1580→
+  1581→
+  1582→def quick_sanitize(text: str) -> str:
+  1583→    """Quick one-shot prompt sanitization.
+  1584→
+  1585→    Args:
+  1586→        text: Input text to sanitize.
+  1587→
+  1588→    Returns:
+  1589→        Sanitized text.
+  1590→    """
+  1591→    return get_defense().sanitize_prompt(text)
+  1592→
+  1593→
+  1594→__all__ = [
+  1595→    "ThreatLevel",
+  1596→    "ThreatMatch",
+  1597→    "ScanResult",
+  1598→    "InjectionDetector",
+  1599→    "ThreatClassifier",
+  1600→    "PromptSanitizer",
+  1601→    "DefenseAuditLogger",
+  1602→    "PromptDefense",
+  1603→    "get_defense",
+  1604→    "quick_scan",
+  1605→    "quick_classify",
+  1606→    "quick_sanitize",
+  1607→    "MAX_PROMPT_LENGTH",
+  1608→    "CONTEXT_OVERFLOW_THRESHOLD",
+  1609→]
+  1610→

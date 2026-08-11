@@ -1,0 +1,1826 @@
+     1→"""ReconPro v11 — Auto Validation Pipeline.
+     2→
+     3→Comprehensive automated validation framework for ReconPro Age III.
+     4→Orchestrates multiple validation stages: syntax, imports, interfaces,
+     5→types, security, performance, and tests.
+     6→
+     7→Pure Python, ZERO external dependencies. Uses stdlib only:
+     8→    py_compile, ast, importlib, subprocess, pathlib, json, time, logging.
+     9→
+    10→Classes:
+    11→    ValidationFinding     — Single finding with file, line, severity, message, suggestion
+    12→    ValidationStageResult — Result of running a single validation stage
+    13→    ValidationReport      — Comprehensive report across all stages with trend data
+    14→    ValidationStage       — ABC base class for individual validation stages
+    15→    SyntaxValidator       — Validates Python syntax via py_compile and ast.parse
+    16→    ImportValidator       — Validates import chains, circular/missing/unused imports
+    17→    InterfaceValidator    — Validates module interface compliance
+    18→    TypeValidator         — Validates type annotation coverage
+    19→    SecurityValidator     — Runs static security checks on source code
+    20→    PerformanceValidator  — Runs basic performance benchmarks
+    21→    TestValidator         — Runs the test suite via subprocess
+    22→    ValidationPipeline    — Orchestrates all validation stages
+    23→
+    24→Usage:
+    25→    from reconpro.auto_validation import ValidationPipeline
+    26→
+    27→    pipeline = ValidationPipeline("/path/to/reconpro")
+    28→    report = pipeline.validate_full()
+    29→    print(report.summary())
+    30→    report.save()
+    31→"""
+    32→
+    33→from __future__ import annotations
+    34→
+    35→import ast
+    36→import importlib.util
+    37→import json
+    38→import logging
+    39→import os
+    40→import py_compile
+    41→import re
+    42→import subprocess
+    43→import sys
+    44→import time
+    45→import traceback
+    46→from abc import ABC, abstractmethod
+    47→from dataclasses import dataclass, field
+    48→from datetime import datetime
+    49→from enum import Enum
+    50→from pathlib import Path
+    51→from typing import Any, Dict, List, Optional, Set, Tuple
+    52→
+    53→from .constants import MEMORY_DIR, RECONPRO_HOME
+    54→
+    55→logger = logging.getLogger(__name__)
+    56→
+    57→
+    58→# ────────────────────────────────────────────────────────────────────────
+    59→# Constants
+    60→# ────────────────────────────────────────────────────────────────────────
+    61→
+    62→VALIDATION_REPORTS_DIR: Path = MEMORY_DIR / "validation_reports"
+    63→
+    64→# Severity ordering: lower number = more severe
+    65→_SEVERITY_ORDER: Dict[str, int] = {
+    66→    "critical": 0,
+    67→    "high": 1,
+    68→    "medium": 2,
+    69→    "low": 3,
+    70→    "info": 4,
+    71→}
+    72→
+    73→VALID_SEVERITIES: frozenset[str] = frozenset(_SEVERITY_ORDER.keys())
+    74→
+    75→# Python stdlib modules (for import resolution checks)
+    76→_STDLIB_MODULES: Optional[Set[str]] = None
+    77→
+    78→
+    79→def _get_stdlib_modules() -> Set[str]:
+    80→    """Lazily compute the set of stdlib module names."""
+    81→    global _STDLIB_MODULES
+    82→    if _STDLIB_MODULES is not None:
+    83→        return _STDLIB_MODULES
+    84→    stdlib_names: Set[str] = set(sys.stdlib_module_names) if hasattr(sys, "stdlib_module_names") else set()
+    85→    # Fallback: read from the current Python's lib
+    86→    if not stdlib_names:
+    87→        import pkgutil
+    88→        for m in pkgutil.iter_modules():
+    89→            if not m.ispkg:
+    90→                stdlib_names.add(m.name)
+    91→    # Add top-level builtins
+    92→    stdlib_names.update({
+    93→        "os", "sys", "re", "json", "ast", "time", "logging", "subprocess",
+    94→        "pathlib", "dataclasses", "enum", "abc", "typing", "collections",
+    95→        "itertools", "functools", "hashlib", "urllib", "http", "socket",
+    96→        "ssl", "importlib", "io", "textwrap", "datetime", "traceback",
+    97→        "threading", "multiprocessing", "concurrent", "asyncio", "copy",
+    98→        "shutil", "tempfile", "glob", "fnmatch", "operator", "string",
+    99→        "struct", "array", "weakref", "types", "inspect", "dis",
+   100→        "tokenize", "token", "keyword", "argparse", "configparser",
+   101→        "pickle", "shelve", "sqlite3", "csv", "xml", "html", "email",
+   102→        "mimetypes", "base64", "binascii", "codecs", "unicodedata",
+   103→        "math", "cmath", "decimal", "fractions", "random", "statistics",
+   104→        "numbers", "gettext", "locale", "calendar", "platform",
+   105→        "signal", "mmap", "resource", "ctypes", "warnings",
+   106→    })
+   107→    _STDLIB_MODULES = stdlib_names
+   108→    return _STDLIB_MODULES
+   109→
+   110→
+   111→# ────────────────────────────────────────────────────────────────────────
+   112→# Data Classes
+   113→# ────────────────────────────────────────────────────────────────────────
+   114→
+   115→class Severity(Enum):
+   116→    """Validation finding severity levels."""
+   117→    CRITICAL = "critical"
+   118→    HIGH = "high"
+   119→    MEDIUM = "medium"
+   120→    LOW = "low"
+   121→    INFO = "info"
+   122→
+   123→    @property
+   124→    def sort_key(self) -> int:
+   125→        return _SEVERITY_ORDER[self.value]
+   126→
+   127→    def __lt__(self, other: "Severity") -> bool:
+   128→        if isinstance(other, Severity):
+   129→            return self.sort_key < other.sort_key
+   130→        return NotImplemented
+   131→
+   132→    def __le__(self, other: "Severity") -> bool:
+   133→        if isinstance(other, Severity):
+   134→            return self.sort_key <= other.sort_key
+   135→        return NotImplemented
+   136→
+   137→    def __ge__(self, other: "Severity") -> bool:
+   138→        if isinstance(other, Severity):
+   139→            return self.sort_key >= other.sort_key
+   140→        return NotImplemented
+   141→
+   142→    def __gt__(self, other: "Severity") -> bool:
+   143→        if isinstance(other, Severity):
+   144→            return self.sort_key > other.sort_key
+   145→        return NotImplemented
+   146→
+   147→
+   148→class StageStatus(Enum):
+   149→    """Status of a validation stage."""
+   150→    PASSED = "passed"
+   151→    FAILED = "failed"
+   152→    SKIPPED = "skipped"
+   153→    ERROR = "error"
+   154→
+   155→
+   156→@dataclass
+   157→class ValidationFinding:
+   158→    """A single validation finding.
+   159→
+   160→    Attributes:
+   161→        file: Relative file path where the finding was detected.
+   162→        line: Line number (0 if not applicable).
+   163→        severity: Severity level of the finding.
+   164→        message: Human-readable description of the finding.
+   165→        suggestion: Suggested fix or action.
+   166→        rule_id: Identifier for the rule that produced this finding.
+   167→    """
+   168→    file: str = ""
+   169→    line: int = 0
+   170→    severity: str = "info"
+   171→    message: str = ""
+   172→    suggestion: str = ""
+   173→    rule_id: str = ""
+   174→
+   175→    def __post_init__(self) -> None:
+   176→        if self.severity.lower() not in VALID_SEVERITIES:
+   177→            self.severity = "info"
+   178→        else:
+   179→            self.severity = self.severity.lower()
+   180→
+   181→    def to_dict(self) -> Dict[str, Any]:
+   182→        return {
+   183→            "file": self.file,
+   184→            "line": self.line,
+   185→            "severity": self.severity,
+   186→            "message": self.message,
+   187→            "suggestion": self.suggestion,
+   188→            "rule_id": self.rule_id,
+   189→        }
+   190→
+   191→
+   192→@dataclass
+   193→class ValidationStageResult:
+   194→    """Result of running a single validation stage.
+   195→
+   196→    Attributes:
+   197→        stage_name: Human-readable name of the stage.
+   198→        status: Overall pass/fail/skip/error status.
+   199→        duration: Wall-clock time in seconds.
+   200→        findings: List of ValidationFinding objects.
+   201→        files_scanned: Number of files scanned.
+   202→        error_message: Error message if the stage raised an exception.
+   203→    """
+   204→    stage_name: str = ""
+   205→    status: str = "skipped"
+   206→    duration: float = 0.0
+   207→    findings: List[ValidationFinding] = field(default_factory=list)
+   208→    files_scanned: int = 0
+   209→    error_message: str = ""
+   210→
+   211→    @property
+   212→    def passed(self) -> bool:
+   213→        return self.status == StageStatus.PASSED.value
+   214→
+   215→    @property
+   216→    def finding_count(self) -> int:
+   217→        return len(self.findings)
+   218→
+   219→    def critical_count(self) -> int:
+   220→        return sum(1 for f in self.findings if f.severity == "critical")
+   221→
+   222→    def high_count(self) -> int:
+   223→        return sum(1 for f in self.findings if f.severity == "high")
+   224→
+   225→    def medium_count(self) -> int:
+   226→        return sum(1 for f in self.findings if f.severity == "medium")
+   227→
+   228→    def low_count(self) -> int:
+   229→        return sum(1 for f in self.findings if f.severity == "low")
+   230→
+   231→    def info_count(self) -> int:
+   232→        return sum(1 for f in self.findings if f.severity == "info")
+   233→
+   234→    def has_critical_or_high(self) -> bool:
+   235→        return any(f.severity in ("critical", "high") for f in self.findings)
+   236→
+   237→    def to_dict(self) -> Dict[str, Any]:
+   238→        return {
+   239→            "stage_name": self.stage_name,
+   240→            "status": self.status,
+   241→            "duration": round(self.duration, 3),
+   242→            "files_scanned": self.files_scanned,
+   243→            "finding_count": self.finding_count,
+   244→            "findings": [f.to_dict() for f in self.findings],
+   245→            "error_message": self.error_message,
+   246→        }
+   247→
+   248→
+   249→@dataclass
+   250→class ValidationReport:
+   251→    """Comprehensive validation report across all stages.
+   252→
+   253→    Attributes:
+   254→        timestamp: When the report was generated.
+   255→        project_root: Root directory that was validated.
+   256→        overall_status: Overall pass/fail status.
+   257→        stage_results: Per-stage results.
+   258→        total_duration: Total wall-clock time in seconds.
+   259→        previous_report: Optional reference to a previous report for trend data.
+   260→    """
+   261→    timestamp: str = ""
+   262→    project_root: str = ""
+   263→    overall_status: str = "pending"
+   264→    stage_results: List[ValidationStageResult] = field(default_factory=list)
+   265→    total_duration: float = 0.0
+   266→    previous_report: Optional[Dict[str, Any]] = None
+   267→
+   268→    def __post_init__(self) -> None:
+   269→        if not self.timestamp:
+   270→            self.timestamp = datetime.now().isoformat()
+   271→
+   272→    @property
+   273→    def passed(self) -> bool:
+   274→        return self.overall_status == StageStatus.PASSED.value
+   275→
+   276→    @property
+   277→    def total_findings(self) -> int:
+   278→        return sum(sr.finding_count for sr in self.stage_results)
+   279→
+   280→    @property
+   281→    def total_critical(self) -> int:
+   282→        return sum(sr.critical_count() for sr in self.stage_results)
+   283→
+   284→    @property
+   285→    def total_high(self) -> int:
+   286→        return sum(sr.high_count() for sr in self.stage_results)
+   287→
+   288→    @property
+   289→    def total_medium(self) -> int:
+   290→        return sum(sr.medium_count() for sr in self.stage_results)
+   291→
+   292→    @property
+   293→    def total_low(self) -> int:
+   294→        return sum(sr.low_count() for sr in self.stage_results)
+   295→
+   296→    @property
+   297→    def total_info(self) -> int:
+   298→        return sum(sr.info_count() for sr in self.stage_results)
+   299→
+   300→    @property
+   301→    def stages_passed(self) -> int:
+   302→        return sum(1 for sr in self.stage_results if sr.passed)
+   303→
+   304→    @property
+   305→    def stages_total(self) -> int:
+   306→        return len(self.stage_results)
+   307→
+   308→    @property
+   309→    def files_scanned_total(self) -> int:
+   310→        return sum(sr.files_scanned for sr in self.stage_results)
+   311→
+   312→    def get_stage_result(self, stage_name: str) -> Optional[ValidationStageResult]:
+   313→        """Look up a stage result by name."""
+   314→        for sr in self.stage_results:
+   315→            if sr.stage_name == stage_name:
+   316→                return sr
+   317→        return None
+   318→
+   319→    def get_trends(self) -> Dict[str, Any]:
+   320→        """Compare current report with previous report for trend data."""
+   321→        if not self.previous_report:
+   322→            return {"trend_available": False}
+   323→
+   324→        prev_findings = self.previous_report.get("total_findings", 0)
+   325→        prev_critical = self.previous_report.get("total_critical", 0)
+   326→        prev_high = self.previous_report.get("total_high", 0)
+   327→        prev_duration = self.previous_report.get("total_duration", 0.0)
+   328→        prev_timestamp = self.previous_report.get("timestamp", "")
+   329→
+   330→        return {
+   331→            "trend_available": True,
+   332→            "previous_timestamp": prev_timestamp,
+   333→            "findings_delta": self.total_findings - prev_findings,
+   334→            "critical_delta": self.total_critical - prev_critical,
+   335→            "high_delta": self.total_high - prev_high,
+   336→            "duration_delta": round(self.total_duration - prev_duration, 3),
+   337→            "improved": (
+   338→                self.total_findings < prev_findings
+   339→                or (self.total_findings == prev_findings
+   340→                    and self.total_duration < prev_duration)
+   341→            ),
+   342→        }
+   343→
+   344→    def summary(self) -> str:
+   345→        """Generate a human-readable summary of the report."""
+   346→        lines: List[str] = []
+   347→        lines.append("=" * 72)
+   348→        lines.append("  ReconPro Auto-Validation Report")
+   349→        lines.append(f"  Generated: {self.timestamp}")
+   350→        lines.append(f"  Project:   {self.project_root}")
+   351→        lines.append("=" * 72)
+   352→        lines.append("")
+   353→        lines.append(f"  Overall Status:  {self.overall_status.upper()}")
+   354→        lines.append(f"  Duration:         {self.total_duration:.3f}s")
+   355→        lines.append(f"  Stages:           {self.stages_passed}/{self.stages_total} passed")
+   356→        lines.append(f"  Files Scanned:    {self.files_scanned_total}")
+   357→        lines.append("")
+   358→
+   359→        # Severity breakdown
+   360→        lines.append("  Findings by Severity:")
+   361→        lines.append(f"    CRITICAL: {self.total_critical}")
+   362→        lines.append(f"    HIGH:     {self.total_high}")
+   363→        lines.append(f"    MEDIUM:   {self.total_medium}")
+   364→        lines.append(f"    LOW:      {self.total_low}")
+   365→        lines.append(f"    INFO:     {self.total_info}")
+   366→        lines.append(f"    TOTAL:    {self.total_findings}")
+   367→        lines.append("")
+   368→
+   369→        # Per-stage results
+   370→        lines.append("  Stage Results:")
+   371→        lines.append("  " + "-" * 66)
+   372→        for sr in self.stage_results:
+   373→            status_marker = "PASS" if sr.passed else "FAIL"
+   374→            finding_str = ""
+   375→            if sr.finding_count > 0:
+   376→                parts: List[str] = []
+   377→                if sr.critical_count():
+   378→                    parts.append(f"{sr.critical_count()} crit")
+   379→                if sr.high_count():
+   380→                    parts.append(f"{sr.high_count()} high")
+   381→                if sr.medium_count():
+   382→                    parts.append(f"{sr.medium_count()} med")
+   383→                if sr.low_count():
+   384→                    parts.append(f"{sr.low_count()} low")
+   385→                finding_str = f" [{', '.join(parts)}]"
+   386→            lines.append(
+   387→                f"    [{status_marker}] {sr.stage_name:<25s} "
+   388→                f"{sr.files_scanned:>4} files  {sr.duration:>7.3f}s"
+   389→                f"{finding_str}"
+   390→            )
+   391→        lines.append("")
+   392→
+   393→        # Trend data
+   394→        trends = self.get_trends()
+   395→        if trends.get("trend_available"):
+   396→            lines.append("  Trends (vs previous run):")
+   397→            lines.append(f"    Findings:  {'+' if trends['findings_delta'] >= 0 else ''}{trends['findings_delta']}")
+   398→            lines.append(f"    Critical:  {'+' if trends['critical_delta'] >= 0 else ''}{trends['critical_delta']}")
+   399→            lines.append(f"    High:      {'+' if trends['high_delta'] >= 0 else ''}{trends['high_delta']}")
+   400→            lines.append(f"    Duration:  {'+' if trends['duration_delta'] >= 0 else ''}{trends['duration_delta']:.3f}s")
+   401→            improved = "YES" if trends["improved"] else "NO"
+   402→            lines.append(f"    Improved:  {improved}")
+   403→            lines.append("")
+   404→
+   405→        # Critical and high findings detail
+   406→        all_critical_high: List[ValidationFinding] = []
+   407→        for sr in self.stage_results:
+   408→            for f in sr.findings:
+   409→                if f.severity in ("critical", "high"):
+   410→                    all_critical_high.append(f)
+   411→
+   412→        if all_critical_high:
+   413→            lines.append("  Critical/High Findings:")
+   414→            lines.append("  " + "-" * 66)
+   415→            for f in sorted(all_critical_high,
+   416→                             key=lambda x: _SEVERITY_ORDER.get(x.severity, 99)):
+   417→                loc = f"{f.file}:{f.line}" if f.line else f.file
+   418→                lines.append(f"    [{f.severity.upper():8s}] {loc}")
+   419→                lines.append(f"              {f.message}")
+   420→                if f.suggestion:
+   421→                    lines.append(f"              -> {f.suggestion}")
+   422→            lines.append("")
+   423→
+   424→        lines.append("=" * 72)
+   425→        return "\n".join(lines)
+   426→
+   427→    def to_dict(self) -> Dict[str, Any]:
+   428→        """Serialize to dictionary for JSON persistence."""
+   429→        trends = self.get_trends()
+   430→        return {
+   431→            "timestamp": self.timestamp,
+   432→            "project_root": self.project_root,
+   433→            "overall_status": self.overall_status,
+   434→            "total_duration": round(self.total_duration, 3),
+   435→            "files_scanned": self.files_scanned_total,
+   436→            "total_findings": self.total_findings,
+   437→            "total_critical": self.total_critical,
+   438→            "total_high": self.total_high,
+   439→            "total_medium": self.total_medium,
+   440→            "total_low": self.total_low,
+   441→            "total_info": self.total_info,
+   442→            "stages_passed": self.stages_passed,
+   443→            "stages_total": self.stages_total,
+   444→            "trends": trends,
+   445→            "stage_results": [sr.to_dict() for sr in self.stage_results],
+   446→        }
+   447→
+   448→    def save(self, reports_dir: Optional[Path] = None) -> Path:
+   449→        """Save the report as a JSON file to the validation reports directory.
+   450→
+   451→        Args:
+   452→            reports_dir: Override directory for saving. Defaults to
+   453→                         RECONPRO_HOME/memory/validation_reports/.
+   454→
+   455→        Returns:
+   456→            Path to the saved report file.
+   457→        """
+   458→        save_dir = reports_dir or VALIDATION_REPORTS_DIR
+   459→        save_dir.mkdir(parents=True, exist_ok=True)
+   460→
+   461→        filename = f"validation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+   462→        filepath = save_dir / filename
+   463→
+   464→        data = self.to_dict()
+   465→        with open(filepath, "w", encoding="utf-8") as fh:
+   466→            json.dump(data, fh, indent=2, default=str)
+   467→
+   468→        logger.info("Validation report saved to %s", filepath)
+   469→        return filepath
+   470→
+   471→    @classmethod
+   472→    def load_latest(cls, reports_dir: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+   473→        """Load the most recent validation report from disk.
+   474→
+   475→        Args:
+   476→            reports_dir: Override directory. Defaults to VALIDATION_REPORTS_DIR.
+   477→
+   478→        Returns:
+   479→            Parsed report dict, or None if no reports exist.
+   480→        """
+   481→        load_dir = reports_dir or VALIDATION_REPORTS_DIR
+   482→        if not load_dir.exists():
+   483→            return None
+   484→
+   485→        reports = sorted(load_dir.glob("validation_*.json"))
+   486→        if not reports:
+   487→            return None
+   488→
+   489→        latest = reports[-1]
+   490→        try:
+   491→            with open(latest, "r", encoding="utf-8") as fh:
+   492→                return json.load(fh)
+   493→        except (json.JSONDecodeError, OSError) as exc:
+   494→            logger.warning("Failed to load report %s: %s", latest, exc)
+   495→            return None
+   496→
+   497→
+   498→# ────────────────────────────────────────────────────────────────────────
+   499→# ValidationStage — ABC Base
+   500→# ────────────────────────────────────────────────────────────────────────
+   501→
+   502→class ValidationStage(ABC):
+   503→    """Abstract base class for individual validation stages.
+   504→
+   505→    Each stage represents one validation domain (syntax, imports, etc.).
+   506→    Subclasses must implement ``run()`` and set ``name`` / ``description``.
+   507→
+   508→    Attributes:
+   509→        name: Short identifier for the stage.
+   510→        description: Human-readable description.
+   511→    """
+   512→
+   513→    name: str = "unnamed"
+   514→    description: str = ""
+   515→
+   516→    def __init__(self, project_root: Path) -> None:
+   517→        self.project_root = project_root
+   518→
+   519→    @abstractmethod
+   520→    def run(self) -> ValidationStageResult:
+   521→        """Execute the validation stage.
+   522→
+   523→        Returns:
+   524→            ValidationStageResult with findings, status, and duration.
+   525→        """
+   526→        ...
+   527→
+   528→    def _make_result(
+   529→        self,
+   530→        status: str,
+   531→        findings: List[ValidationFinding],
+   532→        files_scanned: int = 0,
+   533→        duration: float = 0.0,
+   534→        error_message: str = "",
+   535→    ) -> ValidationStageResult:
+   536→        return ValidationStageResult(
+   537→            stage_name=self.name,
+   538→            status=status,
+   539→            duration=duration,
+   540→            findings=findings,
+   541→            files_scanned=files_scanned,
+   542→            error_message=error_message,
+   543→        )
+   544→
+   545→    def _discover_python_files(self) -> List[Path]:
+   546→        """Find all .py files under project_root (excluding __pycache__)."""
+   547→        files: List[Path] = []
+   548→        try:
+   549→            for py_file in self.project_root.rglob("*.py"):
+   550→                # Skip __pycache__, .git, node_modules, and egg-info
+   551→                parts = py_file.relative_to(self.project_root).parts
+   552→                skip_dirs = {"__pycache__", ".git", "node_modules",
+   553→                             ".eggs", "*.egg-info", ".tox", ".venv", "venv"}
+   554→                if any(part in skip_dirs for part in parts):
+   555→                    continue
+   556→                files.append(py_file)
+   557→        except (OSError, ValueError):
+   558→            pass
+   559→        return sorted(files)
+   560→
+   561→
+   562→# ────────────────────────────────────────────────────────────────────────
+   563→# SyntaxValidator
+   564→# ────────────────────────────────────────────────────────────────────────
+   565→
+   566→class SyntaxValidator(ValidationStage):
+   567→    """Validate Python syntax for all .py files.
+   568→
+   569→    Uses py_compile for byte-code compilation and ast.parse for
+   570→    structural validation (detects syntax errors py_compile might miss).
+   571→    """
+   572→
+   573→    name = "syntax"
+   574→    description = "Check all Python files compile and parse as valid ASTs"
+   575→
+   576→    def run(self) -> ValidationStageResult:
+   577→        start = time.monotonic()
+   578→        findings: List[ValidationFinding] = []
+   579→        py_files = self._discover_python_files()
+   580→
+   581→        for py_file in py_files:
+   582→            rel = str(py_file.relative_to(self.project_root))
+   583→
+   584→            # 1. py_compile check
+   585→            try:
+   586→                py_compile.compile(
+   587→                    str(py_file), doraise=True, quiet=True,
+   588→                )
+   589→            except py_compile.PyCompileError as exc:
+   590→                findings.append(ValidationFinding(
+   591→                    file=rel,
+   592→                    line=self._extract_error_line(str(exc)),
+   593→                    severity="critical",
+   594→                    message=f"Syntax error (py_compile): {exc}",
+   595→                    suggestion="Fix the syntax error in this file.",
+   596→                    rule_id="SYN-001",
+   597→                ))
+   598→                continue  # Don't try ast.parse if compile fails
+   599→
+   600→            # 2. ast.parse check (catches deeper structural issues)
+   601→            try:
+   602→                source = py_file.read_text(encoding="utf-8", errors="replace")
+   603→                ast.parse(source, filename=str(py_file))
+   604→            except SyntaxError as exc:
+   605→                findings.append(ValidationFinding(
+   606→                    file=rel,
+   607→                    line=exc.lineno or 0,
+   608→                    severity="critical",
+   609→                    message=f"AST parse error: {exc.msg}",
+   610→                    suggestion="Review and fix the syntax structure.",
+   611→                    rule_id="SYN-002",
+   612→                ))
+   613→
+   614→        duration = time.monotonic() - start
+   615→        has_critical = any(f.severity == "critical" for f in findings)
+   616→        status = StageStatus.FAILED.value if has_critical else StageStatus.PASSED.value
+   617→        return self._make_result(status, findings, len(py_files), duration)
+   618→
+   619→    @staticmethod
+   620→    def _extract_error_line(error_str: str) -> int:
+   621→        """Try to extract a line number from a PyCompileError string."""
+   622→        match = re.search(r"line (\d+)", error_str)
+   623→        return int(match.group(1)) if match else 0
+   624→
+   625→
+   626→# ────────────────────────────────────────────────────────────────────────
+   627→# ImportValidator
+   628→# ────────────────────────────────────────────────────────────────────────
+   629→
+   630→class ImportValidator(ValidationStage):
+   631→    """Validate import chains across the project.
+   632→
+   633→    Checks for:
+   634→    - Circular imports between modules
+   635→    - Imports that reference non-existent modules (missing)
+   636→    - Unused imports (imported but never referenced in scope)
+   637→    """
+   638→
+   639→    name = "imports"
+   640→    description = "Check for circular, missing, and unused imports"
+   641→
+   642→    def run(self) -> ValidationStageResult:
+   643→        start = time.monotonic()
+   644→        findings: List[ValidationFinding] = []
+   645→        py_files = self._discover_python_files()
+   646→
+   647→        # Build import graph
+   648→        graph: Dict[str, Set[str]] = {}
+   649→        file_imports: Dict[str, List[Tuple[str, str, int]]] = {}  # file -> [(module, name, line)]
+   650→        file_used_names: Dict[str, Set[str]] = {}
+   651→
+   652→        stdlib = _get_stdlib_modules()
+   653→        project_name = self.project_root.name  # e.g. "reconpro"
+   654→
+   655→        for py_file in py_files:
+   656→            rel = str(py_file.relative_to(self.project_root))
+   657→            try:
+   658→                source = py_file.read_text(encoding="utf-8", errors="replace")
+   659→                tree = ast.parse(source, filename=str(py_file))
+   660→            except SyntaxError:
+   661→                continue  # Skip files with syntax errors (SyntaxValidator handles them)
+   662→
+   663→            imports: List[Tuple[str, str, int]] = []
+   664→            names_used: Set[str] = set()
+   665→
+   666→            for node in ast.walk(tree):
+   667→                # Collect imports
+   668→                if isinstance(node, ast.Import):
+   669→                    for alias in node.names:
+   670→                        imports.append((alias.name, alias.asname or alias.name, node.lineno))
+   671→                elif isinstance(node, ast.ImportFrom):
+   672→                    module_name = node.module or ""
+   673→                    if module_name.startswith(f"."):  # relative imports
+   674→                        if module_name == ".":
+   675→                            module_name = f"{project_name}.{rel.replace('/', '.').replace('.py', '').replace('.__init__', '')}"
+   676→                        # Keep as-is for graph purposes
+   677→                    for alias in node.names:
+   678→                        imports.append((module_name, alias.asname or alias.name, node.lineno))
+   679→
+   680→                # Collect name references (simple: names used in the module body)
+   681→                if isinstance(node, ast.Name):
+   682→                    names_used.add(node.id)
+   683→                elif isinstance(node, ast.Attribute):
+   684→                    # Collect just the base attribute name
+   685→                    names_used.add(node.attr)
+   686→
+   687→            graph[rel] = set()
+   688→            file_imports[rel] = imports
+   689→            file_used_names[rel] = names_used
+   690→
+   691→            # Build graph edges: map local imports to relative file paths
+   692→            for mod_name, _local_name, _line in imports:
+   693→                local_mod = self._module_to_file_rel(mod_name, py_files, project_name)
+   694→                if local_mod and local_mod != rel:
+   695→                    graph[rel].add(local_mod)
+   696→
+   697→        # 1. Check for circular imports
+   698→        findings.extend(self._find_circular_imports(graph))
+   699→
+   700→        # 2. Check for missing imports
+   701→        for py_file in py_files:
+   702→            rel = str(py_file.relative_to(self.project_root))
+   703→            for mod_name, local_name, line in file_imports.get(rel, []):
+   704→                # Skip relative imports (they are resolved by the package system)
+   705→                if mod_name.startswith("."):
+   706→                    continue
+   707→                # Skip stdlib
+   708→                top_level = mod_name.split(".")[0]
+   709→                if top_level in stdlib:
+   710→                    continue
+   711→                # Check if the top-level module exists somewhere in the project
+   712→                found = False
+   713→                for other_file in py_files:
+   714→                    other_rel = str(other_file.relative_to(self.project_root))
+   715→                    if other_rel == f"{top_level}.py" or other_rel.startswith(f"{top_level}/"):
+   716→                        found = True
+   717→                        break
+   718→                # Also check if it could be an installed package
+   719→                if not found:
+   720→                    try:
+   721→                        spec = importlib.util.find_spec(top_level)
+   722→                        if spec is not None:
+   723→                            found = True
+   724→                    except (ImportError, ModuleNotFoundError, ValueError):
+   725→                        pass
+   726→                if not found:
+   727→                    # Only flag if it looks like a project-internal import
+   728→                    if top_level == project_name or top_level in {
+   729→                        p.relative_to(self.project_root).parts[0]
+   730→                        for p in py_files
+   731→                        if len(p.relative_to(self.project_root).parts) > 0
+   732→                    }:
+   733→                        findings.append(ValidationFinding(
+   734→                            file=rel,
+   735→                            line=line,
+   736→                            severity="high",
+   737→                            message=f"Missing import: '{mod_name}' (as '{local_name}')",
+   738→                            suggestion=f"Ensure the module '{mod_name}' exists or remove the import.",
+   739→                            rule_id="IMP-002",
+   740→                        ))
+   741→
+   742→        # 3. Check for unused imports
+   743→        for py_file in py_files:
+   744→            rel = str(py_file.relative_to(self.project_root))
+   745→            source = py_file.read_text(encoding="utf-8", errors="replace")
+   746→
+   747→            # Skip test files and __init__ files (commonly re-export)
+   748→            if "test_" in rel or rel.endswith("__init__.py"):
+   749→                continue
+   750→
+   751→            for mod_name, local_name, line in file_imports.get(rel, []):
+   752→                # Common patterns that are used but not simple name refs
+   753→                if local_name in ("*", "_"):
+   754→                    continue
+   755→                if local_name.startswith("_") and local_name.endswith("_"):
+   756→                    continue
+   757→                # Check if name appears as a used reference in the AST
+   758→                if local_name not in file_used_names.get(rel, set()):
+   759→                    # Double-check: search full source — name should appear
+   760→                    # more than once (once in import, once in usage)
+   761→                    name_pattern = re.compile(r'\b' + re.escape(local_name) + r'\b')
+   762→                    matches = name_pattern.findall(source)
+   763→                    if len(matches) <= 1:  # Only the import itself
+   764→                        findings.append(ValidationFinding(
+   765→                            file=rel,
+   766→                            line=line,
+   767→                            severity="low",
+   768→                            message=f"Unused import: '{local_name}' from '{mod_name}'",
+   769→                            suggestion=f"Remove unused import or use '{local_name}'.",
+   770→                            rule_id="IMP-003",
+   771→                        ))
+   772→
+   773→        duration = time.monotonic() - start
+   774→        has_critical_or_high = any(f.severity in ("critical", "high") for f in findings)
+   775→        status = StageStatus.FAILED.value if has_critical_or_high else StageStatus.PASSED.value
+   776→        return self._make_result(status, findings, len(py_files), duration)
+   777→
+   778→    def _find_circular_imports(self, graph: Dict[str, Set[str]]) -> List[ValidationFinding]:
+   779→        """Detect circular import chains using DFS."""
+   780→        findings: List[ValidationFinding] = []
+   781→        WHITE, GRAY, BLACK = 0, 1, 2
+   782→        color: Dict[str, int] = {node: WHITE for node in graph}
+   783→        path: List[str] = []
+   784→
+   785→        def dfs(node: str) -> None:
+   786→            color[node] = GRAY
+   787→            path.append(node)
+   788→
+   789→            for neighbor in graph.get(node, set()):
+   790→                if neighbor not in color:
+   791→                    continue
+   792→                if color[neighbor] == GRAY:
+   793→                    # Found a cycle
+   794→                    cycle_start = path.index(neighbor)
+   795→                    cycle = path[cycle_start:] + [neighbor]
+   796→                    cycle_str = " -> ".join(cycle[-5:])  # Show last 5 nodes
+   797→                    findings.append(ValidationFinding(
+   798→                        file=node,
+   799→                        line=0,
+   800→                        severity="high",
+   801→                        message=f"Circular import detected: {cycle_str}",
+   802→                        suggestion="Refactor to break the cycle using lazy imports or reorganization.",
+   803→                        rule_id="IMP-001",
+   804→                    ))
+   805→                elif color[neighbor] == WHITE:
+   806→                    dfs(neighbor)
+   807→
+   808→            path.pop()
+   809→            color[node] = BLACK
+   810→
+   811→        for node in sorted(graph.keys()):
+   812→            if color.get(node) == WHITE:
+   813→                dfs(node)
+   814→
+   815→        return findings
+   816→
+   817→    def _module_to_file_rel(
+   818→        self, module_name: str, py_files: List[Path], project_name: str,
+   819→    ) -> Optional[str]:
+   820→        """Convert a module import name to a relative file path.
+   821→
+   822→        E.g., 'reconpro.scanner' -> 'scanner.py' (if project_root is reconpro/)
+   823→        """
+   824→        if not module_name:
+   825→            return None
+   826→
+   827→        # Strip project prefix if present
+   828→        if module_name.startswith(project_name + "."):
+   829→            module_name = module_name[len(project_name) + 1:]
+   830→
+   831→        # Direct file match
+   832→        candidate = module_name.replace(".", os.sep) + ".py"
+   833→        candidate_init = os.path.join(module_name.replace(".", os.sep), "__init__.py")
+   834→
+   835→        for py_file in py_files:
+   836→            rel = str(py_file.relative_to(self.project_root))
+   837→            if rel == candidate or rel == candidate_init:
+   838→                return rel
+   839→
+   840→        return None
+   841→
+   842→
+   843→# ────────────────────────────────────────────────────────────────────────
+   844→# InterfaceValidator
+   845→# ────────────────────────────────────────────────────────────────────────
+   846→
+   847→class InterfaceValidator(ValidationStage):
+   848→    """Validate that registered modules implement expected interfaces.
+   849→
+   850→    Checks:
+   851→    - All modules in the registry have a callable runner
+   852→    - Module functions have the expected signature (target, base_url, ...)
+   853→    - Registry completeness: no orphaned runner functions
+   854→    """
+   855→
+   856→    name = "interfaces"
+   857→    description = "Check module interface compliance against registry and protocols"
+   858→
+   859→    def run(self) -> ValidationStageResult:
+   860→        start = time.monotonic()
+   861→        findings: List[ValidationFinding] = []
+   862→        py_files = self._discover_python_files()
+   863→        files_scanned = len(py_files)
+   864→
+   865→        # Try to load the registry
+   866→        registry_modules: Dict[str, Any] = {}
+   867→        local_modules: Dict[str, Any] = {}
+   868→
+   869→        try:
+   870→            # Add project root to path for import resolution
+   871→            if str(self.project_root.parent) not in sys.path:
+   872→                sys.path.insert(0, str(self.project_root.parent))
+   873→
+   874→            import importlib
+   875→            try:
+   876→                reg_mod = importlib.import_module(f"{self.project_root.name}.registry")
+   877→                registry_modules = getattr(reg_mod, "MODULE_REGISTRY", {})
+   878→                local_modules = getattr(reg_mod, "LOCAL_MODULES", {})
+   879→            except ImportError:
+   880→                findings.append(ValidationFinding(
+   881→                    file="registry.py",
+   882→                    line=0,
+   883→                    severity="medium",
+   884→                    message="Could not import registry module for interface validation",
+   885→                    suggestion="Ensure registry.py is importable.",
+   886→                    rule_id="IFC-000",
+   887→                ))
+   888→
+   889→            all_modules: Dict[str, Any] = {}
+   890→            all_modules.update(registry_modules)
+   891→            all_modules.update(local_modules)
+   892→            all_module_ids = list(all_modules.keys())
+   893→
+   894→            if not all_modules:
+   895→                findings.append(ValidationFinding(
+   896→                    file="registry.py",
+   897→                    line=0,
+   898→                    severity="high",
+   899→                    message="Module registry is empty — no modules registered",
+   900→                    suggestion="Register modules in registry.py.",
+   901→                    rule_id="IFC-001",
+   902→                ))
+   903→                duration = time.monotonic() - start
+   904→                return self._make_result(
+   905→                    StageStatus.FAILED.value, findings, files_scanned, duration,
+   906→                )
+   907→
+   908→            # 1. Check each module has a callable runner
+   909→            for module_id in sorted(all_module_ids):
+   910→                entry = all_modules[module_id]
+   911→                runner = entry.get("runner")
+   912→
+   913→                if runner is None:
+   914→                    findings.append(ValidationFinding(
+   915→                        file="registry.py",
+   916→                        line=0,
+   917→                        severity="critical",
+   918→                        message=f"Module '{module_id}' has no runner",
+   919→                        suggestion=f"Add a callable runner for '{module_id}' in registry.py.",
+   920→                        rule_id="IFC-002",
+   921→                    ))
+   922→                elif not callable(runner):
+   923→                    findings.append(ValidationFinding(
+   924→                        file="registry.py",
+   925→                        line=0,
+   926→                        severity="critical",
+   927→                        message=f"Module '{module_id}' runner is not callable (type={type(runner).__name__})",
+   928→                        suggestion="Ensure the runner is a callable function.",
+   929→                        rule_id="IFC-003",
+   930→                    ))
+   931→                else:
+   932→                    # 2. Check function signature
+   933→                    sig_ok = self._check_runner_signature(runner, module_id)
+   934→                    if not sig_ok:
+   935→                        findings.append(ValidationFinding(
+   936→                            file="registry.py",
+   937→                            line=0,
+   938→                            severity="medium",
+   939→                            message=f"Module '{module_id}' has non-standard runner signature",
+   940→                            suggestion="Standard: (target: str, base_url: str, timeout: int = 8, verify_tls: bool = True) -> list",
+   941→                            rule_id="IFC-004",
+   942→                        ))
+   943→
+   944→                # 3. Check module has required metadata
+   945→                if "name" not in entry:
+   946→                    findings.append(ValidationFinding(
+   947→                        file="registry.py",
+   948→                        line=0,
+   949→                        severity="low",
+   950→                        message=f"Module '{module_id}' missing 'name' metadata",
+   951→                        suggestion="Add 'name' key to the module registry entry.",
+   952→                        rule_id="IFC-005",
+   953→                    ))
+   954→
+   955→            # 4. Check for orphaned module files (in modules/ but not in registry)
+   956→            modules_dir = self.project_root / "modules"
+   957→            if modules_dir.exists():
+   958→                registered_names = set(all_module_ids)
+   959→                for mod_file in modules_dir.glob("*.py"):
+   960→                    if mod_file.name == "__init__.py":
+   961→                        continue
+   962→                    stem = mod_file.stem
+   963→                    # Map file stems to module IDs
+   964→                    file_map = {
+   965→                        "free_info_ops": "info_ops",
+   966→                    }
+   967→                    mapped_id = file_map.get(stem, stem)
+   968→                    if mapped_id not in registered_names:
+   969→                        findings.append(ValidationFinding(
+   970→                            file=f"modules/{mod_file.name}",
+   971→                            line=0,
+   972→                            severity="info",
+   973→                            message=f"Module file '{mod_file.name}' not found in registry",
+   974→                            suggestion="Either register the module or remove the orphaned file.",
+   975→                            rule_id="IFC-006",
+   976→                        ))
+   977→
+   978→        except Exception as exc:
+   979→            duration = time.monotonic() - start
+   980→            return self._make_result(
+   981→                StageStatus.ERROR.value, findings, files_scanned, duration,
+   982→                error_message=f"Interface validation error: {exc}",
+   983→            )
+   984→
+   985→        duration = time.monotonic() - start
+   986→        has_critical = any(f.severity == "critical" for f in findings)
+   987→        status = StageStatus.FAILED.value if has_critical else StageStatus.PASSED.value
+   988→        return self._make_result(status, findings, files_scanned, duration)
+   989→
+   990→    def _check_runner_signature(self, runner: Any, module_id: str) -> bool:
+   991→        """Check if a runner has the standard signature."""
+   992→        try:
+   993→            import inspect
+   994→            sig = inspect.signature(runner)
+   995→            params = list(sig.parameters.keys())
+   996→            # Standard: target, base_url, timeout, verify_tls
+   997→            if len(params) < 2:
+   998→                return False
+   999→            if params[0] not in ("target", "self"):
+  1000→                return False
+  1001→            if len(params) >= 2 and params[1] not in ("base_url", "url", "args"):
+  1002→                # Allow some flexibility
+  1003→                pass
+  1004→            return True
+  1005→        except (ValueError, TypeError):
+  1006→            return False
+  1007→
+  1008→
+  1009→# ────────────────────────────────────────────────────────────────────────
+  1010→# TypeValidator
+  1011→# ────────────────────────────────────────────────────────────────────────
+  1012→
+  1013→class TypeValidator(ValidationStage):
+  1014→    """Validate type annotation coverage across the codebase.
+  1015→
+  1016→    Checks:
+  1017→    - Functions/methods with return type annotations
+  1018→    - Functions/methods with parameter type annotations
+  1019→    - Coverage percentage per file and overall
+  1020→    """
+  1021→
+  1022→    name = "types"
+  1023→    description = "Check type annotation coverage for functions and methods"
+  1024→
+  1025→    def run(self) -> ValidationStageResult:
+  1026→        start = time.monotonic()
+  1027→        findings: List[ValidationFinding] = []
+  1028→        py_files = self._discover_python_files()
+  1029→
+  1030→        total_funcs = 0
+  1031→        typed_funcs = 0
+  1032→        total_params = 0
+  1033→        typed_params = 0
+  1034→
+  1035→        for py_file in py_files:
+  1036→            rel = str(py_file.relative_to(self.project_root))
+  1037→
+  1038→            # Skip test files and __init__ files for coverage
+  1039→            if "test_" in rel or rel.endswith("__init__.py"):
+  1040→                continue
+  1041→
+  1042→            try:
+  1043→                source = py_file.read_text(encoding="utf-8", errors="replace")
+  1044→                tree = ast.parse(source, filename=str(py_file))
+  1045→            except SyntaxError:
+  1046→                continue
+  1047→
+  1048→            file_funcs = 0
+  1049→            file_typed = 0
+  1050→            file_untyped: List[Tuple[str, int]] = []
+  1051→
+  1052→            for node in ast.iter_child_nodes(tree):
+  1053→                # Only check top-level and class-level definitions (not nested)
+  1054→                func_nodes: List[ast.AST] = []
+  1055→                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+  1056→                    func_nodes.append(node)
+  1057→                elif isinstance(node, ast.ClassDef):
+  1058→                    for item in ast.iter_child_nodes(node):
+  1059→                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+  1060→                            func_nodes.append(item)
+  1061→
+  1062→                for func in func_nodes:
+  1063→                    file_funcs += 1
+  1064→                    total_funcs += 1
+  1065→
+  1066→                    # Check return annotation
+  1067→                    has_return = func.returns is not None
+  1068→
+  1069→                    # Check parameter annotations
+  1070→                    func_params = 0
+  1071→                    func_typed_params = 0
+  1072→                    for arg in func.args.args:
+  1073→                        if arg.arg in ("self", "cls"):
+  1074→                            continue
+  1075→                        func_params += 1
+  1076→                        total_params += 1
+  1077→                        if arg.annotation is not None:
+  1078→                            func_typed_params += 1
+  1079→                            typed_params += 1
+  1080→
+  1081→                    if has_return and func_params > 0 and func_typed_params == func_params:
+  1082→                        file_typed += 1
+  1083→                        typed_funcs += 1
+  1084→                    elif not has_return:
+  1085→                        file_untyped.append((func.name, func.lineno))
+  1086→
+  1087→            # Report files with low type coverage
+  1088→            if file_funcs >= 3 and file_typed / file_funcs < 0.3:
+  1089→                coverage_pct = int(file_typed / file_funcs * 100) if file_funcs else 0
+  1090→                untyped_names = ", ".join(n for n, _l in file_untyped[:5])
+  1091→                findings.append(ValidationFinding(
+  1092→                    file=rel,
+  1093→                    line=0,
+  1094→                    severity="low",
+  1095→                    message=f"Low type annotation coverage: {coverage_pct}% "
+  1096→                            f"({file_typed}/{file_funcs} functions)",
+  1097→                    suggestion=f"Add type hints to: {untyped_names}, ...",
+  1098→                    rule_id="TYP-001",
+  1099→                ))
+  1100→
+  1101→        # Overall coverage finding
+  1102→        if total_funcs > 0:
+  1103→            overall_coverage = typed_funcs / total_funcs * 100
+  1104→            if overall_coverage < 50:
+  1105→                findings.append(ValidationFinding(
+  1106→                    file="<overall>",
+  1107→                    line=0,
+  1108→                    severity="medium",
+  1109→                    message=f"Overall type annotation coverage is {overall_coverage:.1f}% "
+  1110→                            f"({typed_funcs}/{total_funcs} functions)",
+  1111→                    suggestion="Add type annotations to improve code quality and IDE support.",
+  1112→                    rule_id="TYP-002",
+  1113→                ))
+  1114→
+  1115→        duration = time.monotonic() - start
+  1116→        status = StageStatus.PASSED.value
+  1117→        return self._make_result(status, findings, len(py_files), duration)
+  1118→
+  1119→
+  1120→# ────────────────────────────────────────────────────────────────────────
+  1121→# SecurityValidator
+  1122→# ────────────────────────────────────────────────────────────────────────
+  1123→
+  1124→class SecurityValidator(ValidationStage):
+  1125→    """Run static security checks on Python source code.
+  1126→
+  1127→    Checks for:
+  1128→    - Use of eval(), exec(), compile() with arbitrary input
+  1129→    - Hardcoded secrets (passwords, API keys, tokens)
+  1130→    - Insecure SSL/TLS settings (verify=False, CERT_NONE)
+  1131→    - Use of pickle with untrusted data
+  1132→    - SQL injection patterns
+  1133→    - Shell injection via os.system() or subprocess with shell=True
+  1134→    - Dangerous default arguments (mutable defaults)
+  1135→    - Use of assert for security checks
+  1136→    """
+  1137→
+  1138→    name = "security"
+  1139→    description = "Run static security analysis on Python source code"
+  1140→
+  1141→    # Patterns for secret detection
+  1142→    _SECRET_PATTERNS: List[Tuple[str, str]] = [
+  1143→        (r'(?:password|passwd|pwd)\s*=\s*["\'][^"\']{3,}["\']', "Hardcoded password"),
+  1144→        (r'(?:api_key|apikey|api_secret)\s*=\s*["\'][^"\']{8,}["\']', "Hardcoded API key"),
+  1145→        (r'(?:token|auth_token|access_token)\s*=\s*["\'][^"\']{8,}["\']', "Hardcoded token"),
+  1146→        (r'(?:secret|client_secret)\s*=\s*["\'][^"\']{8,}["\']', "Hardcoded secret"),
+  1147→    ]
+  1148→
+  1149→    def run(self) -> ValidationStageResult:
+  1150→        start = time.monotonic()
+  1151→        findings: List[ValidationFinding] = []
+  1152→        py_files = self._discover_python_files()
+  1153→
+  1154→        for py_file in py_files:
+  1155→            rel = str(py_file.relative_to(self.project_root))
+  1156→
+  1157→            try:
+  1158→                source = py_file.read_text(encoding="utf-8", errors="replace")
+  1159→                tree = ast.parse(source, filename=str(py_file))
+  1160→            except SyntaxError:
+  1161→                continue
+  1162→
+  1163→            # AST-based checks
+  1164→            findings.extend(self._check_dangerous_calls(tree, rel))
+  1165→            findings.extend(self._check_insecure_ssl(tree, rel))
+  1166→            findings.extend(self._check_subprocess_shell(tree, rel))
+  1167→            findings.extend(self._check_mutable_defaults(tree, rel))
+  1168→
+  1169→            # Regex-based checks (line-by-line)
+  1170→            for line_idx, line_text in enumerate(source.splitlines(), start=1):
+  1171→                findings.extend(self._check_secrets_in_line(line_text, rel, line_idx))
+  1172→                findings.extend(self._check_assert_security(line_text, rel, line_idx))
+  1173→
+  1174→        duration = time.monotonic() - start
+  1175→        has_high_or_critical = any(
+  1176→            f.severity in ("critical", "high") for f in findings
+  1177→        )
+  1178→        status = StageStatus.FAILED.value if has_high_or_critical else StageStatus.PASSED.value
+  1179→        return self._make_result(status, findings, len(py_files), duration)
+  1180→
+  1181→    def _check_dangerous_calls(self, tree: ast.AST, rel: str) -> List[ValidationFinding]:
+  1182→        """Check for eval(), exec(), and compile() calls."""
+  1183→        results: List[ValidationFinding] = []
+  1184→        dangerous = {"eval", "exec", "compile"}
+  1185→
+  1186→        for node in ast.walk(tree):
+  1187→            if isinstance(node, ast.Call):
+  1188→                func_name = self._get_call_name(node)
+  1189→                if func_name in dangerous:
+  1190→                    results.append(ValidationFinding(
+  1191→                        file=rel,
+  1192→                        line=node.lineno,
+  1193→                        severity="high",
+  1194→                        message=f"Dangerous function call: {func_name}()",
+  1195→                        suggestion=f"Avoid {func_name}() with untrusted input. Use ast.literal_eval() or safer alternatives.",
+  1196→                        rule_id="SEC-001",
+  1197→                    ))
+  1198→        return results
+  1199→
+  1200→    def _check_insecure_ssl(self, tree: ast.AST, rel: str) -> List[ValidationFinding]:
+  1201→        """Check for disabled SSL verification."""
+  1202→        results: List[ValidationFinding] = []
+  1203→
+  1204→        for node in ast.walk(tree):
+  1205→            # Check for verify=False keyword arguments
+  1206→            if isinstance(node, ast.Call):
+  1207→                for keyword in node.keywords:
+  1208→                    if keyword.arg == "verify":
+  1209→                        if isinstance(keyword.value, ast.Constant) and keyword.value.value is False:
+  1210→                            results.append(ValidationFinding(
+  1211→                                file=rel,
+  1212→                                line=node.lineno,
+  1213→                                severity="high",
+  1214→                                message="SSL verification disabled (verify=False)",
+  1215→                                suggestion="Enable SSL verification or use explicit exception handling.",
+  1216→                                rule_id="SEC-002",
+  1217→                            ))
+  1218→
+  1219→            # Check for CERT_NONE assignments
+  1220→            if isinstance(node, ast.Assign):
+  1221→                for target in node.targets:
+  1222→                    if isinstance(target, ast.Attribute) and target.attr == "verify_mode":
+  1223→                        val = node.value
+  1224→                        # Matches both: ctx.verify_mode = CERT_NONE and
+  1225→                        # ctx.verify_mode = ssl.CERT_NONE
+  1226→                        is_cert_none = (
+  1227→                            (isinstance(val, ast.Name) and val.id == "CERT_NONE") or
+  1228→                            (isinstance(val, ast.Attribute) and val.attr == "CERT_NONE")
+  1229→                        )
+  1230→                        if is_cert_none:
+  1231→                            results.append(ValidationFinding(
+  1232→                                file=rel,
+  1233→                                line=node.lineno,
+  1234→                                severity="high",
+  1235→                                message="SSL verify_mode set to CERT_NONE",
+  1236→                                suggestion="Use proper certificate verification.",
+  1237→                                rule_id="SEC-003",
+  1238→                            ))
+  1239→
+  1240→            # Check for check_hostname = False
+  1241→            if isinstance(node, ast.Assign):
+  1242→                for target in node.targets:
+  1243→                    if isinstance(target, ast.Attribute) and target.attr == "check_hostname":
+  1244→                        if isinstance(node.value, ast.Constant) and node.value.value is False:
+  1245→                            results.append(ValidationFinding(
+  1246→                                file=rel,
+  1247→                                line=node.lineno,
+  1248→                                severity="medium",
+  1249→                                message="SSL check_hostname disabled",
+  1250→                                suggestion="Enable hostname verification when possible.",
+  1251→                                rule_id="SEC-004",
+  1252→                            ))
+  1253→
+  1254→        return results
+  1255→
+  1256→    def _check_subprocess_shell(self, tree: ast.AST, rel: str) -> List[ValidationFinding]:
+  1257→        """Check for subprocess calls with shell=True."""
+  1258→        results: List[ValidationFinding] = []
+  1259→
+  1260→        for node in ast.walk(tree):
+  1261→            if isinstance(node, ast.Call):
+  1262→                func_name = self._get_call_name(node)
+  1263→                if func_name and ("subprocess" in func_name or func_name in (
+  1264→                    "run", "call", "check_call", "check_output", "Popen",
+  1265→                )):
+  1266→                    for keyword in node.keywords:
+  1267→                        if keyword.arg == "shell":
+  1268→                            if isinstance(keyword.value, ast.Constant) and keyword.value.value is True:
+  1269→                                results.append(ValidationFinding(
+  1270→                                    file=rel,
+  1271→                                    line=node.lineno,
+  1272→                                    severity="high",
+  1273→                                    message="subprocess call with shell=True (injection risk)",
+  1274→                                    suggestion="Use shell=False with a list argument, or sanitize input thoroughly.",
+  1275→                                    rule_id="SEC-005",
+  1276→                                ))
+  1277→
+  1278→        return results
+  1279→
+  1280→    def _check_mutable_defaults(self, tree: ast.AST, rel: str) -> List[ValidationFinding]:
+  1281→        """Check for mutable default arguments (common bug source)."""
+  1282→        results: List[ValidationFinding] = []
+  1283→        mutable_types = (ast.List, ast.Dict, ast.Set)
+  1284→
+  1285→        for node in ast.walk(tree):
+  1286→            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+  1287→                for default in node.args.defaults + node.args.kw_defaults:
+  1288→                    if default is None:
+  1289→                        continue
+  1290→                    if isinstance(default, mutable_types):
+  1291→                        results.append(ValidationFinding(
+  1292→                            file=rel,
+  1293→                            line=node.lineno,
+  1294→                            severity="low",
+  1295→                            message=f"Mutable default argument in function '{node.name}'",
+  1296→                            suggestion="Use None as default and initialize inside the function body.",
+  1297→                            rule_id="SEC-006",
+  1298→                        ))
+  1299→                        break  # One finding per function is enough
+  1300→
+  1301→        return results
+  1302→
+  1303→    def _check_secrets_in_line(
+  1304→        self, line_text: str, rel: str, line: int,
+  1305→    ) -> List[ValidationFinding]:
+  1306→        """Check for hardcoded secrets using regex patterns."""
+  1307→        results: List[ValidationFinding] = []
+  1308→
+  1309→        # Skip comments
+  1310→        stripped = line_text.strip()
+  1311→        if stripped.startswith("#") or stripped.startswith("\"\"\"") or stripped.startswith("'''"):
+  1312→            return results
+  1313→
+  1314→        for pattern, description in self._SECRET_PATTERNS:
+  1315→            if re.search(pattern, line_text, re.IGNORECASE):
+  1316→                results.append(ValidationFinding(
+  1317→                    file=rel,
+  1318→                    line=line,
+  1319→                    severity="high",
+  1320→                    message=f"{description} detected",
+  1321→                    suggestion="Use environment variables or a secrets manager instead.",
+  1322→                    rule_id="SEC-007",
+  1323→                ))
+  1324→                break  # One secret finding per line
+  1325→
+  1326→        return results
+  1327→
+  1328→    def _check_assert_security(
+  1329→        self, line_text: str, rel: str, line: int,
+  1330→    ) -> List[ValidationFinding]:
+  1331→        """Check for assert used for security checks (stripped in -O mode)."""
+  1332→        results: List[ValidationFinding] = []
+  1333→        stripped = line_text.strip()
+  1334→
+  1335→        if re.match(r'^assert\s+.*(?:auth|permission|admin|secure|valid|safe)', stripped, re.IGNORECASE):
+  1336→            results.append(ValidationFinding(
+  1337→                file=rel,
+  1338→                line=line,
+  1339→                severity="medium",
+  1340→                message="Assert used for security-critical check (disabled with -O)",
+  1341→                suggestion="Replace with an explicit if/raise pattern.",
+  1342→                rule_id="SEC-008",
+  1343→            ))
+  1344→
+  1345→        return results
+  1346→
+  1347→    @staticmethod
+  1348→    def _get_call_name(node: ast.Call) -> str:
+  1349→        """Extract the full dotted name from a Call node."""
+  1350→        if isinstance(node.func, ast.Name):
+  1351→            return node.func.id
+  1352→        elif isinstance(node.func, ast.Attribute):
+  1353→            parts: List[str] = []
+  1354→            current = node.func
+  1355→            while isinstance(current, ast.Attribute):
+  1356→                parts.append(current.attr)
+  1357→                current = current.value
+  1358→            if isinstance(current, ast.Name):
+  1359→                parts.append(current.id)
+  1360→            return ".".join(reversed(parts))
+  1361→        return ""
+  1362→
+  1363→
+  1364→# ────────────────────────────────────────────────────────────────────────
+  1365→# PerformanceValidator
+  1366→# ────────────────────────────────────────────────────────────────────────
+  1367→
+  1368→class PerformanceValidator(ValidationStage):
+  1369→    """Run basic performance benchmarks on the codebase.
+  1370→
+  1371→    Checks:
+  1372→    - Total lines of code
+  1373→    - Module file sizes (flag oversized files > 1500 lines)
+  1374→    - Import complexity (deep import chains)
+  1375→    - Function complexity (flag functions > 100 lines)
+  1376→    """
+  1377→
+  1378→    name = "performance"
+  1379→    description = "Run codebase performance and complexity analysis"
+  1380→
+  1381→    MAX_FILE_LINES = 1500
+  1382→    MAX_FUNCTION_LINES = 100
+  1383→
+  1384→    def run(self) -> ValidationStageResult:
+  1385→        start = time.monotonic()
+  1386→        findings: List[ValidationFinding] = []
+  1387→        py_files = self._discover_python_files()
+  1388→        total_loc = 0
+  1389→
+  1390→        for py_file in py_files:
+  1391→            rel = str(py_file.relative_to(self.project_root))
+  1392→
+  1393→            try:
+  1394→                source = py_file.read_text(encoding="utf-8", errors="replace")
+  1395→            except OSError:
+  1396→                continue
+  1397→
+  1398→            lines = source.splitlines()
+  1399→            line_count = len(lines)
+  1400→            total_loc += line_count
+  1401→
+  1402→            # Check file size
+  1403→            if line_count > self.MAX_FILE_LINES:
+  1404→                findings.append(ValidationFinding(
+  1405→                    file=rel,
+  1406→                    line=0,
+  1407→                    severity="medium",
+  1408→                    message=f"Large file: {line_count} lines (threshold: {self.MAX_FILE_LINES})",
+  1409→                    suggestion="Consider splitting into smaller modules.",
+  1410→                    rule_id="PERF-001",
+  1411→                ))
+  1412→
+  1413→            # Check function complexity
+  1414→            try:
+  1415→                tree = ast.parse(source, filename=str(py_file))
+  1416→            except SyntaxError:
+  1417→                continue
+  1418→
+  1419→            for node in ast.walk(tree):
+  1420→                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+  1421→                    func_lines = node.end_lineno - node.lineno + 1 if hasattr(node, 'end_lineno') and node.end_lineno else 0
+  1422→                    if func_lines > self.MAX_FUNCTION_LINES:
+  1423→                        findings.append(ValidationFinding(
+  1424→                            file=rel,
+  1425→                            line=node.lineno,
+  1426→                            severity="low",
+  1427→                            message=f"Large function '{node.name}': {func_lines} lines "
+  1428→                                    f"(threshold: {self.MAX_FUNCTION_LINES})",
+  1429→                            suggestion=f"Refactor '{node.name}' into smaller functions.",
+  1430→                            rule_id="PERF-002",
+  1431→                        ))
+  1432→
+  1433→        # Summary info finding
+  1434→        findings.append(ValidationFinding(
+  1435→            file="<summary>",
+  1436→            line=0,
+  1437→            severity="info",
+  1438→            message=f"Total lines of code: {total_loc} across {len(py_files)} files",
+  1439→            suggestion="",
+  1440→            rule_id="PERF-000",
+  1441→        ))
+  1442→
+  1443→        duration = time.monotonic() - start
+  1444→        # Performance is informational, always passes
+  1445→        status = StageStatus.PASSED.value
+  1446→        return self._make_result(status, findings, len(py_files), duration)
+  1447→
+  1448→
+  1449→# ────────────────────────────────────────────────────────────────────────
+  1450→# TestValidator
+  1451→# ────────────────────────────────────────────────────────────────────────
+  1452→
+  1453→class TestValidator(ValidationStage):
+  1454→    """Run the project's test suite.
+  1455→
+  1456→    Executes the test runner via subprocess and captures results.
+  1457→    """
+  1458→
+  1459→    name = "tests"
+  1460→    description = "Run the project test suite and report results"
+  1461→
+  1462→    def run(self) -> ValidationStageResult:
+  1463→        start = time.monotonic()
+  1464→        findings: List[ValidationFinding] = []
+  1465→        files_scanned = 0
+  1466→
+  1467→        # Find test files
+  1468→        tests_dir = self.project_root / "tests"
+  1469→        if not tests_dir.exists():
+  1470→            findings.append(ValidationFinding(
+  1471→                file="<tests>",
+  1472→                line=0,
+  1473→                severity="medium",
+  1474→                message="No tests/ directory found",
+  1475→                suggestion="Create tests/ with unit tests for critical modules.",
+  1476→                rule_id="TST-001",
+  1477→            ))
+  1478→            duration = time.monotonic() - start
+  1479→            return self._make_result(StageStatus.FAILED.value, findings, 0, duration)
+  1480→
+  1481→        test_files = sorted(tests_dir.glob("test_*.py"))
+  1482→        files_scanned = len(test_files)
+  1483→
+  1484→        if not test_files:
+  1485→            findings.append(ValidationFinding(
+  1486→                file="<tests>",
+  1487→                line=0,
+  1488→                severity="medium",
+  1489→                message="No test_*.py files found in tests/",
+  1490→                suggestion="Add unit tests.",
+  1491→                rule_id="TST-002",
+  1492→            ))
+  1493→            duration = time.monotonic() - start
+  1494→            return self._make_result(StageStatus.FAILED.value, findings, files_scanned, duration)
+  1495→
+  1496→        # Run tests via subprocess
+  1497→        try:
+  1498→            result = subprocess.run(
+  1499→                [sys.executable, "-m", "unittest", "discover", "-s", str(tests_dir),
+  1500→                 "-p", "test_*.py", "-v"],
+  1501→                capture_output=True,
+  1502→                text=True,
+  1503→                timeout=120,
+  1504→                cwd=str(self.project_root.parent),
+  1505→            )
+  1506→            output = result.stdout + result.stderr
+  1507→            return_code = result.returncode
+  1508→
+  1509→        except subprocess.TimeoutExpired:
+  1510→            findings.append(ValidationFinding(
+  1511→                file="<tests>",
+  1512→                line=0,
+  1513→                severity="high",
+  1514→                message="Test suite timed out after 120 seconds",
+  1515→                suggestion="Investigate hanging tests and add timeouts.",
+  1516→                rule_id="TST-003",
+  1517→            ))
+  1518→            duration = time.monotonic() - start
+  1519→            return self._make_result(StageStatus.FAILED.value, findings, files_scanned, duration)
+  1520→        except (OSError, FileNotFoundError) as exc:
+  1521→            findings.append(ValidationFinding(
+  1522→                file="<tests>",
+  1523→                line=0,
+  1524→                severity="high",
+  1525→                message=f"Failed to execute test runner: {exc}",
+  1526→                suggestion="Ensure Python unittest is available.",
+  1527→                rule_id="TST-004",
+  1528→            ))
+  1529→            duration = time.monotonic() - start
+  1530→            return self._make_result(StageStatus.FAILED.value, findings, files_scanned, duration)
+  1531→
+  1532→        # Parse test output
+  1533→        tests_run = 0
+  1534→        failures = 0
+  1535→        errors = 0
+  1536→        skipped = 0
+  1537→
+  1538→        # Extract test counts from unittest output
+  1539→        run_match = re.search(r"Ran (\d+) test", output)
+  1540→        if run_match:
+  1541→            tests_run = int(run_match.group(1))
+  1542→
+  1543→        # Look for FAIL/ERROR lines for individual failures
+  1544→        failure_lines = [l for l in output.splitlines() if l.startswith("FAIL:") or l.startswith("ERROR:")]
+  1545→        errors = output.count("ERROR:")
+  1546→        failures = output.count("FAIL:") - errors  # FAIL: includes ERROR: count in some formats
+  1547→
+  1548→        # Count skipped from output
+  1549→        skip_match = re.search(r"skipped=(\d+)", output)
+  1550→        if skip_match:
+  1551→            skipped = int(skip_match.group(1))
+  1552→
+  1553→        # Create findings for failures and errors
+  1554→        for fail_line in failure_lines:
+  1555→            test_name = fail_line.split(":", 1)[-1].strip()
+  1556→            findings.append(ValidationFinding(
+  1557→                file="<tests>",
+  1558→                line=0,
+  1559→                severity="high",
+  1560→                message=f"Test failure: {test_name}",
+  1561→                suggestion="Review and fix the failing test.",
+  1562→                rule_id="TST-005",
+  1563→            ))
+  1564→
+  1565→        if return_code != 0:
+  1566→            status = StageStatus.FAILED.value
+  1567→        else:
+  1568→            status = StageStatus.PASSED.value
+  1569→
+  1570→        # Info finding with test summary
+  1571→        findings.append(ValidationFinding(
+  1572→            file="<summary>",
+  1573→            line=0,
+  1574→            severity="info",
+  1575→            message=f"Test results: {tests_run} ran, {failures} failed, {errors} errors, {skipped} skipped",
+  1576→            suggestion="",
+  1577→            rule_id="TST-000",
+  1578→        ))
+  1579→
+  1580→        duration = time.monotonic() - start
+  1581→        return self._make_result(status, findings, files_scanned, duration)
+  1582→
+  1583→
+  1584→# ────────────────────────────────────────────────────────────────────────
+  1585→# ValidationPipeline — Orchestrator
+  1586→# ────────────────────────────────────────────────────────────────────────
+  1587→
+  1588→class ValidationPipeline:
+  1589→    """Orchestrates all validation stages for ReconPro.
+  1590→
+  1591→    Provides methods to run individual stages or the full pipeline.
+  1592→    Results are collected into a ValidationReport with trend data.
+  1593→
+  1594→    Usage:
+  1595→        pipeline = ValidationPipeline("/path/to/reconpro")
+  1596→        report = pipeline.validate_full()
+  1597→        print(report.summary())
+  1598→        report.save()
+  1599→
+  1600→    Or run individual stages:
+  1601→        pipeline = ValidationPipeline("/path/to/reconpro")
+  1602→        result = pipeline.validate_syntax()
+  1603→    """
+  1604→
+  1605→    def __init__(self, project_root: Optional[str] = None) -> None:
+  1606→        """Initialize the pipeline.
+  1607→
+  1608→        Args:
+  1609→            project_root: Root directory to validate. Defaults to the
+  1610→                          directory containing this file (reconpro/).
+  1611→        """
+  1612→        if project_root:
+  1613→            self.project_root = Path(project_root).resolve()
+  1614→        else:
+  1615→            self.project_root = Path(__file__).parent.resolve()
+  1616→
+  1617→        self._report: Optional[ValidationReport] = None
+  1618→        self._stages: Dict[str, ValidationStage] = {}
+  1619→        self._init_stages()
+  1620→        logger.info(
+  1621→            "ValidationPipeline initialized for %s", self.project_root,
+  1622→        )
+  1623→
+  1624→    def _init_stages(self) -> None:
+  1625→        """Create all validation stage instances."""
+  1626→        self._stages = {
+  1627→            "syntax": SyntaxValidator(self.project_root),
+  1628→            "imports": ImportValidator(self.project_root),
+  1629→            "interfaces": InterfaceValidator(self.project_root),
+  1630→            "types": TypeValidator(self.project_root),
+  1631→            "security": SecurityValidator(self.project_root),
+  1632→            "performance": PerformanceValidator(self.project_root),
+  1633→            "tests": TestValidator(self.project_root),
+  1634→        }
+  1635→
+  1636→    def validate_syntax(self) -> ValidationStageResult:
+  1637→        """Run syntax validation stage only.
+  1638→
+  1639→        Returns:
+  1640→            ValidationStageResult for the syntax stage.
+  1641→        """
+  1642→        return self._stages["syntax"].run()
+  1643→
+  1644→    def validate_imports(self) -> ValidationStageResult:
+  1645→        """Run import validation stage only.
+  1646→
+  1647→        Returns:
+  1648→            ValidationStageResult for the imports stage.
+  1649→        """
+  1650→        return self._stages["imports"].run()
+  1651→
+  1652→    def validate_interfaces(self) -> ValidationStageResult:
+  1653→        """Run interface compliance validation stage only.
+  1654→
+  1655→        Returns:
+  1656→            ValidationStageResult for the interfaces stage.
+  1657→        """
+  1658→        return self._stages["interfaces"].run()
+  1659→
+  1660→    def validate_types(self) -> ValidationStageResult:
+  1661→        """Run type annotation validation stage only.
+  1662→
+  1663→        Returns:
+  1664→            ValidationStageResult for the types stage.
+  1665→        """
+  1666→        return self._stages["types"].run()
+  1667→
+  1668→    def validate_security(self) -> ValidationStageResult:
+  1669→        """Run security validation stage only.
+  1670→
+  1671→        Returns:
+  1672→            ValidationStageResult for the security stage.
+  1673→        """
+  1674→        return self._stages["security"].run()
+  1675→
+  1676→    def validate_performance(self) -> ValidationStageResult:
+  1677→        """Run performance validation stage only.
+  1678→
+  1679→        Returns:
+  1680→            ValidationStageResult for the performance stage.
+  1681→        """
+  1682→        return self._stages["performance"].run()
+  1683→
+  1684→    def validate_tests(self) -> ValidationStageResult:
+  1685→        """Run test suite validation stage only.
+  1686→
+  1687→        Returns:
+  1688→            ValidationStageResult for the tests stage.
+  1689→        """
+  1690→        return self._stages["tests"].run()
+  1691→
+  1692→    def validate_full(self) -> ValidationReport:
+  1693→        """Run ALL validation stages and produce a comprehensive report.
+  1694→
+  1695→        Returns:
+  1696→            ValidationReport with per-stage results, summary, and trends.
+  1697→        """
+  1698→        pipeline_start = time.monotonic()
+  1699→        stage_results: List[ValidationStageResult] = []
+  1700→
+  1701→        # Load previous report for trend comparison
+  1702→        previous = ValidationReport.load_latest()
+  1703→
+  1704→        stage_order = [
+  1705→            "syntax", "imports", "interfaces", "types",
+  1706→            "security", "performance", "tests",
+  1707→        ]
+  1708→
+  1709→        for stage_name in stage_order:
+  1710→            stage = self._stages[stage_name]
+  1711→            logger.info("Running validation stage: %s", stage_name)
+  1712→
+  1713→            try:
+  1714→                result = stage.run()
+  1715→                stage_results.append(result)
+  1716→                logger.info(
+  1717→                    "Stage '%s' completed: %s (%d findings, %.3fs)",
+  1718→                    stage_name, result.status, result.finding_count, result.duration,
+  1719→                )
+  1720→            except Exception as exc:
+  1721→                # Catch unexpected stage errors
+  1722→                error_result = ValidationStageResult(
+  1723→                    stage_name=stage_name,
+  1724→                    status=StageStatus.ERROR.value,
+  1725→                    duration=0.0,
+  1726→                    error_message=f"Stage failed with exception: {exc}\n{traceback.format_exc()}",
+  1727→                )
+  1728→                stage_results.append(error_result)
+  1729→                logger.error("Stage '%s' raised exception: %s", stage_name, exc)
+  1730→
+  1731→        total_duration = time.monotonic() - pipeline_start
+  1732→
+  1733→        # Determine overall status
+  1734→        has_critical = any(sr.critical_count() > 0 for sr in stage_results)
+  1735→        all_passed = all(sr.passed for sr in stage_results)
+  1736→        any_errors = any(sr.status == StageStatus.ERROR.value for sr in stage_results)
+  1737→
+  1738→        if has_critical:
+  1739→            overall = "failed"
+  1740→        elif any_errors:
+  1741→            overall = "error"
+  1742→        elif all_passed:
+  1743→            overall = "passed"
+  1744→        else:
+  1745→            overall = "passed"  # Warnings/low findings don't fail
+  1746→
+  1747→        report = ValidationReport(
+  1748→            timestamp=datetime.now().isoformat(),
+  1749→            project_root=str(self.project_root),
+  1750→            overall_status=overall,
+  1751→            stage_results=stage_results,
+  1752→            total_duration=total_duration,
+  1753→            previous_report=previous,
+  1754→        )
+  1755→
+  1756→        self._report = report
+  1757→        logger.info(
+  1758→            "Full validation complete: %s (%.3fs, %d findings)",
+  1759→            overall, total_duration, report.total_findings,
+  1760→        )
+  1761→        return report
+  1762→
+  1763→    def get_validation_report(self) -> Optional[ValidationReport]:
+  1764→        """Get the most recently generated report.
+  1765→
+  1766→        Returns:
+  1767→            The ValidationReport from the last run, or None if no
+  1768→            validation has been executed yet.
+  1769→        """
+  1770→        return self._report
+  1771→
+  1772→    @classmethod
+  1773→    def quick_validate(cls, project_root: Optional[str] = None) -> ValidationReport:
+  1774→        """Convenience method: create a pipeline and run full validation.
+  1775→
+  1776→        Args:
+  1777→            project_root: Root directory to validate.
+  1778→
+  1779→        Returns:
+  1780→            ValidationReport with full results.
+  1781→        """
+  1782→        pipeline = cls(project_root)
+  1783→        return pipeline.validate_full()
+  1784→
+  1785→
+  1786→# ────────────────────────────────────────────────────────────────────────
+  1787→# Convenience functions
+  1788→# ────────────────────────────────────────────────────────────────────────
+  1789→
+  1790→def validate_syntax(project_root: Optional[str] = None) -> ValidationStageResult:
+  1791→    """Quick syntax validation.
+  1792→
+  1793→    Args:
+  1794→        project_root: Root directory. Defaults to reconpro package root.
+  1795→
+  1796→    Returns:
+  1797→        ValidationStageResult for syntax checks.
+  1798→    """
+  1799→    pipeline = ValidationPipeline(project_root)
+  1800→    return pipeline.validate_syntax()
+  1801→
+  1802→
+  1803→def validate_imports(project_root: Optional[str] = None) -> ValidationStageResult:
+  1804→    """Quick import validation.
+  1805→
+  1806→    Args:
+  1807→        project_root: Root directory. Defaults to reconpro package root.
+  1808→
+  1809→    Returns:
+  1810→        ValidationStageResult for import checks.
+  1811→    """
+  1812→    pipeline = ValidationPipeline(project_root)
+  1813→    return pipeline.validate_imports()
+  1814→
+  1815→
+  1816→def validate_full(project_root: Optional[str] = None) -> ValidationReport:
+  1817→    """Convenience function: run full validation pipeline.
+  1818→
+  1819→    Args:
+  1820→        project_root: Root directory. Defaults to reconpro package root.
+  1821→
+  1822→    Returns:
+  1823→        ValidationReport with all stage results.
+  1824→    """
+  1825→    return ValidationPipeline.quick_validate(project_root)
+  1826→

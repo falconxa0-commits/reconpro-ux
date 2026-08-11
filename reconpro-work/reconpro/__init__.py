@@ -1,7 +1,7 @@
 """ReconPro Enterprise v11 — The Security Reconnaissance Platform.
 
-Twenty-Three Blades. One Target. One Verdict.
-Pure Python. Zero external dependencies. Enterprise-grade.
+Twenty-Seven Blades. One Target. One Verdict.
+Pure Python. Enterprise-grade.
 
 Remote Modules:
     recon      13-category surface reconnaissance
@@ -55,6 +55,19 @@ Intelligence Systems:
     attack_graph        Attack Graph Engine — graph-based attack chain analysis
     threat_intel        Threat Intelligence Center — CVE/CWE/CAPEC/MITRE enrichment
 
+Engineering Systems (Age III):
+    auto_engineering        Automated engineering pipeline — health, drift, quality gates
+    repository_memory       Persistent engineering knowledge store
+    digital_twin            Virtual model of the ReconPro runtime
+    repository_learning     Pattern extraction and prediction from repository behavior
+    engineering_recommendations Rule-based engineering recommendation engine
+    regression_intelligence  Intelligent regression detection and management
+    auto_validation         Automated validation pipeline (syntax, imports, security, perf)
+    benchmark_automation     Continuous benchmark automation with regression detection
+    auto_fix                Auto fix proposal engine with AST-based transforms
+    prompt_defense          Prompt injection defense for AI/chat inputs
+    security_hardening      Security policy engine, plugin sandbox, tamper-evident logs
+
 Usage:
     reconpro example.com                    # Remote scan
     reconpro chat                          # Talk to it
@@ -64,6 +77,9 @@ Usage:
     reconpro agent scan everything          # Autonomous
     reconpro subdomains example.com         # Discover subs
     reconpro serve                          # API server
+    reconpro engineering                    # Full engineering pipeline
+    reconpro validate                      # Run validation pipeline
+    reconpro benchmark                      # Run benchmarks
 """
 
 __version__ = "11.0.0"

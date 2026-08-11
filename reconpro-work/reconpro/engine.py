@@ -484,14 +484,23 @@ class ScanEngine:
             try:
                 from .intelligence_pipeline import IntelligencePipeline
                 intel_pipeline = IntelligencePipeline(
-                    enable_online=False,
+                    enable_ai_analyst=True,
+                    enable_attack_graph=True,
+                    enable_threat_intel=True,
                 )
                 intel_result = intel_pipeline.analyze(all_findings, result.to_dict())
                 intelligence_data = intel_result.to_dict()
                 # Inject intelligence into result
                 result.intelligence = intelligence_data
+                logger.info(
+                    "Intelligence pipeline completed: risk=%.1f exposure=%.1f chains=%d cves=%d",
+                    intel_result.executive_risk_score,
+                    intel_result.exposure_score,
+                    len(intel_result.attack_chains),
+                    len(intel_result.cve_matches),
+                )
             except Exception as e:
-                logger.debug("Intelligence pipeline error: %s", e, exc_info=True)
+                logger.warning("Intelligence pipeline error: %s", e, exc_info=True)
 
         self._emit(
             ScanEvent(
