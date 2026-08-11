@@ -1,0 +1,974 @@
+     1→"""
+     2→ReconPro v9.2.0 - Data Exfiltration Channel Mapping
+     3→
+     4→Identifies, scores, and reports on all possible ways data could leave a target
+     5→network.  Pure Python stdlib -- zero external dependencies.
+     6→
+     7→Classes:
+     8→    ExfilChannel          - Dataclass describing a single exfiltration vector.
+     9→    ExfilChannelMapper    - Probes the target to discover available channels.
+    10→    ExfilRiskScorer       - Scores channels and generates a consolidated report.
+    11→"""
+    12→from __future__ import annotations
+    13→
+    14→import json
+    15→import logging
+    16→import re
+    17→import socket
+    18→import subprocess
+    19→import urllib.error
+    20→import urllib.parse
+    21→import urllib.request
+    22→from dataclasses import dataclass, field
+    23→from datetime import datetime, timezone
+    24→from typing import Any, Dict, List, Optional, Tuple
+    25→
+    26→logger = logging.getLogger(__name__)
+    27→
+    28→
+    29→# ---------------------------------------------------------------------------
+    30→# Data classes
+    31→# ---------------------------------------------------------------------------
+    32→
+    33→@dataclass
+    34→class ExfilChannel:
+    35→    """Describes a potential data-exfiltration vector.
+    36→
+    37→    Attributes:
+    38→        channel_type:        Human-readable label (e.g. 'DNS Tunneling').
+    39→        viability_score:     0-100 how feasible the channel is.
+    40→        bandwidth_estimate:  Qualitative bandwidth (e.g. 'Low (~1 KB/s)').
+    41→        stealth_score:       0-100 how hard the channel is to detect.
+    42→        detection_difficulty: 0-100 difficulty for defenders to notice.
+    43→        indicators:          List of observed indicators / evidence strings.
+    44→        remediation:         Suggested fix or mitigation.
+    45→        overall_risk:        0-100 composite risk score.
+    46→    """
+    47→    channel_type: str
+    48→    viability_score: int
+    49→    bandwidth_estimate: str
+    50→    stealth_score: int
+    51→    detection_difficulty: int
+    52→    indicators: List[str] = field(default_factory=list)
+    53→    remediation: str = ""
+    54→    overall_risk: int = 0
+    55→
+    56→    def to_dict(self) -> Dict[str, Any]:
+    57→        return {
+    58→            "channel_type": self.channel_type,
+    59→            "viability_score": self.viability_score,
+    60→            "bandwidth_estimate": self.bandwidth_estimate,
+    61→            "stealth_score": self.stealth_score,
+    62→            "detection_difficulty": self.detection_difficulty,
+    63→            "indicators": self.indicators,
+    64→            "remediation": self.remediation,
+    65→            "overall_risk": self.overall_risk,
+    66→        }
+    67→
+    68→
+    69→# ---------------------------------------------------------------------------
+    70→# ExfilChannelMapper
+    71→# ---------------------------------------------------------------------------
+    72→
+    73→class ExfilChannelMapper:
+    74→    """Probes a target to discover all potential data-exfiltration channels.
+    75→
+    76→    Each ``analyze_*`` method returns an :class:`ExfilChannel` describing the
+    77→    findings for one channel type.
+    78→    """
+    79→
+    80→    DEFAULT_TIMEOUT: int = 8
+    81→
+    82→    def map_all_channels(
+    83→        self,
+    84→        target: str,
+    85→        base_url: Optional[str] = None,
+    86→        timeout: int = DEFAULT_TIMEOUT,
+    87→    ) -> Dict[str, Any]:
+    88→        """Run all channel analyzers and return a consolidated dict.
+    89→
+    90→        Returns:
+    91→            ``{"channels": [ExfilChannel, ...], "summary": {...}}``
+    92→        """
+    93→        channels: List[ExfilChannel] = []
+    94→
+    95→        # DNS exfiltration
+    96→        logger.info("[ExfilMapper] Analyzing DNS exfiltration for %s", target)
+    97→        dns_ch = self.analyze_dns_exfil(target, timeout=timeout)
+    98→        channels.append(dns_ch)
+    99→
+   100→        # HTTP exfiltration
+   101→        if base_url:
+   102→            logger.info("[ExfilMapper] Analyzing HTTP exfiltration for %s", base_url)
+   103→            http_ch = self.analyze_http_exfil(base_url, timeout=timeout)
+   104→            channels.append(http_ch)
+   105→
+   106→            # WebSocket exfiltration
+   107→            logger.info("[ExfilMapper] Analyzing WebSocket exfiltration for %s", base_url)
+   108→            ws_ch = self.analyze_websocket_exfil(base_url, timeout=timeout)
+   109→            channels.append(ws_ch)
+   110→
+   111→            # Cloud exfiltration
+   112→            logger.info("[ExfilMapper] Analyzing cloud exfiltration for %s", base_url)
+   113→            cloud_ch = self.analyze_cloud_exfil(base_url, timeout=timeout)
+   114→            channels.append(cloud_ch)
+   115→
+   116→        # Email exfiltration
+   117→        logger.info("[ExfilMapper] Analyzing email exfiltration for %s", target)
+   118→        email_ch = self.analyze_email_exfil(target, timeout=timeout)
+   119→        channels.append(email_ch)
+   120→
+   121→        # ICMP exfiltration
+   122→        logger.info("[ExfilMapper] Analyzing ICMP exfiltration for %s", target)
+   123→        icmp_ch = self.analyze_icmp_exfil(target, timeout=timeout)
+   124→        channels.append(icmp_ch)
+   125→
+   126→        # Score each channel
+   127→        scorer = ExfilRiskScorer()
+   128→        scored = scorer.score_channels(channels)
+   129→
+   130→        return {
+   131→            "channels": scored,
+   132→            "summary": scorer.generate_exfil_report(scored),
+   133→        }
+   134→
+   135→    # -- DNS exfiltration --------------------------------------------------
+   136→
+   137→    def analyze_dns_exfil(self, host: str, timeout: int = 8) -> ExfilChannel:
+   138→        """Assess DNS-based exfiltration risk.
+   139→
+   140→        Checks for:
+   141→        - Open DNS resolvers
+   142→        - TXT record support (large payloads)
+   143→        - Whether subdomains accept arbitrary labels (base64 tunneling)
+   144→        """
+   145→        indicators: List[str] = []
+   146→        viability = 0
+   147→        stealth = 50
+   148→        detection = 50
+   149→
+   150→        # 1. Check if we can resolve arbitrary subdomain (open resolver indicator)
+   151→        test_label = "reconpro_test_exfil_" + datetime.now(timezone.utc).strftime("%H%M%S")
+   152→        test_fqdn = f"{test_label}.{host}"
+   153→        try:
+   154→            socket.setdefaulttimeout(timeout)
+   155→            addrs = socket.getaddrinfo(test_fqdn, None)
+   156→            if addrs:
+   157→                indicators.append(
+   158→                    f"Wildcard DNS: {test_fqdn} resolved (accepts arbitrary subdomains)"
+   159→                )
+   160→                viability += 30
+   161→                stealth += 15
+   162→        except socket.gaierror:
+   163→            indicators.append("No wildcard DNS -- arbitrary subdomains rejected")
+   164→            viability += 5
+   165→
+   166→        # 2. Try to fetch TXT records (for payload capacity)
+   167→        try:
+   168→            result = subprocess.run(
+   169→                ["dig", "+short", "TXT", host],
+   170→                capture_output=True, text=True, timeout=timeout,
+   171→            )
+   172→            txt_output = result.stdout.strip()
+   173→            if txt_output:
+   174→                lines = txt_output.splitlines()
+   175→                indicators.append(f"TXT records present ({len(lines)} records)")
+   176→                total_len = sum(len(l) for l in lines)
+   177→                indicators.append(f"Combined TXT payload capacity: {total_len} bytes")
+   178→                viability += 25
+   179→                if total_len > 255:
+   180→                    viability += 10
+   181→                    stealth += 10
+   182→                    indicators.append("Large TXT records suggest data encoding capability")
+   183→            else:
+   184→                indicators.append("No TXT records found")
+   185→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   186→            indicators.append("dig not available for TXT analysis")
+   187→
+   188→        # 3. Check for DNS-over-HTTPS support (encrypted tunnel)
+   189→        doh_hosts = ["dns.google", "cloudflare-dns.com", "dns.quad9.net"]
+   190→        for doh in doh_hosts:
+   191→            try:
+   192→                doh_url = f"https://{doh}/resolve?name={host}&type=A"
+   193→                req = urllib.request.Request(doh_url, headers={
+   194→                    "User-Agent": "ReconPro/9.2.0",
+   195→                    "Accept": "application/dns-json",
+   196→                })
+   197→                with urllib.request.urlopen(req, timeout=timeout) as resp:
+   198→                    data = json.loads(resp.read().decode())
+   199→                    if data.get("Answer"):
+   200→                        indicators.append(
+   201→                            f"DoH resolver {doh} is reachable (potential encrypted tunnel)"
+   202→                        )
+   203→                        viability += 15
+   204→                        stealth += 20
+   205→                        break
+   206→            except (urllib.error.URLError, OSError, json.JSONDecodeError):
+   207→                continue
+   208→
+   209→        # 4. Check base64-like subdomain acceptance
+   210→        b64_test = self._generate_base64_subdomain(host, timeout)
+   211→        if b64_test:
+   212→            indicators.append(b64_test)
+   213→            viability += 20
+   214→            stealth += 15
+   215→
+   216→        viability = min(viability, 100)
+   217→        stealth = min(stealth, 100)
+   218→        detection = min(detection, 100)
+   219→
+   220→        return ExfilChannel(
+   221→            channel_type="DNS Tunneling",
+   222→            viability_score=viability,
+   223→            bandwidth_estimate=self._dns_bandwidth_label(viability),
+   224→            stealth_score=stealth,
+   225→            detection_difficulty=detection,
+   226→            indicators=indicators,
+   227→            remediation=(
+   228→                "Implement DNS query logging and anomaly detection. "
+   229→                "Block or rate-limit long/entropy-high subdomain queries. "
+   230→                "Restrict recursive DNS to authorized resolvers only."
+   231→            ),
+   232→        )
+   233→
+   234→    # -- HTTP exfiltration -------------------------------------------------
+   235→
+   236→    def analyze_http_exfil(self, base_url: str, timeout: int = 8) -> ExfilChannel:
+   237→        """Assess HTTP-based exfiltration risk.
+   238→
+   239→        Checks for:
+   240→        - POST endpoint availability
+   241→        - Upload form presence
+   242→        - CORS wildcard (Access-Control-Allow-Origin: *)
+   243→        - Large response body capacity
+   244→        - Redirect targets (open redirect for data exfil)
+   245→        """
+   246→        indicators: List[str] = []
+   247→        viability = 0
+   248→        stealth = 30
+   249→        detection = 40
+   250→
+   251→        try:
+   252→            req = urllib.request.Request(
+   253→                base_url, headers={"User-Agent": "ReconPro/9.2.0"},
+   254→            )
+   255→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   256→                body = resp.read().decode("utf-8", errors="replace")
+   257→                headers = {k.lower(): v for k, v in resp.getheaders()}
+   258→                status = resp.getcode()
+   259→        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+   260→            return ExfilChannel(
+   261→                channel_type="HTTP Exfiltration",
+   262→                viability_score=0,
+   263→                bandwidth_estimate="None",
+   264→                stealth_score=0,
+   265→                detection_difficulty=0,
+   266→                indicators=[f"Could not reach {base_url}: {exc}"],
+   267→                remediation="N/A -- host unreachable.",
+   268→            )
+   269→
+   270→        indicators.append(f"HTTP {status} response received")
+   271→
+   272→        # 1. Check CORS
+   273→        cors = headers.get("access-control-allow-origin", "")
+   274→        if cors == "*":
+   275→            indicators.append("CORS wildcard (*) -- any origin can read responses")
+   276→            viability += 35
+   277→            stealth += 20
+   278→            detection -= 10
+   279→        elif cors:
+   280→            indicators.append(f"CORS restricted to: {cors}")
+   281→            viability += 10
+   282→        else:
+   283→            indicators.append("No CORS header present")
+   284→
+   285→        # 2. Check for upload forms
+   286→        upload_patterns = [
+   287→            r'<form[^>]*enctype=["\']multipart/form-data["\']',
+   288→            r'<input[^>]*type=["\']file["\']',
+   289→            r'<form[^>]*method=["\']post["\'][^>]*>',
+   290→        ]
+   291→        form_count = 0
+   292→        for pat in upload_patterns:
+   293→            matches = re.findall(pat, body, re.IGNORECASE)
+   294→            if matches:
+   295→                form_count += len(matches)
+   296→        if form_count > 0:
+   297→            indicators.append(f"Found {form_count} upload-capable form element(s)")
+   298→            viability += 30
+   299→            stealth += 10
+   300→
+   301→        # 3. Check Content-Length / body size
+   302→        body_size = len(body)
+   303→        indicators.append(f"Response body size: {body_size} bytes")
+   304→        if body_size > 100_000:
+   305→            indicators.append("Large response body suggests high-bandwidth capability")
+   306→            viability += 15
+   307→        elif body_size > 10_000:
+   308→            viability += 5
+   309→
+   310→        # 4. Check for JSON API endpoints in body
+   311→        json_endpoints = re.findall(r'["\'](/[\w/._-]+)["\']\s*:', body)
+   312→        api_paths = [p for p in json_endpoints if any(
+   313→            kw in p.lower() for kw in ("api", "upload", "submit", "send", "log", "track")
+   314→        )]
+   315→        if api_paths:
+   316→            indicators.append(f"Potential API endpoints: {', '.join(set(api_paths[:5]))}")
+   317→            viability += 20
+   318→
+   319→        # 5. Check for redirect targets
+   320→        redirects = re.findall(r'(?:href|action|location)\s*=\s*["\']((?:https?://|/)[^"\'>\s]+)', body, re.IGNORECASE)
+   321→        external = [r for r in redirects if r.startswith("http") and not self._same_origin(r, base_url)]
+   322→        if external:
+   323→            indicators.append(f"{len(external)} external URL(s) found in page")
+   324→            viability += 10
+   325→
+   326→        # 6. Check for tracking / analytics scripts
+   327→        analytics_patterns = [
+   328→            r'google-analytics\.com',
+   329→            r'googletagmanager\.com',
+   330→            r'facebook\.net/en_US/fbevents',
+   331→            r'connect\.facebook\.net',
+   332→            r'hotjar\.com',
+   333→            r'clarity\.ms',
+   334→            r'segment\.com',
+   335→            r'mixpanel\.com',
+   336→        ]
+   337→        for pat in analytics_patterns:
+   338→            if re.search(pat, body, re.IGNORECASE):
+   339→                indicators.append(f"Analytics/tracking script detected: {pat}")
+   340→                viability += 10
+   341→                stealth += 15
+   342→                break
+   343→
+   344→        viability = min(max(viability, 0), 100)
+   345→        stealth = min(max(stealth, 0), 100)
+   346→        detection = min(max(detection, 0), 100)
+   347→
+   348→        return ExfilChannel(
+   349→            channel_type="HTTP Exfiltration",
+   350→            viability_score=viability,
+   351→            bandwidth_estimate=self._http_bandwidth_label(viability, body_size),
+   352→            stealth_score=stealth,
+   353→            detection_difficulty=detection,
+   354→            indicators=indicators,
+   355→            remediation=(
+   356→                "Restrict CORS to specific trusted origins. "
+   357→                "Implement request size limits and content-type validation. "
+   358→                "Use CSP headers to restrict outbound connections. "
+   359→                "Monitor for anomalous POST volume to unusual endpoints."
+   360→            ),
+   361→        )
+   362→
+   363→    # -- WebSocket exfiltration -------------------------------------------
+   364→
+   365→    def analyze_websocket_exfil(self, base_url: str, timeout: int = 8) -> ExfilChannel:
+   366→        """Assess WebSocket-based exfiltration risk.
+   367→
+   368→        Checks for:
+   369→        - WebSocket endpoint availability (upgrade headers in response)
+   370→        - wss:// references in page source
+   371→        - Binary frame support indicators
+   372→        """
+   373→        indicators: List[str] = []
+   374→        viability = 0
+   375→        stealth = 40
+   376→        detection = 45
+   377→
+   378→        # 1. Try HTTP upgrade
+   379→        try:
+   380→            ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://")
+   381→            req = urllib.request.Request(
+   382→                ws_url,
+   383→                headers={
+   384→                    "User-Agent": "ReconPro/9.2.0",
+   385→                    "Upgrade": "websocket",
+   386→                    "Connection": "Upgrade",
+   387→                    "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+   388→                    "Sec-WebSocket-Version": "13",
+   389→                },
+   390→            )
+   391→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   392→                status = resp.getcode()
+   393→                resp_headers = {k.lower(): v for k, v in resp.getheaders()}
+   394→                if status in (101, 200, 301, 302, 400, 426):
+   395→                    # 426 = Upgrade Required, indicates WS support
+   396→                    if status == 426 or "websocket" in resp_headers.get("upgrade", "").lower():
+   397→                        indicators.append(f"WebSocket upgrade supported (HTTP {status})")
+   398→                        viability += 40
+   399→                        stealth += 20
+   400→                    elif status in (200, 301, 302):
+   401→                        indicators.append(f"HTTP {status} -- server responded to WS handshake")
+   402→                        viability += 10
+   403→        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+   404→            indicators.append(f"WebSocket probe failed: {exc}")
+   405→
+   406→        # 2. Check page source for WebSocket URLs
+   407→        try:
+   408→            req = urllib.request.Request(
+   409→                base_url, headers={"User-Agent": "ReconPro/9.2.0"},
+   410→            )
+   411→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   412→                body = resp.read().decode("utf-8", errors="replace")
+   413→        except (urllib.error.URLError, OSError, TimeoutError):
+   414→            body = ""
+   415→
+   416→        ws_patterns = [
+   417→            r'wss?://[\w.-]+(?::\d+)?[\w/._-]*',
+   418→            r'new\s+WebSocket\s*\(',
+   419→            r'\.onmessage\s*=',
+   420→            r'\.send\(\s*[\w]+\)',
+   421→        ]
+   422→        ws_urls: List[str] = []
+   423→        for pat in ws_patterns:
+   424→            matches = re.findall(pat, body, re.IGNORECASE)
+   425→            for m in matches:
+   426→                if m.startswith("wss://") or m.startswith("ws://"):
+   427→                    ws_urls.append(m)
+   428→        if ws_urls:
+   429→            unique = list(dict.fromkeys(ws_urls))
+   430→            indicators.append(f"WebSocket URL(s) found: {', '.join(unique[:5])}")
+   431→            viability += 30
+   432→            stealth += 15
+   433→
+   434→        # 3. Check for binary data handling patterns
+   435→        binary_patterns = [
+   436→            r'ArrayBuffer',
+   437→            r'Blob\s*\(',
+   438→            r'binaryType\s*[:=]\s*["\']arraybuffer["\']',
+   439→            r'Int8Array|Uint8Array|DataView',
+   440→        ]
+   441→        binary_found = False
+   442→        for pat in binary_patterns:
+   443→            if re.search(pat, body, re.IGNORECASE):
+   444→                binary_found = True
+   445→                break
+   446→        if binary_found:
+   447→            indicators.append("Binary frame handling code detected (ArrayBuffer/Blob)")
+   448→            viability += 15
+   449→            stealth += 10
+   450→
+   451→        # 4. Socket.IO / SignalR detection
+   452→        realtime_libs = [
+   453→            r'socket\.io',
+   454→            r'signalr',
+   455→            r'pusher',
+   456→            r'ably\.io',
+   457→            r'phoenix\s*channel',
+   458→        ]
+   459→        for pat in realtime_libs:
+   460→            if re.search(pat, body, re.IGNORECASE):
+   461→                indicators.append(f"Real-time library detected: {pat}")
+   462→                viability += 15
+   463→                break
+   464→
+   465→        viability = min(max(viability, 0), 100)
+   466→        stealth = min(max(stealth, 0), 100)
+   467→        detection = min(max(detection, 0), 100)
+   468→
+   469→        return ExfilChannel(
+   470→            channel_type="WebSocket Exfiltration",
+   471→            viability_score=viability,
+   472→            bandwidth_estimate="High (~100+ KB/s)" if viability > 50 else "Low (~10 KB/s)",
+   473→            stealth_score=stealth,
+   474→            detection_difficulty=detection,
+   475→            indicators=indicators,
+   476→            remediation=(
+   477→                "Restrict WebSocket endpoints with authentication. "
+   478→                "Implement message size limits and rate limiting. "
+   479→                "Monitor WebSocket traffic for anomalous data volumes. "
+   480→                "Use WAF rules to detect binary data patterns."
+   481→            ),
+   482→        )
+   483→
+   484→    # -- Email exfiltration -----------------------------------------------
+   485→
+   486→    def analyze_email_exfil(self, host: str, timeout: int = 8) -> ExfilChannel:
+   487→        """Assess email-based exfiltration risk.
+   488→
+   489→        Checks for:
+   490→        - MX records (mail servers)
+   491→        - SPF, DKIM, DMARC records
+   492→        - Open SMTP relay (port 25 check)
+   493→        """
+   494→        indicators: List[str] = []
+   495→        viability = 0
+   496→        stealth = 35
+   497→        detection = 30
+   498→
+   499→        # 1. MX records
+   500→        try:
+   501→            mx_result = subprocess.run(
+   502→                ["dig", "+short", "MX", host],
+   503→                capture_output=True, text=True, timeout=timeout,
+   504→            )
+   505→            mx_output = mx_result.stdout.strip()
+   506→            if mx_output:
+   507→                mx_lines = [l.strip() for l in mx_output.splitlines() if l.strip()]
+   508→                indicators.append(f"MX records ({len(mx_lines)}): {', '.join(mx_lines[:3])}")
+   509→                viability += 25
+   510→            else:
+   511→                indicators.append("No MX records found")
+   512→                viability += 5
+   513→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   514→            indicators.append("dig not available for MX lookup")
+   515→
+   516→        # 2. SPF record
+   517→        try:
+   518→            spf_result = subprocess.run(
+   519→                ["dig", "+short", "TXT", host],
+   520→                capture_output=True, text=True, timeout=timeout,
+   521→            )
+   522→            for line in spf_result.stdout.strip().splitlines():
+   523→                if 'v=spf1' in line.lower():
+   524→                    indicators.append(f"SPF record: {line}")
+   525→                    if "+all" in line or "?all" in line:
+   526→                        indicators.append("SPF allows any sender (+all or ?all) -- weak policy")
+   527→                        viability += 20
+   528→                    elif "-all" in line or "~all" in line:
+   529→                        indicators.append("SPF has strict/soft fail policy")
+   530→                    viability += 10
+   531→                    break
+   532→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   533→            pass
+   534→
+   535→        # 3. DMARC record
+   536→        try:
+   537→            dmarc_domain = f"_dmarc.{host}"
+   538→            dmarc_result = subprocess.run(
+   539→                ["dig", "+short", "TXT", dmarc_domain],
+   540→                capture_output=True, text=True, timeout=timeout,
+   541→            )
+   542→            dmarc_output = dmarc_result.stdout.strip()
+   543→            if dmarc_output and "v=dmarc1" in dmarc_output.lower():
+   544→                indicators.append(f"DMARC record present: {dmarc_output}")
+   545→                if "p=none" in dmarc_output.lower():
+   546→                    indicators.append("DMARC policy is 'none' -- no enforcement")
+   547→                    viability += 15
+   548→            else:
+   549→                indicators.append("No DMARC record found -- email spoofing possible")
+   550→                viability += 20
+   551→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   552→            indicators.append("dig not available for DMARC lookup")
+   553→
+   554→        # 4. DKIM record
+   555→        try:
+   556→            # Common DKIM selector names
+   557→            for selector in ("default", "google", "selector1", "selector2", "k1"):
+   558→                dkim_domain = f"{selector}._domainkey.{host}"
+   559→                dkim_result = subprocess.run(
+   560→                    ["dig", "+short", "TXT", dkim_domain],
+   561→                    capture_output=True, text=True, timeout=timeout,
+   562→                )
+   563→                if dkim_result.stdout.strip():
+   564→                    indicators.append(f"DKIM record found (selector: {selector})")
+   565→                    viability += 5
+   566→                    break
+   567→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   568→            pass
+   569→
+   570→        # 5. Open SMTP check (port 25)
+   571→        smtp_open = self._check_smtp_open(host, timeout)
+   572→        if smtp_open:
+   573→            indicators.append(f"SMTP port 25 is OPEN on {host}")
+   574→            viability += 35
+   575→            stealth += 20
+   576→        else:
+   577→            indicators.append("SMTP port 25 is closed or filtered")
+   578→
+   579→        viability = min(max(viability, 0), 100)
+   580→        stealth = min(max(stealth, 0), 100)
+   581→        detection = min(max(detection, 0), 100)
+   582→
+   583→        return ExfilChannel(
+   584→            channel_type="Email Exfiltration",
+   585→            viability_score=viability,
+   586→            bandwidth_estimate="Low (~10 KB/s)" if viability < 50 else "Medium (~50 KB/s)",
+   587→            stealth_score=stealth,
+   588→            detection_difficulty=detection,
+   589→            indicators=indicators,
+   590→            remediation=(
+   591→                "Publish and enforce strict DMARC (p=reject), SPF (-all), and DKIM. "
+   592→                "Close open SMTP relays (port 25). "
+   593→                "Implement email gateway DLP and outbound scanning. "
+   594→                "Block external email from untrusted internal hosts."
+   595→            ),
+   596→        )
+   597→
+   598→    # -- ICMP exfiltration -------------------------------------------------
+   599→
+   600→    def analyze_icmp_exfil(self, host: str, timeout: int = 8) -> ExfilChannel:
+   601→        """Assess ICMP-based exfiltration risk.
+   602→
+   603→        Checks for:
+   604→        - Ping response via subprocess
+   605→        - Payload size in responses
+   606→        - Timing patterns
+   607→        """
+   608→        indicators: List[str] = []
+   609→        viability = 10
+   610→        stealth = 55
+   611→        detection = 60
+   612→
+   613→        # 1. Basic ping
+   614→        try:
+   615→            result = subprocess.run(
+   616→                ["ping", "-c", "4", "-W", str(timeout), host],
+   617→                capture_output=True, text=True, timeout=timeout + 5,
+   618→            )
+   619→            output = result.stdout + result.stderr
+   620→
+   621→            if result.returncode == 0:
+   622→                indicators.append(f"Host responds to ICMP echo (ping)")
+   623→                viability += 20
+   624→
+   625→                # Parse payload size
+   626→                size_match = re.search(r'(?:bytes from|icmp_seq=\d+ ttl=\d+ time=)[^\n]*?(\d+)\s*bytes', output)
+   627→                if size_match:
+   628→                    payload_size = int(size_match.group(1))
+   629→                    indicators.append(f"ICMP payload size: {payload_size} bytes")
+   630→                    if payload_size >= 64:
+   631→                        indicators.append("Payload > 64 bytes -- potential data carrier")
+   632→                        viability += 15
+   633→                        stealth += 10
+   634→
+   635→                # Parse timing for jitter
+   636→                times = re.findall(r'time=([\d.]+)\s*ms', output)
+   637→                if len(times) >= 2:
+   638→                    floats = [float(t) for t in times]
+   639→                    avg_time = sum(floats) / len(floats)
+   640→                    jitter = max(floats) - min(floats)
+   641→                    indicators.append(
+   642→                        f"ICMP timing: avg={avg_time:.1f}ms, jitter={jitter:.1f}ms, samples={len(floats)}"
+   643→                    )
+   644→                    if jitter < 5.0:
+   645→                        indicators.append("Low jitter -- stable timing for covert channel")
+   646→                        viability += 10
+   647→
+   648→                # Check TTL
+   649→                ttl_match = re.search(r'ttl=(\d+)', output)
+   650→                if ttl_match:
+   651→                    ttl = int(ttl_match.group(1))
+   652→                    indicators.append(f"TTL: {ttl}")
+   653→            else:
+   654→                indicators.append("Host does not respond to ICMP echo")
+   655→                viability = 0
+   656→        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+   657→            indicators.append(f"Ping unavailable: {exc}")
+   658→            viability = 5
+   659→
+   660→        # 2. Check if large ICMP payloads are accepted
+   661→        try:
+   662→            result = subprocess.run(
+   663→                ["ping", "-c", "1", "-s", "1024", "-W", str(timeout), host],
+   664→                capture_output=True, text=True, timeout=timeout + 5,
+   665→            )
+   666→            if result.returncode == 0:
+   667→                indicators.append("Large ICMP payload (1024+ bytes) accepted")
+   668→                viability += 25
+   669→                stealth += 15
+   670→            else:
+   671→                indicators.append("Large ICMP payload rejected or filtered")
+   672→        except (FileNotFoundError, subprocess.TimeoutExpired):
+   673→            pass
+   674→
+   675→        viability = min(max(viability, 0), 100)
+   676→        stealth = min(max(stealth, 0), 100)
+   677→        detection = min(max(detection, 0), 100)
+   678→
+   679→        return ExfilChannel(
+   680→            channel_type="ICMP Exfiltration",
+   681→            viability_score=viability,
+   682→            bandwidth_estimate="Very Low (~100 B/s)" if viability < 50 else "Low (~1 KB/s)",
+   683→            stealth_score=stealth,
+   684→            detection_difficulty=detection,
+   685→            indicators=indicators,
+   686→            remediation=(
+   687→                "Block outbound ICMP at the firewall except for essential diagnostics. "
+   688→                "Implement IDS rules for oversized or unusual ICMP payloads. "
+   689→                "Monitor for abnormal ICMP frequency and timing patterns. "
+   690→                "Rate-limit ICMP per source."
+   691→            ),
+   692→        )
+   693→
+   694→    # -- Cloud exfiltration -----------------------------------------------
+   695→
+   696→    def analyze_cloud_exfil(self, base_url: str, timeout: int = 8) -> ExfilChannel:
+   697→        """Assess cloud-storage-based exfiltration risk.
+   698→
+   699→        Checks for:
+   700→        - AWS S3 bucket references
+   701→        - Google Cloud Storage references
+   702→        - Azure Blob Storage references
+   703→        - Other cloud endpoints (Dropbox, etc.)
+   704→        """
+   705→        indicators: List[str] = []
+   706→        viability = 0
+   707→        stealth = 45
+   708→        detection = 50
+   709→
+   710→        # 1. Fetch page body
+   711→        try:
+   712→            req = urllib.request.Request(
+   713→                base_url, headers={"User-Agent": "ReconPro/9.2.0"},
+   714→            )
+   715→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   716→                body = resp.read().decode("utf-8", errors="replace")
+   717→        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+   718→            return ExfilChannel(
+   719→                channel_type="Cloud Storage Exfiltration",
+   720→                viability_score=0,
+   721→                bandwidth_estimate="None",
+   722→                stealth_score=0,
+   723→                detection_difficulty=0,
+   724→                indicators=[f"Could not reach {base_url}: {exc}"],
+   725→                remediation="N/A -- host unreachable.",
+   726→            )
+   727→
+   728→        # 2. S3 bucket detection
+   729→        s3_patterns = [
+   730→            r's3\.amazonaws\.com/[\w.-]+',
+   731→            r'[\w.-]+\.s3\.amazonaws\.com',
+   732→            r's3\.console\.aws\.amazon\.com',
+   733→            r'aws\.amazonaws\.com',
+   734→            r'bucket\.s3\.amazonaws',
+   735→        ]
+   736→        s3_refs: List[str] = []
+   737→        for pat in s3_patterns:
+   738→            matches = re.findall(pat, body, re.IGNORECASE)
+   739→            s3_refs.extend(matches)
+   740→        if s3_refs:
+   741→            unique_s3 = list(dict.fromkeys(s3_refs))
+   742→            indicators.append(f"AWS S3 reference(s) found: {', '.join(unique_s3[:5])}")
+   743→            viability += 35
+   744→            stealth += 15
+   745→
+   746→        # 3. GCS detection
+   747→        gcs_patterns = [
+   748→            r'storage\.googleapis\.com/[\w.-]+',
+   749→            r'[\w.-]+\.storage\.googleapis\.com',
+   750→            r'gs://[\w.-]+',
+   751→        ]
+   752→        gcs_refs: List[str] = []
+   753→        for pat in gcs_patterns:
+   754→            matches = re.findall(pat, body, re.IGNORECASE)
+   755→            gcs_refs.extend(matches)
+   756→        if gcs_refs:
+   757→            unique_gcs = list(dict.fromkeys(gcs_refs))
+   758→            indicators.append(f"GCS reference(s) found: {', '.join(unique_gcs[:5])}")
+   759→            viability += 30
+   760→            stealth += 15
+   761→
+   762→        # 4. Azure Blob detection
+   763→        azure_patterns = [
+   764→            r'[\w]+\.blob\.core\.windows\.net',
+   765→            r'[\w]+\.file\.core\.windows\.net',
+   766→            r'azurestorage',
+   767→            r'azure\.net',
+   768→        ]
+   769→        azure_refs: List[str] = []
+   770→        for pat in azure_patterns:
+   771→            matches = re.findall(pat, body, re.IGNORECASE)
+   772→            azure_refs.extend(matches)
+   773→        if azure_refs:
+   774→            unique_az = list(dict.fromkeys(azure_refs))
+   775→            indicators.append(f"Azure Storage reference(s) found: {', '.join(unique_az[:5])}")
+   776→            viability += 30
+   777→            stealth += 15
+   778→
+   779→        # 5. Other cloud services
+   780→        other_patterns = [
+   781→            (r'dropbox\.com/s/[\w]+', 'Dropbox'),
+   782→            (r'drive\.google\.com', 'Google Drive'),
+   783→            (r'docs\.google\.com', 'Google Docs'),
+   784→            (r'onedrive\.live\.com', 'OneDrive'),
+   785→            (r'github\.com/[\w-]+/[\w-]+', 'GitHub'),
+   786→            (r'pastebin\.com', 'Pastebin'),
+   787→        ]
+   788→        for pat, service in other_patterns:
+   789→            if re.search(pat, body, re.IGNORECASE):
+   790→                indicators.append(f"{service} reference detected")
+   791→                viability += 15
+   792→                break
+   793→
+   794→        # 6. Check for API keys / credentials in source
+   795→        cred_patterns = [
+   796→            r'AKIA[0-9A-Z]{16}',  # AWS access key
+   797→            r'AIza[\w-]{35}',  # Google API key
+   798→            r'eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+',  # JWT
+   799→        ]
+   800→        for pat in cred_patterns:
+   801→            if re.search(pat, body):
+   802→                indicators.append(f"Potential credential/API key pattern detected: {pat[:30]}...")
+   803→                viability += 25
+   804→                stealth += 20
+   805→                break
+   806→
+   807→        # 7. Check for upload SDK references
+   808→        upload_sdks = [
+   809→            r'aws-sdk', r'@aws-sdk',
+   810→            r'google-cloud/storage', r'@google-cloud/storage',
+   811→            r'azure/storage-blob', r'@azure/storage-blob',
+   812→            r'multer', r'formidable', r'busboy',
+   813→        ]
+   814→        for sdk in upload_sdks:
+   815→            if re.search(re.escape(sdk), body, re.IGNORECASE):
+   816→                indicators.append(f"Cloud upload SDK detected: {sdk}")
+   817→                viability += 15
+   818→                break
+   819→
+   820→        if not indicators:
+   821→            indicators.append("No cloud storage references found in page source")
+   822→
+   823→        viability = min(max(viability, 0), 100)
+   824→        stealth = min(max(stealth, 0), 100)
+   825→        detection = min(max(detection, 0), 100)
+   826→
+   827→        return ExfilChannel(
+   828→            channel_type="Cloud Storage Exfiltration",
+   829→            viability_score=viability,
+   830→            bandwidth_estimate="High (1+ MB/s)" if viability > 60 else "Medium (~100 KB/s)",
+   831→            stealth_score=stealth,
+   832→            detection_difficulty=detection,
+   833→            indicators=indicators,
+   834→            remediation=(
+   835→                "Implement CASB (Cloud Access Security Broker) to monitor cloud traffic. "
+   836→                "Restrict outbound access to approved cloud storage endpoints. "
+   837→                "Scan source code for exposed API keys and rotate them. "
+   838→                "Use DLP to inspect data before it reaches cloud services."
+   839→            ),
+   840→        )
+   841→
+   842→    # -- helpers -----------------------------------------------------------
+   843→
+   844→    @staticmethod
+   845→    def _generate_base64_subdomain(host: str, timeout: int = 5) -> Optional[str]:
+   846→        """Try resolving a base64-looking subdomain to test DNS tunneling surface."""
+   847→        import base64
+   848→        payload = base64.b64encode(
+   849→            b"RECONPRO_EXFIL_TEST_PAYLOAD_12345"
+   850→        ).decode("ascii")
+   851→        # Split into DNS-label-sized chunks
+   852→        chunks = [payload[i:i+60] for i in range(0, len(payload), 60)]
+   853→        test_fqdn = ".".join(chunks) + f".{host}"
+   854→        try:
+   855→            socket.setdefaulttimeout(timeout)
+   856→            addrs = socket.getaddrinfo(test_fqdn, None)
+   857→            if addrs:
+   858→                return f"Base64 subdomain resolved: {test_fqdn[:80]}..."
+   859→        except socket.gaierror:
+   860→            pass
+   861→        return None
+   862→
+   863→    @staticmethod
+   864→    def _check_smtp_open(host: str, timeout: int = 5) -> bool:
+   865→        """Check if port 25 (SMTP) is open via TCP connect."""
+   866→        try:
+   867→            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+   868→            sock.settimeout(timeout)
+   869→            result = sock.connect_ex((host, 25))
+   870→            banner = b""
+   871→            if result == 0:
+   872→                try:
+   873→                    banner = sock.recv(512)
+   874→                except OSError:
+   875→                    pass
+   876→            sock.close()
+   877→            return result == 0
+   878→        except OSError:
+   879→            return False
+   880→
+   881→    @staticmethod
+   882→    def _same_origin(url: str, base_url: str) -> bool:
+   883→        """Check if *url* shares the same origin as *base_url*."""
+   884→        try:
+   885→            parsed_url = urllib.parse.urlparse(url)
+   886→            parsed_base = urllib.parse.urlparse(base_url)
+   887→            return parsed_url.netloc.lower() == parsed_base.netloc.lower()
+   888→        except ValueError:
+   889→            return False
+   890→
+   891→    @staticmethod
+   892→    def _dns_bandwidth_label(viability: int) -> str:
+   893→        if viability >= 70:
+   894→            return "Medium (~10 KB/s)"
+   895→        if viability >= 40:
+   896→            return "Low (~1 KB/s)"
+   897→        return "Very Low (<1 KB/s)"
+   898→
+   899→    @staticmethod
+   900→    def _http_bandwidth_label(viability: int, body_size: int) -> str:
+   901→        if viability >= 70 or body_size > 100_000:
+   902→            return "High (100+ KB/s)"
+   903→        if viability >= 40 or body_size > 10_000:
+   904→            return "Medium (~50 KB/s)"
+   905→        return "Low (~10 KB/s)"
+   906→
+   907→
+   908→# ---------------------------------------------------------------------------
+   909→# ExfilRiskScorer
+   910→# ---------------------------------------------------------------------------
+   911→
+   912→class ExfilRiskScorer:
+   913→    """Score exfiltration channels and produce a summary report."""
+   914→
+   915→    @staticmethod
+   916→    def score_channel(channel: ExfilChannel) -> ExfilChannel:
+   917→        """Calculate the overall_risk for a single channel.
+   918→
+   919→        Formula: ``overall_risk = 0.4*viability + 0.3*stealth + 0.3*detection_difficulty``
+   920→        """
+   921→        channel.overall_risk = int(
+   922→            0.4 * channel.viability_score
+   923→            + 0.3 * channel.stealth_score
+   924→            + 0.3 * channel.detection_difficulty
+   925→        )
+   926→        return channel
+   927→
+   928→    def score_channels(self, channels: List[ExfilChannel]) -> List[ExfilChannel]:
+   929→        """Score a list of channels, sorted by overall_risk descending."""
+   930→        for ch in channels:
+   931→            self.score_channel(ch)
+   932→        return sorted(channels, key=lambda c: c.overall_risk, reverse=True)
+   933→
+   934→    def generate_exfil_report(self, channels: List[ExfilChannel]) -> Dict[str, Any]:
+   935→        """Produce a summary report dict for all scored channels."""
+   936→        if not channels:
+   937→            return {"error": "No channels analysed"}
+   938→
+   939→        total_channels = len(channels)
+   940→        critical = [c for c in channels if c.overall_risk >= 70]
+   941→        high = [c for c in channels if 50 <= c.overall_risk < 70]
+   942→        medium = [c for c in channels if 30 <= c.overall_risk < 50]
+   943→        low = [c for c in channels if c.overall_risk < 30]
+   944→
+   945→        avg_risk = sum(c.overall_risk for c in channels) / total_channels
+   946→        max_risk = max(c.overall_risk for c in channels)
+   947→
+   948→        return {
+   949→            "generated_at": datetime.now(timezone.utc).isoformat(),
+   950→            "total_channels": total_channels,
+   951→            "average_risk": round(avg_risk, 1),
+   952→            "max_risk": max_risk,
+   953→            "risk_breakdown": {
+   954→                "critical": len(critical),
+   955→                "high": len(high),
+   956→                "medium": len(medium),
+   957→                "low": len(low),
+   958→            },
+   959→            "critical_channels": [c.channel_type for c in critical],
+   960→            "channels": [c.to_dict() for c in channels],
+   961→            "recommendations": self._top_recommendations(channels),
+   962→        }
+   963→
+   964→    @staticmethod
+   965→    def _top_recommendations(channels: List[ExfilChannel]) -> List[str]:
+   966→        """Return the top 3 remediation strings from the highest-risk channels."""
+   967→        recs: List[str] = []
+   968→        for ch in channels:
+   969→            if ch.remediation and ch.remediation not in recs:
+   970→                recs.append(ch.remediation)
+   971→            if len(recs) >= 3:
+   972→                break
+   973→        return recs
+   974→

@@ -315,7 +315,12 @@ class TestFindingCorrelator(unittest.TestCase):
         self.assertGreater(len(asset_groups), 0)
 
     def test_detect_attack_chain(self):
-        findings = [_finding_auth_bypass(), _finding_default_creds()]
+        # Both findings share the same asset so the chain detection
+        # can link them (auth_bypass → default_creds attack chain).
+        auth = _finding_auth_bypass()
+        auth["asset"] = "example.com/admin"
+        creds = _finding_default_creds()
+        findings = [auth, creds]
         groups, deduped = self.correlator.correlate(findings)
         chain_groups = [g for g in groups if g.correlation_type == "attack_chain"]
         self.assertGreater(len(chain_groups), 0)

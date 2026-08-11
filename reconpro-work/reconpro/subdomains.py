@@ -18,6 +18,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from .constants import USER_AGENT
+
 __all__ = [
     "SubdomainResult",
     "SubdomainEnumerator",
@@ -28,7 +30,7 @@ __all__ = [
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-USER_AGENT = "ReconPro/9"
+USER_AGENT = USER_AGENT  # canonical from constants
 DEFAULT_TIMEOUT = 10.0
 DEFAULT_WORKERS = 5
 

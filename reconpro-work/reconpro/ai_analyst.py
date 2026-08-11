@@ -659,7 +659,7 @@ class FindingCorrelator:
                     # Verify shared asset or related
                     shared = (f_a.get("asset", "") == f_b.get("asset", "") or
                               self._assets_related(f_a.get("asset", ""), f_b.get("asset", "")))
-                    if shared or True:  # Even unrelated assets can form chains
+                    if shared:
                         conf = min(cr_a.confidence, cr_b.confidence) * 0.8
                         chains.append(CorrelationGroup(
                             findings=[f_a, f_b],

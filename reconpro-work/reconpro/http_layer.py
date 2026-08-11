@@ -6,6 +6,8 @@ Thread-safe rate limiter, hardened probe, TLS config.
 from __future__ import annotations
 
 import ssl
+
+from .constants import USER_AGENT as UA
 import time
 import urllib.error
 import urllib.request
@@ -29,7 +31,12 @@ class RateLimiter:
             now = time.monotonic()
             elapsed = now - self._last
             if elapsed < self._min_interval:
-                time.sleep(self._min_interval - elapsed)
+                delay = self._min_interval - elapsed
+            else:
+                delay = 0.0
+        if delay > 0:
+            time.sleep(delay)
+        with self._lock:
             self._last = time.monotonic()
 
 
@@ -37,11 +44,6 @@ default_limiter = RateLimiter(max_per_second=10.0)
 
 
 # ── HTTP Probe ──────────────────────────────────────────────────────────
-
-UA = (
-    "ReconPro/10.0 (Enterprise Security Scanner; "
-    "+https://github.com/reconpro-security/reconpro)"
-)
 
 
 def http_probe(

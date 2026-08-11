@@ -1,4 +1,4 @@
-"""Async HTTP engine for ReconPro v10.0.
+"""Async HTTP engine for ReconPro v11.0.
 
 Architecture
 ────────────
@@ -59,11 +59,9 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-# Reuse the same User-Agent string as the sync layer.
-UA = (
-    "ReconPro/11.0.0 (Enterprise Security Scanner; "
-    "+https://reconpro.dev)"
-)
+# Reuse the canonical User-Agent string from constants.
+UA = None  # imported below
+from .constants import USER_AGENT as UA  # noqa: E402
 
 DEFAULT_HEADERS = {
     "User-Agent": UA,

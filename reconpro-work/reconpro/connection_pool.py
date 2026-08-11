@@ -38,14 +38,12 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 
+from .constants import USER_AGENT
+
 # ── Constants ────────────────────────────────────────────────────────────
 
-UA = (
-    "ReconPro/11.0.0 (Enterprise Security Scanner; "
-    "+https://reconpro.dev)"
-)
+UA = USER_AGENT  # canonical from constants
 
-# Pre-built header templates — created once at module import time.
 _HEADER_TEMPLATES = {
     "default": {
         "User-Agent": UA,

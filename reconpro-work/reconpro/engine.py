@@ -398,10 +398,8 @@ class ScanEngine:
             Identical shape to what ``scanner.scan`` returns.
         """
         effective_rate = rate_limit if rate_limit is not None else self._default_rate_limit
-        _limiter = RateLimiter(effective_rate)
 
         # Resolve modules list.
-        registry = LOCAL_MODULES if is_local else MODULE_REGISTRY
         if is_local:
             mods = self._resolve_local_modules(modules, all_modules)
         else:
@@ -693,7 +691,6 @@ async def concurrent_scan(
     dict[str, ReconProResult]
         Mapping of target → result for every target.
     """
-    global_semaphore = asyncio.Semaphore(max_concurrency)
     results: Dict[str, ReconProResult] = {}
     lock = asyncio.Lock()
 
@@ -704,9 +701,6 @@ async def concurrent_scan(
             rate_limit=rate_limit,
             use_async=True,
         )
-        # We override the internal semaphore with the shared one by
-        # running through a wrapper that acquires the global semaphore
-        # before the per-module semaphore.
         result = await engine.run(
             target=t,
             modules=modules,

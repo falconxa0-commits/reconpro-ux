@@ -1275,7 +1275,7 @@ class FuzzSession:
             resp_headers = dict(resp.headers)
             return resp.status, resp_body, elapsed, resp_headers
         except urllib.error.HTTPError as e:
-            elapsed = time.monotonic() - time.monotonic() + 0.001
+            elapsed = time.monotonic() - start
             try:
                 resp_body = e.read().decode("utf-8", errors="replace")
             except Exception:
