@@ -1,0 +1,1001 @@
+     1→"""ReconPro Age III — Continuous Engineering Workflow Orchestrator.
+     2→
+     3→Wires all 11 Age III engineering modules into ONE continuous pipeline that
+     4→executes a full engineering cycle: from state capture and validation through
+     5→diagnostics, drift detection, benchmarking, regression analysis, learning,
+     6→recommendations, auto-fix proposals, quality gating, reporting, and memory
+     7→persistence.
+     8→
+     9→Every stage failure is logged but does NOT stop the pipeline — the
+    10→orchestrator degrades gracefully, collecting whatever results it can.
+    11→
+    12→Pure Python. Zero external dependencies. Full type hints. Lazy imports
+    13→to avoid circular dependency issues.
+    14→
+    15→Classes:
+    16→    EngineeringStage       – Enum for each pipeline stage
+    17→    StageResult            – Per-stage outcome dataclass
+    18→    EngineeringCycleResult – Complete cycle result dataclass
+    19→    ContinuousEngineeringOrchestrator – Main orchestrator facade
+    20→
+    21→Usage:
+    22→    from reconpro.engineering_workflow import ContinuousEngineeringOrchestrator
+    23→
+    24→    orch = ContinuousEngineeringOrchestrator("/path/to/repo")
+    25→    result = orch.run_full_cycle()
+    26→    print(result.overall_status)
+    27→"""
+    28→
+    29→from __future__ import annotations
+    30→
+    31→import json
+    32→import logging
+    33→import os
+    34→import time
+    35→from dataclasses import dataclass, field
+    36→from datetime import datetime, timezone
+    37→from enum import Enum
+    38→from pathlib import Path
+    39→from typing import Any, Dict, List, Optional, Tuple
+    40→
+    41→from .constants import MEMORY_DIR, RECONPRO_HOME
+    42→
+    43→logger = logging.getLogger("reconpro.engineering_workflow")
+    44→
+    45→# ── Persistence paths ──────────────────────────────────────────────────
+    46→
+    47→ENGINEERING_CYCLES_DIR: Path = MEMORY_DIR / "engineering_cycles"
+    48→
+    49→
+    50→def _ensure_dir(path: Path) -> Path:
+    51→    """Create directory (and parents) if it does not exist."""
+    52→    path.mkdir(parents=True, exist_ok=True)
+    53→    return path
+    54→
+    55→
+    56→# ═══════════════════════════════════════════════════════════════════════
+    57→#  EngineeringStage — pipeline stage enum
+    58→# ═══════════════════════════════════════════════════════════════════════
+    59→
+    60→
+    61→class EngineeringStage(str, Enum):
+    62→    """Each stage in the continuous engineering cycle."""
+    63→
+    64→    DIGITAL_TWIN_STATE = "digital_twin_state"
+    65→    DIGITAL_TWIN_ANOMALY = "digital_twin_anomaly"
+    66→    REPOSITORY_MEMORY_RECALL = "repository_memory_recall"
+    67→    AUTO_VALIDATION = "auto_validation"
+    68→    HEALTH_CHECK = "health_check"
+    69→    DRIFT_DETECTION = "drift_detection"
+    70→    BENCHMARK = "benchmark"
+    71→    REGRESSION_INTELLIGENCE = "regression_intelligence"
+    72→    LEARNING = "learning"
+    73→    RECOMMENDATIONS = "recommendations"
+    74→    AUTO_FIX = "auto_fix"
+    75→    QUALITY_GATE = "quality_gate"
+    76→    REPORTING = "reporting"
+    77→    REPOSITORY_MEMORY_PERSIST = "repository_memory_persist"
+    78→
+    79→
+    80→# Full cycle stage order (a through m per spec)
+    81→_FULL_CYCLE_STAGES: List[EngineeringStage] = [
+    82→    EngineeringStage.DIGITAL_TWIN_STATE,
+    83→    EngineeringStage.DIGITAL_TWIN_ANOMALY,
+    84→    EngineeringStage.REPOSITORY_MEMORY_RECALL,
+    85→    EngineeringStage.AUTO_VALIDATION,
+    86→    EngineeringStage.HEALTH_CHECK,
+    87→    EngineeringStage.DRIFT_DETECTION,
+    88→    EngineeringStage.BENCHMARK,
+    89→    EngineeringStage.REGRESSION_INTELLIGENCE,
+    90→    EngineeringStage.LEARNING,
+    91→    EngineeringStage.RECOMMENDATIONS,
+    92→    EngineeringStage.AUTO_FIX,
+    93→    EngineeringStage.QUALITY_GATE,
+    94→    EngineeringStage.REPORTING,
+    95→    EngineeringStage.REPOSITORY_MEMORY_PERSIST,
+    96→]
+    97→
+    98→# Validation-only subset (steps a, c, k)
+    99→_VALIDATION_ONLY_STAGES: List[EngineeringStage] = [
+   100→    EngineeringStage.DIGITAL_TWIN_STATE,
+   101→    EngineeringStage.AUTO_VALIDATION,
+   102→    EngineeringStage.QUALITY_GATE,
+   103→]
+   104→
+   105→# Engineering-only subset (steps d–j)
+   106→_ENGINEERING_ONLY_STAGES: List[EngineeringStage] = [
+   107→    EngineeringStage.HEALTH_CHECK,
+   108→    EngineeringStage.DRIFT_DETECTION,
+   109→    EngineeringStage.BENCHMARK,
+   110→    EngineeringStage.REGRESSION_INTELLIGENCE,
+   111→    EngineeringStage.LEARNING,
+   112→    EngineeringStage.RECOMMENDATIONS,
+   113→    EngineeringStage.AUTO_FIX,
+   114→]
+   115→
+   116→
+   117→# ═══════════════════════════════════════════════════════════════════════
+   118→#  StageResult — per-stage outcome
+   119→# ═══════════════════════════════════════════════════════════════════════
+   120→
+   121→
+   122→@dataclass
+   123→class StageResult:
+   124→    """Result of executing a single pipeline stage.
+   125→
+   126→    Attributes:
+   127→        stage: Which stage was executed.
+   128→        status: 'pass', 'fail', 'warn', 'skipped'.
+   129→        duration_s: Wall-clock seconds for this stage.
+   130→        data: Stage-specific result data (raw return values).
+   131→        error: Exception message if the stage failed, else empty string.
+   132→    """
+   133→
+   134→    stage: EngineeringStage
+   135→    status: str = "pass"
+   136→    duration_s: float = 0.0
+   137→    data: Dict[str, Any] = field(default_factory=dict)
+   138→    error: str = ""
+   139→
+   140→    def to_dict(self) -> Dict[str, Any]:
+   141→        return {
+   142→            "stage": self.stage.value,
+   143→            "status": self.status,
+   144→            "duration_s": round(self.duration_s, 4),
+   145→            "data": self.data,
+   146→            "error": self.error,
+   147→        }
+   148→
+   149→
+   150→# ═══════════════════════════════════════════════════════════════════════
+   151→#  EngineeringCycleResult — full cycle result
+   152→# ═══════════════════════════════════════════════════════════════════════
+   153→
+   154→
+   155→@dataclass
+   156→class EngineeringCycleResult:
+   157→    """Comprehensive result of an engineering cycle.
+   158→
+   159→    Attributes:
+   160→        cycle_id: Unique identifier for this cycle.
+   161→        repository_path: Path of the repository analysed.
+   162→        mode: Which pipeline mode was run ('full', 'validation_only', 'engineering_only').
+   163→        overall_status: 'pass', 'fail', or 'warn'.
+   164→        started_at: ISO-8601 UTC timestamp when cycle began.
+   165→        finished_at: ISO-8601 UTC timestamp when cycle finished.
+   166→        total_duration_s: Total wall-clock seconds for the cycle.
+   167→        stages: Ordered list of StageResult for each executed stage.
+   168→        metrics: Aggregate metrics across all stages.
+   169→        recommendations_count: Total number of recommendations generated.
+   170→        fix_proposals_count: Total number of fix proposals generated.
+   171→        anomaly_count: Number of anomalies detected.
+   172→        regression_count: Number of regressions detected.
+   173→    """
+   174→
+   175→    cycle_id: str = ""
+   176→    repository_path: str = ""
+   177→    mode: str = "full"
+   178→    overall_status: str = "pass"
+   179→    started_at: str = ""
+   180→    finished_at: str = ""
+   181→    total_duration_s: float = 0.0
+   182→    stages: List[StageResult] = field(default_factory=list)
+   183→    metrics: Dict[str, Any] = field(default_factory=dict)
+   184→    recommendations_count: int = 0
+   185→    fix_proposals_count: int = 0
+   186→    anomaly_count: int = 0
+   187→    regression_count: int = 0
+   188→
+   189→    def to_dict(self) -> Dict[str, Any]:
+   190→        return {
+   191→            "cycle_id": self.cycle_id,
+   192→            "repository_path": self.repository_path,
+   193→            "mode": self.mode,
+   194→            "overall_status": self.overall_status,
+   195→            "started_at": self.started_at,
+   196→            "finished_at": self.finished_at,
+   197→            "total_duration_s": round(self.total_duration_s, 4),
+   198→            "stages": [s.to_dict() for s in self.stages],
+   199→            "metrics": self.metrics,
+   200→            "recommendations_count": self.recommendations_count,
+   201→            "fix_proposals_count": self.fix_proposals_count,
+   202→            "anomaly_count": self.anomaly_count,
+   203→            "regression_count": self.regression_count,
+   204→        }
+   205→
+   206→    def save(self, directory: Optional[Path] = None) -> Path:
+   207→        """Persist cycle results as JSON.
+   208→
+   209→        Args:
+   210→            directory: Override directory. Defaults to ENGINEERING_CYCLES_DIR.
+   211→
+   212→        Returns:
+   213→            Path to the saved JSON file.
+   214→        """
+   215→        save_dir = _ensure_dir(directory or ENGINEERING_CYCLES_DIR)
+   216→        filename = f"cycle_{self.cycle_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.json"
+   217→        filepath = save_dir / filename
+   218→        try:
+   219→            with open(filepath, "w", encoding="utf-8") as f:
+   220→                json.dump(self.to_dict(), f, indent=2, ensure_ascii=False, default=str)
+   221→            logger.info("Cycle results saved to %s", filepath)
+   222→        except OSError:
+   223→            logger.warning("Failed to save cycle results to %s", filepath, exc_info=True)
+   224→        return filepath
+   225→
+   226→    @classmethod
+   227→    def load_latest(cls, directory: Optional[Path] = None) -> Optional["EngineeringCycleResult"]:
+   228→        """Load the most recent cycle result from JSON files.
+   229→
+   230→        Args:
+   231→            directory: Override directory.
+   232→
+   233→        Returns:
+   234→            EngineeringCycleResult or None if no files found.
+   235→        """
+   236→        search_dir = directory or ENGINEERING_CYCLES_DIR
+   237→        if not search_dir.exists():
+   238→            return None
+   239→        try:
+   240→            files = sorted(search_dir.glob("cycle_*.json"), key=os.path.getmtime)
+   241→            if not files:
+   242→                return None
+   243→            with open(files[-1], "r", encoding="utf-8") as f:
+   244→                data = json.load(f)
+   245→            result = cls()
+   246→            result.cycle_id = data.get("cycle_id", "")
+   247→            result.repository_path = data.get("repository_path", "")
+   248→            result.mode = data.get("mode", "full")
+   249→            result.overall_status = data.get("overall_status", "pass")
+   250→            result.started_at = data.get("started_at", "")
+   251→            result.finished_at = data.get("finished_at", "")
+   252→            result.total_duration_s = data.get("total_duration_s", 0.0)
+   253→            result.metrics = data.get("metrics", {})
+   254→            result.recommendations_count = data.get("recommendations_count", 0)
+   255→            result.fix_proposals_count = data.get("fix_proposals_count", 0)
+   256→            result.anomaly_count = data.get("anomaly_count", 0)
+   257→            result.regression_count = data.get("regression_count", 0)
+   258→            for sdata in data.get("stages", []):
+   259→                sr = StageResult(
+   260→                    stage=EngineeringStage(sdata.get("stage", "unknown")),
+   261→                    status=sdata.get("status", "pass"),
+   262→                    duration_s=sdata.get("duration_s", 0.0),
+   263→                    data=sdata.get("data", {}),
+   264→                    error=sdata.get("error", ""),
+   265→                )
+   266→                result.stages.append(sr)
+   267→            return result
+   268→        except (OSError, json.JSONDecodeError, KeyError, ValueError):
+   269→            logger.warning("Failed to load latest cycle result", exc_info=True)
+   270→            return None
+   271→
+   272→
+   273→# ═══════════════════════════════════════════════════════════════════════
+   274→#  ContinuousEngineeringOrchestrator — main orchestrator
+   275→# ═══════════════════════════════════════════════════════════════════════
+   276→
+   277→
+   278→class ContinuousEngineeringOrchestrator:
+   279→    """Wires all 11 Age III modules into ONE continuous engineering pipeline.
+   280→
+   281→    Executes stages in order, collecting results. Each stage failure is
+   282→    logged but does NOT stop the pipeline (graceful degradation).
+   283→
+   284→    Modules wired:
+   285→        1. auto_engineering      — EngineeringPipeline (health, drift, quality_gate)
+   286→        2. repository_memory     — RepositoryMemory (remember, recall, search)
+   287→        3. digital_twin           — DigitalTwin (capture_state, predict_impact, detect_anomaly)
+   288→        4. repository_learning    — RepositoryLearner (learn_from_*, predict_outcome)
+   289→        5. engineering_recommendations — EngineeringRecommender (recommend_from_*)
+   290→        6. regression_intelligence — RegressionIntelligence (capture_baseline, detect_regression)
+   291→        7. auto_validation        — ValidationPipeline (validate_full)
+   292→        8. benchmark_automation  — BenchmarkAutomation (run_quick_benchmark)
+   293→        9. auto_fix               — AutoFixEngine (propose_fixes)
+   294→       10. prompt_defense         — PromptDefense (scan_input, sanitize_prompt)
+   295→       11. security_hardening     — SecurityPolicyEngine, PluginSandbox, SecretsManager
+   296→
+   297→    Parameters:
+   298→        repository_path: Root path of the repository to engineer.
+   299→    """
+   300→
+   301→    def __init__(self, repository_path: str = ".") -> None:
+   302→        self._repo_path: str = str(repository_path)
+   303→        self._repo_resolved: Path = Path(repository_path).resolve()
+   304→
+   305→        # Lazy-loaded subsystem instances (populated on first use)
+   306→        self._engineering_pipeline: Any = None
+   307→        self._repository_memory: Any = None
+   308→        self._digital_twin: Any = None
+   309→        self._repository_learner: Any = None
+   310→        self._engineering_recommender: Any = None
+   311→        self._regression_intelligence: Any = None
+   312→        self._validation_pipeline: Any = None
+   313→        self._benchmark_automation: Any = None
+   314→        self._auto_fix_engine: Any = None
+   315→        self._prompt_defense: Any = None
+   316→        self._security_policy_engine: Any = None
+   317→
+   318→        # Last cycle result
+   319→        self._last_result: Optional[EngineeringCycleResult] = None
+   320→        self._cycle_count: int = 0
+   321→
+   322→    # ── Lazy import helpers ────────────────────────────────────────────
+   323→
+   324→    def _get_engineering_pipeline(self) -> Any:
+   325→        """Lazy-load EngineeringPipeline."""
+   326→        if self._engineering_pipeline is None:
+   327→            from .auto_engineering import EngineeringPipeline
+   328→            self._engineering_pipeline = EngineeringPipeline(repo_path=self._repo_path)
+   329→        return self._engineering_pipeline
+   330→
+   331→    def _get_repository_memory(self) -> Any:
+   332→        """Lazy-load RepositoryMemory."""
+   333→        if self._repository_memory is None:
+   334→            from .repository_memory import RepositoryMemory
+   335→            self._repository_memory = RepositoryMemory()
+   336→        return self._repository_memory
+   337→
+   338→    def _get_digital_twin(self) -> Any:
+   339→        """Lazy-load DigitalTwin."""
+   340→        if self._digital_twin is None:
+   341→            from .digital_twin import DigitalTwin
+   342→            self._digital_twin = DigitalTwin(persist=True)
+   343→        return self._digital_twin
+   344→
+   345→    def _get_repository_learner(self) -> Any:
+   346→        """Lazy-load RepositoryLearner."""
+   347→        if self._repository_learner is None:
+   348→            from .repository_learning import RepositoryLearner
+   349→            self._repository_learner = RepositoryLearner()
+   350→        return self._repository_learner
+   351→
+   352→    def _get_engineering_recommender(self) -> Any:
+   353→        """Lazy-load EngineeringRecommender."""
+   354→        if self._engineering_recommender is None:
+   355→            from .engineering_recommendations import EngineeringRecommender
+   356→            self._engineering_recommender = EngineeringRecommender()
+   357→        return self._engineering_recommender
+   358→
+   359→    def _get_regression_intelligence(self) -> Any:
+   360→        """Lazy-load RegressionIntelligence."""
+   361→        if self._regression_intelligence is None:
+   362→            from .regression_intelligence import RegressionIntelligence
+   363→            self._regression_intelligence = RegressionIntelligence()
+   364→        return self._regression_intelligence
+   365→
+   366→    def _get_validation_pipeline(self) -> Any:
+   367→        """Lazy-load ValidationPipeline."""
+   368→        if self._validation_pipeline is None:
+   369→            from .auto_validation import ValidationPipeline
+   370→            self._validation_pipeline = ValidationPipeline(project_root=self._repo_path)
+   371→        return self._validation_pipeline
+   372→
+   373→    def _get_benchmark_automation(self) -> Any:
+   374→        """Lazy-load BenchmarkAutomation."""
+   375→        if self._benchmark_automation is None:
+   376→            from .benchmark_automation import BenchmarkAutomation
+   377→            self._benchmark_automation = BenchmarkAutomation()
+   378→        return self._benchmark_automation
+   379→
+   380→    def _get_auto_fix_engine(self) -> Any:
+   381→        """Lazy-load AutoFixEngine."""
+   382→        if self._auto_fix_engine is None:
+   383→            from .auto_fix import AutoFixEngine
+   384→            self._auto_fix_engine = AutoFixEngine(dry_run=True)
+   385→        return self._auto_fix_engine
+   386→
+   387→    def _get_prompt_defense(self) -> Any:
+   388→        """Lazy-load PromptDefense."""
+   389→        if self._prompt_defense is None:
+   390→            from .prompt_defense import PromptDefense
+   391→            self._prompt_defense = PromptDefense()
+   392→        return self._prompt_defense
+   393→
+   394→    def _get_security_policy_engine(self) -> Any:
+   395→        """Lazy-load SecurityPolicyEngine."""
+   396→        if self._security_policy_engine is None:
+   397→            from .security_hardening import SecurityPolicyEngine
+   398→            self._security_policy_engine = SecurityPolicyEngine()
+   399→        return self._security_policy_engine
+   400→
+   401→    # ── Stage execution helpers ────────────────────────────────────────
+   402→
+   403→    def _execute_stage(
+   404→        self,
+   405→        stage: EngineeringStage,
+   406→        stage_fn: Any,
+   407→        result: EngineeringCycleResult,
+   408→    ) -> StageResult:
+   409→        """Execute a single stage with timing and error handling.
+   410→
+   411→        Args:
+   412→            stage: The stage enum value.
+   413→            stage_fn: Callable that performs the stage work.
+   414→            result: The cycle result to append this stage result to.
+   415→
+   416→        Returns:
+   417→            StageResult with outcome data.
+   418→        """
+   419→        stage_result = StageResult(stage=stage)
+   420→        t0 = time.monotonic()
+   421→        try:
+   422→            data = stage_fn()
+   423→            if isinstance(data, dict):
+   424→                stage_result.data = data
+   425→            elif data is not None:
+   426→                stage_result.data = {"result": data}
+   427→            stage_result.status = "pass"
+   428→            logger.info("Stage %s completed successfully", stage.value)
+   429→        except Exception as exc:
+   430→            stage_result.status = "fail"
+   431→            stage_result.error = f"{type(exc).__name__}: {exc}"
+   432→            logger.warning(
+   433→                "Stage %s failed (continuing): %s", stage.value, exc, exc_info=True
+   434→            )
+   435→        finally:
+   436→            stage_result.duration_s = time.monotonic() - t0
+   437→        result.stages.append(stage_result)
+   438→        return stage_result
+   439→
+   440→    def _compute_overall_status(self, result: EngineeringCycleResult) -> str:
+   441→        """Compute overall pass/fail/warn from stage statuses.
+   442→
+   443→        Rules:
+   444→            - Any 'fail' → overall 'fail'
+   445→            - Any 'warn' (and no 'fail') → overall 'warn'
+   446→            - All 'pass' or 'skipped' → overall 'pass'
+   447→        """
+   448→        has_fail = any(s.status == "fail" for s in result.stages)
+   449→        has_warn = any(s.status == "warn" for s in result.stages)
+   450→        if has_fail:
+   451→            return "fail"
+   452→        if has_warn:
+   453→            return "warn"
+   454→        return "pass"
+   455→
+   456→    # ── Stage implementations ─────────────────────────────────────────
+   457→
+   458→    def _stage_digital_twin_state(self) -> Dict[str, Any]:
+   459→        """a. Digital Twin: capture current state."""
+   460→        twin = self._get_digital_twin()
+   461→        state = twin.capture_state()
+   462→        return {
+   463→            "system_status": state.overall_status(),
+   464→            "version": getattr(state, "version", "unknown"),
+   465→            "captured_at": getattr(state, "captured_at", ""),
+   466→        }
+   467→
+   468→    def _stage_digital_twin_anomaly(self) -> Dict[str, Any]:
+   469→        """a. Digital Twin: detect anomalies."""
+   470→        twin = self._get_digital_twin()
+   471→        anomalies = twin.detect_anomaly()
+   472→        anomaly_list = anomalies.get("anomalies", [])
+   473→        return {
+   474→            "anomaly_count": anomalies.get("anomaly_count", len(anomaly_list)),
+   475→            "anomalies": anomaly_list,
+   476→        }
+   477→
+   478→    def _stage_repository_memory_recall(self) -> Dict[str, Any]:
+   479→        """b. Repository Memory: recall previous engineering knowledge."""
+   480→        mem = self._get_repository_memory()
+   481→        # Search for all engineering-cycle-related facts
+   482→        facts = mem.search(query_text="engineering")
+   483→        if not facts:
+   484→            facts = mem.search(query_text="pipeline")
+   485→        return {
+   486→            "recall_count": len(facts),
+   487→            "facts": [
+   488→                {"key": f.key, "confidence": f.confidence, "source": f.source}
+   489→                for f in facts[:50]  # Cap at 50 to avoid excessive data
+   490→            ],
+   491→        }
+   492→
+   493→    def _stage_auto_validation(self) -> Dict[str, Any]:
+   494→        """c. Auto Validation: run full validation pipeline."""
+   495→        vp = self._get_validation_pipeline()
+   496→        report = vp.validate_full()
+   497→        # Handle both object and dict forms
+   498→        if hasattr(report, "to_dict"):
+   499→            data = report.to_dict()
+   500→        elif hasattr(report, "summary"):
+   501→            data = {"summary": report.summary()}
+   502→        else:
+   503→            data = {"result": report}
+   504→        return data
+   505→
+   506→    def _stage_health_check(self) -> Dict[str, Any]:
+   507→        """d. Diagnostics: run health checks via EngineeringPipeline."""
+   508→        ep = self._get_engineering_pipeline()
+   509→        health = ep.health_check()
+   510→        return health if isinstance(health, dict) else {"result": health}
+   511→
+   512→    def _stage_drift_detection(self) -> Dict[str, Any]:
+   513→        """e. Drift Detection: detect code drift from baseline."""
+   514→        ep = self._get_engineering_pipeline()
+   515→        drift = ep.drift_detection(create_baseline_if_missing=True)
+   516→        return drift if isinstance(drift, dict) else {"result": drift}
+   517→
+   518→    def _stage_benchmark(self) -> Dict[str, Any]:
+   519→        """f. Benchmark: run quick benchmarks, detect performance regressions."""
+   520→        ba = self._get_benchmark_automation()
+   521→        bench_result = ba.run_quick_benchmark()
+   522→        return bench_result if isinstance(bench_result, dict) else {"result": bench_result}
+   523→
+   524→    def _stage_regression_intelligence(self) -> Dict[str, Any]:
+   525→        """g. Regression Intelligence: detect regressions."""
+   526→        ri = self._get_regression_intelligence()
+   527→        # Use a synthetic "current state" for comparison
+   528→        current_results: Dict[str, Any] = {
+   529→            "timestamp": datetime.now(timezone.utc).isoformat(),
+   530→            "repository_path": self._repo_path,
+   531→        }
+   532→        regressions = ri.detect_regression(current_results)
+   533→        reg_list = regressions if isinstance(regressions, list) else []
+   534→        return {
+   535→            "regression_count": len(reg_list),
+   536→            "regressions": [
+   537→                {
+   538→                    "id": getattr(r, "id", ""),
+   539→                    "type": str(getattr(r, "regression_type", "")),
+   540→                    "severity": str(getattr(r, "severity", "")),
+   541→                    "description": getattr(r, "description", ""),
+   542→                }
+   543→                for r in reg_list
+   544→            ],
+   545→        }
+   546→
+   547→    def _stage_learning(self) -> Dict[str, Any]:
+   548→        """h. Learning: learn from all collected data so far."""
+   549→        learner = self._get_repository_learner()
+   550→        patterns_learned = 0
+   551→
+   552→        # Feed validation results if available
+   553→        for sr in self._last_result.stages if self._last_result else []:
+   554→            if sr.stage == EngineeringStage.AUTO_VALIDATION and sr.data:
+   555→                try:
+   556→                    n = learner.learn_from_test(sr.data)
+   557→                    patterns_learned += n
+   558→                except Exception:
+   559→                    logger.debug("Learning from validation data failed", exc_info=True)
+   560→            if sr.stage == EngineeringStage.HEALTH_CHECK and sr.data:
+   561→                try:
+   562→                    n = learner.learn_from_scan(sr.data)
+   563→                    patterns_learned += n
+   564→                except Exception:
+   565→                    logger.debug("Learning from health check data failed", exc_info=True)
+   566→
+   567→        return {"patterns_learned": patterns_learned}
+   568→
+   569→    def _stage_recommendations(self) -> Dict[str, Any]:
+   570→        """i. Recommendations: generate from all findings."""
+   571→        recommender = self._get_engineering_recommender()
+   572→        all_recs: List[Any] = []
+   573→
+   574→        for sr in self._last_result.stages if self._last_result else []:
+   575→            try:
+   576→                if sr.stage == EngineeringStage.HEALTH_CHECK and sr.data:
+   577→                    recs = recommender.recommend_from_diagnostics(sr.data)
+   578→                    all_recs.extend(recs)
+   579→                elif sr.stage == EngineeringStage.DRIFT_DETECTION and sr.data:
+   580→                    recs = recommender.recommend_from_drift(sr.data)
+   581→                    all_recs.extend(recs)
+   582→                elif sr.stage == EngineeringStage.AUTO_VALIDATION and sr.data:
+   583→                    recs = recommender.recommend_from_test_results(sr.data)
+   584→                    all_recs.extend(recs)
+   585→                elif sr.stage == EngineeringStage.BENCHMARK and sr.data:
+   586→                    recs = recommender.recommend_from_performance(sr.data)
+   587→                    all_recs.extend(recs)
+   588→            except Exception:
+   589→                logger.debug(
+   590→                    "Recommendation generation failed for stage %s",
+   591→                    sr.stage.value,
+   592→                    exc_info=True,
+   593→                )
+   594→
+   595→        return {
+   596→            "recommendations_count": len(all_recs),
+   597→            "recommendations": [
+   598→                {
+   599→                    "id": getattr(r, "id", ""),
+   600→                    "title": getattr(r, "title", ""),
+   601→                    "severity": str(getattr(r, "severity", "")),
+   602→                    "category": getattr(r, "category", ""),
+   603→                }
+   604→                for r in all_recs
+   605→            ],
+   606→        }
+   607→
+   608→    def _stage_auto_fix(self) -> Dict[str, Any]:
+   609→        """j. Auto Fix: propose fixes for detected issues."""
+   610→        engine = self._get_auto_fix_engine()
+   611→        # Aggregate findings from previous stages into a scan_result-like dict
+   612→        scan_result: Dict[str, Any] = {
+   613→            "repository_path": self._repo_path,
+   614→            "timestamp": datetime.now(timezone.utc).isoformat(),
+   615→        }
+   616→
+   617→        for sr in self._last_result.stages if self._last_result else []:
+   618→            if sr.stage == EngineeringStage.HEALTH_CHECK and sr.data:
+   619→                scan_result["diagnostics"] = sr.data
+   620→            elif sr.stage == EngineeringStage.DRIFT_DETECTION and sr.data:
+   621→                scan_result.setdefault("findings", []).append(sr.data)
+   622→
+   623→        proposals = engine.propose_fixes(scan_result)
+   624→        return {
+   625→            "fix_proposals_count": len(proposals),
+   626→            "proposals": [
+   627→                {
+   628→                    "id": getattr(p, "id", ""),
+   629→                    "title": getattr(p, "title", ""),
+   630→                    "severity": str(getattr(p, "severity", "")),
+   631→                    "confidence": getattr(p, "confidence", 0.0),
+   632→                    "status": str(getattr(p, "status", "")),
+   633→                }
+   634→                for p in proposals
+   635→            ],
+   636→        }
+   637→
+   638→    def _stage_quality_gate(self) -> Dict[str, Any]:
+   639→        """k. Quality Gate: enforce quality thresholds."""
+   640→        ep = self._get_engineering_pipeline()
+   641→
+   642→        # Gather prior stage data for quality gate inputs
+   643→        metrics_snapshot = None
+   644→        drift_report = None
+   645→        health_result = None
+   646→
+   647→        for sr in self._last_result.stages if self._last_result else []:
+   648→            if sr.stage == EngineeringStage.HEALTH_CHECK:
+   649→                health_result = sr.data
+   650→            elif sr.stage == EngineeringStage.DRIFT_DETECTION:
+   651→                drift_report = sr.data
+   652→
+   653→        qg_result = ep.quality_gate(
+   654→            metrics_snapshot=metrics_snapshot,
+   655→            drift_report=drift_report,
+   656→            health_result=health_result,
+   657→        )
+   658→        if hasattr(qg_result, "to_dict"):
+   659→            data = qg_result.to_dict()
+   660→        elif hasattr(qg_result, "__dict__"):
+   661→            data = vars(qg_result)
+   662→        else:
+   663→            data = {"result": qg_result}
+   664→        return data
+   665→
+   666→    def _stage_reporting(self) -> Dict[str, Any]:
+   667→        """l. Reporting: generate comprehensive engineering report."""
+   668→        ri = self._get_regression_intelligence()
+   669→        try:
+   670→            report = ri.generate_regression_report(
+   671→                days=7, include_history=True, include_trends=True
+   672→            )
+   673→            return {"report": str(report)[:2000]}  # Truncate large reports
+   674→        except Exception as exc:
+   675→            return {"report": f"Report generation failed: {exc}"}
+   676→
+   677→    def _stage_repository_memory_persist(self) -> Dict[str, Any]:
+   678→        """m. Repository Memory: persist results for next cycle."""
+   679→        mem = self._get_repository_memory()
+   680→        if not self._last_result:
+   681→            return {"persisted": False, "reason": "no result to persist"}
+   682→
+   683→        facts_stored = 0
+   684→
+   685→        # Persist cycle summary
+   686→        try:
+   687→            mem.remember(
+   688→                key=f"engineering_cycle/{self._last_result.cycle_id}/summary",
+   689→                value={
+   690→                    "overall_status": self._last_result.overall_status,
+   691→                    "mode": self._last_result.mode,
+   692→                    "total_duration_s": self._last_result.total_duration_s,
+   693→                    "recommendations_count": self._last_result.recommendations_count,
+   694→                    "fix_proposals_count": self._last_result.fix_proposals_count,
+   695→                    "anomaly_count": self._last_result.anomaly_count,
+   696→                    "regression_count": self._last_result.regression_count,
+   697→                },
+   698→                metadata={"source": "engineering_workflow", "tags": ["cycle", "summary"]},
+   699→            )
+   700→            facts_stored += 1
+   701→        except Exception:
+   702→            logger.debug("Failed to persist cycle summary", exc_info=True)
+   703→
+   704→        # Persist per-stage results
+   705→        for sr in self._last_result.stages:
+   706→            try:
+   707→                mem.remember(
+   708→                    key=f"engineering_cycle/{self._last_result.cycle_id}/stage/{sr.stage.value}",
+   709→                    value={
+   710→                        "status": sr.status,
+   711→                        "duration_s": sr.duration_s,
+   712→                        "error": sr.error,
+   713→                    },
+   714→                    metadata={"source": "engineering_workflow", "tags": ["cycle", "stage"]},
+   715→                )
+   716→                facts_stored += 1
+   717→            except Exception:
+   718→                logger.debug(
+   719→                    "Failed to persist stage %s", sr.stage.value, exc_info=True
+   720→                )
+   721→
+   722→        return {"persisted": True, "facts_stored": facts_stored}
+   723→
+   724→    # ── Stage dispatch ─────────────────────────────────────────────────
+   725→
+   726→    _STAGE_DISPATCH: Dict[str, str] = {
+   727→        EngineeringStage.DIGITAL_TWIN_STATE: "_stage_digital_twin_state",
+   728→        EngineeringStage.DIGITAL_TWIN_ANOMALY: "_stage_digital_twin_anomaly",
+   729→        EngineeringStage.REPOSITORY_MEMORY_RECALL: "_stage_repository_memory_recall",
+   730→        EngineeringStage.AUTO_VALIDATION: "_stage_auto_validation",
+   731→        EngineeringStage.HEALTH_CHECK: "_stage_health_check",
+   732→        EngineeringStage.DRIFT_DETECTION: "_stage_drift_detection",
+   733→        EngineeringStage.BENCHMARK: "_stage_benchmark",
+   734→        EngineeringStage.REGRESSION_INTELLIGENCE: "_stage_regression_intelligence",
+   735→        EngineeringStage.LEARNING: "_stage_learning",
+   736→        EngineeringStage.RECOMMENDATIONS: "_stage_recommendations",
+   737→        EngineeringStage.AUTO_FIX: "_stage_auto_fix",
+   738→        EngineeringStage.QUALITY_GATE: "_stage_quality_gate",
+   739→        EngineeringStage.REPORTING: "_stage_reporting",
+   740→        EngineeringStage.REPOSITORY_MEMORY_PERSIST: "_stage_repository_memory_persist",
+   741→    }
+   742→
+   743→    # ── Public API ──────────────────────────────────────────────────────
+   744→
+   745→    def run_full_cycle(
+   746→        self,
+   747→        repository_path: Optional[str] = None,
+   748→    ) -> EngineeringCycleResult:
+   749→        """Execute the complete engineering cycle (all 14 stages, a–m).
+   750→
+   751→        Steps:
+   752→            a. Digital Twin: capture state, detect anomalies
+   753→            b. Repository Memory: recall previous knowledge
+   754→            c. Auto Validation: run full validation pipeline
+   755→            d. Diagnostics: health checks
+   756→            e. Drift Detection: detect code drift
+   757→            f. Benchmark: quick benchmarks, performance regressions
+   758→            g. Regression Intelligence: detect regressions
+   759→            h. Learning: learn from collected data
+   760→            i. Recommendations: generate from findings
+   761→            j. Auto Fix: propose fixes
+   762→            k. Quality Gate: enforce thresholds
+   763→            l. Reporting: comprehensive report
+   764→            m. Repository Memory: persist results
+   765→
+   766→        Args:
+   767→            repository_path: Override repository path for this cycle.
+   768→
+   769→        Returns:
+   770→            EngineeringCycleResult with all stage results.
+   771→        """
+   772→        if repository_path:
+   773→            self._repo_path = str(repository_path)
+   774→            self._repo_resolved = Path(repository_path).resolve()
+   775→
+   776→        result = EngineeringCycleResult(
+   777→            cycle_id=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"),
+   778→            repository_path=self._repo_path,
+   779→            mode="full",
+   780→            started_at=datetime.now(timezone.utc).isoformat(),
+   781→        )
+   782→
+   783→        self._last_result = result
+   784→        cycle_start = time.monotonic()
+   785→        logger.info("Starting full engineering cycle %s for %s", result.cycle_id, self._repo_path)
+   786→
+   787→        for stage in _FULL_CYCLE_STAGES:
+   788→            method_name = self._STAGE_DISPATCH.get(stage)
+   789→            if method_name is None:
+   790→                logger.warning("No dispatch for stage %s — skipping", stage.value)
+   791→                result.stages.append(StageResult(stage=stage, status="skipped"))
+   792→                continue
+   793→            stage_fn = getattr(self, method_name, None)
+   794→            if stage_fn is None:
+   795→                result.stages.append(StageResult(stage=stage, status="skipped"))
+   796→                continue
+   797→            sr = self._execute_stage(stage, stage_fn, result)
+   798→            # Track aggregate counts
+   799→            if sr.status == "pass" and sr.data:
+   800→                if sr.stage == EngineeringStage.DIGITAL_TWIN_ANOMALY:
+   801→                    result.anomaly_count = sr.data.get("anomaly_count", 0)
+   802→                if sr.stage == EngineeringStage.REGRESSION_INTELLIGENCE:
+   803→                    result.regression_count = sr.data.get("regression_count", 0)
+   804→                if sr.stage == EngineeringStage.RECOMMENDATIONS:
+   805→                    result.recommendations_count = sr.data.get("recommendations_count", 0)
+   806→                if sr.stage == EngineeringStage.AUTO_FIX:
+   807→                    result.fix_proposals_count = sr.data.get("fix_proposals_count", 0)
+   808→
+   809→        result.finished_at = datetime.now(timezone.utc).isoformat()
+   810→        result.total_duration_s = time.monotonic() - cycle_start
+   811→        result.overall_status = self._compute_overall_status(result)
+   812→        result.metrics = {
+   813→            "total_stages": len(result.stages),
+   814→            "passed": sum(1 for s in result.stages if s.status == "pass"),
+   815→            "failed": sum(1 for s in result.stages if s.status == "fail"),
+   816→            "warned": sum(1 for s in result.stages if s.status == "warn"),
+   817→            "skipped": sum(1 for s in result.stages if s.status == "skipped"),
+   818→        }
+   819→
+   820→        # Persist results
+   821→        result.save()
+   822→
+   823→        self._cycle_count += 1
+   824→        logger.info(
+   825→            "Engineering cycle %s complete: status=%s duration=%.2fs",
+   826→            result.cycle_id,
+   827→            result.overall_status,
+   828→            result.total_duration_s,
+   829→        )
+   830→        return result
+   831→
+   832→    def run_validation_only(
+   833→        self,
+   834→        repository_path: Optional[str] = None,
+   835→    ) -> EngineeringCycleResult:
+   836→        """Quick validation pass (steps a, c, k).
+   837→
+   838→        Runs:
+   839→            a. Digital Twin: capture current state
+   840→            c. Auto Validation: run full validation pipeline
+   841→            k. Quality Gate: enforce quality thresholds
+   842→
+   843→        Args:
+   844→            repository_path: Override repository path.
+   845→
+   846→        Returns:
+   847→            EngineeringCycleResult with validation-stage results.
+   848→        """
+   849→        if repository_path:
+   850→            self._repo_path = str(repository_path)
+   851→            self._repo_resolved = Path(repository_path).resolve()
+   852→
+   853→        result = EngineeringCycleResult(
+   854→            cycle_id=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"),
+   855→            repository_path=self._repo_path,
+   856→            mode="validation_only",
+   857→            started_at=datetime.now(timezone.utc).isoformat(),
+   858→        )
+   859→
+   860→        self._last_result = result
+   861→        cycle_start = time.monotonic()
+   862→        logger.info("Starting validation-only cycle %s", result.cycle_id)
+   863→
+   864→        for stage in _VALIDATION_ONLY_STAGES:
+   865→            method_name = self._STAGE_DISPATCH.get(stage)
+   866→            if method_name:
+   867→                stage_fn = getattr(self, method_name, None)
+   868→                if stage_fn:
+   869→                    self._execute_stage(stage, stage_fn, result)
+   870→                else:
+   871→                    result.stages.append(StageResult(stage=stage, status="skipped"))
+   872→            else:
+   873→                result.stages.append(StageResult(stage=stage, status="skipped"))
+   874→
+   875→        result.finished_at = datetime.now(timezone.utc).isoformat()
+   876→        result.total_duration_s = time.monotonic() - cycle_start
+   877→        result.overall_status = self._compute_overall_status(result)
+   878→        result.metrics = {
+   879→            "total_stages": len(result.stages),
+   880→            "passed": sum(1 for s in result.stages if s.status == "pass"),
+   881→            "failed": sum(1 for s in result.stages if s.status == "fail"),
+   882→            "warned": sum(1 for s in result.stages if s.status == "warn"),
+   883→            "skipped": sum(1 for s in result.stages if s.status == "skipped"),
+   884→        }
+   885→        result.save()
+   886→        self._cycle_count += 1
+   887→        return result
+   888→
+   889→    def run_engineering_only(
+   890→        self,
+   891→        repository_path: Optional[str] = None,
+   892→    ) -> EngineeringCycleResult:
+   893→        """Engineering cycle (steps d–j).
+   894→
+   895→        Runs:
+   896→            d. Health checks
+   897→            e. Drift detection
+   898→            f. Benchmark
+   899→            g. Regression intelligence
+   900→            h. Learning
+   901→            i. Recommendations
+   902→            j. Auto fix proposals
+   903→
+   904→        Args:
+   905→            repository_path: Override repository path.
+   906→
+   907→        Returns:
+   908→            EngineeringCycleResult with engineering-stage results.
+   909→        """
+   910→        if repository_path:
+   911→            self._repo_path = str(repository_path)
+   912→            self._repo_resolved = Path(repository_path).resolve()
+   913→
+   914→        result = EngineeringCycleResult(
+   915→            cycle_id=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f"),
+   916→            repository_path=self._repo_path,
+   917→            mode="engineering_only",
+   918→            started_at=datetime.now(timezone.utc).isoformat(),
+   919→        )
+   920→
+   921→        self._last_result = result
+   922→        cycle_start = time.monotonic()
+   923→        logger.info("Starting engineering-only cycle %s", result.cycle_id)
+   924→
+   925→        for stage in _ENGINEERING_ONLY_STAGES:
+   926→            method_name = self._STAGE_DISPATCH.get(stage)
+   927→            if method_name:
+   928→                stage_fn = getattr(self, method_name, None)
+   929→                if stage_fn:
+   930→                    sr = self._execute_stage(stage, stage_fn, result)
+   931→                    if sr.status == "pass" and sr.data:
+   932→                        if sr.stage == EngineeringStage.REGRESSION_INTELLIGENCE:
+   933→                            result.regression_count = sr.data.get("regression_count", 0)
+   934→                        if sr.stage == EngineeringStage.RECOMMENDATIONS:
+   935→                            result.recommendations_count = sr.data.get("recommendations_count", 0)
+   936→                        if sr.stage == EngineeringStage.AUTO_FIX:
+   937→                            result.fix_proposals_count = sr.data.get("fix_proposals_count", 0)
+   938→                else:
+   939→                    result.stages.append(StageResult(stage=stage, status="skipped"))
+   940→            else:
+   941→                result.stages.append(StageResult(stage=stage, status="skipped"))
+   942→
+   943→        result.finished_at = datetime.now(timezone.utc).isoformat()
+   944→        result.total_duration_s = time.monotonic() - cycle_start
+   945→        result.overall_status = self._compute_overall_status(result)
+   946→        result.metrics = {
+   947→            "total_stages": len(result.stages),
+   948→            "passed": sum(1 for s in result.stages if s.status == "pass"),
+   949→            "failed": sum(1 for s in result.stages if s.status == "fail"),
+   950→            "warned": sum(1 for s in result.stages if s.status == "warn"),
+   951→            "skipped": sum(1 for s in result.stages if s.status == "skipped"),
+   952→        }
+   953→        result.save()
+   954→        self._cycle_count += 1
+   955→        return result
+   956→
+   957→    def get_status(self) -> Dict[str, Any]:
+   958→        """Return current orchestrator status and recent results.
+   959→
+   960→        Returns:
+   961→            Dict with:
+   962→                - repository_path: Current repository being engineered
+   963→                - cycle_count: Total cycles executed by this instance
+   964→                - last_cycle: Summary of the last cycle result (or None)
+   965→                - subsystems_loaded: Which subsystems have been instantiated
+   966→        """
+   967→        subsystems: Dict[str, bool] = {
+   968→            "engineering_pipeline": self._engineering_pipeline is not None,
+   969→            "repository_memory": self._repository_memory is not None,
+   970→            "digital_twin": self._digital_twin is not None,
+   971→            "repository_learner": self._repository_learner is not None,
+   972→            "engineering_recommender": self._engineering_recommender is not None,
+   973→            "regression_intelligence": self._regression_intelligence is not None,
+   974→            "validation_pipeline": self._validation_pipeline is not None,
+   975→            "benchmark_automation": self._benchmark_automation is not None,
+   976→            "auto_fix_engine": self._auto_fix_engine is not None,
+   977→            "prompt_defense": self._prompt_defense is not None,
+   978→            "security_policy_engine": self._security_policy_engine is not None,
+   979→        }
+   980→
+   981→        last_summary: Optional[Dict[str, Any]] = None
+   982→        if self._last_result:
+   983→            last_summary = {
+   984→                "cycle_id": self._last_result.cycle_id,
+   985→                "mode": self._last_result.mode,
+   986→                "overall_status": self._last_result.overall_status,
+   987→                "total_duration_s": self._last_result.total_duration_s,
+   988→                "stages_executed": len(self._last_result.stages),
+   989→                "recommendations_count": self._last_result.recommendations_count,
+   990→                "fix_proposals_count": self._last_result.fix_proposals_count,
+   991→                "anomaly_count": self._last_result.anomaly_count,
+   992→                "regression_count": self._last_result.regression_count,
+   993→            }
+   994→
+   995→        return {
+   996→            "repository_path": self._repo_path,
+   997→            "cycle_count": self._cycle_count,
+   998→            "subsystems_loaded": subsystems,
+   999→            "last_cycle": last_summary,
+  1000→        }
+  1001→

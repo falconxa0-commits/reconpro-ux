@@ -1,0 +1,2002 @@
+     1→"""ReconPro Age III — Auto Fix Proposal Engine.
+     2→
+     3→Analyzes detected issues and proposes automated fixes.  Every fix is a
+     4→*proposal* that must be explicitly approved before it is applied.
+     5→Dry-run mode is the default — nothing is ever written to disk without
+     6→the caller's consent.
+     7→
+     8→Classes:
+     9→    FixProposal      — Dataclass for a single fix proposal.
+    10→    FixAnalyzer      — Generates fix proposals from issue patterns.
+    11→    FixStore         — Persistent JSON-backed proposal storage.
+    12→    AutoFixEngine    — Top-level orchestrator.
+    13→
+    14→Lifecycle of a proposal:
+    15→    proposed → approved → applied → verified  (or  rejected / failed)
+    16→"""
+    17→from __future__ import annotations
+    18→
+    19→import ast
+    20→import json
+    21→import logging
+    22→import re
+    23→import shutil
+    24→import textwrap
+    25→import uuid
+    26→from dataclasses import dataclass, field
+    27→from datetime import datetime, timezone
+    28→from enum import Enum
+    29→from pathlib import Path
+    30→from typing import Any, Dict, List, Optional, Set, Tuple
+    31→
+    32→from .constants import MEMORY_DIR, RECONPRO_HOME, SEVERITY_LEVELS, VALID_SEVERITIES
+    33→
+    34→
+    35→# ── Logging ─────────────────────────────────────────────────────────────
+    36→
+    37→logger = logging.getLogger(__name__)
+    38→
+    39→
+    40→# ── Proposal lifecycle ──────────────────────────────────────────────────
+    41→
+    42→class ProposalStatus(str, Enum):
+    43→    PROPOSED  = "proposed"
+    44→    APPROVED  = "approved"
+    45→    APPLIED   = "applied"
+    46→    VERIFIED  = "verified"
+    47→    REJECTED  = "rejected"
+    48→    FAILED    = "failed"
+    49→    ROLLED_BACK = "rolled_back"
+    50→
+    51→
+    52→class RiskLevel(str, Enum):
+    53→    LOW      = "low"
+    54→    MEDIUM   = "medium"
+    55→    HIGH     = "high"
+    56→    CRITICAL = "critical"
+    57→
+    58→
+    59→class FixCategory(str, Enum):
+    60→    SECURITY     = "security"
+    61→    PERFORMANCE  = "performance"
+    62→    CODE_QUALITY = "code_quality"
+    63→    CONFIG       = "config"
+    64→    DEPENDENCY   = "dependency"
+    65→    INFRASTRUCTURE = "infrastructure"
+    66→
+    67→
+    68→# ═══════════════════════════════════════════════════════════════════════════
+    69→# FixProposal dataclass
+    70→# ═══════════════════════════════════════════════════════════════════════════
+    71→
+    72→
+    73→@dataclass
+    74→class FixProposal:
+    75→    """A single proposed fix for a detected issue.
+    76→
+    77→    Attributes:
+    78→        id:               Unique identifier (UUID4-based).
+    79→        title:            Short human-readable title.
+    80→        description:      Detailed explanation of the fix.
+    81→        severity:         Severity of the *underlying issue* (critical/high/…).
+    82→        category:         FixCategory enum value.
+    83→        affected_file:    Absolute path to the file (or "").
+    84→        affected_lines:   1-based line numbers impacted.
+    85→        original_code:    Original source lines (may be empty for config fixes).
+    86→        proposed_code:    Proposed replacement lines.
+    87→        risk_level:       Risk of applying the fix.
+    88→        confidence:       0.0–1.0 confidence that the fix is correct.
+    89→        automated:        True if the fix can be applied without human review.
+    90→        verification_steps: List of steps to confirm the fix worked.
+    91→        rollback_plan:    How to undo the fix.
+    92→        status:           Current ProposalStatus.
+    93→        source_issue:     The original issue dict that triggered this proposal.
+    94→        created_at:       ISO-8601 timestamp.
+    95→        applied_at:       ISO-8601 timestamp (empty until applied).
+    96→        verified_at:      ISO-8601 timestamp (empty until verified).
+    97→        error_message:    If status is FAILED, the error text.
+    98→    """
+    99→    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+   100→    title: str = ""
+   101→    description: str = ""
+   102→    severity: str = "medium"
+   103→    category: str = FixCategory.CODE_QUALITY.value
+   104→    affected_file: str = ""
+   105→    affected_lines: List[int] = field(default_factory=list)
+   106→    original_code: str = ""
+   107→    proposed_code: str = ""
+   108→    risk_level: str = RiskLevel.MEDIUM.value
+   109→    confidence: float = 0.5
+   110→    automated: bool = False
+   111→    verification_steps: List[str] = field(default_factory=list)
+   112→    rollback_plan: str = ""
+   113→    status: str = ProposalStatus.PROPOSED.value
+   114→    source_issue: Dict[str, Any] = field(default_factory=dict)
+   115→    created_at: str = field(
+   116→        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
+   117→    )
+   118→    applied_at: str = ""
+   119→    verified_at: str = ""
+   120→    error_message: str = ""
+   121→
+   122→    # ── Serialisation ────────────────────────────────────────────────
+   123→
+   124→    def to_dict(self) -> Dict[str, Any]:
+   125→        return {
+   126→            "id": self.id,
+   127→            "title": self.title,
+   128→            "description": self.description,
+   129→            "severity": self.severity,
+   130→            "category": self.category,
+   131→            "affected_file": self.affected_file,
+   132→            "affected_lines": self.affected_lines,
+   133→            "original_code": self.original_code,
+   134→            "proposed_code": self.proposed_code,
+   135→            "risk_level": self.risk_level,
+   136→            "confidence": self.confidence,
+   137→            "automated": self.automated,
+   138→            "verification_steps": self.verification_steps,
+   139→            "rollback_plan": self.rollback_plan,
+   140→            "status": self.status,
+   141→            "source_issue": self.source_issue,
+   142→            "created_at": self.created_at,
+   143→            "applied_at": self.applied_at,
+   144→            "verified_at": self.verified_at,
+   145→            "error_message": self.error_message,
+   146→        }
+   147→
+   148→    @classmethod
+   149→    def from_dict(cls, data: Dict[str, Any]) -> FixProposal:
+   150→        return cls(
+   151→            id=data.get("id", uuid.uuid4().hex[:12]),
+   152→            title=data.get("title", ""),
+   153→            description=data.get("description", ""),
+   154→            severity=data.get("severity", "medium"),
+   155→            category=data.get("category", FixCategory.CODE_QUALITY.value),
+   156→            affected_file=data.get("affected_file", ""),
+   157→            affected_lines=data.get("affected_lines", []),
+   158→            original_code=data.get("original_code", ""),
+   159→            proposed_code=data.get("proposed_code", ""),
+   160→            risk_level=data.get("risk_level", RiskLevel.MEDIUM.value),
+   161→            confidence=data.get("confidence", 0.5),
+   162→            automated=data.get("automated", False),
+   163→            verification_steps=data.get("verification_steps", []),
+   164→            rollback_plan=data.get("rollback_plan", ""),
+   165→            status=data.get("status", ProposalStatus.PROPOSED.value),
+   166→            source_issue=data.get("source_issue", {}),
+   167→            created_at=data.get("created_at", ""),
+   168→            applied_at=data.get("applied_at", ""),
+   169→            verified_at=data.get("verified_at", ""),
+   170→            error_message=data.get("error_message", ""),
+   171→        )
+   172→
+   173→
+   174→# ═══════════════════════════════════════════════════════════════════════════
+   175→# FixAnalyzer — pattern matching + code transformation
+   176→# ═══════════════════════════════════════════════════════════════════════════
+   177→
+   178→
+   179→# Known issue → fix templates.
+   180→# Each tuple: (matcher_category, matcher_pattern, fix_title, fix_desc,
+   181→#              fix_category, risk, confidence, automated, code_transform_fn_name)
+   182→
+   183→_SECURITY_FIX_TEMPLATES: List[Dict[str, Any]] = [
+   184→    {
+   185→        "match_category": "dangerous_eval",
+   186→        "match_pattern": r"\beval\s*\(",
+   187→        "title": "Replace eval() with ast.literal_eval() or explicit parsing",
+   188→        "description": (
+   189→            "eval() permits arbitrary code execution. Replace with "
+   190→            "ast.literal_eval() for literal values, or a purpose-built parser."
+   191→        ),
+   192→        "category": FixCategory.SECURITY.value,
+   193→        "risk": RiskLevel.LOW.value,
+   194→        "confidence": 0.85,
+   195→        "automated": False,
+   196→    },
+   197→    {
+   198→        "match_category": "dangerous_exec",
+   199→        "match_pattern": r"\bexec\s*\(",
+   200→        "title": "Remove or sandbox exec() call",
+   201→        "description": (
+   202→            "exec() permits arbitrary code execution. Remove if unused, "
+   203→            "or restrict to a whitelist of allowed callables."
+   204→        ),
+   205→        "category": FixCategory.SECURITY.value,
+   206→        "risk": RiskLevel.MEDIUM.value,
+   207→        "confidence": 0.75,
+   208→        "automated": False,
+   209→    },
+   210→    {
+   211→        "match_category": "command_injection",
+   212→        "match_pattern": r"shell\s*=\s*True",
+   213→        "title": "Remove shell=True from subprocess call",
+   214→        "description": (
+   215→            "shell=True enables shell injection. Pass arguments as a list "
+   216→            "to avoid shell interpretation."
+   217→        ),
+   218→        "category": FixCategory.SECURITY.value,
+   219→        "risk": RiskLevel.LOW.value,
+   220→        "confidence": 0.90,
+   221→        "automated": True,
+   222→    },
+   223→    {
+   224→        "match_category": "unsafe_deserialization",
+   225→        "match_pattern": r"pickle\.loads",
+   226→        "title": "Replace pickle.loads() with safe deserialization",
+   227→        "description": (
+   228→            "pickle.loads() can execute arbitrary code during deserialization. "
+   229→            "Use JSON, msgpack, or signed payloads instead."
+   230→        ),
+   231→        "category": FixCategory.SECURITY.value,
+   232→        "risk": RiskLevel.MEDIUM.value,
+   233→        "confidence": 0.80,
+   234→        "automated": False,
+   235→    },
+   236→    {
+   237→        "match_category": "sql_injection",
+   238→        "match_pattern": r"(?:SELECT|INSERT|UPDATE|DELETE|DROP)",
+   239→        "title": "Use parameterized queries instead of string formatting",
+   240→        "description": (
+   241→            "SQL queries built via string formatting are vulnerable to injection. "
+   242→            "Use cursor.execute(query, params) with placeholders."
+   243→        ),
+   244→        "category": FixCategory.SECURITY.value,
+   245→        "risk": RiskLevel.MEDIUM.value,
+   246→        "confidence": 0.85,
+   247→        "automated": False,
+   248→    },
+   249→    {
+   250→        "match_category": "hardcoded_secret",
+   251→        "match_pattern": r"(?:password|secret|token|api_key)\s*=\s*['\"][^'\"]{6,}['\"]",
+   252→        "title": "Move hardcoded secret to environment variable",
+   253→        "description": (
+   254→            "Hardcoded secrets in source code are a security risk. "
+   255→            "Move to environment variables or a secrets manager."
+   256→        ),
+   257→        "category": FixCategory.SECURITY.value,
+   258→        "risk": RiskLevel.LOW.value,
+   259→        "confidence": 0.80,
+   260→        "automated": True,
+   261→    },
+   262→    {
+   263→        "match_category": "weak_crypto",
+   264→        "match_pattern": r"(?:md5|sha1|DES|RC4|Blowfish)",
+   265→        "title": "Upgrade to strong cryptographic algorithm",
+   266→        "description": (
+   267→            "Weak cryptographic algorithms (MD5, SHA1, DES, RC4) are broken. "
+   268→            "Use SHA-256, SHA-3, AES-256-GCM, or ChaCha20."
+   269→        ),
+   270→        "category": FixCategory.SECURITY.value,
+   271→        "risk": RiskLevel.MEDIUM.value,
+   272→        "confidence": 0.80,
+   273→        "automated": False,
+   274→    },
+   275→    {
+   276→        "match_category": "cors_wildcard",
+   277→        "match_pattern": r"Access-Control-Allow-Origin.*\*",
+   278→        "title": "Restrict CORS origin to trusted domains",
+   279→        "description": (
+   280→            "CORS wildcard (*) allows any origin. Restrict to a whitelist "
+   281→            "of trusted origins."
+   282→        ),
+   283→        "category": FixCategory.SECURITY.value,
+   284→        "risk": RiskLevel.LOW.value,
+   285→        "confidence": 0.85,
+   286→        "automated": False,
+   287→    },
+   288→    {
+   289→        "match_category": "csrf_disabled",
+   290→        "match_pattern": r"CSRF.*(?:false|False|disabled)",
+   291→        "title": "Enable CSRF protection",
+   292→        "description": (
+   293→            "CSRF protection is disabled, exposing the application to "
+   294→            "cross-site request forgery attacks. Enable it for all "
+   295→            "state-changing endpoints."
+   296→        ),
+   297→        "category": FixCategory.SECURITY.value,
+   298→        "risk": RiskLevel.LOW.value,
+   299→        "confidence": 0.90,
+   300→        "automated": True,
+   301→    },
+   302→    {
+   303→        "match_category": "debug_mode",
+   304→        "match_pattern": r"DEBUG\s*=\s*True",
+   305→        "title": "Disable debug mode in production",
+   306→        "description": (
+   307→            "Debug mode exposes detailed error pages and can leak sensitive "
+   308→            "information. Disable in production environments."
+   309→        ),
+   310→        "category": FixCategory.SECURITY.value,
+   311→        "risk": RiskLevel.LOW.value,
+   312→        "confidence": 0.90,
+   313→        "automated": True,
+   314→    },
+   315→    {
+   316→        "match_category": "sensitive_logging",
+   317→        "match_pattern": r"(?:logger|logging|log)\.\w+\(.*?(?:password|secret|token|api_key)",
+   318→        "title": "Remove sensitive data from log statements",
+   319→        "description": (
+   320→            "Logging passwords, tokens, or PII violates security best practices. "
+   321→            "Redact or remove sensitive values before logging."
+   322→        ),
+   323→        "category": FixCategory.SECURITY.value,
+   324→        "risk": RiskLevel.LOW.value,
+   325→        "confidence": 0.80,
+   326→        "automated": False,
+   327→    },
+   328→    {
+   329→        "match_category": "path_traversal",
+   330→        "match_pattern": r"open\s*\(.*[\+\$\{]",
+   331→        "title": "Add path validation to prevent directory traversal",
+   332→        "description": (
+   333→            "Dynamic path construction in open() can lead to directory "
+   334→            "traversal. Validate and resolve paths with os.path.realpath() "
+   335→            "and check they are within an allowed base directory."
+   336→        ),
+   337→        "category": FixCategory.SECURITY.value,
+   338→        "risk": RiskLevel.MEDIUM.value,
+   339→        "confidence": 0.75,
+   340→        "automated": False,
+   341→    },
+   342→    {
+   343→        "match_category": "temp_file_race",
+   344→        "match_pattern": r"mktemp\s*\(",
+   345→        "title": "Replace mktemp() with mkstemp() or NamedTemporaryFile()",
+   346→        "description": (
+   347→            "tempfile.mktemp() is vulnerable to race conditions. Use "
+   348→            "tempfile.mkstemp() or tempfile.NamedTemporaryFile() instead."
+   349→        ),
+   350→        "category": FixCategory.SECURITY.value,
+   351→        "risk": RiskLevel.LOW.value,
+   352→        "confidence": 0.90,
+   353→        "automated": True,
+   354→    },
+   355→    {
+   356→        "match_category": "cleartext_http",
+   357→        "match_pattern": r"http://",
+   358→        "title": "Upgrade HTTP URL to HTTPS",
+   359→        "description": (
+   360→            "Cleartext HTTP exposes data to interception. Switch to HTTPS."
+   361→        ),
+   362→        "category": FixCategory.SECURITY.value,
+   363→        "risk": RiskLevel.LOW.value,
+   364→        "confidence": 0.85,
+   365→        "automated": True,
+   366→    },
+   367→    {
+   368→        "match_category": "jwt_no_verify",
+   369→        "match_pattern": r"jwt\.decode\s*\(",
+   370→        "title": "Add signature verification to JWT decode",
+   371→        "description": (
+   372→            "JWT decoded without signature verification. Always pass a "
+   373→            "secret or public key and specify allowed algorithms."
+   374→        ),
+   375→        "category": FixCategory.SECURITY.value,
+   376→        "risk": RiskLevel.LOW.value,
+   377→        "confidence": 0.85,
+   378→        "automated": False,
+   379→    },
+   380→]
+   381→
+   382→
+   383→# Performance fix templates
+   384→_PERFORMANCE_FIX_TEMPLATES: List[Dict[str, Any]] = [
+   385→    {
+   386→        "match_category": "n_plus_one_query",
+   387→        "match_pattern": r"for\s+.*in\s+.*:\s*\n\s+.*(?:execute|query|find)",
+   388→        "title": "Eliminate N+1 query with batch fetch",
+   389→        "description": (
+   390→            "A query inside a loop causes N+1 database round-trips. "
+   391→            "Fetch all needed data in a single batch query before the loop."
+   392→        ),
+   393→        "category": FixCategory.PERFORMANCE.value,
+   394→        "risk": RiskLevel.MEDIUM.value,
+   395→        "confidence": 0.70,
+   396→        "automated": False,
+   397→    },
+   398→    {
+   399→        "match_category": "missing_caching",
+   400→        "match_pattern": r"(?:requests\.get|urllib\.request\.urlopen|http_probe)\s*\(",
+   401→        "title": "Add caching for repeated HTTP requests",
+   402→        "description": (
+   403→            "Repeated HTTP requests to the same URL waste bandwidth and time. "
+   404→            "Add response caching with an appropriate TTL."
+   405→        ),
+   406→        "category": FixCategory.PERFORMANCE.value,
+   407→        "risk": RiskLevel.LOW.value,
+   408→        "confidence": 0.60,
+   409→        "automated": False,
+   410→    },
+   411→    {
+   412→        "match_category": "inefficient_concat",
+   413→        "match_pattern": r"(?:\+=\s*['\"])|(?:result\s*\+=\s*result)",
+   414→        "title": "Use list-join instead of string concatenation in loop",
+   415→        "description": (
+   416→            "String concatenation in a loop creates O(n²) copies. "
+   417→            "Collect parts in a list and use ''.join(parts)."
+   418→        ),
+   419→        "category": FixCategory.PERFORMANCE.value,
+   420→        "risk": RiskLevel.LOW.value,
+   421→        "confidence": 0.65,
+   422→        "automated": False,
+   423→    },
+   424→]
+   425→
+   426→
+   427→# Code quality fix templates
+   428→_CODE_QUALITY_TEMPLATES: List[Dict[str, Any]] = [
+   429→    {
+   430→        "match_category": "missing_type_hints",
+   431→        "match_pattern": r"^def \w+\([^)]*\):\s*$",
+   432→        "title": "Add return type hint to function definition",
+   433→        "description": (
+   434→            "Function definitions without return type hints reduce IDE support "
+   435→            "and static analysis effectiveness. Add -> None or the appropriate type."
+   436→        ),
+   437→        "category": FixCategory.CODE_QUALITY.value,
+   438→        "risk": RiskLevel.LOW.value,
+   439→        "confidence": 0.75,
+   440→        "automated": False,
+   441→    },
+   442→    {
+   443→        "match_category": "missing_docstring",
+   444→        "match_pattern": r"^(class |def )\w+.*:\s*\n(\s*\n|\s*pass|\s*\"\"\")",
+   445→        "title": "Add docstring to public function or class",
+   446→        "description": (
+   447→            "Public functions and classes should have docstrings for API "
+   448→            "documentation and developer clarity."
+   449→        ),
+   450→        "category": FixCategory.CODE_QUALITY.value,
+   451→        "risk": RiskLevel.LOW.value,
+   452→        "confidence": 0.70,
+   453→        "automated": False,
+   454→    },
+   455→    {
+   456→        "match_category": "bare_except",
+   457→        "match_pattern": r"except\s*:\s*$",
+   458→        "title": "Replace bare except with specific exception types",
+   459→        "description": (
+   460→            "Bare 'except:' clauses silently swallow all exceptions including "
+   461→            "KeyboardInterrupt and SystemExit. Use 'except Exception:' at minimum."
+   462→        ),
+   463→        "category": FixCategory.CODE_QUALITY.value,
+   464→        "risk": RiskLevel.LOW.value,
+   465→        "confidence": 0.90,
+   466→        "automated": True,
+   467→    },
+   468→    {
+   469→        "match_category": "mutable_default",
+   470→        "match_pattern": r"def \w+\([^)]*=\s*(?:\[\]|\{\})",
+   471→        "title": "Replace mutable default argument with None sentinel",
+   472→        "description": (
+   473→            "Mutable default arguments (list/dict) are shared across calls, "
+   474→            "causing subtle bugs. Use None and initialise inside the function."
+   475→        ),
+   476→        "category": FixCategory.CODE_QUALITY.value,
+   477→        "risk": RiskLevel.LOW.value,
+   478→        "confidence": 0.90,
+   479→        "automated": True,
+   480→    },
+   481→]
+   482→
+   483→
+   484→# Config fix templates — matched against diagnostics/validate_config issues
+   485→_CONFIG_FIX_TEMPLATES: List[Dict[str, Any]] = [
+   486→    {
+   487→        "match_category": "paths",
+   488→        "match_pattern": r"directory does not exist",
+   489→        "title": "Create missing ReconPro directory",
+   490→        "description": "Create the missing directory with appropriate permissions.",
+   491→        "category": FixCategory.CONFIG.value,
+   492→        "risk": RiskLevel.LOW.value,
+   493→        "confidence": 0.95,
+   494→        "automated": True,
+   495→    },
+   496→    {
+   497→        "match_category": "config",
+   498→        "match_pattern": r"invalid JSON",
+   499→        "title": "Fix malformed config.json",
+   500→        "description": (
+   501→            "The config.json file contains invalid JSON. Fix syntax errors "
+   502→            "or regenerate the file with defaults."
+   503→        ),
+   504→        "category": FixCategory.CONFIG.value,
+   505→        "risk": RiskLevel.MEDIUM.value,
+   506→        "confidence": 0.70,
+   507→        "automated": False,
+   508→    },
+   509→    {
+   510→        "match_category": "config",
+   511→        "match_pattern": r"not a valid JSON object",
+   512→        "title": "Replace config.json with valid object",
+   513→        "description": (
+   514→            "config.json should contain a JSON object at the top level. "
+   515→            "Replace the contents with a valid empty object or defaults."
+   516→        ),
+   517→        "category": FixCategory.CONFIG.value,
+   518→        "risk": RiskLevel.MEDIUM.value,
+   519→        "confidence": 0.80,
+   520→        "automated": True,
+   521→    },
+   522→    {
+   523→        "match_category": "disk",
+   524→        "match_pattern": r"Low disk space",
+   525→        "title": "Free disk space for scan data",
+   526→        "description": (
+   527→            "Insufficient disk space for scan data. Clean old scans, "
+   528→            "remove temporary files, or expand the volume."
+   529→        ),
+   530→        "category": FixCategory.INFRASTRUCTURE.value,
+   531→        "risk": RiskLevel.HIGH.value,
+   532→        "confidence": 0.60,
+   533→        "automated": False,
+   534→    },
+   535→    {
+   536→        "match_category": "network",
+   537→        "match_pattern": r"DNS resolution failed",
+   538→        "title": "Check network connectivity",
+   539→        "description": (
+   540→            "DNS resolution failed, indicating a network issue. Check the "
+   541→            "network connection, DNS configuration, and firewall rules."
+   542→        ),
+   543→        "category": FixCategory.INFRASTRUCTURE.value,
+   544→        "risk": RiskLevel.LOW.value,
+   545→        "confidence": 0.70,
+   546→        "automated": False,
+   547→    },
+   548→    {
+   549→        "match_category": "modules",
+   550→        "match_pattern": r"broken runners",
+   551→        "title": "Repair broken module registry entries",
+   552→        "description": (
+   553→            "Some modules have broken or missing runner functions. "
+   554→            "Reinstall ReconPro or check module file integrity."
+   555→        ),
+   556→        "category": FixCategory.DEPENDENCY.value,
+   557→        "risk": RiskLevel.MEDIUM.value,
+   558→        "confidence": 0.50,
+   559→        "automated": False,
+   560→    },
+   561→    {
+   562→        "match_category": "python",
+   563→        "match_pattern": r"below minimum",
+   564→        "title": "Upgrade Python to 3.9 or higher",
+   565→        "description": (
+   566→            "Python version is below the minimum supported (3.9). "
+   567→            "Upgrade Python to the latest stable release."
+   568→        ),
+   569→        "category": FixCategory.DEPENDENCY.value,
+   570→        "risk": RiskLevel.HIGH.value,
+   571→        "confidence": 0.95,
+   572→        "automated": False,
+   573→    },
+   574→]
+   575→
+   576→
+   577→# Merge all templates for fast lookup
+   578→_ALL_FIX_TEMPLATES: List[Dict[str, Any]] = (
+   579→    _SECURITY_FIX_TEMPLATES
+   580→    + _PERFORMANCE_FIX_TEMPLATES
+   581→    + _CODE_QUALITY_TEMPLATES
+   582→    + _CONFIG_FIX_TEMPLATES
+   583→)
+   584→
+   585→
+   586→# ═══════════════════════════════════════════════════════════════════════════
+   587→# FixAnalyzer
+   588→# ═══════════════════════════════════════════════════════════════════════════
+   589→
+   590→
+   591→class FixAnalyzer:
+   592→    """Analyses issues and generates FixProposal objects.
+   593→
+   594→    Uses pattern matching against a knowledge base of known issue → fix
+   595→    mappings, plus AST-based code analysis for Python source files.
+   596→    """
+   597→
+   598→    def __init__(self) -> None:
+   599→        self._template_cache: Dict[str, List[Dict[str, Any]]] = {}
+   600→        self._build_template_index()
+   601→
+   602→    def _build_template_index(self) -> None:
+   603→        """Index templates by match_category for O(1) lookup."""
+   604→        for tmpl in _ALL_FIX_TEMPLATES:
+   605→            cat = tmpl["match_category"]
+   606→            self._template_cache.setdefault(cat, []).append(tmpl)
+   607→
+   608→    # ── Public API ────────────────────────────────────────────────────
+   609→
+   610→    def analyze_issue(self, issue: Dict[str, Any]) -> Optional[FixProposal]:
+   611→        """Analyse a single issue dict and return a FixProposal (or None)."""
+   612→        # Determine which kind of issue this is
+   613→        category = issue.get("category", "")
+   614→        message = issue.get("message", "")
+   615→        evidence = issue.get("evidence", "")
+   616→        title = issue.get("title", "")
+   617→        severity = issue.get("severity", "medium")
+   618→        description = issue.get("description", "")
+   619→        file_path = issue.get("asset", issue.get("file", ""))
+   620→
+   621→        # Combine searchable text
+   622→        search_text = " ".join([title, message, evidence, description]).lower()
+   623→
+   624→        # 1. Try exact category match first
+   625→        proposals = self._match_by_category(category, issue)
+   626→        if proposals:
+   627→            proposal = proposals[0]
+   628→            proposal.severity = self._normalise_severity(severity)
+   629→            proposal.source_issue = issue
+   630→            proposal.affected_file = str(file_path) if file_path else ""
+   631→            return proposal
+   632→
+   633→        # 2. Try pattern match on the text
+   634→        proposals = self._match_by_pattern(search_text, issue)
+   635→        if proposals:
+   636→            proposal = proposals[0]
+   637→            proposal.severity = self._normalise_severity(severity)
+   638→            proposal.source_issue = issue
+   639→            proposal.affected_file = str(file_path) if file_path else ""
+   640→            return proposal
+   641→
+   642→        # 3. Generate a generic proposal if we have any issue at all
+   643→        if message or title:
+   644→            return self._generic_proposal(issue)
+   645→
+   646→        return None
+   647→
+   648→    def propose_code_fixes(
+   649→        self,
+   650→        file_path: str,
+   651→        issues: List[Dict[str, Any]],
+   652→    ) -> List[FixProposal]:
+   653→        """Generate code-level fix proposals for issues in a file.
+   654→
+   655→        Uses AST analysis to propose concrete code changes when possible.
+   656→        """
+   657→        proposals: List[FixProposal] = []
+   658→        path = Path(file_path)
+   659→
+   660→        if not path.is_file():
+   661→            logger.warning("Cannot propose code fixes for non-existent file: %s", file_path)
+   662→            return proposals
+   663→
+   664→        try:
+   665→            source = path.read_text(encoding="utf-8", errors="replace")
+   666→        except OSError as exc:
+   667→            logger.error("Failed to read %s: %s", file_path, exc)
+   668→            return proposals
+   669→
+   670→        lines = source.splitlines()
+   671→
+   672→        for issue in issues:
+   673→            proposal = self._generate_code_proposal(file_path, source, lines, issue)
+   674→            if proposal is not None:
+   675→                proposals.append(proposal)
+   676→
+   677→        return proposals
+   678→
+   679→    def propose_config_fixes(
+   680→        self,
+   681→        config_issues: List[Dict[str, Any]],
+   682→    ) -> List[FixProposal]:
+   683→        """Generate configuration fix proposals."""
+   684→        proposals: List[FixProposal] = []
+   685→        for issue in config_issues:
+   686→            proposal = self.analyze_issue(issue)
+   687→            if proposal is not None:
+   688→                proposals.append(proposal)
+   689→        return proposals
+   690→
+   691→    # ── Internal matching ─────────────────────────────────────────────
+   692→
+   693→    def _match_by_category(
+   694→        self,
+   695→        category: str,
+   696→        issue: Dict[str, Any],
+   697→    ) -> List[FixProposal]:
+   698→        """Find fix templates matching the issue category."""
+   699→        results: List[FixProposal] = []
+   700→        templates = self._template_cache.get(category, [])
+   701→        for tmpl in templates:
+   702→            proposal = self._template_to_proposal(tmpl, issue)
+   703→            if proposal is not None:
+   704→                results.append(proposal)
+   705→        return results
+   706→
+   707→    def _match_by_pattern(
+   708→        self,
+   709→        text: str,
+   710→        issue: Dict[str, Any],
+   711→    ) -> List[FixProposal]:
+   712→        """Find fix templates whose regex pattern matches the text."""
+   713→        results: List[FixProposal] = []
+   714→        seen_categories: Set[str] = set()
+   715→        for tmpl in _ALL_FIX_TEMPLATES:
+   716→            cat = tmpl["match_category"]
+   717→            if cat in seen_categories:
+   718→                continue
+   719→            try:
+   720→                pattern = re.compile(tmpl["match_pattern"], re.IGNORECASE)
+   721→                if pattern.search(text):
+   722→                    proposal = self._template_to_proposal(tmpl, issue)
+   723→                    if proposal is not None:
+   724→                        results.append(proposal)
+   725→                        seen_categories.add(cat)
+   726→            except re.error:
+   727→                continue
+   728→        return results
+   729→
+   730→    def _template_to_proposal(
+   731→        self,
+   732→        tmpl: Dict[str, Any],
+   733→        issue: Dict[str, Any],
+   734→    ) -> Optional[FixProposal]:
+   735→        """Convert a fix template + issue into a FixProposal."""
+   736→        title = tmpl.get("title", "")
+   737→        if not title:
+   738→            return None
+   739→
+   740→        evidence = issue.get("evidence", "")
+   741→        file_path = issue.get("asset", issue.get("file", ""))
+   742→
+   743→        proposal = FixProposal(
+   744→            title=title,
+   745→            description=tmpl.get("description", ""),
+   746→            severity=self._normalise_severity(issue.get("severity", "medium")),
+   747→            category=tmpl.get("category", FixCategory.CODE_QUALITY.value),
+   748→            affected_file=str(file_path) if file_path else "",
+   749→            original_code=evidence,
+   750→            risk_level=tmpl.get("risk", RiskLevel.MEDIUM.value),
+   751→            confidence=tmpl.get("confidence", 0.5),
+   752→            automated=tmpl.get("automated", False),
+   753→            source_issue=issue,
+   754→            rollback_plan=self._generate_rollback(tmpl, issue),
+   755→            verification_steps=self._generate_verification(tmpl, issue),
+   756→        )
+   757→        return proposal
+   758→
+   759→    def _generic_proposal(self, issue: Dict[str, Any]) -> FixProposal:
+   760→        """Create a generic fix proposal when no template matches."""
+   761→        title = issue.get("title", "") or issue.get("message", "")
+   762→        suggestion = issue.get("suggestion", "") or issue.get("remediation", "")
+   763→        description = issue.get("description", "")
+   764→        category = issue.get("category", "")
+   765→
+   766→        # Map issue category to fix category
+   767→        fix_cat = FixCategory.CODE_QUALITY.value
+   768→        if category in ("security", "headers", "tls", "ssl"):
+   769→            fix_cat = FixCategory.SECURITY.value
+   770→        elif category in ("performance", "speed"):
+   771→            fix_cat = FixCategory.PERFORMANCE.value
+   772→        elif category in ("paths", "config", "disk", "network", "python", "modules"):
+   773→            fix_cat = FixCategory.CONFIG.value
+   774→        elif category in ("deps", "dependencies"):
+   775→            fix_cat = FixCategory.DEPENDENCY.value
+   776→
+   777→        return FixProposal(
+   778→            title=f"Review and fix: {title}",
+   779→            description=description or f"Address the issue: {title}",
+   780→            severity=self._normalise_severity(issue.get("severity", "medium")),
+   781→            category=fix_cat,
+   782→            affected_file=issue.get("asset", ""),
+   783→            proposed_code=suggestion,
+   784→            risk_level=RiskLevel.MEDIUM.value,
+   785→            confidence=0.3,
+   786→            automated=False,
+   787→            source_issue=issue,
+   788→            verification_steps=[
+   789→                f"Manually review the issue: {title}",
+   790→                f"Apply the suggested fix: {suggestion}" if suggestion else "Determine and apply the appropriate fix",
+   791→                "Re-run diagnostics or scan to confirm resolution",
+   792→            ],
+   793→            rollback_plan="Revert manual changes. No automated rollback available for generic proposals.",
+   794→        )
+   795→
+   796→    # ── Code-level proposal generation ────────────────────────────────
+   797→
+   798→    def _generate_code_proposal(
+   799→        self,
+   800→        file_path: str,
+   801→        source: str,
+   802→        lines: List[str],
+   803→        issue: Dict[str, Any],
+   804→    ) -> Optional[FixProposal]:
+   805→        """Generate a concrete code fix proposal using AST analysis."""
+   806→        category = issue.get("category", "")
+   807→        evidence = issue.get("evidence", "")
+   808→
+   809→        # Try AST-based transformations for Python files
+   810→        if file_path.endswith(".py"):
+   811→            proposal = self._ast_code_proposal(file_path, source, lines, issue)
+   812→            if proposal is not None:
+   813→                return proposal
+   814→
+   815→        # Fall back to text-based proposals
+   816→        proposal = self.analyze_issue(issue)
+   817→        if proposal is not None and not proposal.original_code and evidence:
+   818→            proposal.original_code = evidence
+   819→            proposal.affected_file = file_path
+   820→        return proposal
+   821→
+   822→    def _ast_code_proposal(
+   823→        self,
+   824→        file_path: str,
+   825→        source: str,
+   826→        lines: List[str],
+   827→        issue: Dict[str, Any],
+   828→    ) -> Optional[FixProposal]:
+   829→        """Use AST analysis to generate a concrete code fix."""
+   830→        try:
+   831→            tree = ast.parse(source, filename=file_path)
+   832→        except SyntaxError:
+   833→            return None
+   834→
+   835→        category = issue.get("category", "")
+   836→        title = issue.get("title", "")
+   837→        evidence = issue.get("evidence", "")
+   838→
+   839→        # Find the relevant node
+   840→        finder = _IssueNodeFinder(category, evidence, title)
+   841→        finder.visit(tree)
+   842→
+   843→        if not finder.matched_nodes:
+   844→            return None
+   845→
+   846→        node = finder.matched_nodes[0]
+   847→        start_line = getattr(node, "lineno", 0)
+   848→        end_line = getattr(node, "end_lineno", start_line)
+   849→
+   850→        # Extract original code lines
+   851→        orig_lines = lines[start_line - 1 : end_line]
+   852→        original_code = "\n".join(orig_lines)
+   853→
+   854→        # Generate proposed code based on category
+   855→        proposed_code = self._transform_node(category, node, lines, start_line, end_line)
+   856→        if proposed_code is None:
+   857→            return None
+   858→
+   859→        # Look up template for metadata
+   860→        templates = self._template_cache.get(category, [])
+   861→        tmpl = templates[0] if templates else {}
+   862→
+   863→        return FixProposal(
+   864→            title=tmpl.get("title", f"Fix: {title}"),
+   865→            description=tmpl.get("description", f"Address the {category} issue in {file_path}"),
+   866→            severity=self._normalise_severity(issue.get("severity", "medium")),
+   867→            category=tmpl.get("category", FixCategory.SECURITY.value),
+   868→            affected_file=file_path,
+   869→            affected_lines=list(range(start_line, end_line + 1)),
+   870→            original_code=original_code,
+   871→            proposed_code=proposed_code,
+   872→            risk_level=tmpl.get("risk", RiskLevel.MEDIUM.value),
+   873→            confidence=tmpl.get("confidence", 0.7),
+   874→            automated=tmpl.get("automated", False),
+   875→            source_issue=issue,
+   876→            verification_steps=[
+   877→                f"Verify the fix in {file_path} lines {start_line}-{end_line}",
+   878→                "Run the AST analyzer again to confirm the issue is resolved",
+   879→                "Run tests to ensure no regressions",
+   880→            ],
+   881→            rollback_plan=f"Restore original code at lines {start_line}-{end_line} in {file_path}",
+   882→        )
+   883→
+   884→    def _transform_node(
+   885→        self,
+   886→        category: str,
+   887→        node: ast.AST,
+   888→        lines: List[str],
+   889→        start_line: int,
+   890→        end_line: int,
+   891→    ) -> Optional[str]:
+   892→        """Transform an AST node into fixed code.
+   893→
+   894→        Returns the proposed replacement code as a string, or None if no
+   895→        transformation is possible.
+   896→        """
+   897→        indent = self._get_indent(lines, start_line - 1)
+   898→
+   899→        if category == "dangerous_eval" and isinstance(node, ast.Call):
+   900→            return self._transform_eval(node, indent, lines, start_line)
+   901→
+   902→        if category == "dangerous_exec" and isinstance(node, ast.Call):
+   903→            return self._transform_exec(node, indent, lines, start_line)
+   904→
+   905→        if category == "command_injection" and isinstance(node, ast.Call):
+   906→            return self._transform_shell_true(node, indent, lines, start_line, end_line)
+   907→
+   908→        if category == "hardcoded_secret" and isinstance(node, ast.Assign):
+   909→            return self._transform_hardcoded_secret(node, indent, lines, start_line)
+   910→
+   911→        if category == "bare_except":
+   912→            return self._transform_bare_except(indent, lines, start_line)
+   913→
+   914→        if category == "debug_mode":
+   915→            return self._transform_debug_mode(indent, lines, start_line)
+   916→
+   917→        if category == "cleartext_http":
+   918→            return self._transform_http_to_https(indent, lines, start_line, end_line)
+   919→
+   920→        if category == "temp_file_race":
+   921→            return self._transform_mktemp(indent, lines, start_line)
+   922→
+   923→        if category == "csrf_disabled":
+   924→            return self._transform_csrf_disabled(indent, lines, start_line)
+   925→
+   926→        return None
+   927→
+   928→    # ── AST transform helpers ─────────────────────────────────────────
+   929→
+   930→    @staticmethod
+   931→    def _get_indent(lines: List[str], index: int) -> str:
+   932→        """Extract leading whitespace from a line."""
+   933→        if 0 <= index < len(lines):
+   934→            line = lines[index]
+   935→            return line[: len(line) - len(line.lstrip())]
+   936→        return ""
+   937→
+   938→    def _transform_eval(
+   939→        self,
+   940→        node: ast.Call,
+   941→        indent: str,
+   942→        lines: List[str],
+   943→        start_line: int,
+   944→    ) -> Optional[str]:
+   945→        """Propose replacing eval() with ast.literal_eval()."""
+   946→        func_name = _get_call_name(node)
+   947→        if func_name != "eval":
+   948→            return None
+   949→
+   950→        # Reconstruct the call argument
+   951→        if node.args:
+   952→            arg_src = self._extract_arg_source(node.args[0], lines)
+   953→        else:
+   954→            arg_src = "..."
+   955→
+   956→        return (
+   957→            f"{indent}import ast as _ast  # noqa: added for safe evaluation\n"
+   958→            f"{indent}_ast.literal_eval({arg_src})"
+   959→        )
+   960→
+   961→    def _transform_exec(
+   962→        self,
+   963→        node: ast.Call,
+   964→        indent: str,
+   965→        lines: List[str],
+   966→        start_line: int,
+   967→    ) -> Optional[str]:
+   968→        """Propose removing exec() or marking it as dangerous."""
+   969→        func_name = _get_call_name(node)
+   970→        if func_name != "exec":
+   971→            return None
+   972→
+   973→        arg_src = ""
+   974→        if node.args:
+   975→            arg_src = self._extract_arg_source(node.args[0], lines)
+   976→        else:
+   977→            arg_src = "..."
+   978→
+   979→        return (
+   980→            f"{indent}# WARNING: exec() removed — arbitrary code execution risk\n"
+   981→            f"{indent}# If this is needed, use a restricted sandbox or whitelist approach\n"
+   982→            f"{indent}# Original: exec({arg_src})\n"
+   983→            f"{indent}raise NotImplementedError(\"exec() was removed for security reasons\")"
+   984→        )
+   985→
+   986→    def _transform_shell_true(
+   987→        self,
+   988→        node: ast.Call,
+   989→        indent: str,
+   990→        lines: List[str],
+   991→        start_line: int,
+   992→        end_line: int,
+   993→    ) -> Optional[str]:
+   994→        """Remove shell=True from a subprocess call."""
+   995→        func_name = _get_call_name(node)
+   996→        if func_name not in ("run", "call", "Popen", "check_output", "check_call"):
+   997→            return None
+   998→
+   999→        # Find and remove shell=True keyword
+  1000→        new_lines: List[str] = []
+  1001→        for i in range(start_line - 1, end_line):
+  1002→            line = lines[i]
+  1003→            if "shell=True" in line:
+  1004→                # Remove the shell=True keyword argument
+  1005→                line = re.sub(r",?\s*shell\s*=\s*True\s*,?", ",", line)
+  1006→                line = re.sub(r",\s*,", ",", line)  # Clean double commas
+  1007→                # If shell=True was the only keyword, clean up
+  1008→                line = re.sub(r"\(\s*,", "(", line)
+  1009→                line = re.sub(r",\s*\)", ")", line)
+  1010→            new_lines.append(line)
+  1011→
+  1012→        return "\n".join(new_lines)
+  1013→
+  1014→    def _transform_hardcoded_secret(
+  1015→        self,
+  1016→        node: ast.Assign,
+  1017→        indent: str,
+  1018→        lines: List[str],
+  1019→        start_line: int,
+  1020→    ) -> Optional[str]:
+  1021→        """Replace hardcoded secret with os.environ.get()."""
+  1022→        # Get variable name
+  1023→        targets = node.targets
+  1024→        if not targets or not isinstance(targets[0], ast.Name):
+  1025→            return None
+  1026→
+  1027→        var_name = targets[0].id
+  1028→        return (
+  1029→            f"{indent}import os  # noqa: added for secret loading\n"
+  1030→            f"{indent}{var_name} = os.environ.get(\"{var_name.upper()}\", \"\")  "
+  1031→            f"# was hardcoded secret"
+  1032→        )
+  1033→
+  1034→    def _transform_bare_except(
+  1035→        self,
+  1036→        indent: str,
+  1037→        lines: List[str],
+  1038→        start_line: int,
+  1039→    ) -> Optional[str]:
+  1040→        """Replace bare 'except:' with 'except Exception:'."""
+  1041→        if start_line - 1 < len(lines):
+  1042→            line = lines[start_line - 1]
+  1043→            if re.search(r"except\s*:\s*$", line):
+  1044→                new_line = re.sub(r"except\s*:", "except Exception:", line)
+  1045→                return new_line
+  1046→        return None
+  1047→
+  1048→    def _transform_debug_mode(
+  1049→        self,
+  1050→        indent: str,
+  1051→        lines: List[str],
+  1052→        start_line: int,
+  1053→    ) -> Optional[str]:
+  1054→        """Replace DEBUG=True with DEBUG=False."""
+  1055→        if start_line - 1 < len(lines):
+  1056→            line = lines[start_line - 1]
+  1057→            new_line = re.sub(
+  1058→                r"(DEBUG\s*=\s*)True",
+  1059→                r"\1False  # disabled in production",
+  1060→                line,
+  1061→                flags=re.IGNORECASE,
+  1062→            )
+  1063→            if new_line != line:
+  1064→                return new_line
+  1065→        return None
+  1066→
+  1067→    def _transform_http_to_https(
+  1068→        self,
+  1069→        indent: str,
+  1070→        lines: List[str],
+  1071→        start_line: int,
+  1072→        end_line: int,
+  1073→    ) -> Optional[str]:
+  1074→        """Replace http:// with https:// in the matched lines."""
+  1075→        new_lines: List[str] = []
+  1076→        changed = False
+  1077→        for i in range(start_line - 1, end_line):
+  1078→            line = lines[i]
+  1079→            new_line = re.sub(r'"http://', '"https://', line)
+  1080→            new_line = re.sub(r"'http://", "'https://", new_line)
+  1081→            if new_line != line:
+  1082→                changed = True
+  1083→            new_lines.append(new_line)
+  1084→        return "\n".join(new_lines) if changed else None
+  1085→
+  1086→    def _transform_mktemp(
+  1087→        self,
+  1088→        indent: str,
+  1089→        lines: List[str],
+  1090→        start_line: int,
+  1091→    ) -> Optional[str]:
+  1092→        """Replace mktemp() with mkstemp() or NamedTemporaryFile()."""
+  1093→        if start_line - 1 < len(lines):
+  1094→            line = lines[start_line - 1]
+  1095→            if re.search(r"mktemp\s*\(", line):
+  1096→                new_line = re.sub(
+  1097→                    r"mktemp\s*\([^)]*\)",
+  1098→                    "NamedTemporaryFile(delete=False).name",
+  1099→                    line,
+  1100→                )
+  1101→                # Add import if needed
+  1102→                return (
+  1103→                    f"{indent}from tempfile import NamedTemporaryFile  # noqa: safe replacement\n"
+  1104→                    f"{new_line}"
+  1105→                )
+  1106→        return None
+  1107→
+  1108→    def _transform_csrf_disabled(
+  1109→        self,
+  1110→        indent: str,
+  1111→        lines: List[str],
+  1112→        start_line: int,
+  1113→    ) -> Optional[str]:
+  1114→        """Replace CSRF_ENABLED=False with CSRF_ENABLED=True."""
+  1115→        if start_line - 1 < len(lines):
+  1116→            line = lines[start_line - 1]
+  1117→            new_line = re.sub(
+  1118→                r"(CSRF_ENABLED\s*=\s*|WTF_CSRF_ENABLED\s*=\s*)False",
+  1119→                r"\1True  # re-enabled for security",
+  1120→                line,
+  1121→                flags=re.IGNORECASE,
+  1122→            )
+  1123→            if new_line != line:
+  1124→                return new_line
+  1125→        return None
+  1126→
+  1127→    @staticmethod
+  1128→    def _extract_arg_source(node: ast.AST, lines: List[str]) -> str:
+  1129→        """Best-effort extraction of source text for an AST node."""
+  1130→        start = getattr(node, "lineno", 0)
+  1131→        end = getattr(node, "end_lineno", start)
+  1132→        col_start = getattr(node, "col_offset", 0)
+  1133→        col_end = getattr(node, "end_col_offset", None)
+  1134→
+  1135→        if 0 < start <= len(lines):
+  1136→            line = lines[start - 1]
+  1137→            if col_end is not None:
+  1138→                return line[col_start:col_end]
+  1139→            # Fallback: take from col_start to end of line
+  1140→            return line[col_start:]
+  1141→        return "..."
+  1142→
+  1143→    @staticmethod
+  1144→    def _normalise_severity(severity: str) -> str:
+  1145→        """Normalise a severity string to a valid value."""
+  1146→        sev = severity.lower().strip()
+  1147→        if sev in VALID_SEVERITIES:
+  1148→            return sev
+  1149→        # Map common alternatives
+  1150→        mapping = {
+  1151→            "error": "high",
+  1152→            "warn": "medium",
+  1153→            "warning": "medium",
+  1154→        }
+  1155→        return mapping.get(sev, "medium")
+  1156→
+  1157→    @staticmethod
+  1158→    def _generate_rollback(tmpl: Dict[str, Any], issue: Dict[str, Any]) -> str:
+  1159→        """Generate a rollback plan for a template-based fix."""
+  1160→        file_path = issue.get("asset", "") or issue.get("file", "")
+  1161→        if file_path:
+  1162→            return f"Restore original code in {file_path} using version control (git checkout -- {file_path}) or the backup created before applying the fix."
+  1163→        cat = tmpl.get("match_category", "")
+  1164→        if cat == "config":
+  1165→            return "Restore the previous configuration from backup or version control."
+  1166→        if cat in ("paths", "disk", "network"):
+  1167→            return "Infrastructure changes may require manual rollback. Consult the system documentation."
+  1168→        return "Revert changes using version control or restore from the backup created before applying."
+  1169→
+  1170→    @staticmethod
+  1171→    def _generate_verification(tmpl: Dict[str, Any], issue: Dict[str, Any]) -> List[str]:
+  1172→        """Generate verification steps for a template-based fix."""
+  1173→        cat = tmpl.get("match_category", "")
+  1174→        steps = ["Re-run the scan or diagnostics that detected this issue."]
+  1175→        if cat in ("dangerous_eval", "dangerous_exec", "command_injection",
+  1176→                    "unsafe_deserialization", "sql_injection"):
+  1177→            steps.append("Run the AST analyzer to confirm the vulnerable pattern is gone.")
+  1178→            steps.append("Run the application test suite to ensure no regressions.")
+  1179→        elif cat in ("hardcoded_secret", "sensitive_logging"):
+  1180→            steps.append("Search the codebase for any remaining hardcoded secrets.")
+  1181→            steps.append("Verify the environment variable or secret manager is configured.")
+  1182→        elif cat == "cleartext_http":
+  1183→            steps.append("Verify all HTTP URLs now use HTTPS.")
+  1184→            steps.append("Test that the application connects successfully over HTTPS.")
+  1185→        elif cat in ("debug_mode", "csrf_disabled"):
+  1186→            steps.append("Verify the configuration change in the running application.")
+  1187→            steps.append("Test that the application still functions correctly.")
+  1188→        elif cat == "config":
+  1189→            steps.append("Validate the configuration file with: python -m json.tool config.json")
+  1190→        return steps
+  1191→
+  1192→
+  1193→# ── AST helper: find nodes matching an issue ──────────────────────────
+  1194→
+  1195→
+  1196→class _IssueNodeFinder(ast.NodeVisitor):
+  1197→    """Walks the AST and collects nodes that match a given issue."""
+  1198→
+  1199→    def __init__(self, category: str, evidence: str, title: str) -> None:
+  1200→        self.category = category
+  1201→        self.evidence = evidence.lower()
+  1202→        self.title = title.lower()
+  1203→        self.matched_nodes: List[ast.AST] = []
+  1204→        self._imported: Set[str] = set()
+  1205→
+  1206→    def visit_Import(self, node: ast.Import) -> None:
+  1207→        for alias in node.names:
+  1208→            self._imported.add(alias.name.split(".")[0])
+  1209→        self.generic_visit(node)
+  1210→
+  1211→    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+  1212→        if node.module:
+  1213→            self._imported.add(node.module.split(".")[0])
+  1214→        self.generic_visit(node)
+  1215→
+  1216→    def visit_Call(self, node: ast.Call) -> None:
+  1217→        fname = _get_call_name(node)
+  1218→        func_full = _get_call_full_name(node)
+  1219→
+  1220→        if self.category == "dangerous_eval" and fname == "eval":
+  1221→            self.matched_nodes.append(node)
+  1222→        elif self.category == "dangerous_exec" and fname == "exec":
+  1223→            self.matched_nodes.append(node)
+  1224→        elif self.category == "command_injection":
+  1225→            if fname in ("run", "call", "Popen", "check_output", "check_call"):
+  1226→                for kw in node.keywords:
+  1227→                    if kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+  1228→                        self.matched_nodes.append(node)
+  1229→                        break
+  1230→        elif self.category == "unsafe_deserialization":
+  1231→            if func_full and ("pickle.loads" in func_full or "marshal.loads" in func_full):
+  1232→                self.matched_nodes.append(node)
+  1233→            elif func_full and "yaml.load" in func_full:
+  1234→                self.matched_nodes.append(node)
+  1235→        elif self.category == "jwt_no_verify":
+  1236→            if func_full and "jwt.decode" in func_full:
+  1237→                self.matched_nodes.append(node)
+  1238→        elif self.category == "temp_file_race":
+  1239→            if func_full and "mktemp" in func_full:
+  1240→                self.matched_nodes.append(node)
+  1241→
+  1242→        self.generic_visit(node)
+  1243→
+  1244→    def visit_Assign(self, node: ast.Assign) -> None:
+  1245→        if self.category == "hardcoded_secret":
+  1246→            # Get the source text for the line
+  1247→            start = getattr(node, "lineno", 0)
+  1248→            end = getattr(node, "end_lineno", start)
+  1249→            # We'll match by the parent logic
+  1250→            for target in node.targets:
+  1251→                if isinstance(target, ast.Name):
+  1252→                    name = target.id.lower()
+  1253→                    secret_names = ("password", "passwd", "secret", "token",
+  1254→                                    "api_key", "apikey", "private_key")
+  1255→                    if any(s in name for s in secret_names):
+  1256→                        # Check if value is a string constant
+  1257→                        if isinstance(node.value, (ast.Constant,)) and isinstance(node.value.value, str):
+  1258→                            self.matched_nodes.append(node)
+  1259→
+  1260→        self.generic_visit(node)
+  1261→
+  1262→    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+  1263→        if self.category == "bare_except":
+  1264→            if node.type is None:
+  1265→                self.matched_nodes.append(node)
+  1266→        self.generic_visit(node)
+  1267→
+  1268→    def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+  1269→        if self.category == "sql_injection":
+  1270→            parts: List[str] = []
+  1271→            for val in node.values:
+  1272→                if isinstance(val, ast.Constant):
+  1273→                    parts.append(str(val.value))
+  1274→                elif isinstance(val, ast.FormattedValue):
+  1275→                    parts.append("{}")
+  1276→            combined = " ".join(parts)
+  1277→            sql_kw = re.compile(
+  1278→                r"\b(?:SELECT|INSERT|UPDATE|DELETE|DROP|UNION|ALTER|CREATE|EXEC)\b", re.I,
+  1279→            )
+  1280→            if sql_kw.search(combined):
+  1281→                self.matched_nodes.append(node)
+  1282→        self.generic_visit(node)
+  1283→
+  1284→    def _line_based_match(self, node: ast.stmt) -> None:
+  1285→        """Additional line-based matching for statement nodes."""
+  1286→        # Handled in parent methods
+  1287→        pass
+  1288→
+  1289→    def generic_visit(self, node: ast.AST) -> None:
+  1290→        if isinstance(node, ast.stmt):
+  1291→            # Check for line-based patterns
+  1292→            lineno = getattr(node, "lineno", 0)
+  1293→            # debug_mode
+  1294→            if self.category == "debug_mode" and lineno > 0:
+  1295→                pass  # Handled by parent
+  1296→        super().generic_visit(node)
+  1297→
+  1298→
+  1299→# ── AST utilities ─────────────────────────────────────────────────────
+  1300→
+  1301→
+  1302→def _get_call_name(node: ast.Call) -> str:
+  1303→    """Get the simple function name from a Call node."""
+  1304→    func = node.func
+  1305→    if isinstance(func, ast.Name):
+  1306→        return func.id
+  1307→    if isinstance(func, ast.Attribute):
+  1308→        return func.attr
+  1309→    return ""
+  1310→
+  1311→
+  1312→def _get_call_full_name(node: ast.Call) -> str:
+  1313→    """Get the full dotted function name from a Call node."""
+  1314→    func = node.func
+  1315→    if isinstance(func, ast.Name):
+  1316→        return func.id
+  1317→    if isinstance(func, ast.Attribute):
+  1318→        parts = [func.attr]
+  1319→        current = func.value
+  1320→        while isinstance(current, ast.Attribute):
+  1321→            parts.append(current.attr)
+  1322→            current = current.value
+  1323→        if isinstance(current, ast.Name):
+  1324→            parts.append(current.id)
+  1325→        parts.reverse()
+  1326→        return ".".join(parts)
+  1327→    return ""
+  1328→
+  1329→
+  1330→# ═══════════════════════════════════════════════════════════════════════════
+  1331→# FixStore — Persistent JSON storage
+  1332→# ═══════════════════════════════════════════════════════════════════════════
+  1333→
+  1334→
+  1335→class FixStore:
+  1336→    """Persistent storage for fix proposals.
+  1337→
+  1338→    Stores proposals in ``RECONPRO_HOME/memory/fix_proposals.json``.
+  1339→    Tracks the full lifecycle: proposed → approved → applied → verified.
+  1340→    """
+  1341→
+  1342→    def __init__(self, store_path: Optional[Path] = None) -> None:
+  1343→        self._path = store_path or (MEMORY_DIR / "fix_proposals.json")
+  1344→        self._proposals: Dict[str, FixProposal] = {}
+  1345→        self._history: List[Dict[str, Any]] = []
+  1346→        self._load()
+  1347→
+  1348→    # ── Persistence ───────────────────────────────────────────────────
+  1349→
+  1350→    def _ensure_dir(self) -> None:
+  1351→        """Ensure the storage directory exists."""
+  1352→        try:
+  1353→            self._path.parent.mkdir(parents=True, exist_ok=True)
+  1354→        except OSError as exc:
+  1355→            logger.error("Cannot create fix store directory %s: %s", self._path.parent, exc)
+  1356→
+  1357→    def _load(self) -> None:
+  1358→        """Load proposals from disk."""
+  1359→        if not self._path.exists():
+  1360→            self._proposals = {}
+  1361→            self._history = []
+  1362→            return
+  1363→        try:
+  1364→            raw = self._path.read_text(encoding="utf-8")
+  1365→            data = json.loads(raw)
+  1366→            proposals_data = data.get("proposals", {})
+  1367→            self._proposals = {
+  1368→                pid: FixProposal.from_dict(pdata)
+  1369→                for pid, pdata in proposals_data.items()
+  1370→            }
+  1371→            self._history = data.get("history", [])
+  1372→        except (json.JSONDecodeError, OSError, KeyError) as exc:
+  1373→            logger.warning("Failed to load fix store from %s: %s", self._path, exc)
+  1374→            self._proposals = {}
+  1375→            self._history = []
+  1376→
+  1377→    def _save(self) -> None:
+  1378→        """Persist proposals to disk."""
+  1379→        self._ensure_dir()
+  1380→        try:
+  1381→            data = {
+  1382→                "proposals": {
+  1383→                    pid: p.to_dict() for pid, p in self._proposals.items()
+  1384→                },
+  1385→                "history": self._history[-500:],  # Keep last 500 history entries
+  1386→                "updated_at": datetime.now(timezone.utc).isoformat(),
+  1387→            }
+  1388→            tmp_path = self._path.with_suffix(".tmp")
+  1389→            tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+  1390→            tmp_path.replace(self._path)
+  1391→        except OSError as exc:
+  1392→            logger.error("Failed to save fix store to %s: %s", self._path, exc)
+  1393→
+  1394→    # ── CRUD ──────────────────────────────────────────────────────────
+  1395→
+  1396→    def add(self, proposal: FixProposal) -> None:
+  1397→        """Add a new proposal to the store."""
+  1398→        self._proposals[proposal.id] = proposal
+  1399→        self._add_history_entry("added", proposal)
+  1400→        self._save()
+  1401→
+  1402→    def get(self, proposal_id: str) -> Optional[FixProposal]:
+  1403→        """Retrieve a proposal by ID."""
+  1404→        return self._proposals.get(proposal_id)
+  1405→
+  1406→    def update(self, proposal: FixProposal) -> None:
+  1407→        """Update an existing proposal."""
+  1408→        if proposal.id in self._proposals:
+  1409→            old_status = self._proposals[proposal.id].status
+  1410→            self._proposals[proposal.id] = proposal
+  1411→            if old_status != proposal.status:
+  1412→                self._add_history_entry(f"status_changed:{old_status}->{proposal.status}", proposal)
+  1413→            self._save()
+  1414→        else:
+  1415→            logger.warning("Attempted to update non-existent proposal: %s", proposal.id)
+  1416→
+  1417→    def remove(self, proposal_id: str) -> bool:
+  1418→        """Remove a proposal from the store. Returns True if found."""
+  1419→        if proposal_id in self._proposals:
+  1420→            proposal = self._proposals.pop(proposal_id)
+  1421→            self._add_history_entry("removed", proposal)
+  1422→            self._save()
+  1423→            return True
+  1424→        return False
+  1425→
+  1426→    def list_all(self) -> List[FixProposal]:
+  1427→        """List all proposals."""
+  1428→        return list(self._proposals.values())
+  1429→
+  1430→    def list_by_status(self, status: str) -> List[FixProposal]:
+  1431→        """Filter proposals by status."""
+  1432→        return [p for p in self._proposals.values() if p.status == status]
+  1433→
+  1434→    def list_by_category(self, category: str) -> List[FixProposal]:
+  1435→        """Filter proposals by category."""
+  1436→        return [p for p in self._proposals.values() if p.category == category]
+  1437→
+  1438→    def list_by_severity(self, severity: str) -> List[FixProposal]:
+  1439→        """Filter proposals by severity."""
+  1440→        return [p for p in self._proposals.values() if p.severity == severity]
+  1441→
+  1442→    def approve(self, proposal_id: str) -> bool:
+  1443→        """Approve a proposal. Returns True if successful."""
+  1444→        proposal = self._proposals.get(proposal_id)
+  1445→        if proposal is None:
+  1446→            return False
+  1447→        if proposal.status != ProposalStatus.PROPOSED.value:
+  1448→            logger.warning("Cannot approve proposal %s in status %s", proposal_id, proposal.status)
+  1449→            return False
+  1450→        proposal.status = ProposalStatus.APPROVED.value
+  1451→        self.update(proposal)
+  1452→        return True
+  1453→
+  1454→    def reject(self, proposal_id: str) -> bool:
+  1455→        """Reject a proposal. Returns True if successful."""
+  1456→        proposal = self._proposals.get(proposal_id)
+  1457→        if proposal is None:
+  1458→            return False
+  1459→        if proposal.status != ProposalStatus.PROPOSED.value:
+  1460→            logger.warning("Cannot reject proposal %s in status %s", proposal_id, proposal.status)
+  1461→            return False
+  1462→        proposal.status = ProposalStatus.REJECTED.value
+  1463→        self.update(proposal)
+  1464→        return True
+  1465→
+  1466→    # ── History ────────────────────────────────────────────────────────
+  1467→
+  1468→    def _add_history_entry(self, action: str, proposal: FixProposal) -> None:
+  1469→        """Append an entry to the history log."""
+  1470→        entry: Dict[str, Any] = {
+  1471→            "timestamp": datetime.now(timezone.utc).isoformat(),
+  1472→            "action": action,
+  1473→            "proposal_id": proposal.id,
+  1474→            "proposal_title": proposal.title,
+  1475→            "status": proposal.status,
+  1476→            "severity": proposal.severity,
+  1477→            "category": proposal.category,
+  1478→        }
+  1479→        self._history.append(entry)
+  1480→
+  1481→    def get_history(self) -> List[Dict[str, Any]]:
+  1482→        """Return the full history log."""
+  1483→        return list(self._history)
+  1484→
+  1485→    def get_stats(self) -> Dict[str, Any]:
+  1486→        """Return summary statistics."""
+  1487→        proposals = list(self._proposals.values())
+  1488→        status_counts: Dict[str, int] = {}
+  1489→        severity_counts: Dict[str, int] = {}
+  1490→        category_counts: Dict[str, int] = {}
+  1491→        automated_count = 0
+  1492→        total_confidence = 0.0
+  1493→
+  1494→        for p in proposals:
+  1495→            status_counts[p.status] = status_counts.get(p.status, 0) + 1
+  1496→            severity_counts[p.severity] = severity_counts.get(p.severity, 0) + 1
+  1497→            category_counts[p.category] = category_counts.get(p.category, 0) + 1
+  1498→            if p.automated:
+  1499→                automated_count += 1
+  1500→            total_confidence += p.confidence
+  1501→
+  1502→        avg_confidence = round(total_confidence / len(proposals), 2) if proposals else 0.0
+  1503→
+  1504→        return {
+  1505→            "total_proposals": len(proposals),
+  1506→            "by_status": status_counts,
+  1507→            "by_severity": severity_counts,
+  1508→            "by_category": category_counts,
+  1509→            "automated_count": automated_count,
+  1510→            "average_confidence": avg_confidence,
+  1511→            "history_entries": len(self._history),
+  1512→        }
+  1513→
+  1514→
+  1515→# ═══════════════════════════════════════════════════════════════════════════
+  1516→# AutoFixEngine — Top-level orchestrator
+  1517→# ═══════════════════════════════════════════════════════════════════════════
+  1518→
+  1519→
+  1520→class AutoFixEngine:
+  1521→    """Top-level engine that analyses scan results and proposes automated fixes.
+  1522→
+  1523→    The engine is **dry-run by default** — it only *proposes* fixes.
+  1524→    Applying a fix requires explicit approval via :meth:`apply_fix` with
+  1525→    ``dry_run=False``.
+  1526→
+  1527→    Usage::
+  1528→
+  1529→        engine = AutoFixEngine()
+  1530→        proposals = engine.propose_fixes(scan_result)
+  1531→        for p in proposals:
+  1532→            print(f"[{p.severity}] {p.title} (confidence={p.confidence})")
+  1533→
+  1534→        # Apply a specific approved fix
+  1535→        result = engine.apply_fix(proposals[0], dry_run=False)
+  1536→        print(result)
+  1537→    """
+  1538→
+  1539→    def __init__(
+  1540→        self,
+  1541→        store: Optional[FixStore] = None,
+  1542→        dry_run: bool = True,
+  1543→    ) -> None:
+  1544→        self._analyzer = FixAnalyzer()
+  1545→        self._store = store or FixStore()
+  1546→        self._dry_run = dry_run
+  1547→        logger.info("AutoFixEngine initialised (dry_run=%s)", dry_run)
+  1548→
+  1549→    # ── Public API ────────────────────────────────────────────────────
+  1550→
+  1551→    def analyze_issue(self, issue: Dict[str, Any]) -> Optional[FixProposal]:
+  1552→        """Analyse a single issue and return a fix proposal."""
+  1553→        try:
+  1554→            proposal = self._analyzer.analyze_issue(issue)
+  1555→            if proposal is not None:
+  1556→                self._store.add(proposal)
+  1557→                logger.info(
+  1558→                    "Proposed fix %s: %s (confidence=%.2f)",
+  1559→                    proposal.id, proposal.title, proposal.confidence,
+  1560→                )
+  1561→            return proposal
+  1562→        except Exception as exc:
+  1563→            logger.error("Failed to analyze issue: %s", exc, exc_info=True)
+  1564→            return None
+  1565→
+  1566→    def propose_fixes(self, scan_result: Dict[str, Any]) -> List[FixProposal]:
+  1567→        """Analyse a full scan result and propose fixes for all findings.
+  1568→
+  1569→        The scan_result dict can contain:
+  1570→        - ``findings``: List of finding dicts (from http_layer.Finding.to_dict())
+  1571→        - ``diagnostics``: Dict from diagnostics.run_diagnostics()
+  1572→        - ``config_issues``: List from diagnostics.validate_config()
+  1573→        - ``cross_validation``: Dict from cross_validator
+  1574→
+  1575→        Any combination of the above keys is supported.
+  1576→        """
+  1577→        proposals: List[FixProposal] = []
+  1578→
+  1579→        # 1. Process scan findings
+  1580→        findings = scan_result.get("findings", [])
+  1581→        if findings:
+  1582→            proposals.extend(self._process_findings(findings))
+  1583→
+  1584→        # 2. Process diagnostics failures
+  1585→        diagnostics = scan_result.get("diagnostics", {})
+  1586→        if diagnostics:
+  1587→            proposals.extend(self._process_diagnostics(diagnostics))
+  1588→
+  1589→        # 3. Process config issues
+  1590→        config_issues = scan_result.get("config_issues", [])
+  1591→        if config_issues:
+  1592→            proposals.extend(self._process_config_issues(config_issues))
+  1593→
+  1594→        # 4. Process cross-validation mismatches
+  1595→        cv = scan_result.get("cross_validation", {})
+  1596→        if cv:
+  1597→            proposals.extend(self._process_cross_validation(cv))
+  1598→
+  1599→        logger.info(
+  1600→            "Generated %d fix proposals from scan result (%d findings, %d diagnostics, %d config, %d cv)",
+  1601→            len(proposals),
+  1602→            len(findings),
+  1603→            len(diagnostics.get("checks", [])) if diagnostics else 0,
+  1604→            len(config_issues),
+  1605→            len(cv.get("mismatches", [])) if cv else 0,
+  1606→        )
+  1607→
+  1608→        return proposals
+  1609→
+  1610→    def propose_code_fixes(
+  1611→        self,
+  1612→        file_path: str,
+  1613→        issues: List[Dict[str, Any]],
+  1614→    ) -> List[FixProposal]:
+  1615→        """Propose code-level fixes for issues in a specific file."""
+  1616→        try:
+  1617→            proposals = self._analyzer.propose_code_fixes(file_path, issues)
+  1618→            for p in proposals:
+  1619→                self._store.add(p)
+  1620→            return proposals
+  1621→        except Exception as exc:
+  1622→            logger.error("Failed to propose code fixes for %s: %s", file_path, exc)
+  1623→            return []
+  1624→
+  1625→    def propose_config_fixes(
+  1626→        self,
+  1627→        config_issues: List[Dict[str, Any]],
+  1628→    ) -> List[FixProposal]:
+  1629→        """Propose configuration fixes."""
+  1630→        try:
+  1631→            proposals = self._analyzer.propose_config_fixes(config_issues)
+  1632→            for p in proposals:
+  1633→                self._store.add(p)
+  1634→            return proposals
+  1635→        except Exception as exc:
+  1636→            logger.error("Failed to propose config fixes: %s", exc)
+  1637→            return []
+  1638→
+  1639→    def apply_fix(
+  1640→        self,
+  1641→        fix_proposal: FixProposal,
+  1642→        dry_run: Optional[bool] = None,
+  1643→    ) -> Dict[str, Any]:
+  1644→        """Apply an approved fix.
+  1645→
+  1646→        Args:
+  1647→            fix_proposal: The proposal to apply.
+  1648→            dry_run: Override the engine's dry_run setting. Defaults to the
+  1649→                    engine's setting. Pass False to actually apply.
+  1650→
+  1651→        Returns:
+  1652→            Dict with keys: success, message, dry_run, proposal_id, changes.
+  1653→        """
+  1654→        is_dry = dry_run if dry_run is not None else self._dry_run
+  1655→
+  1656→        result: Dict[str, Any] = {
+  1657→            "success": False,
+  1658→            "message": "",
+  1659→            "dry_run": is_dry,
+  1660→            "proposal_id": fix_proposal.id,
+  1661→            "changes": [],
+  1662→        }
+  1663→
+  1664→        # Validate proposal state
+  1665→        if fix_proposal.status == ProposalStatus.APPLIED.value:
+  1666→            result["message"] = "Proposal has already been applied."
+  1667→            return result
+  1668→
+  1669→        if fix_proposal.status != ProposalStatus.APPROVED.value and not is_dry:
+  1670→            result["message"] = (
+  1671→                f"Proposal must be in 'approved' status to apply. "
+  1672→                f"Current status: {fix_proposal.status}. Use fix_store.approve(id) first."
+  1673→            )
+  1674→            return result
+  1675→
+  1676→        # Dry-run: just describe what would happen
+  1677→        if is_dry:
+  1678→            result["success"] = True
+  1679→            result["message"] = self._describe_dry_run(fix_proposal)
+  1680→            result["changes"].append({
+  1681→                "type": "dry_run",
+  1682→                "file": fix_proposal.affected_file,
+  1683→                "lines": fix_proposal.affected_lines,
+  1684→                "description": f"Would apply: {fix_proposal.title}",
+  1685→            })
+  1686→            logger.info("[DRY-RUN] Would apply fix %s: %s", fix_proposal.id, fix_proposal.title)
+  1687→            return result
+  1688→
+  1689→        # Actual application
+  1690→        try:
+  1691→            applied = self._do_apply(fix_proposal)
+  1692→            if applied:
+  1693→                fix_proposal.status = ProposalStatus.APPLIED.value
+  1694→                fix_proposal.applied_at = datetime.now(timezone.utc).isoformat()
+  1695→                self._store.update(fix_proposal)
+  1696→                result["success"] = True
+  1697→                result["message"] = f"Fix applied successfully: {fix_proposal.title}"
+  1698→                result["changes"].append({
+  1699→                    "type": "applied",
+  1700→                    "file": fix_proposal.affected_file,
+  1701→                    "lines": fix_proposal.affected_lines,
+  1702→                    "description": fix_proposal.title,
+  1703→                })
+  1704→                logger.info("Applied fix %s: %s", fix_proposal.id, fix_proposal.title)
+  1705→            else:
+  1706→                fix_proposal.status = ProposalStatus.FAILED.value
+  1707→                fix_proposal.error_message = "No applicable transformation found"
+  1708→                self._store.update(fix_proposal)
+  1709→                result["message"] = "No applicable transformation found for this proposal."
+  1710→        except Exception as exc:
+  1711→            fix_proposal.status = ProposalStatus.FAILED.value
+  1712→            fix_proposal.error_message = str(exc)
+  1713→            self._store.update(fix_proposal)
+  1714→            result["message"] = f"Failed to apply fix: {exc}"
+  1715→            logger.error("Failed to apply fix %s: %s", fix_proposal.id, exc, exc_info=True)
+  1716→
+  1717→        return result
+  1718→
+  1719→    def batch_fix(
+  1720→        self,
+  1721→        fix_proposals: List[FixProposal],
+  1722→        dry_run: Optional[bool] = None,
+  1723→    ) -> Dict[str, Any]:
+  1724→        """Apply multiple fixes.
+  1725→
+  1726→        Args:
+  1727→            fix_proposals: List of proposals to apply.
+  1728→            dry_run: Override the engine's dry_run setting.
+  1729→
+  1730→        Returns:
+  1731→            Dict with keys: total, succeeded, failed, skipped, results.
+  1732→        """
+  1733→        results: List[Dict[str, Any]] = []
+  1734→        succeeded = 0
+  1735→        failed = 0
+  1736→        skipped = 0
+  1737→
+  1738→        for proposal in fix_proposals:
+  1739→            # Skip non-automated in non-dry-run mode unless pre-approved
+  1740→            is_dry = dry_run if dry_run is not None else self._dry_run
+  1741→            if not is_dry and not proposal.automated and proposal.status != ProposalStatus.APPROVED.value:
+  1742→                results.append({
+  1743→                    "proposal_id": proposal.id,
+  1744→                    "title": proposal.title,
+  1745→                    "success": False,
+  1746→                    "message": "Skipped: non-automated and not pre-approved",
+  1747→                    "dry_run": is_dry,
+  1748→                })
+  1749→                skipped += 1
+  1750→                continue
+  1751→
+  1752→            res = self.apply_fix(proposal, dry_run=dry_run)
+  1753→            results.append(res)
+  1754→            if res["success"]:
+  1755→                succeeded += 1
+  1756→            else:
+  1757→                failed += 1
+  1758→
+  1759→        return {
+  1760→            "total": len(fix_proposals),
+  1761→            "succeeded": succeeded,
+  1762→            "failed": failed,
+  1763→            "skipped": skipped,
+  1764→            "results": results,
+  1765→        }
+  1766→
+  1767→    def get_fix_history(self) -> List[Dict[str, Any]]:
+  1768→        """Return the full history of fix proposals."""
+  1769→        return self._store.get_history()
+  1770→
+  1771→    def verify_fix(
+  1772→        self,
+  1773→        fix_proposal: FixProposal,
+  1774→        post_state: Dict[str, Any],
+  1775→    ) -> Dict[str, Any]:
+  1776→        """Verify that a fix was effective.
+  1777→
+  1778→        Args:
+  1779→            fix_proposal: The applied proposal to verify.
+  1780→            post_state: The state after fix application (e.g., re-scan results).
+  1781→
+  1782→        Returns:
+  1783→            Dict with keys: verified, details, remaining_issues.
+  1784→        """
+  1785→        result: Dict[str, Any] = {
+  1786→            "verified": False,
+  1787→            "proposal_id": fix_proposal.id,
+  1788→            "details": "",
+  1789→            "remaining_issues": [],
+  1790→        }
+  1791→
+  1792→        if fix_proposal.status != ProposalStatus.APPLIED.value:
+  1793→            result["details"] = f"Proposal not in applied status (current: {fix_proposal.status})"
+  1794→            return result
+  1795→
+  1796→        # Check if the original issue is still present
+  1797→        source_issue = fix_proposal.source_issue
+  1798→        original_category = source_issue.get("category", "")
+  1799→        original_title = source_issue.get("title", "")
+  1800→        original_message = source_issue.get("message", "")
+  1801→
+  1802→        # Look for the issue in the post_state
+  1803→        post_findings = post_state.get("findings", [])
+  1804→        post_issues = post_state.get("issues", post_findings)
+  1805→
+  1806→        still_present = False
+  1807→        for issue in post_issues:
+  1808→            issue_cat = issue.get("category", "")
+  1809→            issue_title = issue.get("title", "")
+  1810→            issue_msg = issue.get("message", "")
+  1811→
+  1812→            if issue_cat == original_category:
+  1813→                if issue_title == original_title or issue_msg == original_message:
+  1814→                    still_present = True
+  1815→                    result["remaining_issues"].append(issue)
+  1816→
+  1817→        if not still_present:
+  1818→            fix_proposal.status = ProposalStatus.VERIFIED.value
+  1819→            fix_proposal.verified_at = datetime.now(timezone.utc).isoformat()
+  1820→            self._store.update(fix_proposal)
+  1821→            result["verified"] = True
+  1822→            result["details"] = f"Fix verified: {fix_proposal.title} — original issue no longer detected."
+  1823→            logger.info("Verified fix %s: %s", fix_proposal.id, fix_proposal.title)
+  1824→        else:
+  1825→            result["details"] = (
+  1826→                f"Fix NOT verified: {fix_proposal.title} — issue still detected. "
+  1827→                f"{len(result['remaining_issues'])} remaining instance(s)."
+  1828→            )
+  1829→            logger.warning("Fix %s not verified: %s", fix_proposal.id, fix_proposal.title)
+  1830→
+  1831→        return result
+  1832→
+  1833→    # ── Internal processing ───────────────────────────────────────────
+  1834→
+  1835→    def _process_findings(self, findings: List[Dict[str, Any]]) -> List[FixProposal]:
+  1836→        """Process scan findings into fix proposals."""
+  1837→        proposals: List[FixProposal] = []
+  1838→        seen: Set[str] = set()
+  1839→
+  1840→        for finding in findings:
+  1841→            try:
+  1842→                proposal = self._analyzer.analyze_issue(finding)
+  1843→                if proposal is not None and proposal.id not in seen:
+  1844→                    self._store.add(proposal)
+  1845→                    proposals.append(proposal)
+  1846→                    seen.add(proposal.id)
+  1847→            except Exception as exc:
+  1848→                logger.debug("Failed to process finding: %s", exc)
+  1849→                continue
+  1850→
+  1851→        return proposals
+  1852→
+  1853→    def _process_diagnostics(self, diagnostics: Dict[str, Any]) -> List[FixProposal]:
+  1854→        """Process diagnostic check results."""
+  1855→        proposals: List[FixProposal] = []
+  1856→        checks = diagnostics.get("checks", [])
+  1857→
+  1858→        for check in checks:
+  1859→            if check.get("status") != "ok":
+  1860→                issue = {
+  1861→                    "title": f"Diagnostic failure: {check.get('label', '')}",
+  1862→                    "message": check.get("error", "Check failed"),
+  1863→                    "category": check.get("label", ""),
+  1864→                    "severity": "high",
+  1865→                    "description": f"Diagnostic check '{check.get('label', '')}' failed: {check.get('error', '')}",
+  1866→                    "suggestion": "Run diagnostics for details and suggested actions.",
+  1867→                }
+  1868→                try:
+  1869→                    proposal = self._analyzer.analyze_issue(issue)
+  1870→                    if proposal is not None:
+  1871→                        self._store.add(proposal)
+  1872→                        proposals.append(proposal)
+  1873→                except Exception as exc:
+  1874→                    logger.debug("Failed to process diagnostic check: %s", exc)
+  1875→
+  1876→        return proposals
+  1877→
+  1878→    def _process_config_issues(self, config_issues: List[Dict[str, Any]]) -> List[FixProposal]:
+  1879→        """Process configuration validation issues."""
+  1880→        proposals: List[FixProposal] = []
+  1881→        for issue in config_issues:
+  1882→            try:
+  1883→                proposal = self._analyzer.analyze_issue(issue)
+  1884→                if proposal is not None:
+  1885→                    self._store.add(proposal)
+  1886→                    proposals.append(proposal)
+  1887→            except Exception as exc:
+  1888→                logger.debug("Failed to process config issue: %s", exc)
+  1889→        return proposals
+  1890→
+  1891→    def _process_cross_validation(self, cv: Dict[str, Any]) -> List[FixProposal]:
+  1892→        """Process cross-validation mismatches."""
+  1893→        proposals: List[FixProposal] = []
+  1894→        mismatches = cv.get("mismatches", [])
+  1895→
+  1896→        for mm in mismatches:
+  1897→            issue = {
+  1898→                "title": mm.get("finding", "Cross-validation mismatch"),
+  1899→                "message": mm.get("details", "Finding could not be independently verified"),
+  1900→                "category": mm.get("category", "validation"),
+  1901→                "severity": mm.get("severity", "medium"),
+  1902→                "description": mm.get("details", ""),
+  1903→                "evidence": mm.get("details", ""),
+  1904→            }
+  1905→            try:
+  1906→                proposal = self._analyzer.analyze_issue(issue)
+  1907→                if proposal is not None:
+  1908→                    self._store.add(proposal)
+  1909→                    proposals.append(proposal)
+  1910→            except Exception as exc:
+  1911→                logger.debug("Failed to process CV mismatch: %s", exc)
+  1912→
+  1913→        return proposals
+  1914→
+  1915→    # ── Fix application ───────────────────────────────────────────────
+  1916→
+  1917→    def _describe_dry_run(self, proposal: FixProposal) -> str:
+  1918→        """Describe what a dry-run would do."""
+  1919→        parts = [
+  1920→            f"[DRY-RUN] Fix: {proposal.title}",
+  1921→            f"  File: {proposal.affected_file or '(no file)'}",
+  1922→            f"  Lines: {proposal.affected_lines or '(no lines)'}",
+  1923→            f"  Risk: {proposal.risk_level}, Confidence: {proposal.confidence:.0%}",
+  1924→        ]
+  1925→        if proposal.original_code:
+  1926→            parts.append(f"  Original:\n{textwrap.indent(proposal.original_code, '    ')}")
+  1927→        if proposal.proposed_code:
+  1928→            parts.append(f"  Proposed:\n{textwrap.indent(proposal.proposed_code, '    ')}")
+  1929→        return "\n".join(parts)
+  1930→
+  1931→    def _do_apply(self, proposal: FixProposal) -> bool:
+  1932→        """Actually apply a fix to a file.
+  1933→
+  1934→        Creates a backup before modification. Returns True on success.
+  1935→        """
+  1936→        file_path = proposal.affected_file
+  1937→        if not file_path:
+  1938→            logger.warning("No file path in proposal %s — cannot apply", proposal.id)
+  1939→            return False
+  1940→
+  1941→        path = Path(file_path)
+  1942→        if not path.is_file():
+  1943→            logger.warning("File not found: %s", file_path)
+  1944→            return False
+  1945→
+  1946→        if not proposal.proposed_code:
+  1947→            logger.warning("No proposed code in proposal %s — nothing to apply", proposal.id)
+  1948→            return False
+  1949→
+  1950→        # Read current file
+  1951→        try:
+  1952→            original_content = path.read_text(encoding="utf-8")
+  1953→        except OSError as exc:
+  1954→            raise RuntimeError(f"Cannot read {file_path}: {exc}") from exc
+  1955→
+  1956→        # Create backup
+  1957→        backup_path = path.with_suffix(path.suffix + ".bak")
+  1958→        try:
+  1959→            shutil.copy2(str(path), str(backup_path))
+  1960→        except OSError as exc:
+  1961→            raise RuntimeError(f"Cannot create backup at {backup_path}: {exc}") from exc
+  1962→
+  1963→        # Apply the fix
+  1964→        try:
+  1965→            lines = original_content.splitlines()
+  1966→            affected = proposal.affected_lines
+  1967→
+  1968→            if affected:
+  1969→                # Replace specific line ranges
+  1970→                start = affected[0] - 1  # Convert to 0-based
+  1971→                end = affected[-1]      # End stays 1-based for slice
+  1972→
+  1973→                proposed_lines = proposal.proposed_code.splitlines()
+  1974→                new_lines = lines[:start] + proposed_lines + lines[end:]
+  1975→                new_content = "\n".join(new_lines)
+  1976→
+  1977→                # Preserve original line ending
+  1978→                if original_content.endswith("\n"):
+  1979→                    new_content += "\n"
+  1980→            else:
+  1981→                # No line info — append proposed code as a comment
+  1982→                new_content = original_content.rstrip("\n") + "\n"
+  1983→                new_content += f"\n# AUTO-FIX ({proposal.id}): {proposal.title}\n"
+  1984→                new_content += f"# {proposal.description}\n"
+  1985→                new_content += f"# TODO: {proposal.proposed_code}\n"
+  1986→
+  1987→            # Write the modified file
+  1988→            path.write_text(new_content, encoding="utf-8")
+  1989→            logger.info("Applied fix %s to %s", proposal.id, file_path)
+  1990→            return True
+  1991→
+  1992→        except Exception as exc:
+  1993→            # Restore backup on failure
+  1994→            try:
+  1995→                shutil.copy2(str(backup_path), str(path))
+  1996→            except OSError:
+  1997→                logger.error("CRITICAL: Failed to restore backup for %s", file_path)
+  1998→            raise RuntimeError(f"Failed to apply fix: {exc}") from exc
+  1999→
+  2000→
+
+[showing lines 1-2000 of 2022; use offset=2001 with limit to continue reading]

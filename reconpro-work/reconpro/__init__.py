@@ -67,6 +67,7 @@ Engineering Systems (Age III):
     auto_fix                Auto fix proposal engine with AST-based transforms
     prompt_defense          Prompt injection defense for AI/chat inputs
     security_hardening      Security policy engine, plugin sandbox, tamper-evident logs
+    quality_intelligence    Multi-dimensional code quality analysis (AST-based)
 
 Usage:
     reconpro example.com                    # Remote scan
@@ -85,4 +86,5 @@ Usage:
 __version__ = "11.0.0"
 __all__ = ["scan", "ReconProResult", "audit_scan", "__version__"]
 
-from .scanner import scan, ReconProResult, audit_scan  # noqa: E402
+from .engine import scan, audit_scan  # noqa: E402 — async engine is the default
+from .scanner import ReconProResult  # noqa: E402

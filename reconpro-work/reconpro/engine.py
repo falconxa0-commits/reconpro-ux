@@ -190,6 +190,7 @@ class ScanEngine:
         self._use_async = use_async
         self._run_engineering = run_engineering
         self._engineering_repo_path = engineering_repo_path
+        self._rate_limit = rate_limit
 
     # -- internal helpers --------------------------------------------------
 
@@ -267,6 +268,7 @@ class ScanEngine:
         base_url: str,
         timeout: int,
         verify_tls: bool,
+        limiter: Any,
         semaphore: asyncio.Semaphore,
         findings_lock: asyncio.Lock,
         all_findings: List[Finding],
@@ -284,6 +286,7 @@ class ScanEngine:
                         base_url=base_url,
                         timeout=timeout,
                         verify_tls=verify_tls,
+                        limiter=limiter,
                     )
                 else:
                     result = await asyncio.to_thread(
@@ -292,6 +295,7 @@ class ScanEngine:
                         base_url=base_url,
                         timeout=timeout,
                         verify_tls=verify_tls,
+                        limiter=limiter,
                     )
 
                 duration = time.monotonic() - t0
@@ -437,6 +441,10 @@ class ScanEngine:
         module_results: Dict[str, Dict[str, Any]] = {}
         vibesec_state: Dict[str, Any] = {}
 
+        # Create rate limiter for modules that accept it.
+        from .http_layer import RateLimiter
+        limiter = RateLimiter(effective_rate)
+
         # Build coroutine tasks for each module.
         tasks: List[asyncio.Task[None]] = []
         for mod_id in mods:
@@ -470,6 +478,7 @@ class ScanEngine:
                         base_url=base_url,
                         timeout=timeout,
                         verify_tls=verify_tls,
+                        limiter=limiter,
                         semaphore=semaphore,
                         findings_lock=findings_lock,
                         all_findings=all_findings,

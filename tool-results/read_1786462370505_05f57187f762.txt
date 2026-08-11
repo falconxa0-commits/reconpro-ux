@@ -1,0 +1,834 @@
+     1→     1→"""Async scan orchestration engine for ReconPro v10.0.
+     2→     2→
+     3→     3→Runs modules concurrently with an event-driven architecture.  The public
+     4→     4→``scan()`` function is a drop-in replacement for ``scanner.scan()`` — it
+     5→     5→accepts the same arguments and returns an identical ``ReconProResult`` so
+     6→     6→that every existing consumer (CLI, TUI, reports, tests) works unchanged.
+     7→     7→
+     8→     8→Components
+     9→     9→──────────
+    10→    10→1. **ScanEvent** — lightweight dataclass emitted at every scan milestone.
+    11→    11→2. **ScanEngine** — async orchestrator that resolves modules, runs them
+    12→    12→   with bounded concurrency, and aggregates results.
+    13→    13→3. **EventCollector** — convenience helper that buffers events for later
+    14→    14→   inspection (useful in tests and TUI dashboards).
+    15→    15→4. **concurrent_scan()** — scan many targets in parallel.
+    16→    16→"""
+    17→    17→
+    18→    18→from __future__ import annotations
+    19→    19→
+    20→    20→import asyncio
+    21→    21→import logging
+    22→    22→import time
+    23→    23→from dataclasses import dataclass, field
+    24→    24→from typing import Any, Callable, Dict, List, Optional
+    25→    25→
+    26→    26→logger = logging.getLogger(__name__)
+    27→    27→
+    28→    28→from .registry import (
+    29→    29→    ALL_MODULES,
+    30→    30→    DEFAULT_LOCAL_MODULES,
+    31→    31→    DEFAULT_MODULES,
+    32→    32→    LOCAL_MODULES,
+    33→    33→    MODULE_REGISTRY,
+    34→    34→)
+    35→    35→from .scanner import ReconProResult
+    36→    36→from .http_layer import Finding
+    37→    37→from .utils import compute_grade, badge_markdown, compute_score
+    38→    38→
+    39→    39→
+    40→    40→# ── Scan Event ──────────────────────────────────────────────────────────
+    41→    41→
+    42→    42→
+    43→    43→@dataclass
+    44→    44→class ScanEvent:
+    45→    45→    """Event emitted during scan execution.
+    46→    46→
+    47→    47→    Attributes
+    48→    48→    ----------
+    49→    49→    type : str
+    50→    50→        One of ``SCAN_START``, ``MODULE_START``, ``FINDING``,
+    51→    51→        ``MODULE_COMPLETE``, ``SCAN_COMPLETE``.
+    52→    52→    module_id : str | None
+    53→    53→        The module that produced the event (``None`` for scan-level events).
+    54→    54→    target : str | None
+    55→    55→        The scan target (``None`` for module-level events).
+    56→    56→    finding : Finding | None
+    57→    57→        Present only for ``FINDING`` events.
+    58→    58→    findings_count : int
+    59→    59→        Present only for ``MODULE_COMPLETE`` events.
+    60→    60→    duration : float
+    61→    61→        Elapsed seconds for the module (``MODULE_COMPLETE``) or the
+    62→    62→        whole scan (``SCAN_COMPLETE``).
+    63→    63→    result : ReconProResult | None
+    64→    64→        Present only for ``SCAN_COMPLETE``.
+    65→    65→    modules : List[str]
+    66→    66→        Present only for ``SCAN_START`` — the resolved module list.
+    67→    67→    timestamp : float
+    68→    68→        ``time.monotonic()`` when the event was created.
+    69→    69→    """
+    70→    70→
+    71→    71→    type: str
+    72→    72→    module_id: Optional[str] = None
+    73→    73→    target: Optional[str] = None
+    74→    74→    finding: Optional[Finding] = None
+    75→    75→    findings_count: int = 0
+    76→    76→    duration: float = 0.0
+    77→    77→    result: Optional[ReconProResult] = None
+    78→    78→    modules: List[str] = field(default_factory=list)
+    79→    79→    timestamp: float = field(default_factory=time.monotonic)
+    80→    80→
+    81→    81→
+    82→    82→# ── Event Collector ─────────────────────────────────────────────────────
+    83→    83→
+    84→    84→
+    85→    85→class EventCollector:
+    86→    86→    """Buffer that stores every ``ScanEvent`` for later inspection.
+    87→    87→
+    88→    88→    Usage::
+    89→    89→
+    90→    90→        collector = EventCollector()
+    91→    91→        engine = ScanEngine(event_callback=collector)
+    92→    92→        await engine.run("example.com")
+    93→    93→        print(collector.timeline())
+    94→    94→        for f in collector.findings:
+    95→    95→            print(f.title)
+    96→    96→    """
+    97→    97→
+    98→    98→    def __init__(self) -> None:
+    99→    99→        self.events: List[ScanEvent] = []
+   100→   100→        self._start: float = 0.0
+   101→   101→
+   102→   102→    def __call__(self, event: ScanEvent) -> None:
+   103→   103→        """Append *event*; record scan start time for timeline."""
+   104→   104→        if event.type == "SCAN_START" and not self._start:
+   105→   105→            self._start = event.timestamp
+   106→   106→        self.events.append(event)
+   107→   107→
+   108→   108→    # -- derived views -----------------------------------------------------
+   109→   109→
+   110→   110→    @property
+   111→   111→    def findings(self) -> List[Finding]:
+   112→   112→        """All findings extracted from ``FINDING`` events, in order."""
+   113→   113→        return [e.finding for e in self.events if e.type == "FINDING" and e.finding is not None]
+   114→   114→
+   115→   115→    def by_module(self) -> Dict[str, List[ScanEvent]]:
+   116→   116→        """Events grouped by ``module_id``.
+   117→   117→
+   118→   118→        Scan-level events (``SCAN_START``, ``SCAN_COMPLETE``) are stored
+   119→   119→        under the key ``"_scan"``.
+   120→   120→        """
+   121→   121→        out: Dict[str, List[ScanEvent]] = {}
+   122→   122→        for e in self.events:
+   123→   123→            key = e.module_id if e.module_id else "_scan"
+   124→   124→            out.setdefault(key, []).append(e)
+   125→   125→        return out
+   126→   126→
+   127→   127→    def timeline(self) -> List[str]:
+   128→   128→        """Human-readable timeline of events relative to scan start.
+   129→   129→
+   130→   130→        Returns a list of formatted strings suitable for printing.
+   131→   131→        """
+   132→   132→        lines: List[str] = []
+   133→   133→        anchor = self._start or (self.events[0].timestamp if self.events else 0.0)
+   134→   134→        for e in self.events:
+   135→   135→            dt = e.timestamp - anchor
+   136→   136→            tag = f"[{dt:6.2f}s] {e.type}"
+   137→   137→            if e.module_id:
+   138→   138→                tag += f" ({e.module_id})"
+   139→   139→            if e.target and e.type in ("SCAN_START", "SCAN_COMPLETE"):
+   140→   140→                tag += f" target={e.target}"
+   141→   141→            if e.type == "FINDING" and e.finding:
+   142→   142→                tag += f" [{e.finding.severity}] {e.finding.title}"
+   143→   143→            if e.type == "MODULE_COMPLETE":
+   144→   144→                tag += f" {e.findings_count} findings in {e.duration:.2f}s"
+   145→   145→            if e.type == "SCAN_COMPLETE" and e.result:
+   146→   146→                tag += f" score={e.result.total_score} grade={e.result.grade}"
+   147→   147→            lines.append(tag)
+   148→   148→        return lines
+   149→   149→
+   150→   150→
+   151→   151→# ── Scan Engine ─────────────────────────────────────────────────────────
+   152→   152→
+   153→   153→
+   154→   154→class ScanEngine:
+   155→   155→    """Async scan orchestrator with bounded concurrency and event emission.
+   156→   156→
+   157→   157→    Parameters
+   158→   158→    ----------
+   159→   159→    event_callback : Callable[[ScanEvent], None] | None
+   160→   160→        If provided, called for every ``ScanEvent`` produced during the scan.
+   161→   161→    concurrency : int
+   162→   162→        Maximum number of modules that run simultaneously.
+   163→   163→    rate_limit : float
+   164→   164→        Default requests-per-second cap (overridden per-scan).
+   165→   165→    use_async : bool
+   166→   166→        When ``True`` the engine calls ``async_run()`` on modules that
+   167→   167→        expose it; otherwise every module is wrapped in
+   168→   168→        ``asyncio.to_thread``.
+   169→   169→    run_engineering : bool
+   170→   170→        When ``True``, the engineering pipeline runs automatically after
+   171→   171→        each scan completes.  Default ``False`` to preserve existing
+   172→   172→        behaviour.
+   173→   173→    engineering_repo_path : str
+   174→   174→        Repository path passed to the
+   175→   175→        ``ContinuousEngineeringOrchestrator`` when engineering is enabled.
+   176→   176→    """
+   177→   177→
+   178→   178→    def __init__(
+   179→   179→        self,
+   180→   180→        event_callback: Optional[Callable[[ScanEvent], None]] = None,
+   181→   181→        concurrency: int = 5,
+   182→   182→        rate_limit: float = 50.0,
+   183→   183→        use_async: bool = True,
+   184→   184→        run_engineering: bool = False,
+   185→   185→        engineering_repo_path: str = ".",
+   186→   186→    ) -> None:
+   187→   187→        self._callback = event_callback
+   188→   188→        self._concurrency = concurrency
+   189→   189→        self._default_rate_limit = rate_limit
+   190→   190→        self._use_async = use_async
+   191→   191→        self._run_engineering = run_engineering
+   192→   192→        self._engineering_repo_path = engineering_repo_path
+   193→   193→
+   194→   194→    # -- internal helpers --------------------------------------------------
+   195→   195→
+   196→   196→    def _emit(self, event: ScanEvent) -> None:
+   197→   197→        """Fire the event callback (if any)."""
+   198→   198→        if self._callback is not None:
+   199→   199→            try:
+   200→   200→                self._callback(event)
+   201→   201→            except Exception:
+   202→   202→                logger.debug("Event callback error", exc_info=True)
+   203→   203→
+   204→   204→    @staticmethod
+   205→   205→    def _resolve_remote_modules(
+   206→   206→        modules: Optional[List[str]],
+   207→   207→        all_modules: bool,
+   208→   208→    ) -> List[str]:
+   209→   209→        """Determine which remote modules to run (mirrors scanner.py logic)."""
+   210→   210→        if all_modules:
+   211→   211→            return [m for m in ALL_MODULES if m in MODULE_REGISTRY]
+   212→   212→        if modules:
+   213→   213→            return [m.strip().lower() for m in modules if m.strip().lower() in MODULE_REGISTRY]
+   214→   214→        return list(DEFAULT_MODULES)
+   215→   215→
+   216→   216→    @staticmethod
+   217→   217→    def _resolve_local_modules(
+   218→   218→        modules: Optional[List[str]],
+   219→   219→        all_modules: bool,
+   220→   220→    ) -> List[str]:
+   221→   221→        """Determine which local modules to run (mirrors scanner.py logic)."""
+   222→   222→        if all_modules:
+   223→   223→            return list(DEFAULT_LOCAL_MODULES)
+   224→   224→        if modules:
+   225→   225→            return [m.strip().lower() for m in modules if m.strip().lower() in LOCAL_MODULES]
+   226→   226→        return list(DEFAULT_LOCAL_MODULES)
+   227→   227→
+   228→   228→    def _build_result(
+   229→   229→        self,
+   230→   230→        target: str,
+   231→   231→        mods: List[str],
+   232→   232→        all_findings: List[Finding],
+   233→   233→        module_results: Dict[str, Dict[str, Any]],
+   234→   234→        vibesec_score: Optional[int],
+   235→   235→        vibesec_grade: Optional[str],
+   236→   236→    ) -> ReconProResult:
+   237→   237→        """Aggregate findings into a ``ReconProResult`` identical to scanner.py."""
+   238→   238→        total_score = compute_score(all_findings)
+   239→   239→        grade = compute_grade(total_score)
+   240→   240→        host = target.replace("https://", "").replace("http://", "").split("/")[0]
+   241→   241→        badge = badge_markdown(host, grade)
+   242→   242→
+   243→   243→        sev_counts: Dict[str, int] = {}
+   244→   244→        for f in all_findings:
+   245→   245→            sev_counts[f.severity] = sev_counts.get(f.severity, 0) + 1
+   246→   246→
+   247→   247→        return ReconProResult(
+   248→   248→            target=host,
+   249→   249→            modules_run=mods,
+   250→   250→            findings=[f.to_dict() for f in all_findings],
+   251→   251→            severity_counts=sev_counts,
+   252→   252→            total_score=total_score,
+   253→   253→            grade=grade,
+   254→   254→            badge_markdown=badge,
+   255→   255→            vibesec_score=vibesec_score,
+   256→   256→            vibesec_grade=vibesec_grade,
+   257→   257→            module_results=module_results,
+   258→   258→        )
+   259→   259→
+   260→   260→    # -- single module execution -------------------------------------------
+   261→   261→
+   262→   262→    async def _run_module(
+   263→   263→        self,
+   264→   264→        mod_id: str,
+   265→   265→        runner: Any,
+   266→   266→        target: str,
+   267→   267→        base_url: str,
+   268→   268→        timeout: int,
+   269→   269→        verify_tls: bool,
+   270→   270→        semaphore: asyncio.Semaphore,
+   271→   271→        findings_lock: asyncio.Lock,
+   272→   272→        all_findings: List[Finding],
+   273→   273→        module_results: Dict[str, Dict[str, Any]],
+   274→   274→        vibesec_state: Dict[str, Any],
+   275→   275→    ) -> None:
+   276→   276→        """Execute one module under the concurrency semaphore."""
+   277→   277→        async with semaphore:
+   278→   278→            self._emit(ScanEvent(type="MODULE_START", module_id=mod_id))
+   279→   279→            t0 = time.monotonic()
+   280→   280→            try:
+   281→   281→                if self._use_async and hasattr(runner, "async_run"):
+   282→   282→                    result = await runner.async_run(
+   283→   283→                        target=target,
+   284→   284→                        base_url=base_url,
+   285→   285→                        timeout=timeout,
+   286→   286→                        verify_tls=verify_tls,
+   287→   287→                    )
+   288→   288→                else:
+   289→   289→                    result = await asyncio.to_thread(
+   290→   290→                        runner,
+   291→   291→                        target=target,
+   292→   292→                        base_url=base_url,
+   293→   293→                        timeout=timeout,
+   294→   294→                        verify_tls=verify_tls,
+   295→   295→                    )
+   296→   296→
+   297→   297→                duration = time.monotonic() - t0
+   298→   298→
+   299→   299→                # Dispatch based on return type.
+   300→   300→                # vibesec returns (findings, score, grade, badge_md).
+   301→   301→                # All other modules return list[Finding].
+   302→   302→                if isinstance(result, tuple) and len(result) == 4:
+   303→   303→                    mod_findings, score, grade, badge_md = result
+   304→   304→                    vibesec_state["score"] = score
+   305→   305→                    vibesec_state["grade"] = grade
+   306→   306→                    async with findings_lock:
+   307→   307→                        all_findings.extend(mod_findings)
+   308→   308→                    module_results[mod_id] = {
+   309→   309→                        "findings": [f.to_dict() for f in mod_findings],
+   310→   310→                        "score": score,
+   311→   311→                        "grade": grade,
+   312→   312→                        "badge": badge_md,
+   313→   313→                    }
+   314→   314→                else:
+   315→   315→                    mod_findings = result
+   316→   316→                    async with findings_lock:
+   317→   317→                        all_findings.extend(mod_findings)
+   318→   318→                        for f in mod_findings:
+   319→   319→                            self._emit(
+   320→   320→                                ScanEvent(type="FINDING", module_id=mod_id, finding=f)
+   321→   321→                            )
+   322→   322→                            try:
+   323→   323→                                from .plugins import HookManager
+   324→   324→                                HookManager.fire("post_finding", finding=f)
+   325→   325→                            except Exception:
+   326→   326→                                logger.debug("Hook 'post_finding' error", exc_info=True)
+   327→   327→                    module_results[mod_id] = {
+   328→   328→                        "findings": [f.to_dict() for f in mod_findings],
+   329→   329→                        "count": len(mod_findings),
+   330→   330→                    }
+   331→   331→
+   332→   332→                _module_health.record_success(mod_id)
+   333→   333→
+   334→   334→                self._emit(
+   335→   335→                    ScanEvent(
+   336→   336→                        type="MODULE_COMPLETE",
+   337→   337→                        module_id=mod_id,
+   338→   338→                        findings_count=len(mod_findings),
+   339→   339→                        duration=duration,
+   340→   340→                    )
+   341→   341→                )
+   342→   342→            except Exception as exc:
+   343→   343→                duration = time.monotonic() - t0
+   344→   344→                _module_health.record_failure(mod_id)
+   345→   345→                logger.error("Module '%s' failed: %s", mod_id, exc, exc_info=True)
+   346→   346→                # Emit a finding-like error so the scan doesn't silently
+   347→   347→                # swallow module failures.
+   348→   348→                err_finding = Finding(
+   349→   349→                    title=f"Module {mod_id} error: {exc}",
+   350→   350→                    severity="info",
+   351→   351→                    category="engine_error",
+   352→   352→                    module=mod_id,
+   353→   353→                    description=f"Module {mod_id} raised an exception during execution.",
+   354→   354→                    evidence=str(exc),
+   355→   355→                    asset=target,
+   356→   356→                )
+   357→   357→                async with findings_lock:
+   358→   358→                    all_findings.append(err_finding)
+   359→   359→                module_results[mod_id] = {
+   360→   360→                    "findings": [err_finding.to_dict()],
+   361→   361→                    "count": 1,
+   362→   362→                    "error": str(exc),
+   363→   363→                }
+   364→   364→                self._emit(
+   365→   365→                    ScanEvent(
+   366→   366→                        type="MODULE_COMPLETE",
+   367→   367→                        module_id=mod_id,
+   368→   368→                        findings_count=1,
+   369→   369→                        duration=duration,
+   370→   370→                    )
+   371→   371→                )
+   372→   372→
+   373→   373→    # -- main async entry point --------------------------------------------
+   374→   374→
+   375→   375→    async def run(
+   376→   376→        self,
+   377→   377→        target: str,
+   378→   378→        modules: Optional[List[str]] = None,
+   379→   379→        all_modules: bool = False,
+   380→   380→        timeout: int = 10,
+   381→   381→        verify_tls: bool = True,
+   382→   382→        rate_limit: Optional[float] = None,
+   383→   383→        is_local: bool = False,
+   384→   384→    ) -> ReconProResult:
+   385→   385→        """Run a scan against *target* with concurrent module execution.
+   386→   386→
+   387→   387→        This is the async counterpart of :func:`scanner.scan` and produces
+   388→   388→        an identical ``ReconProResult``.  The only difference is that modules
+   389→   389→        are executed concurrently (up to ``self._concurrency`` at a time)
+   390→   390→        instead of sequentially.
+   391→   391→
+   392→   392→        Parameters
+   393→   393→        ----------
+   394→   394→        target : str
+   395→   395→            Domain, URL, or directory path (for local scans).
+   396→   396→        modules : list[str] | None
+   397→   397→            Explicit module IDs.  ``None`` → defaults.
+   398→   398→        all_modules : bool
+   399→   399→            Run every registered module for the scan type.
+   400→   400→        timeout : int
+   401→   401→            Per-request timeout in seconds.
+   402→   402→        verify_tls : bool
+   403→   403→            Whether to verify TLS certificates.
+   404→   404→        rate_limit : float | None
+   405→   405→            Requests-per-second cap.  Falls back to the engine default.
+   406→   406→        is_local : bool
+   407→   407→            If ``True``, use ``LOCAL_MODULES`` instead of
+   408→   408→            ``MODULE_REGISTRY`` (same as ``audit_scan``).
+   409→   409→
+   410→   410→        Returns
+   411→   411→        -------
+   412→   412→        ReconProResult
+   413→   413→            Identical shape to what ``scanner.scan`` returns.
+   414→   414→        """
+   415→   415→        effective_rate = rate_limit if rate_limit is not None else self._default_rate_limit
+   416→   416→
+   417→   417→        # Resolve modules list.
+   418→   418→        if is_local:
+   419→   419→            mods = self._resolve_local_modules(modules, all_modules)
+   420→   420→        else:
+   421→   421→            mods = self._resolve_remote_modules(modules, all_modules)
+   422→   422→
+   423→   423→        base_url = target if target.startswith("http") else f"https://{target}"
+   424→   424→        host = target.replace("https://", "").replace("http://", "").split("/")[0]
+   425→   425→
+   426→   426→        self._emit(ScanEvent(type="SCAN_START", target=target, modules=list(mods)))
+   427→   427→        try:
+   428→   428→            from .plugins import HookManager
+   429→   429→            HookManager.fire("pre_scan", target=target, modules=mods)
+   430→   430→        except Exception:
+   431→   431→            logger.debug("Hook 'pre_scan' error", exc_info=True)
+   432→   432→        scan_t0 = time.monotonic()
+   433→   433→
+   434→   434→        semaphore = asyncio.Semaphore(self._concurrency)
+   435→   435→        findings_lock = asyncio.Lock()
+   436→   436→        all_findings: List[Finding] = []
+   437→   437→        module_results: Dict[str, Dict[str, Any]] = {}
+   438→   438→        vibesec_state: Dict[str, Any] = {}
+   439→   439→
+   440→   440→        # Build coroutine tasks for each module.
+   441→   441→        tasks: List[asyncio.Task[None]] = []
+   442→   442→        for mod_id in mods:
+   443→   443→            if is_local:
+   444→   444→                entry = LOCAL_MODULES.get(mod_id)
+   445→   445→            else:
+   446→   446→                entry = MODULE_REGISTRY.get(mod_id)
+   447→   447→
+   448→   448→            if entry is None:
+   449→   449→                continue
+   450→   450→
+   451→   451→            if not _module_health.is_healthy(mod_id):
+   452→   452→                logger.warning("Module '%s' is unhealthy (circuit breaker open), skipping", mod_id)
+   453→   453→                continue
+   454→   454→
+   455→   455→            runner = entry.get("runner")
+   456→   456→            if runner is None:
+   457→   457→                # Special case: vibesec — lazy import.
+   458→   458→                if mod_id == "vibesec" and not is_local:
+   459→   459→                    from .modules.vibesec import run_vibesec  # type: ignore[no-redef]
+   460→   460→                    runner = run_vibesec
+   461→   461→                else:
+   462→   462→                    continue
+   463→   463→
+   464→   464→            tasks.append(
+   465→   465→                asyncio.create_task(
+   466→   466→                    self._run_module(
+   467→   467→                        mod_id=mod_id,
+   468→   468→                        runner=runner,
+   469→   469→                        target=target,
+   470→   470→                        base_url=base_url,
+   471→   471→                        timeout=timeout,
+   472→   472→                        verify_tls=verify_tls,
+   473→   473→                        semaphore=semaphore,
+   474→   474→                        findings_lock=findings_lock,
+   475→   475→                        all_findings=all_findings,
+   476→   476→                        module_results=module_results,
+   477→   477→                        vibesec_state=vibesec_state,
+   478→   478→                    )
+   479→   479→                )
+   480→   480→            )
+   481→   481→
+   482→   482→        # Run all module tasks concurrently (bounded by semaphore).
+   483→   483→        if tasks:
+   484→   484→            await asyncio.gather(*tasks, return_exceptions=True)
+   485→   485→
+   486→   486→        scan_duration = time.monotonic() - scan_t0
+   487→   487→
+   488→   488→        vibesec_score = vibesec_state.get("score")
+   489→   489→        vibesec_grade = vibesec_state.get("grade")
+   490→   490→
+   491→   491→        result = self._build_result(
+   492→   492→            target=host if not is_local else (target if target != "." else "local-audit"),
+   493→   493→            mods=mods,
+   494→   494→            all_findings=all_findings,
+   495→   495→            module_results=module_results,
+   496→   496→            vibesec_score=vibesec_score,
+   497→   497→            vibesec_grade=vibesec_grade,
+   498→   498→        )
+   499→   499→
+   500→   500→        # ── Post-scan Intelligence Pipeline ──────────────────────
+   501→   501→        intelligence_data = None
+   502→   502→        if all_findings:
+   503→   503→            try:
+   504→   504→                from .intelligence_pipeline import IntelligencePipeline
+   505→   505→                intel_pipeline = IntelligencePipeline(
+   506→   506→                    enable_ai_analyst=True,
+   507→   507→                    enable_attack_graph=True,
+   508→   508→                    enable_threat_intel=True,
+   509→   509→                )
+   510→   510→                intel_result = intel_pipeline.analyze(all_findings, result.to_dict())
+   511→   511→                intelligence_data = intel_result.to_dict()
+   512→   512→                # Inject intelligence into result
+   513→   513→                result.intelligence = intelligence_data
+   514→   514→                logger.info(
+   515→   515→                    "Intelligence pipeline completed: risk=%.1f exposure=%.1f chains=%d cves=%d",
+   516→   516→                    intel_result.executive_risk_score,
+   517→   517→                    intel_result.exposure_score,
+   518→   518→                    len(intel_result.attack_chains),
+   519→   519→                    len(intel_result.cve_matches),
+   520→   520→                )
+   521→   521→            except Exception as e:
+   522→   522→                logger.warning("Intelligence pipeline error: %s", e, exc_info=True)
+   523→   523→
+   524→   524→        self._emit(
+   525→   525→            ScanEvent(
+   526→   526→                type="SCAN_COMPLETE",
+   527→   527→                target=target,
+   528→   528→                result=result,
+   529→   529→                duration=scan_duration,
+   530→   530→            )
+   531→   531→        )
+   532→   532→        try:
+   533→   533→            from .plugins import HookManager
+   534→   534→            HookManager.fire("post_scan", target=target, result=result, duration=scan_duration)
+   535→   535→        except Exception:
+   536→   536→            logger.debug("Hook 'post_scan' error", exc_info=True)
+   537→   537→
+   538→   538→        # ── Post-scan Engineering Pipeline (if enabled) ──────────────
+   539→   539→        if self._run_engineering and all_findings:
+   540→   540→            try:
+   541→   541→                from .engineering_workflow import ContinuousEngineeringOrchestrator
+   542→   542→                eng_orchestrator = ContinuousEngineeringOrchestrator(self._engineering_repo_path)
+   543→   543→                eng_result = eng_orchestrator.run_full_cycle(self._engineering_repo_path)
+   544→   544→                # Store engineering result metadata in result for later retrieval
+   545→   545→                result.engineering = eng_result.to_dict()
+   546→   546→                logger.info(
+   547→   547→                    "Engineering pipeline completed: status=%s stages=%d duration=%.2fs",
+   548→   548→                    eng_result.overall_status,
+   549→   549→                    len(eng_result.stages),
+   550→   550→                    eng_result.total_duration_s,
+   551→   551→                )
+   552→   552→            except Exception as e:
+   553→   553→                logger.warning("Engineering pipeline error: %s", e, exc_info=True)
+   554→   554→
+   555→   555→        return result
+   556→   556→
+   557→   557→    # -- sync wrapper ------------------------------------------------------
+   558→   558→
+   559→   559→    def scan_one(
+   560→   560→        self,
+   561→   561→        target: str,
+   562→   562→        modules: Optional[List[str]] = None,
+   563→   563→        timeout: int = 10,
+   564→   564→        verify_tls: bool = True,
+   565→   565→        rate_limit: Optional[float] = None,
+   566→   566→        is_local: bool = False,
+   567→   567→        run_engineering: bool = False,
+   568→   568→        engineering_repo_path: str = ".",
+   569→   569→    ) -> ReconProResult:
+   570→   570→        """Synchronous wrapper around :meth:`run`.
+   571→   571→
+   572→   572→        Creates a fresh event loop (or reuses the running one) so callers
+   573→   573→        don't need to care about asyncio.
+   574→   574→
+   575→   575→        Parameters are identical to :meth:`run` except ``all_modules`` is
+   576→   576→        not exposed — pass an explicit ``modules`` list instead.
+   577→   577→        """
+   578→   578→        # Override instance-level engineering settings if caller provides them.
+   579→   579→        if run_engineering:
+   580→   580→            self._run_engineering = True
+   581→   581→        if engineering_repo_path != ".":
+   582→   582→            self._engineering_repo_path = engineering_repo_path
+   583→   583→        try:
+   584→   584→            loop = asyncio.get_running_loop()
+   585→   585→        except RuntimeError:
+   586→   586→            loop = None
+   587→   587→
+   588→   588→        if loop is not None and loop.is_running():
+   589→   589→            # Already inside an async context — use nest_asyncio-safe
+   590→   590→            # approach or fallback to a new thread.
+   591→   591→            import concurrent.futures
+   592→   592→
+   593→   593→            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+   594→   594→                future = pool.submit(
+   595→   595→                    asyncio.run,
+   596→   596→                    self.run(
+   597→   597→                        target=target,
+   598→   598→                        modules=modules,
+   599→   599→                        timeout=timeout,
+   600→   600→                        verify_tls=verify_tls,
+   601→   601→                        rate_limit=rate_limit,
+   602→   602→                        is_local=is_local,
+   603→   603→                    ),
+   604→   604→                )
+   605→   605→                return future.result()
+   606→   606→
+   607→   607→        return asyncio.run(
+   608→   608→            self.run(
+   609→   609→                target=target,
+   610→   610→                modules=modules,
+   611→   611→                timeout=timeout,
+   612→   612→                verify_tls=verify_tls,
+   613→   613→                rate_limit=rate_limit,
+   614→   614→                is_local=is_local,
+   615→   615→            )
+   616→   616→        )
+   617→   617→
+   618→   618→
+   619→   619→# ── Module Health Tracking ────────────────────────────────────────────
+   620→   620→
+   621→   621→
+   622→   622→class ModuleHealthState:
+   623→   623→    """Tracks health of scanner modules for circuit-breaker logic."""
+   624→   624→
+   625→   625→    def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 60.0):
+   626→   626→        self._failure_counts: Dict[str, int] = {}
+   627→   627→        self._last_failure_time: Dict[str, float] = {}
+   628→   628→        self._failure_threshold = failure_threshold
+   629→   629→        self._cooldown_seconds = cooldown_seconds
+   630→   630→
+   631→   631→    def record_success(self, module_id: str) -> None:
+   632→   632→        self._failure_counts.pop(module_id, None)
+   633→   633→        self._last_failure_time.pop(module_id, None)
+   634→   634→
+   635→   635→    def record_failure(self, module_id: str) -> None:
+   636→   636→        self._failure_counts[module_id] = self._failure_counts.get(module_id, 0) + 1
+   637→   637→        self._last_failure_time[module_id] = time.monotonic()
+   638→   638→
+   639→   639→    def is_healthy(self, module_id: str) -> bool:
+   640→   640→        """Check if a module is healthy enough to run."""
+   641→   641→        count = self._failure_counts.get(module_id, 0)
+   642→   642→        if count < self._failure_threshold:
+   643→   643→            return True
+   644→   644→        # In cooldown?
+   645→   645→        last_fail = self._last_failure_time.get(module_id, 0)
+   646→   646→        if time.monotonic() - last_fail > self._cooldown_seconds:
+   647→   647→            # Cooldown expired, reset
+   648→   648→            self.record_success(module_id)
+   649→   649→            return True
+   650→   650→        return False
+   651→   651→
+   652→   652→    def get_status(self) -> Dict[str, Dict[str, Any]]:
+   653→   653→        """Return health status for all tracked modules."""
+   654→   654→        return {
+   655→   655→            mid: {
+   656→   656→                "failure_count": count,
+   657→   657→                "is_healthy": self.is_healthy(mid),
+   658→   658→                "in_cooldown": not self.is_healthy(mid),
+   659→   659→            }
+   660→   660→            for mid, count in self._failure_counts.items()
+   661→   661→        }
+   662→   662→
+   663→   663→
+   664→   664→# Global module health tracker
+   665→   665→_module_health = ModuleHealthState()
+   666→   666→
+   667→   667→
+   668→   668→# ── Module-level convenience functions ───────────────────────────────────
+   669→   669→
+   670→   670→
+   671→   671→async def _scan_async(
+   672→   672→    target: str,
+   673→   673→    modules: Optional[List[str]] = None,
+   674→   674→    all_modules: bool = False,
+   675→   675→    timeout: int = 10,
+   676→   676→    verify_tls: bool = True,
+   677→   677→    rate_limit: float = 50.0,
+   678→   678→    event_callback: Optional[Callable[[ScanEvent], None]] = None,
+   679→   679→    concurrency: int = 5,
+   680→   680→    use_async: bool = True,
+   681→   681→) -> ReconProResult:
+   682→   682→    """Standalone async scan function — creates a temporary ``ScanEngine``."""
+   683→   683→    engine = ScanEngine(
+   684→   684→        event_callback=event_callback,
+   685→   685→        concurrency=concurrency,
+   686→   686→        rate_limit=rate_limit,
+   687→   687→        use_async=use_async,
+   688→   688→    )
+   689→   689→    return await engine.run(
+   690→   690→        target=target,
+   691→   691→        modules=modules,
+   692→   692→        all_modules=all_modules,
+   693→   693→        timeout=timeout,
+   694→   694→        verify_tls=verify_tls,
+   695→   695→        rate_limit=rate_limit,
+   696→   696→    )
+   697→   697→
+   698→   698→
+   699→   699→def scan(
+   700→   700→    target: str,
+   701→   701→    modules: Optional[List[str]] = None,
+   702→   702→    all_modules: bool = False,
+   703→   703→    timeout: int = 8,
+   704→   704→    verify_tls: bool = True,
+   705→   705→    rate_limit: float = 10.0,
+   706→   706→    run_engineering: bool = False,
+   707→   707→    engineering_repo_path: str = ".",
+   708→   708→) -> ReconProResult:
+   709→   709→    """Drop-in replacement for ``scanner.scan`` with concurrent module execution.
+   710→   710→
+   711→   711→    Accepts the exact same parameters and returns an identical
+   712→   712→    ``ReconProResult``.  The only internal difference is that modules
+   713→   713→    are executed concurrently (up to 5 by default) instead of sequentially.
+   714→   714→
+   715→   715→    This function can be used as a direct upgrade path::
+   716→   716→
+   717→   717→        # Before (sequential)
+   718→   718→        from reconpro.scanner import scan
+   719→   719→        result = scan("example.com")
+   720→   720→
+   721→   721→        # After (concurrent, drop-in)
+   722→   722→        from reconpro.engine import scan
+   723→   723→        result = scan("example.com")
+   724→   724→    """
+   725→   725→    engine = ScanEngine(
+   726→   726→        concurrency=5,
+   727→   727→        rate_limit=rate_limit,
+   728→   728→        use_async=True,
+   729→   729→        run_engineering=run_engineering,
+   730→   730→        engineering_repo_path=engineering_repo_path,
+   731→   731→    )
+   732→   732→    return engine.scan_one(
+   733→   733→        target=target,
+   734→   734→        modules=modules,
+   735→   735→        timeout=timeout,
+   736→   736→        verify_tls=verify_tls,
+   737→   737→        rate_limit=rate_limit,
+   738→   738→        run_engineering=run_engineering,
+   739→   739→        engineering_repo_path=engineering_repo_path,
+   740→   740→    )
+   741→   741→
+   742→   742→
+   743→   743→def audit_scan(
+   744→   744→    target: str = ".",
+   745→   745→    modules: Optional[List[str]] = None,
+   746→   746→    all_modules: bool = False,
+   747→   747→    run_engineering: bool = False,
+   748→   748→    engineering_repo_path: str = ".",
+   749→   749→) -> ReconProResult:
+   750→   750→    """Drop-in replacement for ``scanner.audit_scan`` with concurrent module execution.
+   751→   751→
+   752→   752→    Runs local machine / project audit modules concurrently.
+   753→   753→    """
+   754→   754→    engine = ScanEngine(
+   755→   755→        concurrency=5,
+   756→   756→        rate_limit=10.0,
+   757→   757→        use_async=True,
+   758→   758→        run_engineering=run_engineering,
+   759→   759→        engineering_repo_path=engineering_repo_path,
+   760→   760→    )
+   761→   761→    return engine.scan_one(
+   762→   762→        target=target,
+   763→   763→        modules=modules,
+   764→   764→        timeout=8,
+   765→   765→        verify_tls=True,
+   766→   766→        is_local=True,
+   767→   767→        run_engineering=run_engineering,
+   768→   768→        engineering_repo_path=engineering_repo_path,
+   769→   769→    )
+   770→   770→
+   771→   771→
+   772→   772→async def concurrent_scan(
+   773→   773→    targets: List[str],
+   774→   774→    modules: Optional[List[str]] = None,
+   775→   775→    all_modules: bool = False,
+   776→   776→    timeout: int = 10,
+   777→   777→    verify_tls: bool = True,
+   778→   778→    rate_limit: float = 50.0,
+   779→   779→    max_concurrency: int = 10,
+   780→   780→    is_local: bool = False,
+   781→   781→    event_callback: Optional[Callable[[ScanEvent], None]] = None,
+   782→   782→) -> Dict[str, ReconProResult]:
+   783→   783→    """Scan multiple targets concurrently with bounded total parallelism.
+   784→   784→
+   785→   785→    Spawns one ``ScanEngine`` per target but shares a single
+   786→   786→    ``asyncio.Semaphore`` so the total number of in-flight modules
+   787→   787→    across *all* targets never exceeds ``max_concurrency``.
+   788→   788→
+   789→   789→    Parameters
+   790→   790→    ----------
+   791→   791→    targets : list[str]
+   792→   792→        Domains / URLs to scan.
+   793→   793→    modules, all_modules, timeout, verify_tls, rate_limit
+   794→   794→        Forwarded to each per-target scan.
+   795→   795→    max_concurrency : int
+   796→   796→        Upper bound on simultaneous module executions across all targets.
+   797→   797→    is_local : bool
+   798→   798→        If ``True``, run local audit modules instead of remote ones.
+   799→   799→    event_callback : callable | None
+   800→   800→        Receives ``ScanEvent`` from every target scan.
+   801→   801→
+   802→   802→    Returns
+   803→   803→    -------
+   804→   804→    dict[str, ReconProResult]
+   805→   805→        Mapping of target → result for every target.
+   806→   806→    """
+   807→   807→    results: Dict[str, ReconProResult] = {}
+   808→   808→    lock = asyncio.Lock()
+   809→   809→
+   810→   810→    async def _scan_one(t: str) -> None:
+   811→   811→        engine = ScanEngine(
+   812→   812→            event_callback=event_callback,
+   813→   813→            concurrency=max_concurrency,
+   814→   814→            rate_limit=rate_limit,
+   815→   815→            use_async=True,
+   816→   816→        )
+   817→   817→        result = await engine.run(
+   818→   818→            target=t,
+   819→   819→            modules=modules,
+   820→   820→            all_modules=all_modules,
+   821→   821→            timeout=timeout,
+   822→   822→            verify_tls=verify_tls,
+   823→   823→            rate_limit=rate_limit,
+   824→   824→            is_local=is_local,
+   825→   825→        )
+   826→   826→        async with lock:
+   827→   827→            results[t] = result
+   828→   828→
+   829→   829→    tasks = [asyncio.create_task(_scan_one(t)) for t in targets]
+   830→   830→    if tasks:
+   831→   831→        await asyncio.gather(*tasks, return_exceptions=True)
+   832→   832→
+   833→   833→    return results
+   834→   834→

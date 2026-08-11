@@ -73,6 +73,7 @@ class EngineeringStage(str, Enum):
     RECOMMENDATIONS = "recommendations"
     AUTO_FIX = "auto_fix"
     QUALITY_GATE = "quality_gate"
+    QUALITY_INTELLIGENCE = "quality_intelligence"
     REPORTING = "reporting"
     REPOSITORY_MEMORY_PERSIST = "repository_memory_persist"
 
@@ -91,6 +92,7 @@ _FULL_CYCLE_STAGES: List[EngineeringStage] = [
     EngineeringStage.RECOMMENDATIONS,
     EngineeringStage.AUTO_FIX,
     EngineeringStage.QUALITY_GATE,
+    EngineeringStage.QUALITY_INTELLIGENCE,
     EngineeringStage.REPORTING,
     EngineeringStage.REPOSITORY_MEMORY_PERSIST,
 ]
@@ -663,6 +665,48 @@ class ContinuousEngineeringOrchestrator:
             data = {"result": qg_result}
         return data
 
+    def _stage_quality_intelligence(self) -> Dict[str, Any]:
+        """k2. Quality Intelligence: multi-dimensional code quality analysis."""
+        try:
+            from .quality_intelligence import QualityIntelligence
+
+            qi = QualityIntelligence()
+            repo_path = self._repo_path or "."
+            # Analyze key package files
+            target_files = []
+            pkg = Path(repo_path)
+            if pkg.is_dir():
+                for py_file in sorted(pkg.glob("*.py"))[:20]:
+                    target_files.append(str(py_file))
+                # Also analyze subdirectories
+                for subdir in ["reconpro", "modules", "integrations"]:
+                    sub_path = pkg / subdir
+                    if sub_path.is_dir():
+                        for py_file in sorted(sub_path.glob("*.py"))[:10]:
+                            target_files.append(str(py_file))
+
+            if not target_files:
+                return {"analyzed": 0, "reason": "no Python files found"}
+
+            results = {}
+            for fpath in target_files:
+                try:
+                    snapshot = qi.analyze_file(fpath)
+                    results[fpath] = snapshot.to_dict() if hasattr(snapshot, "to_dict") else str(snapshot)
+                except Exception:
+                    continue
+
+            overall = qi.analyze_repository(repo_path) if pkg.is_dir() else None
+            data = {
+                "files_analyzed": len(results),
+                "results": results,
+            }
+            if overall and hasattr(overall, "to_dict"):
+                data["overall"] = overall.to_dict()
+            return data
+        except Exception as exc:
+            return {"analyzed": 0, "error": str(exc)}
+
     def _stage_reporting(self) -> Dict[str, Any]:
         """l. Reporting: generate comprehensive engineering report."""
         ri = self._get_regression_intelligence()
@@ -736,6 +780,7 @@ class ContinuousEngineeringOrchestrator:
         EngineeringStage.RECOMMENDATIONS: "_stage_recommendations",
         EngineeringStage.AUTO_FIX: "_stage_auto_fix",
         EngineeringStage.QUALITY_GATE: "_stage_quality_gate",
+        EngineeringStage.QUALITY_INTELLIGENCE: "_stage_quality_intelligence",
         EngineeringStage.REPORTING: "_stage_reporting",
         EngineeringStage.REPOSITORY_MEMORY_PERSIST: "_stage_repository_memory_persist",
     }

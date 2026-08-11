@@ -34,7 +34,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from reconpro.constants import RECONPRO_HOME, MEMORY_DIR, SEVERITY_LEVELS
+from .constants import RECONPRO_HOME, MEMORY_DIR, SEVERITY_LEVELS
 
 # ── Module paths ──────────────────────────────────────────────────────────
 

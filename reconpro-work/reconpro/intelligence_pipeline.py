@@ -246,7 +246,7 @@ class IntelligencePipeline:
         # ----------------------------------------------------------------
         if self.enable_ai_analyst:
             try:
-                from reconpro.ai_analyst import AIAnalystEngine
+                from .ai_analyst import AIAnalystEngine
 
                 engine = AIAnalystEngine()
                 t_ai = time.monotonic()
@@ -282,7 +282,7 @@ class IntelligencePipeline:
         # ----------------------------------------------------------------
         if self.enable_attack_graph:
             try:
-                from reconpro.attack_graph import AttackGraphEngine
+                from .attack_graph import AttackGraphEngine
 
                 engine = AttackGraphEngine()
                 t_graph = time.monotonic()
@@ -305,7 +305,7 @@ class IntelligencePipeline:
         # ----------------------------------------------------------------
         if self.enable_threat_intel:
             try:
-                from reconpro.threat_intel import ThreatIntelEngine
+                from .threat_intel import ThreatIntelEngine
 
                 engine = ThreatIntelEngine()
                 t_intel = time.monotonic()
@@ -328,7 +328,7 @@ class IntelligencePipeline:
         # ----------------------------------------------------------------
         if self.enable_knowledge_graph:
             try:
-                from reconpro.knowledge_graph import SecurityKnowledgeGraph
+                from .knowledge_graph import SecurityKnowledgeGraph
 
                 kg = SecurityKnowledgeGraph()
                 for f in valid:
@@ -439,7 +439,7 @@ class IntelligencePipeline:
             intel_signals += len(result.attack_chains) * 2
         total_signals = intel_signals + 1  # avoid div-by-zero
         result.threat_confidence_index = round(
-            min(1.0, intel_signals / max(n, 1) * 2.0), 2
+            min(100.0, intel_signals / max(n, 1) * 200.0), 2
         )
 
 

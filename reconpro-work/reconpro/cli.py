@@ -1529,10 +1529,21 @@ def main(argv: list[str] | None = None) -> None:
         scan_args = parser.parse_args(["scan"] + remaining)
         modules = [m.strip().lower() for m in scan_args.modules.split(",")] if scan_args.modules else None
         _banner(scan_args)
+        run_eng = getattr(scan_args, "engineering", False)
         result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
                                 all_modules=scan_args.all, timeout=scan_args.timeout,
-                                verify_tls=not scan_args.insecure, rate_limit=scan_args.rate_limit)
+                                verify_tls=not scan_args.insecure, rate_limit=scan_args.rate_limit,
+                                run_engineering=run_eng)
         _output_result(result, scan_args)
+        if run_eng and result.engineering:
+            eng = result.engineering
+            console.print(Panel(
+                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
+                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
+                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
+                title="[bold]ENGINEERING PIPELINE[/bold]",
+                border_style="bright_cyan",
+            ))
         return
 
     # ── ZAI (z.ai live stream) ──────────────────────────────────────
@@ -1896,7 +1907,7 @@ def main(argv: list[str] | None = None) -> None:
         # Rich output for all modules
         console.print()
         console.print(Panel(
-            f"[bold]ReconPro v9.2.0  |  {len(ratings)} Modules  |  ~{total_loc:,} Lines  |  0 Dependencies[/bold]",
+            f"[bold]ReconPro v{__version__}  |  {len(ratings)} Modules  |  ~{total_loc:,} Lines  |  0 Dependencies[/bold]",
             title="MODULE RATINGS vs INDUSTRY TOOLS",
             border_style="bright_cyan",
         ))
