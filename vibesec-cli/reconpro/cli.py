@@ -726,8 +726,9 @@ def main(argv: list[str] | None = None) -> None:
         start_chat()
         return
 
-    # ── TUI ────────────────────────────────────────────────────────
+    # ── TUI (deprecated alias for nexus) ───────────────────────────
     if cmd == "tui":
+        console.print("  [yellow]'reconpro tui' is deprecated — use 'reconpro nexus' instead.[/]")
         from .nexus_tui import start_nexus
         start_nexus()
         return

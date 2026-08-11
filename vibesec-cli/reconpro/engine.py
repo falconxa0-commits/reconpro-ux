@@ -1,4 +1,4 @@
-"""Async scan orchestration engine for ReconPro v7.0.
+"""Async scan orchestration engine for ReconPro v8.0.0.
 
 Runs modules concurrently with an event-driven architecture.  The public
 ``scan()`` function is a drop-in replacement for ``scanner.scan()`` — it

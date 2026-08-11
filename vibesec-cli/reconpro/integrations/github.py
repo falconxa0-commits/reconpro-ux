@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from ..config_utils import integration_config_path, load_config
+
 # GitHub API base
 GITHUB_API = "https://api.github.com"
 
@@ -30,31 +32,8 @@ SEVERITY_LABELS: dict[str, str] = {
 DREAD_LABELS = ("damage", "reproducibility", "exploitability", "affected_users", "discoverability")
 
 
-def _load_config(path: Path) -> dict[str, str]:
-    """Load config from YAML or JSON (no external deps)."""
-    text = path.read_text(encoding="utf-8")
-    try:
-        return json.loads(text)  # type: ignore[return-value]
-    except json.JSONDecodeError:
-        pass
-    # Minimal YAML parser for flat key: value
-    data: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            data[key] = value
-    return data
-
-
 def _default_config_path() -> Path:
-    return Path.home() / ".reconpro" / "integrations" / "github.yaml"
+    return integration_config_path("github")
 
 
 class GitHubClient:
@@ -69,8 +48,7 @@ class GitHubClient:
         cfg_path = _default_config_path()
         cfg: dict[str, str] = {}
 
-        if cfg_path.exists():
-            cfg = _load_config(cfg_path)
+        cfg = load_config(cfg_path)
 
         self.token = token or cfg.get("token", "")
         self.owner = owner or cfg.get("owner", "")

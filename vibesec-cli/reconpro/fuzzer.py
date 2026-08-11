@@ -15,8 +15,10 @@ import json
 import urllib.parse
 import urllib.request
 import urllib.error
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
+
+from .profiler import TechProfile
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -756,49 +758,6 @@ PAYLOAD_DATABASE: dict[str, dict[str, list[str]]] = {
         ],
     },
 }
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# TECH_PROFILE — Data container for fingerprinting results
-# ──────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class TechProfile:
-    """Result of technology detection against a target."""
-    frameworks: list[str] = field(default_factory=list)
-    language: Optional[str] = None
-    server: Optional[str] = None
-    waf: Optional[str] = None
-    cms: Optional[str] = None
-    has_graphql: bool = False
-    has_rest_api: bool = False
-    confidence: float = 0.0
-
-    def to_dict(self) -> dict:
-        return {
-            "frameworks": self.frameworks,
-            "language": self.language,
-            "server": self.server,
-            "waf": self.waf,
-            "cms": self.cms,
-            "has_graphql": self.has_graphql,
-            "has_rest_api": self.has_rest_api,
-            "confidence": self.confidence,
-        }
-
-    def __repr__(self) -> str:
-        parts = []
-        if self.cms:
-            parts.append(f"cms={self.cms}")
-        if self.language:
-            parts.append(f"lang={self.language}")
-        if self.frameworks:
-            parts.append(f"fw={','.join(self.frameworks)}")
-        if self.server:
-            parts.append(f"srv={self.server}")
-        if self.waf:
-            parts.append(f"waf={self.waf}")
-        return f"TechProfile({', '.join(parts)}, confidence={self.confidence:.0%})"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

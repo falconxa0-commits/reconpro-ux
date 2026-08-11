@@ -24,7 +24,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
-_CONFIG_DIR = Path.home() / ".reconpro" / "config"
+from .config_utils import default_config_path, load_config
+
+_CONFIG_DIR = default_config_path()
 _CONFIG_FILE = _CONFIG_DIR / "webhooks.json"
 
 
@@ -36,9 +38,8 @@ def _load_config() -> Dict[str, Any]:
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if _CONFIG_FILE.exists():
         try:
-            with open(_CONFIG_FILE, "r") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError):
+            return load_config(_CONFIG_FILE)
+        except (OSError, ValueError):
             pass
     return {}
 

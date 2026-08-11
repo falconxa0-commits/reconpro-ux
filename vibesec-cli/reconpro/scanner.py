@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .modules import (
     run_recon, run_vibesec, run_auth, run_chain,
@@ -11,6 +11,24 @@ from .modules import (
     run_cloud_recon, run_team,
 )
 from .http import http_probe, Finding, compute_grade, badge_markdown, default_limiter
+
+
+# ── Wrapper adapters for local modules that return 4-tuples ───────
+
+def _run_iac_audit(target: str, base_url: str = "",
+                   timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+    """Adapter: iac_audit.run() returns (findings, max_pts, name, category)."""
+    from .modules.iac_audit import run as _iac_run
+    findings, *_ = _iac_run(target, base_url, timeout=timeout, verify_tls=verify_tls)
+    return findings
+
+
+def _run_container_sec(target: str, base_url: str = "",
+                       timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+    """Adapter: container_sec.run() returns (findings, deducted, grade, badge)."""
+    from .modules.container_sec import run as _cs_run
+    findings, *_ = _cs_run(target, base_url, timeout=timeout, verify_tls=verify_tls)
+    return findings
 
 
 # ── Remote scan modules (require a URL target) ─────────────────────────
@@ -29,16 +47,19 @@ MODULE_REGISTRY = {
 
 # ── Local scan modules (scan the machine, not a URL) ────────────────────
 LOCAL_MODULES = {
-    "host":   {"name": "HOST AUDIT",   "runner": run_host,   "color": "bright_yellow"},
-    "dev":    {"name": "DEV SEC",      "runner": run_dev,    "color": "bright_cyan"},
-    "doctor": {"name": "DOCTOR",       "runner": run_doctor, "color": "bright_green"},
+    "host":          {"name": "HOST AUDIT",          "runner": run_host,          "color": "bright_yellow"},
+    "dev":           {"name": "DEV SEC",             "runner": run_dev,           "color": "bright_cyan"},
+    "doctor":        {"name": "DOCTOR",              "runner": run_doctor,        "color": "bright_green"},
+    "iac_audit":     {"name": "IAC AUDIT",           "runner": _run_iac_audit,    "color": "bright_magenta"},
+    "container_sec": {"name": "CONTAINER SECURITY",  "runner": _run_container_sec, "color": "bright_red"},
+    "team":          {"name": "TEAM",                "runner": run_team,          "color": "cyan"},
 }
 
 # Merge all for --all scans
 ALL_MODULES = list(MODULE_REGISTRY.keys()) + list(LOCAL_MODULES.keys())
 
 DEFAULT_MODULES = ["recon", "vibesec", "auth", "chain", "oblivion", "gorgon", "bot", "pegasus"]
-DEFAULT_LOCAL_MODULES = ["host", "dev", "doctor"]
+DEFAULT_LOCAL_MODULES = ["host", "dev", "doctor", "iac_audit", "container_sec"]
 
 
 @dataclass

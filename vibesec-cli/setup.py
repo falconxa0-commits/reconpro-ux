@@ -2,12 +2,12 @@ from setuptools import setup, find_packages
 
 setup(
     name="reconpro",
-    version="2.0.0",
+    version="8.0.0",
     author="ReconPro Security",
     author_email="security@reconpro.io",
     description=(
         "ReconPro Enterprise — The Security Reconnaissance Platform. "
-        "Eight Blades. One Target. One Verdict. "
+        "Eleven Blades. One Target. One Verdict. "
         "8 modules: RECON, AUTH BYPASS, CHAIN HUNTER, BOT HUNTER, "
         "GORGON ULTRA, OBLIVION, VIBESEC, NHI GRAPH."
     ),

@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from ..config_utils import integration_config_path, load_config
+
 # Severity → Slack accent colour mapping
 SEVERITY_COLORS: dict[str, str] = {
     "critical": "#E01E5A",
@@ -30,31 +32,8 @@ SEVERITY_EMOJI: dict[str, str] = {
 }
 
 
-def _load_config(path: Path) -> dict[str, str]:
-    """Load config from YAML or JSON (no external deps)."""
-    text = path.read_text(encoding="utf-8")
-    try:
-        return json.loads(text)  # type: ignore[return-value]
-    except json.JSONDecodeError:
-        pass
-    # Minimal YAML parser for flat key: value
-    data: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            data[key] = value
-    return data
-
-
 def _default_config_path() -> Path:
-    return Path.home() / ".reconpro" / "integrations" / "slack.yaml"
+    return integration_config_path("slack")
 
 
 class SlackClient:
@@ -62,10 +41,7 @@ class SlackClient:
 
     def __init__(self, webhook_url: str = "", bot_token: str | None = None) -> None:
         cfg_path = _default_config_path()
-        cfg: dict[str, str] = {}
-
-        if cfg_path.exists():
-            cfg = _load_config(cfg_path)
+        cfg = load_config(cfg_path)
 
         self.webhook_url = webhook_url or cfg.get("webhook_url", "")
         self.bot_token = bot_token or cfg.get("bot_token")

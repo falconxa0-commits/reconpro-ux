@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from ..config_utils import integration_config_path, load_config
 
 # ---------------------------------------------------------------------------
 # Severity → Jira priority mapping
@@ -30,40 +31,8 @@ SEVERITY_PRIORITY: dict[str, str] = {
 _DONE_TRANSITIONS = {"done", "closed", "resolved"}
 
 
-def _load_config(path: Path) -> dict[str, Any]:
-    """Load a YAML or JSON config file.
-
-    We first attempt to read the file as raw text and parse JSON.
-    If that fails and PyYAML is somehow available we try yaml.safe_load.
-    Otherwise we fall back to a minimal inline YAML-like parser that
-    handles the flat key: value structure used for ReconPro configs.
-    """
-    text = path.read_text(encoding="utf-8")
-
-    # Try JSON first (works for .json and also .yaml that happens to be JSON)
-    try:
-        return json.loads(text)  # type: ignore[return-value]
-    except json.JSONDecodeError:
-        pass
-
-    # Minimal YAML parser for flat key: value pairs (no external deps)
-    data: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key:
-            data[key] = value
-    return data
-
-
 def _default_config_path() -> Path:
-    return Path.home() / ".reconpro" / "integrations" / "jira.yaml"
+    return integration_config_path("jira")
 
 
 class JiraClient:
@@ -77,10 +46,7 @@ class JiraClient:
         project_key: str = "",
     ) -> None:
         cfg_path = _default_config_path()
-        cfg: dict[str, str] = {}
-
-        if cfg_path.exists():
-            cfg = _load_config(cfg_path)  # type: ignore[assignment]
+        cfg = load_config(cfg_path)
 
         self.server_url = (server_url or cfg.get("server_url", "")).rstrip("/")
         self.email = email or cfg.get("email", "")

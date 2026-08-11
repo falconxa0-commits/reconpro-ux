@@ -47,6 +47,20 @@ class TechProfile:
             "detected_technologies": self.detected_technologies,
         }
 
+    def __repr__(self) -> str:
+        parts = []
+        if self.cms:
+            parts.append(f"cms={self.cms}")
+        if self.language:
+            parts.append(f"lang={self.language}")
+        if self.frameworks:
+            parts.append(f"fw={','.join(self.frameworks)}")
+        if self.server:
+            parts.append(f"srv={self.server}")
+        if self.waf:
+            parts.append(f"waf={self.waf}")
+        return f"TechProfile({', '.join(parts)}, confidence={self.confidence:.0%})"
+
 
 # ── TargetProfiler ───────────────────────────────────────────────────────
 
