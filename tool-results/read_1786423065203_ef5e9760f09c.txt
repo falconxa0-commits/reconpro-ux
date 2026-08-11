@@ -1,0 +1,745 @@
+     1→"""Tests for reconpro.formats — multi-format export (SARIF, Markdown, JSON, HTML, PDF)."""
+     2→
+     3→import sys
+     4→import os
+     5→import json
+     6→import tempfile
+     7→import unittest
+     8→from pathlib import Path
+     9→
+    10→sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    11→
+    12→from reconpro.formats import (
+    13→    _normalize,
+    14→    export_sarif,
+    15→    export_markdown,
+    16→    export_json,
+    17→    export_pdf,
+    18→    export,
+    19→    _severity_to_cvss,
+    20→    _SEV_ORDER,
+    21→    _FORMAT_MAP,
+    22→)
+    23→from reconpro.scanner import ReconProResult
+    24→
+    25→
+    26→def _sample_data(
+    27→    target="example.com",
+    28→    score=85,
+    29→    grade="A",
+    30→    findings=None,
+    31→    modules_run=None,
+    32→):
+    33→    """Build a sample data dict."""
+    34→    if findings is None:
+    35→        findings = [
+    36→            {
+    37→                "title": "SQL Injection in login form",
+    38→                "severity": "critical",
+    39→                "category": "sqli",
+    40→                "module": "auth",
+    41→                "description": "A SQL injection was found in the login endpoint.",
+    42→                "evidence": "POST /login?id=1' OR '1'='1",
+    43→                "asset": "/api/login",
+    44→                "points_deducted": 30,
+    45→                "remediation": "Use parameterized queries.",
+    46→            },
+    47→            {
+    48→                "title": "Missing CSP header",
+    49→                "severity": "medium",
+    50→                "category": "headers",
+    51→                "module": "recon",
+    52→                "description": "Content-Security-Policy header is missing.",
+    53→                "evidence": "No CSP header in response",
+    54→                "asset": "https://example.com",
+    55→                "points_deducted": 10,
+    56→                "remediation": "Add a Content-Security-Policy header.",
+    57→            },
+    58→        ]
+    59→    if modules_run is None:
+    60→        modules_run = ["auth", "recon"]
+    61→    severity_counts = {}
+    62→    for f in findings:
+    63→        sev = f.get("severity", "info").lower()
+    64→        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+    65→    return {
+    66→        "target": target,
+    67→        "total_score": score,
+    68→        "grade": grade,
+    69→        "findings": findings,
+    70→        "modules_run": modules_run,
+    71→        "severity_counts": severity_counts,
+    72→    }
+    73→
+    74→
+    75→# ── _normalize ───────────────────────────────────────────────────────────
+    76→
+    77→
+    78→class TestNormalize(unittest.TestCase):
+    79→    """Test _normalize accepts both dict and ReconProResult."""
+    80→
+    81→    def test_dict_passthrough(self):
+    82→        data = {"key": "value"}
+    83→        result = _normalize(data)
+    84→        self.assertEqual(result, data)
+    85→
+    86→    def test_reconpro_result_converted(self):
+    87→        result_obj = ReconProResult(
+    88→            target="test.com",
+    89→            modules_run=[],
+    90→            findings=[],
+    91→            severity_counts={},
+    92→            total_score=100,
+    93→            grade="A+",
+    94→            badge_markdown="",
+    95→        )
+    96→        result = _normalize(result_obj)
+    97→        self.assertIsInstance(result, dict)
+    98→        self.assertEqual(result["target"], "test.com")
+    99→        self.assertEqual(result["total_score"], 100)
+   100→
+   101→    def test_dict_with_to_dict_attribute(self):
+   102→        """Objects with to_dict() method should be normalized."""
+   103→        class Fake:
+   104→            def to_dict(self):
+   105→                return {"from_fake": True}
+   106→        result = _normalize(Fake())
+   107→        self.assertEqual(result, {"from_fake": True})
+   108→
+   109→
+   110→# ── _severity_to_cvss ─────────────────────────────────────────────────────
+   111→
+   112→
+   113→class TestSeverityToCvss(unittest.TestCase):
+   114→    """Test _severity_to_cvss mapping for SARIF properties."""
+   115→
+   116→    def test_critical(self):
+   117→        self.assertEqual(_severity_to_cvss("critical"), "9.0")
+   118→
+   119→    def test_high(self):
+   120→        self.assertEqual(_severity_to_cvss("high"), "7.5")
+   121→
+   122→    def test_medium(self):
+   123→        self.assertEqual(_severity_to_cvss("medium"), "5.0")
+   124→
+   125→    def test_low(self):
+   126→        self.assertEqual(_severity_to_cvss("low"), "2.5")
+   127→
+   128→    def test_info(self):
+   129→        self.assertEqual(_severity_to_cvss("info"), "0.0")
+   130→
+   131→    def test_unknown_defaults_zero(self):
+   132→        self.assertEqual(_severity_to_cvss("unknown"), "0.0")
+   133→
+   134→    def test_empty_string_defaults_zero(self):
+   135→        self.assertEqual(_severity_to_cvss(""), "0.0")
+   136→
+   137→    def test_case_sensitive_exact_match_only(self):
+   138→        # _severity_to_cvss does NOT lowercase — only exact matches work
+   139→        self.assertEqual(_severity_to_cvss("critical"), "9.0")
+   140→        self.assertEqual(_severity_to_cvss("CRITICAL"), "0.0")  # not lowered
+   141→
+   142→
+   143→# ── export_sarif ──────────────────────────────────────────────────────────
+   144→
+   145→
+   146→class TestExportSarif(unittest.TestCase):
+   147→    """Test SARIF 2.1.0 export."""
+   148→
+   149→    def test_valid_output(self):
+   150→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   151→            tmppath = f.name
+   152→        try:
+   153→            data = _sample_data()
+   154→            result_path = export_sarif(data, tmppath)
+   155→            self.assertTrue(os.path.exists(tmppath))
+   156→            with open(tmppath) as f:
+   157→                sarif = json.load(f)
+   158→            self.assertEqual(sarif["$schema"].startswith("https://raw.githubusercontent.com/oasis-tcs/sarif-spec"), True)
+   159→            self.assertEqual(sarif["version"], "2.1.0")
+   160→            self.assertEqual(len(sarif["runs"]), 1)
+   161→            run = sarif["runs"][0]
+   162→            self.assertEqual(run["tool"]["driver"]["name"], "ReconPro")
+   163→            self.assertEqual(len(run["results"]), 2)
+   164→        finally:
+   165→            os.unlink(tmppath)
+   166→
+   167→    def test_empty_findings(self):
+   168→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   169→            tmppath = f.name
+   170→        try:
+   171→            data = _sample_data(findings=[])
+   172→            result_path = export_sarif(data, tmppath)
+   173→            with open(tmppath) as f:
+   174→                sarif = json.load(f)
+   175→            self.assertEqual(len(sarif["runs"][0]["results"]), 0)
+   176→            self.assertEqual(len(sarif["runs"][0]["tool"]["driver"]["rules"]), 0)
+   177→        finally:
+   178→            os.unlink(tmppath)
+   179→
+   180→    def test_special_characters_in_title(self):
+   181→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   182→            tmppath = f.name
+   183→        try:
+   184→            data = _sample_data(findings=[
+   185→                {"title": "XSS <script>alert('hi')</script>", "severity": "high",
+   186→                 "category": "xss", "module": "auth", "description": "test",
+   187→                 "evidence": "<script>", "asset": "/page", "points_deducted": 20},
+   188→            ])
+   189→            result_path = export_sarif(data, tmppath)
+   190→            with open(tmppath) as f:
+   191→                sarif = json.load(f)
+   192→            result = sarif["runs"][0]["results"][0]
+   193→            self.assertIn("script", result["message"]["text"])
+   194→        finally:
+   195→            os.unlink(tmppath)
+   196→
+   197→    def test_sarif_level_mapping(self):
+   198→        """Verify all severities map to correct SARIF levels."""
+   199→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   200→            tmppath = f.name
+   201→        try:
+   202→            data = _sample_data(findings=[
+   203→                {"title": f"T{s}", "severity": s, "category": "c", "module": "m",
+   204→                 "description": "d", "evidence": "e", "asset": "a", "points_deducted": 5}
+   205→                for s in ["critical", "high", "medium", "low", "info"]
+   206→            ])
+   207→            result_path = export_sarif(data, tmppath)
+   208→            with open(tmppath) as f:
+   209→                sarif = json.load(f)
+   210→            levels = {r["level"] for r in sarif["runs"][0]["results"]}
+   211→            self.assertIn("error", levels)  # critical, high
+   212→            self.assertIn("warning", levels)  # medium
+   213→            self.assertIn("note", levels)  # low, info
+   214→        finally:
+   215→            os.unlink(tmppath)
+   216→
+   217→    def test_cve_references_in_findings(self):
+   218→        """Test CVE enrichment data is included in SARIF."""
+   219→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   220→            tmppath = f.name
+   221→        try:
+   222→            data = _sample_data(findings=[
+   223→                {
+   224→                    "title": "CVE Finding",
+   225→                    "severity": "critical",
+   226→                    "category": "cve",
+   227→                    "module": "cve",
+   228→                    "description": "CVE found",
+   229→                    "evidence": "evidence",
+   230→                    "asset": "asset",
+   231→                    "points_deducted": 30,
+   232→                    "related_cves": [
+   233→                        {"cve_id": "CVE-2024-1234", "cvss_score": "9.8", "url": "https://nvd.nist.gov/vuln/detail/CVE-2024-1234"},
+   234→                    ],
+   235→                },
+   236→            ])
+   237→            result_path = export_sarif(data, tmppath)
+   238→            with open(tmppath) as f:
+   239→                sarif = json.load(f)
+   240→            result = sarif["runs"][0]["results"][0]
+   241→            self.assertIn("relatedLocations", result)
+   242→            self.assertEqual(len(result["relatedLocations"]), 1)
+   243→            self.assertIn("CVE-2024-1234", result["relatedLocations"][0]["message"]["text"])
+   244→        finally:
+   245→            os.unlink(tmppath)
+   246→
+   247→    def test_evidence_truncated_to_200(self):
+   248→        """Evidence field should be truncated to 200 chars in SARIF."""
+   249→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   250→            tmppath = f.name
+   251→        try:
+   252→            long_evidence = "A" * 500
+   253→            data = _sample_data(findings=[
+   254→                {"title": "T", "severity": "info", "category": "c", "module": "m",
+   255→                 "description": "d", "evidence": long_evidence, "asset": "a",
+   256→                 "points_deducted": 0},
+   257→            ])
+   258→            result_path = export_sarif(data, tmppath)
+   259→            with open(tmppath) as f:
+   260→                sarif = json.load(f)
+   261→            prop_evidence = sarif["runs"][0]["results"][0]["properties"]["evidence"]
+   262→            self.assertLessEqual(len(prop_evidence), 200)
+   263→        finally:
+   264→            os.unlink(tmppath)
+   265→
+   266→    def test_creates_parent_directories(self):
+   267→        """export_sarif should create parent directories if they don't exist."""
+   268→        import tempfile
+   269→        tmpdir = tempfile.mkdtemp()
+   270→        nested = os.path.join(tmpdir, "a", "b", "c", "output.sarif")
+   271→        try:
+   272→            data = _sample_data()
+   273→            result_path = export_sarif(data, nested)
+   274→            self.assertTrue(os.path.exists(nested))
+   275→        finally:
+   276→            os.unlink(nested)
+   277→            # Clean up dirs
+   278→            os.rmdir(os.path.join(tmpdir, "a", "b", "c"))
+   279→            os.rmdir(os.path.join(tmpdir, "a", "b"))
+   280→            os.rmdir(os.path.join(tmpdir, "a"))
+   281→            os.rmdir(tmpdir)
+   282→
+   283→    def test_unicode_content(self):
+   284→        """Test SARIF handles unicode in findings."""
+   285→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   286→            tmppath = f.name
+   287→        try:
+   288→            data = _sample_data(findings=[
+   289→                {"title": "Unicode: 你好 世界 🌍", "severity": "info", "category": "c",
+   290→                 "module": "m", "description": "测试", "evidence": "テスト",
+   291→                 "asset": "a", "points_deducted": 0},
+   292→            ])
+   293→            result_path = export_sarif(data, tmppath)
+   294→            with open(tmppath, encoding="utf-8") as f:
+   295→                sarif = json.load(f)
+   296→            self.assertIn("你好", sarif["runs"][0]["results"][0]["message"]["text"])
+   297→        finally:
+   298→            os.unlink(tmppath)
+   299→
+   300→
+   301→# ── export_markdown ───────────────────────────────────────────────────────
+   302→
+   303→
+   304→class TestExportMarkdown(unittest.TestCase):
+   305→    """Test Markdown export."""
+   306→
+   307→    def test_valid_output(self):
+   308→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   309→            tmppath = f.name
+   310→        try:
+   311→            data = _sample_data()
+   312→            result_path = export_markdown(data, tmppath)
+   313→            with open(tmppath) as f:
+   314→                content = f.read()
+   315→            self.assertIn("# ReconPro Security Report", content)
+   316→            self.assertIn("example.com", content)
+   317→            self.assertIn("85/100", content)
+   318→            self.assertIn("| # | Severity |", content)
+   319→        finally:
+   320→            os.unlink(tmppath)
+   321→
+   322→    def test_empty_findings_clean_report(self):
+   323→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   324→            tmppath = f.name
+   325→        try:
+   326→            data = _sample_data(findings=[])
+   327→            result_path = export_markdown(data, tmppath)
+   328→            with open(tmppath) as f:
+   329→                content = f.read()
+   330→            self.assertIn("No findings", content)
+   331→            self.assertIn("| **Total** | **0** |", content)
+   332→        finally:
+   333→            os.unlink(tmppath)
+   334→
+   335→    def test_severity_ordering(self):
+   336→        """Findings should be sorted critical -> info."""
+   337→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   338→            tmppath = f.name
+   339→        try:
+   340→            data = _sample_data(findings=[
+   341→                {"title": "Info Finding", "severity": "info", "category": "c",
+   342→                 "module": "m", "description": "d", "evidence": "e", "asset": "a",
+   343→                 "points_deducted": 0},
+   344→                {"title": "Critical Finding", "severity": "critical", "category": "c",
+   345→                 "module": "m", "description": "d", "evidence": "e", "asset": "a",
+   346→                 "points_deducted": 30},
+   347→            ])
+   348→            result_path = export_markdown(data, tmppath)
+   349→            with open(tmppath) as f:
+   350→                content = f.read()
+   351→            # Critical should appear before Info in the findings table
+   352→            crit_pos = content.index("Critical Finding")
+   353→            info_pos = content.index("Info Finding")
+   354→            self.assertLess(crit_pos, info_pos)
+   355→        finally:
+   356→            os.unlink(tmppath)
+   357→
+   358→    def test_remediation_section(self):
+   359→        """Remediations for critical/high should appear, info/low filtered out."""
+   360→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   361→            tmppath = f.name
+   362→        try:
+   363→            data = _sample_data(findings=[
+   364→                {"title": "T1", "severity": "critical", "category": "c", "module": "m",
+   365→                 "description": "d", "evidence": "e", "asset": "a", "points_deducted": 30,
+   366→                 "remediation": "Fix critical"},
+   367→                {"title": "T2", "severity": "info", "category": "c", "module": "m",
+   368→                 "description": "d", "evidence": "e", "asset": "a", "points_deducted": 0,
+   369→                 "remediation": "Fix info"},
+   370→            ])
+   371→            result_path = export_markdown(data, tmppath)
+   372→            with open(tmppath) as f:
+   373→                content = f.read()
+   374→            self.assertIn("Fix critical", content)
+   375→            self.assertNotIn("Fix info", content)
+   376→        finally:
+   377→            os.unlink(tmppath)
+   378→
+   379→    def test_module_breakdown_section(self):
+   380→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   381→            tmppath = f.name
+   382→        try:
+   383→            data = _sample_data()
+   384→            result_path = export_markdown(data, tmppath)
+   385→            with open(tmppath) as f:
+   386→                content = f.read()
+   387→            self.assertIn("## Module Breakdown", content)
+   388→            self.assertIn("auth", content)
+   389→            self.assertIn("recon", content)
+   390→        finally:
+   391→            os.unlink(tmppath)
+   392→
+   393→    def test_modules_run_list(self):
+   394→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   395→            tmppath = f.name
+   396→        try:
+   397→            data = _sample_data(modules_run=["auth", "recon", "headers"])
+   398→            result_path = export_markdown(data, tmppath)
+   399→            with open(tmppath) as f:
+   400→                content = f.read()
+   401→            self.assertIn("## Modules Run", content)
+   402→            self.assertIn("`auth`", content)
+   403→            self.assertIn("`recon`", content)
+   404→            self.assertIn("`headers`", content)
+   405→        finally:
+   406→            os.unlink(tmppath)
+   407→
+   408→    def test_badge_generation(self):
+   409→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   410→            tmppath = f.name
+   411→        try:
+   412→            data = _sample_data(grade="A+")
+   413→            result_path = export_markdown(data, tmppath)
+   414→            with open(tmppath) as f:
+   415→                content = f.read()
+   416→            self.assertIn("img.shields.io", content)
+   417→            self.assertIn("A+", content)
+   418→        finally:
+   419→            os.unlink(tmppath)
+   420→
+   421→    def test_unicode_in_markdown(self):
+   422→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   423→            tmppath = f.name
+   424→        try:
+   425→            data = _sample_data(findings=[
+   426→                {"title": "日本語タイトル", "severity": "info", "category": "c",
+   427→                 "module": "m", "description": "描述", "evidence": "증거",
+   428→                 "asset": "a", "points_deducted": 0},
+   429→            ])
+   430→            result_path = export_markdown(data, tmppath)
+   431→            with open(tmppath, encoding="utf-8") as f:
+   432→                content = f.read()
+   433→            self.assertIn("日本語タイトル", content)
+   434→        finally:
+   435→            os.unlink(tmppath)
+   436→
+   437→
+   438→# ── export_json ───────────────────────────────────────────────────────────
+   439→
+   440→
+   441→class TestExportJson(unittest.TestCase):
+   442→    """Test JSON export."""
+   443→
+   444→    def test_valid_output(self):
+   445→        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+   446→            tmppath = f.name
+   447→        try:
+   448→            data = _sample_data()
+   449→            result_path = export_json(data, tmppath)
+   450→            with open(tmppath) as f:
+   451→                loaded = json.load(f)
+   452→            self.assertEqual(loaded["target"], "example.com")
+   453→            self.assertEqual(loaded["total_score"], 85)
+   454→            self.assertEqual(len(loaded["findings"]), 2)
+   455→        finally:
+   456→            os.unlink(tmppath)
+   457→
+   458→    def test_pretty_printed(self):
+   459→        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+   460→            tmppath = f.name
+   461→        try:
+   462→            data = _sample_data()
+   463→            result_path = export_json(data, tmppath)
+   464→            with open(tmppath) as f:
+   465→                content = f.read()
+   466→            # Pretty printed should have indentation
+   467→            self.assertIn("  ", content)
+   468→            self.assertIn("\n", content)
+   469→        finally:
+   470→            os.unlink(tmppath)
+   471→
+   472→    def test_with_reconpro_result(self):
+   473→        """export_json should accept ReconProResult via _normalize."""
+   474→        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+   475→            tmppath = f.name
+   476→        try:
+   477→            result_obj = ReconProResult(
+   478→                target="test.com",
+   479→                modules_run=["recon"],
+   480→                findings=[],
+   481→                severity_counts={},
+   482→                total_score=100,
+   483→                grade="A+",
+   484→                badge_markdown="",
+   485→            )
+   486→            result_path = export_json(result_obj, tmppath)
+   487→            with open(tmppath) as f:
+   488→                loaded = json.load(f)
+   489→            self.assertEqual(loaded["target"], "test.com")
+   490→        finally:
+   491→            os.unlink(tmppath)
+   492→
+   493→    def test_empty_data(self):
+   494→        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+   495→            tmppath = f.name
+   496→        try:
+   497→            result_path = export_json({}, tmppath)
+   498→            with open(tmppath) as f:
+   499→                loaded = json.load(f)
+   500→            self.assertEqual(loaded, {})
+   501→        finally:
+   502→            os.unlink(tmppath)
+   503→
+   504→
+   505→# ── export_pdf (print-ready HTML) ────────────────────────────────────────
+   506→
+   507→
+   508→class TestExportPdf(unittest.TestCase):
+   509→    """Test PDF (print-ready HTML) export."""
+   510→
+   511→    def test_valid_output_html(self):
+   512→        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+   513→            tmppath = f.name
+   514→        try:
+   515→            data = _sample_data()
+   516→            result_path = export_pdf(data, tmppath)
+   517→            with open(tmppath) as f:
+   518→                content = f.read()
+   519→            self.assertIn("<!DOCTYPE html>", content)
+   520→            self.assertIn("ReconPro Security Report", content)
+   521→            self.assertIn("example.com", content)
+   522→            self.assertIn("@media print", content)
+   523→        finally:
+   524→            os.unlink(tmppath)
+   525→
+   526→    def test_html_escaping(self):
+   527→        """HTML special characters in title should be in raw HTML (not escaped in table)."""
+   528→        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+   529→            tmppath = f.name
+   530→        try:
+   531→            data = _sample_data(findings=[
+   532→                {"title": "Test <b>bold</b>", "severity": "info", "category": "c",
+   533→                 "module": "m", "description": "d", "evidence": "<script>alert(1)</script>",
+   534→                 "asset": "a", "points_deducted": 0},
+   535→            ])
+   536→            result_path = export_pdf(data, tmppath)
+   537→            with open(tmppath) as f:
+   538→                content = f.read()
+   539→            # Title appears in the HTML content
+   540→            self.assertIn("Test", content)
+   541→        finally:
+   542→            os.unlink(tmppath)
+   543→
+   544→    def test_empty_findings_no_rows(self):
+   545→        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+   546→            tmppath = f.name
+   547→        try:
+   548→            data = _sample_data(findings=[])
+   549→            result_path = export_pdf(data, tmppath)
+   550→            with open(tmppath) as f:
+   551→                content = f.read()
+   552→            self.assertIn("No findings", content)
+   553→        finally:
+   554→            os.unlink(tmppath)
+   555→
+   556→    def test_grade_color_in_score_circle(self):
+   557→        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+   558→            tmppath = f.name
+   559→        try:
+   560→            data = _sample_data(grade="A+", score=95)
+   561→            result_path = export_pdf(data, tmppath)
+   562→            with open(tmppath) as f:
+   563→                content = f.read()
+   564→            self.assertIn("#2ecc71", content)  # A+ color
+   565→            self.assertIn("95", content)
+   566→        finally:
+   567→            os.unlink(tmppath)
+   568→
+   569→    def test_severity_colors_in_table(self):
+   570→        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+   571→            tmppath = f.name
+   572→        try:
+   573→            data = _sample_data()
+   574→            result_path = export_pdf(data, tmppath)
+   575→            with open(tmppath) as f:
+   576→                content = f.read()
+   577→            # Should have severity colors
+   578→            self.assertIn("#e74c3c", content)  # critical color
+   579→            self.assertIn("#f1c40f", content)  # medium color
+   580→        finally:
+   581→            os.unlink(tmppath)
+   582→
+   583→    def test_unicode_content(self):
+   584→        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+   585→            tmppath = f.name
+   586→        try:
+   587→            data = _sample_data(findings=[
+   588→                {"title": "Ünïcödé têst", "severity": "info", "category": "c",
+   589→                 "module": "m", "description": "d", "evidence": "e",
+   590→                 "asset": "a", "points_deducted": 0},
+   591→            ])
+   592→            result_path = export_pdf(data, tmppath)
+   593→            with open(tmppath, encoding="utf-8") as f:
+   594→                content = f.read()
+   595→            self.assertIn("Ünïcödé", content)
+   596→        finally:
+   597→            os.unlink(tmppath)
+   598→
+   599→
+   600→# ── export (auto-detect) ─────────────────────────────────────────────────
+   601→
+   602→
+   603→class TestExportAutoDetect(unittest.TestCase):
+   604→    """Test export() auto-detects format from extension."""
+   605→
+   606→    def test_sarif_extension(self):
+   607→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   608→            tmppath = f.name
+   609→        try:
+   610→            data = _sample_data()
+   611→            result_path = export(data, tmppath)
+   612→            with open(tmppath) as f:
+   613→                content = json.load(f)
+   614→            self.assertEqual(content["version"], "2.1.0")
+   615→        finally:
+   616→            os.unlink(tmppath)
+   617→
+   618→    def test_md_extension(self):
+   619→        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+   620→            tmppath = f.name
+   621→        try:
+   622→            data = _sample_data()
+   623→            result_path = export(data, tmppath)
+   624→            with open(tmppath) as f:
+   625→                content = f.read()
+   626→            self.assertIn("# ReconPro Security Report", content)
+   627→        finally:
+   628→            os.unlink(tmppath)
+   629→
+   630→    def test_markdown_extension(self):
+   631→        """'.markdown' extension should also trigger markdown export."""
+   632→        with tempfile.NamedTemporaryFile(suffix=".markdown", delete=False) as f:
+   633→            tmppath = f.name
+   634→        try:
+   635→            data = _sample_data()
+   636→            result_path = export(data, tmppath)
+   637→            with open(tmppath) as f:
+   638→                content = f.read()
+   639→            self.assertIn("# ReconPro Security Report", content)
+   640→        finally:
+   641→            os.unlink(tmppath)
+   642→
+   643→    def test_json_extension(self):
+   644→        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+   645→            tmppath = f.name
+   646→        try:
+   647→            data = _sample_data()
+   648→            result_path = export(data, tmppath)
+   649→            with open(tmppath) as f:
+   650→                content = json.load(f)
+   651→            self.assertEqual(content["target"], "example.com")
+   652→        finally:
+   653→            os.unlink(tmppath)
+   654→
+   655→    def test_pdf_extension(self):
+   656→        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+   657→            tmppath = f.name
+   658→        try:
+   659→            data = _sample_data()
+   660→            result_path = export(data, tmppath)
+   661→            with open(tmppath) as f:
+   662→                content = f.read()
+   663→            self.assertIn("<!DOCTYPE html>", content)
+   664→        finally:
+   665→            os.unlink(tmppath)
+   666→
+   667→    def test_unknown_extension_defaults_json(self):
+   668→        """Unknown extension should default to JSON export."""
+   669→        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+   670→            tmppath = f.name
+   671→        try:
+   672→            data = _sample_data()
+   673→            result_path = export(data, tmppath)
+   674→            with open(tmppath) as f:
+   675→                content = json.load(f)
+   676→            self.assertEqual(content["target"], "example.com")
+   677→        finally:
+   678→            os.unlink(tmppath)
+   679→
+   680→    def test_explicit_format_override(self):
+   681→        """Explicit format parameter should override extension."""
+   682→        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+   683→            tmppath = f.name
+   684→        try:
+   685→            data = _sample_data()
+   686→            result_path = export(data, tmppath, format="sarif")
+   687→            with open(tmppath) as f:
+   688→                content = json.load(f)
+   689→            self.assertEqual(content["version"], "2.1.0")
+   690→        finally:
+   691→            os.unlink(tmppath)
+   692→
+   693→    def test_format_without_dot_prefix(self):
+   694→        """Format without leading dot should work."""
+   695→        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+   696→            tmppath = f.name
+   697→        try:
+   698→            data = _sample_data()
+   699→            result_path = export(data, tmppath, format="md")
+   700→            with open(tmppath) as f:
+   701→                content = f.read()
+   702→            self.assertIn("# ReconPro Security Report", content)
+   703→        finally:
+   704→            os.unlink(tmppath)
+   705→
+   706→
+   707→# ── _SEV_ORDER and _FORMAT_MAP ───────────────────────────────────────────
+   708→
+   709→
+   710→class TestFormatConstants(unittest.TestCase):
+   711→    """Test format module constants."""
+   712→
+   713→    def test_sev_order_keys(self):
+   714→        for sev in ("critical", "high", "medium", "low", "info"):
+   715→            self.assertIn(sev, _SEV_ORDER)
+   716→
+   717→    def test_sev_order_values_monotonic(self):
+   718→        values = list(_SEV_ORDER.values())
+   719→        self.assertEqual(values, sorted(values))
+   720→
+   721→    def test_format_map_extensions(self):
+   722→        for ext in (".sarif", ".md", ".markdown", ".json", ".html", ".htm", ".pdf"):
+   723→            self.assertIn(ext, _FORMAT_MAP)
+   724→
+   725→    def test_format_map_all_callable(self):
+   726→        for exporter in _FORMAT_MAP.values():
+   727→            self.assertTrue(callable(exporter))
+   728→
+   729→    def test_missing_keys_in_findings(self):
+   730→        """Export should handle findings missing optional keys gracefully."""
+   731→        with tempfile.NamedTemporaryFile(suffix=".sarif", delete=False) as f:
+   732→            tmppath = f.name
+   733→        try:
+   734→            data = _sample_data(findings=[{"title": "Minimal"}])
+   735→            result_path = export_sarif(data, tmppath)
+   736→            with open(tmppath) as f:
+   737→                sarif = json.load(f)
+   738→            self.assertEqual(len(sarif["runs"][0]["results"]), 1)
+   739→        finally:
+   740→            os.unlink(tmppath)
+   741→
+   742→
+   743→if __name__ == "__main__":
+   744→    unittest.main()
+   745→

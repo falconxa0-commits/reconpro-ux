@@ -1,0 +1,745 @@
+   200→        "STATUS_CHANGE": "medium",
+   201→    }
+   202→
+   203→    # Security header removal is always critical.
+   204→    _CRITICAL_SECURITY_HEADERS = (
+   205→        "strict-transport-security",
+   206→        "content-security-policy",
+   207→    )
+   208→
+   209→    def score_event(self, event: DriftEvent) -> float:
+   210→        """Return a 0–100 risk score for a single drift event."""
+   211→        base = self._SEVERITY_WEIGHTS.get(event.severity, 25.0)
+   212→
+   213→        # Boost for security header removal
+   214→        field_lower = event.field_changed.lower()
+   215→        if event.field_changed.startswith("security_header_removed:"):
+   216→            hdr = field_lower.replace("security_header_removed:", "")
+   217→            if hdr in self._CRITICAL_SECURITY_HEADERS:
+   218→                return 100.0
+   219→            return 85.0
+   220→
+   221→        # Boost for DNS changes
+   222→        if "dns" in field_lower:
+   223→            base = max(base, 70.0)
+   224→
+   225→        # Boost for TLS cert changes
+   226→        if "cert" in field_lower or "tls" in field_lower:
+   227→            base = max(base, 60.0)
+   228→
+   229→        # Boost for new open ports
+   230→        if "port" in field_lower and "added" in event.risk_impact.lower():
+   231→            base = max(base, 80.0)
+   232→
+   233→        return min(base, 100.0)
+   234→
+   235→    def score_drift(self, events: List[DriftEvent]) -> float:
+   236→        """Aggregate 0–100 risk score for a list of drift events."""
+   237→        if not events:
+   238→            return 0.0
+   239→        individual = [self.score_event(e) for e in events]
+   240→        # Weighted: worst event counts more, but all contribute.
+   241→        worst = max(individual)
+   242→        average = sum(individual) / len(individual)
+   243→        score = worst * 0.6 + average * 0.4
+   244→        # Slight bump for volume
+   245→        volume_factor = min(len(events) / 10.0, 1.0) * 10.0
+   246→        return min(score + volume_factor, 100.0)
+   247→
+   248→    def classify_event(self, event: DriftEvent) -> str:
+   249→        """Return the severity string for a drift event."""
+   250→        return self._CATEGORY_DEFAULTS.get(event.field_changed, "low")
+   251→
+   252→
+   253→# ------------------------------------------------------------------
+   254→# InfrastructureDriftMonitor
+   255→# ------------------------------------------------------------------
+   256→
+   257→class InfrastructureDriftMonitor:
+   258→    """Capture, compare, and report infrastructure drift for targets.
+   259→
+   260→    Snapshots are persisted to ``~/.reconpro/drift/<target>/``.
+   261→    """
+   262→
+   263→    def __init__(self) -> None:
+   264→        self._ua = "ReconPro/9.2.0 (drift-monitor)"
+   265→        self._scorer = DriftRiskScorer()
+   266→        self._store = Path(os.path.expanduser("~/.reconpro/drift"))
+   267→
+   268→    # -- public API ---------------------------------------------------
+   269→
+   270→    def take_snapshot(
+   271→        self, target: str, base_url: str, timeout: int = 8
+   272→    ) -> DriftSnapshot:
+   273→        """Capture the current infrastructure state of *target*."""
+   274→        host = self._extract_host(base_url)
+   275→        now = datetime.now(timezone.utc).isoformat()
+   276→
+   277→        dns_records = self._capture_dns(host, timeout=timeout)
+   278→        tls_cert = self._capture_tls_cert(host, timeout=timeout)
+   279→        headers: Dict[str, str] = {}
+   280→        body = ""
+   281→        status_code = 0
+   282→        body_length = 0
+   283→
+   284→        try:
+   285→            req = urllib.request.Request(
+   286→                base_url, headers={"User-Agent": self._ua}
+   287→            )
+   288→            with urllib.request.urlopen(req, timeout=timeout) as resp:
+   289→                headers = {k.lower(): v for k, v in resp.headers.items()}
+   290→                body = resp.read(262_144).decode("utf-8", errors="replace")
+   291→                status_code = resp.status
+   292→                body_length = len(body)
+   293→        except (urllib.error.URLError, socket.timeout, OSError):
+   294→            pass
+   295→
+   296→        page_hash = (
+   297→            hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest()[:32]
+   298→            if body else ""
+   299→        )
+   300→        tech_stack = self._detect_tech_stack(headers, body)
+   301→        security_headers = self._extract_security_headers(headers)
+   302→        open_ports = self._scan_common_ports(host, timeout=timeout)
+   303→
+   304→        return DriftSnapshot(
+   305→            target=target,
+   306→            timestamp=now,
+   307→            dns_records=dns_records,
+   308→            tls_cert=tls_cert,
+   309→            headers=headers,
+   310→            tech_stack=tech_stack,
+   311→            open_ports=open_ports,
+   312→            security_headers=security_headers,
+   313→            page_hash=page_hash,
+   314→            status_code=status_code,
+   315→            body_length=body_length,
+   316→        )
+   317→
+   318→    def compare_snapshots(
+   319→        self, snapshot_a: DriftSnapshot, snapshot_b: DriftSnapshot
+   320→    ) -> List[DriftEvent]:
+   321→        """Compare two snapshots and return a list of DriftEvents.
+   322→
+   323→        *snapshot_a* is the older baseline, *snapshot_b* the newer.
+   324→        """
+   325→        events: List[DriftEvent] = []
+   326→        ts = snapshot_b.timestamp or datetime.now(timezone.utc).isoformat()
+   327→
+   328→        # DNS changes
+   329→        events.extend(self._diff_dict(
+   330→            ts, "DNS_CHANGE", snapshot_a.dns_records, snapshot_b.dns_records
+   331→        ))
+   332→
+   333→        # TLS cert changes
+   334→        events.extend(self._diff_dict(
+   335→            ts, "CERT_CHANGE", snapshot_a.tls_cert, snapshot_b.tls_cert
+   336→        ))
+   337→
+   338→        # Header changes (excluding noisy headers)
+   339→        noisy = {"date", "set-cookie", "x-cache", "x-timer", "age",
+   340→                 "x-request-id", "x-ratelimit-remaining", "etag"}
+   341→        filtered_a = {k: v for k, v in snapshot_a.headers.items()
+   342→                      if k.lower() not in noisy}
+   343→        filtered_b = {k: v for k, v in snapshot_b.headers.items()
+   344→                      if k.lower() not in noisy}
+   345→        events.extend(self._diff_dict(
+   346→            ts, "HEADER_CHANGE", filtered_a, filtered_b
+   347→        ))
+   348→
+   349→        # Tech stack changes
+   350→        events.extend(self._diff_list(
+   351→            ts, "TECH_CHANGE", snapshot_a.tech_stack, snapshot_b.tech_stack
+   352→        ))
+   353→
+   354→        # Port changes
+   355→        events.extend(self._diff_list(
+   356→            ts, "PORT_CHANGE",
+   357→            [str(p) for p in snapshot_a.open_ports],
+   358→            [str(p) for p in snapshot_b.open_ports],
+   359→        ))
+   360→
+   361→        # Security header changes
+   362→        events.extend(self._diff_security_headers(
+   363→            ts, snapshot_a.security_headers, snapshot_b.security_headers
+   364→        ))
+   365→
+   366→        # Content hash change
+   367→        if (snapshot_a.page_hash and snapshot_b.page_hash
+   368→                and snapshot_a.page_hash != snapshot_b.page_hash):
+   369→            events.append(DriftEvent(
+   370→                timestamp=ts,
+   371→                field_changed="CONTENT_CHANGE",
+   372→                old_value=snapshot_a.page_hash,
+   373→                new_value=snapshot_b.page_hash,
+   374→                severity="low",
+   375→                risk_impact="Page content changed",
+   376→            ))
+   377→
+   378→        # Status code change
+   379→        if snapshot_a.status_code != snapshot_b.status_code:
+   380→            sev = "high" if snapshot_b.status_code >= 500 else "medium"
+   381→            events.append(DriftEvent(
+   382→                timestamp=ts,
+   383→                field_changed="STATUS_CHANGE",
+   384→                old_value=str(snapshot_a.status_code),
+   385→                new_value=str(snapshot_b.status_code),
+   386→                severity=sev,
+   387→                risk_impact=(
+   388→                    f"HTTP status changed from {snapshot_a.status_code} "
+   389→                    f"to {snapshot_b.status_code}"
+   390→                ),
+   391→            ))
+   392→
+   393→        # Body length change (significant)
+   394→        if snapshot_a.body_length > 0 and snapshot_b.body_length > 0:
+   395→            ratio = snapshot_b.body_length / max(snapshot_a.body_length, 1)
+   396→            if ratio > 1.5 or ratio < 0.5:
+   397→                events.append(DriftEvent(
+   398→                    timestamp=ts,
+   399→                    field_changed="CONTENT_CHANGE",
+   400→                    old_value=str(snapshot_a.body_length),
+   401→                    new_value=str(snapshot_b.body_length),
+   402→                    severity="medium",
+   403→                    risk_impact=(
+   404→                        f"Body length changed by {abs(ratio - 1) * 100:.0f}%"
+   405→                    ),
+   406→                ))
+   407→
+   408→        return events
+   409→
+   410→    def detect_drift(
+   411→        self, target: str, base_url: str, timeout: int = 8
+   412→    ) -> Dict[str, Any]:
+   413→        """Take a snapshot and compare against the last saved one."""
+   414→        current = self.take_snapshot(target, base_url, timeout=timeout)
+   415→        self.save_snapshot(current)
+   416→
+   417→        previous = self._load_latest_snapshot(target, exclude_current=True)
+   418→        if previous is None:
+   419→            return {
+   420→                "target": target,
+   421→                "drift_detected": False,
+   422→                "message": "No previous snapshot to compare against",
+   423→                "current_snapshot": current.to_dict(),
+   424→                "drift_events": [],
+   425→                "risk_score": 0.0,
+   426→            }
+   427→
+   428→        events = self.compare_snapshots(previous, current)
+   429→        risk_score = self._scorer.score_drift(events)
+   430→
+   431→        return {
+   432→            "target": target,
+   433→            "drift_detected": len(events) > 0,
+   434→            "drift_event_count": len(events),
+   435→            "previous_timestamp": previous.timestamp,
+   436→            "current_timestamp": current.timestamp,
+   437→            "drift_events": [e.to_dict() for e in events],
+   438→            "risk_score": round(risk_score, 1),
+   439→            "current_snapshot": current.to_dict(),
+   440→        }
+   441→
+   442→    def save_snapshot(self, snapshot: DriftSnapshot) -> Path:
+   443→        """Persist a snapshot to ``~/.reconpro/drift/<target>/``."""
+   444→        target_dir = self._target_dir(snapshot.target)
+   445→        ts_safe = re.sub(r"[^\w\-]", "_", snapshot.timestamp)
+   446→        path = target_dir / f"snapshot_{ts_safe}.json"
+   447→        with open(path, "w", encoding="utf-8") as f:
+   448→            json.dump(snapshot.to_dict(), f, indent=2, ensure_ascii=False)
+   449→        return path
+   450→
+   451→    def load_snapshots(self, target: str) -> List[DriftSnapshot]:
+   452→        """Load all saved snapshots for a target, newest first."""
+   453→        target_dir = self._target_dir(target)
+   454→        if not target_dir.exists():
+   455→            return []
+   456→        snapshots: List[DriftSnapshot] = []
+   457→        for p in sorted(target_dir.glob("snapshot_*.json"), reverse=True):
+   458→            try:
+   459→                with open(p, "r", encoding="utf-8") as f:
+   460→                    data = json.load(f)
+   461→                snapshots.append(DriftSnapshot.from_dict(data))
+   462→            except (json.JSONDecodeError, TypeError, OSError):
+   463→                continue
+   464→        return snapshots
+   465→
+   466→    def analyze_drift_trend(self, target: str) -> Dict[str, Any]:
+   467→        """Analyze drift patterns over time.
+   468→
+   469→        Returns trend analysis: increasing, decreasing, cyclical,
+   470→        or stable, along with category breakdowns.
+   471→        """
+   472→        snapshots = self.load_snapshots(target)
+   473→        if len(snapshots) < 2:
+   474→            return {
+   475→                "target": target,
+   476→                "trend": "insufficient_data",
+   477→                "snapshot_count": len(snapshots),
+   478→                "category_breakdown": {},
+   479→                "details": [],
+   480→            }
+   481→
+   482→        all_events: List[DriftEvent] = []
+   483→        for i in range(len(snapshots) - 1):
+   484→            events = self.compare_snapshots(snapshots[i + 1], snapshots[i])
+   485→            all_events.extend(events)
+   486→
+   487→        # Category breakdown
+   488→        category_counts: Dict[str, int] = {}
+   489→        for ev in all_events:
+   490→            cat = ev.field_changed
+   491→            category_counts[cat] = category_counts.get(cat, 0) + 1
+   492→
+   493→        # Group events by snapshot pair to detect trends
+   494→        pairs: List[int] = []
+   495→        for i in range(len(snapshots) - 1):
+   496→            pair_events = self.compare_snapshots(
+   497→                snapshots[i + 1], snapshots[i]
+   498→            )
+   499→            pairs.append(len(pair_events))
+   500→
+   501→        # Determine trend
+   502→        trend = self._determine_trend(pairs)
+   503→
+   504→        # Time between changes
+   505→        change_intervals: List[str] = []
+   506→        for i in range(len(snapshots) - 1):
+   507→            events = self.compare_snapshots(snapshots[i + 1], snapshots[i])
+   508→            if events:
+   509→                try:
+   510→                    ts_a = datetime.fromisoformat(snapshots[i + 1].timestamp)
+   511→                    ts_b = datetime.fromisoformat(snapshots[i].timestamp)
+   512→                    delta = abs((ts_b - ts_a).total_seconds())
+   513→                    if delta < 3600:
+   514→                        interval = f"{int(delta // 60)} minutes"
+   515→                    elif delta < 86400:
+   516→                        interval = f"{delta / 3600:.1f} hours"
+   517→                    else:
+   518→                        interval = f"{delta / 86400:.1f} days"
+   519→                    change_intervals.append(interval)
+   520→                except (ValueError, TypeError):
+   521→                    pass
+   522→
+   523→        return {
+   524→            "target": target,
+   525→            "trend": trend,
+   526→            "snapshot_count": len(snapshots),
+   527→            "total_drift_events": len(all_events),
+   528→            "category_breakdown": category_counts,
+   529→            "events_per_snapshot_pair": pairs,
+   530→            "change_intervals": change_intervals,
+   531→            "risk_trend": self._risk_trend(snapshots),
+   532→            "details": [e.to_dict() for e in all_events],
+   533→        }
+   534→
+   535→    def score_drift_risk(self, drift_events: List[DriftEvent]) -> float:
+   536→        """Convenience wrapper around DriftRiskScorer.score_drift."""
+   537→        return self._scorer.score_drift(drift_events)
+   538→
+   539→    def generate_drift_report(self, target: str) -> Dict[str, Any]:
+   540→        """Generate a full drift analysis report for a target.
+   541→
+   542→        Includes current snapshot, trend analysis, risk scoring,
+   543→        and actionable recommendations.
+   544→        """
+   545→        snapshots = self.load_snapshots(target)
+   546→        trend = self.analyze_drift_trend(target)
+   547→
+   548→        # Severity summary
+   549→        critical = sum(1 for e in trend.get("details", []) if e.get("severity") == "critical")
+   550→        high = sum(1 for e in trend.get("details", []) if e.get("severity") == "high")
+   551→        medium = sum(1 for e in trend.get("details", []) if e.get("severity") == "medium")
+   552→        low = sum(1 for e in trend.get("details", []) if e.get("severity") == "low")
+   553→
+   554→        # Current snapshot
+   555→        current = snapshots[0] if snapshots else None
+   556→
+   557→        # Recommendations
+   558→        recommendations = self._generate_recommendations(
+   559→            trend, current
+   560→        )
+   561→
+   562→        return {
+   563→            "target": target,
+   564→            "generated_at": datetime.now(timezone.utc).isoformat(),
+   565→            "summary": {
+   566→                "total_snapshots": len(snapshots),
+   567→                "total_drift_events": trend.get("total_drift_events", 0),
+   568→                "trend": trend.get("trend", "unknown"),
+   569→                "current_risk_score": self._scorer.score_drift(
+   570→                    [DriftEvent(**e) for e in trend.get("details", [])]
+   571→                ),
+   572→            },
+   573→            "severity_breakdown": {
+   574→                "critical": critical,
+   575→                "high": high,
+   576→                "medium": medium,
+   577→                "low": low,
+   578→            },
+   579→            "category_breakdown": trend.get("category_breakdown", {}),
+   580→            "trend_analysis": trend,
+   581→            "current_snapshot": current.to_dict() if current else None,
+   582→            "recommendations": recommendations,
+   583→        }
+   584→
+   585→    # -- private helpers ---------------------------------------------
+   586→
+   587→    def _target_dir(self, target: str) -> Path:
+   588→        safe = re.sub(r"[^a-zA-Z0-9._-]", "_", target)
+   589→        d = self._store / safe
+   590→        d.mkdir(parents=True, exist_ok=True)
+   591→        return d
+   592→
+   593→    def _load_latest_snapshot(
+   594→        self, target: str, exclude_current: bool = False
+   595→    ) -> Optional[DriftSnapshot]:
+   596→        """Load the most recent snapshot (optionally skipping the latest)."""
+   597→        snapshots = self.load_snapshots(target)
+   598→        if not snapshots:
+   599→            return None
+   600→        if exclude_current and len(snapshots) > 1:
+   601→            return snapshots[1]
+   602→        return snapshots[0]
+   603→
+   604→    @staticmethod
+   605→    def _extract_host(url: str) -> str:
+   606→        parsed = urllib.parse.urlparse(url)
+   607→        return parsed.hostname or parsed.path.split("/")[0]
+   608→
+   609→    def _capture_dns(
+   610→        self, host: str, timeout: int = 8
+   611→    ) -> Dict[str, Any]:
+   612→        """Resolve DNS and return structured records."""
+   613→        records: Dict[str, Any] = {}
+   614→        try:
+   615→            answers = socket.getaddrinfo(host, None)
+   616→            a_records = sorted({addr[4][0] for addr in answers if addr[4]})
+   617→            records["A"] = a_records
+   618→            records["AAAA"] = [
+   619→                addr[4][0] for addr in answers
+   620→                if addr[0] == socket.AF_INET6 and addr[4]
+   621→            ]
+   622→        except (socket.gaierror, OSError) as exc:
+   623→            records["error"] = str(exc)
+   624→
+   625→        # Check for CNAME-like patterns
+   626→        records["hostname"] = host
+   627→        return records
+   628→
+   629→    def _capture_tls_cert(
+   630→        self, host: str, timeout: int = 8
+   631→    ) -> Dict[str, Any]:
+   632→        """Fetch the TLS certificate details."""
+   633→        cert_info: Dict[str, Any] = {}
+   634→        try:
+   635→            ctx = ssl.create_default_context()
+   636→            ctx.check_hostname = False
+   637→            ctx.verify_mode = ssl.CERT_NONE
+   638→            with socket.create_connection((host, 443), timeout=timeout) as sock:
+   639→                with ctx.wrap_socket(sock, server_hostname=host) as tls:
+   640→                    cert = tls.getpeercert()
+   641→                    if cert:
+   642→                        cert_info["subject"] = {
+   643→                            k: v for item in cert.get("subject", [])
+   644→                            for k, v in item
+   645→                        }
+   646→                        cert_info["issuer"] = {
+   647→                            k: v for item in cert.get("issuer", [])
+   648→                            for k, v in item
+   649→                        }
+   650→                        cert_info["not_before"] = cert.get("notBefore", "")
+   651→                        cert_info["not_after"] = cert.get("notAfter", "")
+   652→                        cert_info["serial"] = cert.get("serialNumber", "")
+   653→                        cert_info["version"] = cert.get("version", "")
+   654→                        cert_info["san"] = [
+   655→                            v for item in cert.get("subjectAltName", [])
+   656→                            for v in item[1:]  # skip the type tag
+   657→                        ]
+   658→        except (socket.timeout, socket.gaierror, ssl.SSLError, OSError) as exc:
+   659→            cert_info["error"] = str(exc)
+   660→        return cert_info
+   661→
+   662→    @staticmethod
+   663→    def _detect_tech_stack(
+   664→        headers: Dict[str, str], body: str
+   665→    ) -> List[str]:
+   666→        """Detect technologies from headers and page content."""
+   667→        detected: List[str] = []
+   668→        header_str = "\n".join(f"{k}: {v}" for k, v in headers.items())
+   669→        combined = header_str + "\n" + body
+   670→        combined_lower = combined.lower()
+   671→
+   672→        for tech, signatures in _TECH_SIGNATURES.items():
+   673→            for sig in signatures:
+   674→                if sig.lower() in combined_lower:
+   675→                    if tech not in detected:
+   676→                        detected.append(tech)
+   677→                    break
+   678→
+   679→        return sorted(detected)
+   680→
+   681→    @staticmethod
+   682→    def _extract_security_headers(
+   683→        headers: Dict[str, str],
+   684→    ) -> Set[str]:
+   685→        """Return the set of tracked security headers present."""
+   686→        found: Set[str] = set()
+   687→        for hdr in _TRACKED_SECURITY_HEADERS:
+   688→            if hdr in headers:
+   689→                found.add(hdr)
+   690→        return found
+   691→
+   692→    def _scan_common_ports(
+   693→        self, host: str, timeout: int = 8
+   694→    ) -> List[int]:
+   695→        """Scan a set of common ports and return open ones."""
+   696→        open_ports: List[int] = []
+   697→        per_port_timeout = max(1, timeout // 8)
+   698→        for port in _COMMON_PORTS:
+   699→            try:
+   700→                sock = socket.create_connection(
+   701→                    (host, port), timeout=per_port_timeout
+   702→                )
+   703→                sock.close()
+   704→                open_ports.append(port)
+   705→            except (socket.timeout, socket.gaierror, OSError):
+   706→                pass
+   707→        return open_ports
+   708→
+   709→    # -- diff helpers ------------------------------------------------
+   710→
+   711→    def _diff_dict(
+   712→        self,
+   713→        ts: str,
+   714→        category: str,
+   715→        a: Dict[str, Any],
+   716→        b: Dict[str, Any],
+   717→    ) -> List[DriftEvent]:
+   718→        """Compare two dicts and emit DriftEvents for differences."""
+   719→        events: List[DriftEvent] = []
+   720→        all_keys = set(a.keys()) | set(b.keys())
+   721→        severity = self._scorer._CATEGORY_DEFAULTS.get(category, "low")
+   722→
+   723→        for key in all_keys:
+   724→            old_val = json.dumps(a.get(key), sort_keys=True, default=str)
+   725→            new_val = json.dumps(b.get(key), sort_keys=True, default=str)
+   726→            if old_val != new_val:
+   727→                impact = f"{key}: {'added' if key not in a else 'removed' if key not in b else 'changed'}"
+   728→                events.append(DriftEvent(
+   729→                    timestamp=ts,
+   730→                    field_changed=category,
+   731→                    old_value=old_val[:500],
+   732→                    new_value=new_val[:500],
+   733→                    severity=severity,
+   734→                    risk_impact=impact,
+   735→                ))
+   736→        return events
+   737→
+   738→    def _diff_list(
+   739→        self,
+   740→        ts: str,
+   741→        category: str,
+   742→        a: List[str],
+   743→        b: List[str],
+   744→    ) -> List[DriftEvent]:
+   745→        """Compare two lists and emit events for additions/removals."""
+   746→        events: List[DriftEvent] = []
+   747→        severity = self._scorer._CATEGORY_DEFAULTS.get(category, "low")
+   748→        set_a = set(a)
+   749→        set_b = set(b)
+   750→
+   751→        added = set_b - set_a
+   752→        removed = set_a - set_b
+   753→
+   754→        for item in sorted(added):
+   755→            events.append(DriftEvent(
+   756→                timestamp=ts,
+   757→                field_changed=category,
+   758→                old_value="",
+   759→                new_value=str(item),
+   760→                severity=severity,
+   761→                risk_impact=f"{item} added",
+   762→            ))
+   763→        for item in sorted(removed):
+   764→            events.append(DriftEvent(
+   765→                timestamp=ts,
+   766→                field_changed=category,
+   767→                old_value=str(item),
+   768→                new_value="",
+   769→                severity=severity,
+   770→                risk_impact=f"{item} removed",
+   771→            ))
+   772→        return events
+   773→
+   774→    def _diff_security_headers(
+   775→        self,
+   776→        ts: str,
+   777→        a: Set[str],
+   778→        b: Set[str],
+   779→    ) -> List[DriftEvent]:
+   780→        """Diff security headers — removal is always critical."""
+   781→        events: List[DriftEvent] = []
+   782→
+   783→        added = b - a
+   784→        removed = a - b
+   785→
+   786→        for hdr in sorted(added):
+   787→            events.append(DriftEvent(
+   788→                timestamp=ts,
+   789→                field_changed=f"SECURITY_CHANGE",
+   790→                old_value="",
+   791→                new_value=hdr,
+   792→                severity="low",  # addition is good
+   793→                risk_impact=f"Security header added: {hdr}",
+   794→            ))
+   795→
+   796→        for hdr in sorted(removed):
+   797→            is_critical = hdr in self._scorer._CRITICAL_SECURITY_HEADERS
+   798→            events.append(DriftEvent(
+   799→                timestamp=ts,
+   800→                field_changed=f"SECURITY_CHANGE",
+   801→                old_value=hdr,
+   802→                new_value="",
+   803→                severity="critical" if is_critical else "high",
+   804→                risk_impact=f"Security header removed: {hdr}",
+   805→            ))
+   806→
+   807→        return events
+   808→
+   809→    # -- trend analysis helpers --------------------------------------
+   810→
+   811→    @staticmethod
+   812→    def _determine_trend(pairs: List[int]) -> str:
+   813→        """Classify the drift trend from a list of event counts."""
+   814→        if len(pairs) < 2:
+   815→            return "stable"
+   816→
+   817→        first_half = pairs[: len(pairs) // 2]
+   818→        second_half = pairs[len(pairs) // 2 :]
+   819→        avg_first = sum(first_half) / len(first_half)
+   820→        avg_second = sum(second_half) / len(second_half)
+   821→
+   822→        if avg_first == 0 and avg_second == 0:
+   823→            return "stable"
+   824→        if avg_first == 0:
+   825→            return "increasing"
+   826→
+   827→        ratio = avg_second / avg_first
+   828→        if ratio > 1.5:
+   829→            return "increasing"
+   830→        elif ratio < 0.5:
+   831→            return "decreasing"
+   832→        else:
+   833→            # Check for cyclical pattern (alternating high/low)
+   834→            if len(pairs) >= 4:
+   835→                alternating = 0
+   836→                for i in range(1, len(pairs)):
+   837→                    if pairs[i] == pairs[i - 1]:
+   838→                        continue
+   839→                    if i == 1:
+   840→                        alternating += 1
+   841→                        continue
+   842→                    curr_up = pairs[i] > pairs[i - 1]
+   843→                    prev_up = pairs[i - 1] > pairs[i - 2]
+   844→                    if prev_up != curr_up:
+   845→                        alternating += 1
+   846→                if alternating > len(pairs) * 0.6:
+   847→                    return "cyclical"
+   848→            return "stable"
+   849→
+   850→    def _risk_trend(self, snapshots: List[DriftSnapshot]) -> str:
+   851→        """Determine if overall risk is trending up or down."""
+   852→        if len(snapshots) < 3:
+   853→            return "insufficient_data"
+   854→
+   855→        scores: List[float] = []
+   856→        for i in range(len(snapshots) - 1):
+   857→            events = self.compare_snapshots(snapshots[i + 1], snapshots[i])
+   858→            scores.append(self._scorer.score_drift(events))
+   859→
+   860→        recent = scores[: max(1, len(scores) // 2)]
+   861→        older = scores[max(1, len(scores) // 2) :]
+   862→        avg_recent = sum(recent) / len(recent)
+   863→        avg_older = sum(older) / len(older) if older else 0.0
+   864→
+   865→        if avg_recent > avg_older * 1.3:
+   866→            return "increasing_risk"
+   867→        elif avg_recent < avg_older * 0.7:
+   868→            return "decreasing_risk"
+   869→        return "stable_risk"
+   870→
+   871→    @staticmethod
+   872→    def _generate_recommendations(
+   873→        trend: Dict[str, Any],
+   874→        current: Optional[DriftSnapshot],
+   875→    ) -> List[str]:
+   876→        """Produce actionable recommendations based on drift data."""
+   877→        recs: List[str] = []
+   878→        breakdown = trend.get("category_breakdown", {})
+   879→
+   880→        if "SECURITY_CHANGE" in breakdown:
+   881→            recs.append(
+   882→                "CRITICAL: Security headers were modified. Review and restore "
+   883→                "HSTS and CSP headers immediately."
+   884→            )
+   885→
+   886→        if "DNS_CHANGE" in breakdown:
+   887→            recs.append(
+   888→                "HIGH: DNS records changed. Verify this was authorized and check "
+   889→                "for DNS hijacking or unauthorized zone transfers."
+   890→            )
+   891→
+   892→        if "PORT_CHANGE" in breakdown:
+   893→            recs.append(
+   894→                "HIGH: Open port configuration changed. Audit new exposed "
+   895→                "services and ensure firewall rules are up to date."
+   896→            )
+   897→
+   898→        if "CERT_CHANGE" in breakdown:
+   899→            recs.append(
+   900→                "MEDIUM: TLS certificate changed. Verify the new certificate "
+   901→                "is legitimate and not issued by a compromised CA."
+   902→            )
+   903→
+   904→        if "TECH_CHANGE" in breakdown:
+   905→            recs.append(
+   906→                "MEDIUM: Technology stack changed. This may indicate a "
+   907→                "deployment, migration, or potential compromise."
+   908→            )
+   909→
+   910→        if trend.get("trend") == "increasing":
+   911→            recs.append(
+   912→                "WARNING: Infrastructure drift is increasing over time. "
+   913→                "Consider implementing infrastructure-as-code with drift detection."
+   914→            )
+   915→
+   916→        if current:
+   917→            if not current.security_headers:
+   918→                recs.append(
+   919→                    "INFO: No security headers detected. Implement at minimum "
+   920→                    "HSTS, CSP, and X-Content-Type-Options."
+   921→                )
+   922→            if 9200 in current.open_ports:
+   923→                recs.append(
+   924→                    "INFO: Elasticsearch port 9200 is open. Ensure it is not "
+   925→                    "exposed to the public internet."
+   926→                )
+   927→            if 6379 in current.open_ports:
+   928→                recs.append(
+   929→                    "INFO: Redis port 6379 is open. Ensure authentication is "
+   930→                    "enabled and access is restricted."
+   931→                )
+   932→            if 27017 in current.open_ports:
+   933→                recs.append(
+   934→                    "INFO: MongoDB port 27017 is open. Ensure authentication is "
+   935→                    "enabled and the port is firewalled."
+   936→                )
+   937→
+   938→        if not recs:
+   939→            recs.append(
+   940→                "No significant issues detected. Continue monitoring for changes."
+   941→            )
+   942→
+   943→        return recs
+   944→

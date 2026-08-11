@@ -1,0 +1,1332 @@
+   370→            "data_points": n,
+   371→        }
+   372→
+   373→
+   374→# ════════════════════════════════════════════════════════════════════════
+   375→# QualityGate — Threshold gatekeeper
+   376→# ════════════════════════════════════════════════════════════════════════
+   377→
+   378→
+   379→@dataclass
+   380→class GateResult:
+   381→    """Result of evaluating a quality gate."""
+   382→
+   383→    gate_name: str
+   384→    passed: bool
+   385→    timestamp: str
+   386→    score: float
+   387→    threshold: float
+   388→    failures: List[Dict[str, Any]] = field(default_factory=list)
+   389→    actions_taken: List[str] = field(default_factory=list)
+   390→
+   391→    def to_dict(self) -> Dict[str, Any]:
+   392→        return {
+   393→            "gate_name": self.gate_name,
+   394→            "passed": self.passed,
+   395→            "timestamp": self.timestamp,
+   396→            "score": self.score,
+   397→            "threshold": self.threshold,
+   398→            "failures": self.failures,
+   399→            "actions_taken": self.actions_taken,
+   400→        }
+   401→
+   402→
+   403→class QualityGate:
+   404→    """Gatekeeper for quality thresholds.
+   405→
+   406→    Gates are defined with per-dimension minimums and optional actions
+   407→    (callables) triggered on failure.
+   408→    """
+   409→
+   410→    def __init__(self) -> None:
+   411→        self._gates: Dict[str, Dict[str, Any]] = {}
+   412→        self._history: List[GateResult] = []
+   413→        self._load_history()
+   414→
+   415→    # ── Persistence ──────────────────────────────────────────────────────
+   416→
+   417→    def _load_history(self) -> None:
+   418→        """Load gate history from disk."""
+   419→        try:
+   420→            if GATE_HISTORY_FILE.exists():
+   421→                raw = json.loads(GATE_HISTORY_FILE.read_text(encoding="utf-8"))
+   422→                for entry in raw:
+   423→                    self._history.append(GateResult(
+   424→                        gate_name=entry["gate_name"],
+   425→                        passed=entry["passed"],
+   426→                        timestamp=entry["timestamp"],
+   427→                        score=entry.get("score", 0.0),
+   428→                        threshold=entry.get("threshold", 0.0),
+   429→                        failures=entry.get("failures", []),
+   430→                        actions_taken=entry.get("actions_taken", []),
+   431→                    ))
+   432→        except Exception as exc:
+   433→            logger.warning("Failed to load gate history: %s", exc)
+   434→            self._history = []
+   435→
+   436→    def _save_history(self) -> None:
+   437→        """Persist gate history to disk."""
+   438→        try:
+   439→            MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+   440→            data = [r.to_dict() for r in self._history]
+   441→            GATE_HISTORY_FILE.write_text(
+   442→                json.dumps(data, indent=2), encoding="utf-8"
+   443→            )
+   444→        except Exception as exc:
+   445→            logger.error("Failed to save gate history: %s", exc)
+   446→
+   447→    # ── Public API ───────────────────────────────────────────────────────
+   448→
+   449→    def define_gate(
+   450→        self,
+   451→        name: str,
+   452→        thresholds: Dict[str, float],
+   453→        actions: Optional[List[Callable[[], None]]] = None,
+   454→    ) -> None:
+   455→        """Define a quality gate.
+   456→
+   457→        Args:
+   458→            name:        Unique gate identifier.
+   459→            thresholds:  Dict mapping dimension name to minimum score.
+   460→                         Use "_composite" for the overall score threshold.
+   461→            actions:      Optional list of callables invoked on gate failure.
+   462→        """
+   463→        self._gates[name] = {
+   464→            "thresholds": dict(thresholds),
+   465→            "actions": actions or [],
+   466→        }
+   467→        logger.info("Defined quality gate '%s' with %d thresholds", name, len(thresholds))
+   468→
+   469→    def evaluate(
+   470→        self,
+   471→        gate_name: str,
+   472→        quality_data: Dict[str, Any],
+   473→    ) -> GateResult:
+   474→        """Evaluate a named gate against quality data.
+   475→
+   476→        Args:
+   477→            gate_name:    Name of a previously defined gate.
+   478→            quality_data: Dict with "composite_score" (float) and
+   479→                          "dimensions" (dict of dimension_name -> score).
+   480→
+   481→        Returns:
+   482→            GateResult with pass/fail status and failure details.
+   483→        """
+   484→        if gate_name not in self._gates:
+   485→            logger.warning("Gate '%s' not defined, auto-passing", gate_name)
+   486→            result = GateResult(
+   487→                gate_name=gate_name,
+   488→                passed=True,
+   489→                timestamp=datetime.now(timezone.utc).isoformat(),
+   490→                score=quality_data.get("composite_score", 0.0),
+   491→                threshold=0.0,
+   492→                failures=[{"dimension": "_gate_not_found", "message": f"Gate '{gate_name}' is not defined"}],
+   493→            )
+   494→            self._history.append(result)
+   495→            self._save_history()
+   496→            return result
+   497→
+   498→        gate_def = self._gates[gate_name]
+   499→        thresholds = gate_def["thresholds"]
+   500→        actions = gate_def["actions"]
+   501→
+   502→        composite_score = quality_data.get("composite_score", 0.0)
+   503→        dimensions = quality_data.get("dimensions", {})
+   504→
+   505→        failures: List[Dict[str, Any]] = []
+   506→        composite_threshold = thresholds.get("_composite", 0.0)
+   507→
+   508→        # Check composite threshold
+   509→        if composite_threshold > 0 and composite_score < composite_threshold:
+   510→            failures.append({
+   511→                "dimension": "_composite",
+   512→                "message": f"Composite score {composite_score:.1f} below threshold {composite_threshold:.1f}",
+   513→                "actual": round(composite_score, 1),
+   514→                "required": composite_threshold,
+   515→            })
+   516→
+   517→        # Check per-dimension thresholds
+   518→        for dim_name, min_score in thresholds.items():
+   519→            if dim_name == "_composite":
+   520→                continue
+   521→            actual = dimensions.get(dim_name, 0.0)
+   522→            if actual < min_score:
+   523→                failures.append({
+   524→                    "dimension": dim_name,
+   525→                    "message": f"{dim_name} score {actual:.1f} below threshold {min_score:.1f}",
+   526→                    "actual": round(actual, 1),
+   527→                    "required": min_score,
+   528→                })
+   529→
+   530→        passed = len(failures) == 0
+   531→
+   532→        # Execute failure actions
+   533→        actions_taken: List[str] = []
+   534→        if not passed and actions:
+   535→            for action in actions:
+   536→                try:
+   537→                    action()
+   538→                    actions_taken.append(action.__name__)
+   539→                except Exception as exc:
+   540→                    actions_taken.append(f"{action.__name__} (failed: {exc})")
+   541→                    logger.error("Gate action %s failed: %s", action.__name__, exc)
+   542→
+   543→        result = GateResult(
+   544→            gate_name=gate_name,
+   545→            passed=passed,
+   546→            timestamp=datetime.now(timezone.utc).isoformat(),
+   547→            score=composite_score,
+   548→            threshold=composite_threshold,
+   549→            failures=failures,
+   550→            actions_taken=actions_taken,
+   551→        )
+   552→
+   553→        self._history.append(result)
+   554→        self._save_history()
+   555→
+   556→        status = "PASSED" if passed else "FAILED"
+   557→        logger.info(
+   558→            "Gate '%s' %s (score=%.1f, threshold=%.1f)",
+   559→            gate_name, status, composite_score, composite_threshold,
+   560→        )
+   561→        return result
+   562→
+   563→    def get_gate_history(self, gate_name: Optional[str] = None) -> List[Dict[str, Any]]:
+   564→        """Return gate evaluation history, optionally filtered by name."""
+   565→        results = self._history
+   566→        if gate_name is not None:
+   567→            results = [r for r in results if r.gate_name == gate_name]
+   568→        return [r.to_dict() for r in results]
+   569→
+   570→    def get_gate_pass_rate(self, gate_name: Optional[str] = None) -> float:
+   571→        """Return pass rate as a fraction (0.0-1.0)."""
+   572→        results = self._history
+   573→        if gate_name is not None:
+   574→            results = [r for r in results if r.gate_name == gate_name]
+   575→        if not results:
+   576→            return 0.0
+   577→        return sum(1 for r in results if r.passed) / len(results)
+   578→
+   579→
+   580→# ════════════════════════════════════════════════════════════════════════
+   581→# AST Analysis Helpers
+   582→# ════════════════════════════════════════════════════════════════════════
+   583→
+   584→
+   585→def _parse_file_safe(file_path: str) -> Optional[ast.AST]:
+   586→    """Parse a Python file, returning None on any error."""
+   587→    try:
+   588→        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+   589→            source = f.read()
+   590→        return ast.parse(source, filename=file_path)
+   591→    except (SyntaxError, ValueError, OSError) as exc:
+   592→        logger.debug("Cannot parse %s: %s", file_path, exc)
+   593→        return None
+   594→
+   595→
+   596→class _ASTAnalyzer(ast.NodeVisitor):
+   597→    """Collects code metrics from an AST tree."""
+   598→
+   599→    def __init__(self, source_lines: List[str]) -> None:
+   600→        self.source_lines = source_lines
+   601→        self.total_loc: int = len(source_lines)
+   602→        self.blank_lines: int = 0
+   603→        self.comment_lines: int = 0
+   604→        self.functions: List[Dict[str, Any]] = []
+   605→        self.classes: List[Dict[str, Any]] = []
+   606→        self.imports: List[str] = []
+   607→        self.max_nesting_depth: int = 0
+   608→        self.total_branches: int = 0
+   609→        self.has_type_hints: int = 0
+   610→        self.total_params: int = 0
+   611→        self.docstring_count: int = 0
+   612→        self.docstring_targets: int = 0
+   613→        self.except_handlers: int = 0
+   614→        self.bare_except_handlers: int = 0
+   615→        self.try_blocks: int = 0
+   616→        self.security_issues: List[Dict[str, Any]] = []
+   617→        self.naming_violations: List[Dict[str, Any]] = []
+   618→        self._current_depth: int = 0
+   619→
+   620→        # Count blanks and comments
+   621→        for line in source_lines:
+   622→            stripped = line.strip()
+   623→            if not stripped:
+   624→                self.blank_lines += 1
+   625→            elif stripped.startswith("#"):
+   626→                self.comment_lines += 1
+   627→
+   628→    # ── Visitors ─────────────────────────────────────────────────────────
+   629→
+   630→    def visit_FunctionDef(self, node: ast.AST) -> None:  # type: ignore[override]
+   631→        self._analyse_function(node)
+   632→        self.generic_visit(node)
+   633→
+   634→    def visit_AsyncFunctionDef(self, node: ast.AST) -> None:  # type: ignore[override]
+   635→        self._analyse_function(node)
+   636→        self.generic_visit(node)
+   637→
+   638→    def visit_ClassDef(self, node: ast.AST) -> None:  # type: ignore[override]
+   639→        name = getattr(node, "name", "")
+   640→        bases = [getattr(b, "id", "") if isinstance(b, ast.Name) else "" for b in getattr(node, "bases", [])]
+   641→        docstring = ast.get_docstring(node)
+   642→        has_doc = docstring is not None
+   643→
+   644→        # Check class naming
+   645→        if name and not _NAMING_PATTERNS["class"].match(name) and not name.startswith("_"):
+   646→            self.naming_violations.append({
+   647→                "name": name, "kind": "class", "line": getattr(node, "lineno", 0),
+   648→            })
+   649→
+   650→        self.classes.append({
+   651→            "name": name,
+   652→            "bases": bases,
+   653→            "has_docstring": has_doc,
+   654→            "line": getattr(node, "lineno", 0),
+   655→            "end_line": getattr(node, "end_lineno", 0),
+   656→        })
+   657→        if has_doc:
+   658→            self.docstring_count += 1
+   659→        self.docstring_targets += 1
+   660→
+   661→        self.generic_visit(node)
+   662→
+   663→    def visit_Import(self, node: ast.AST) -> None:  # type: ignore[override]
+   664→        for alias in getattr(node, "names", []):
+   665→            self.imports.append(getattr(alias, "name", ""))
+   666→        self.generic_visit(node)
+   667→
+   668→    def visit_ImportFrom(self, node: ast.AST) -> None:  # type: ignore[override]
+   669→        module = getattr(node, "module", "") or ""
+   670→        for alias in getattr(node, "names", []):
+   671→            self.imports.append(f"{module}.{getattr(alias, 'name', '')}")
+   672→        self.generic_visit(node)
+   673→
+   674→    def visit_If(self, node: ast.AST) -> None:  # type: ignore[override]
+   675→        self.total_branches += 1
+   676→        self._current_depth += 1
+   677→        self.max_nesting_depth = max(self.max_nesting_depth, self._current_depth)
+   678→        self.generic_visit(node)
+   679→        self._current_depth -= 1
+   680→
+   681→    def visit_For(self, node: ast.AST) -> None:  # type: ignore[override]
+   682→        self.total_branches += 1
+   683→        self._current_depth += 1
+   684→        self.max_nesting_depth = max(self.max_nesting_depth, self._current_depth)
+   685→        self.generic_visit(node)
+   686→        self._current_depth -= 1
+   687→
+   688→    def visit_While(self, node: ast.AST) -> None:  # type: ignore[override]
+   689→        self.total_branches += 1
+   690→        self._current_depth += 1
+   691→        self.max_nesting_depth = max(self.max_nesting_depth, self._current_depth)
+   692→        self.generic_visit(node)
+   693→        self._current_depth -= 1
+   694→
+   695→    def visit_With(self, node: ast.AST) -> None:  # type: ignore[override]
+   696→        self.total_branches += 1
+   697→        self._current_depth += 1
+   698→        self.max_nesting_depth = max(self.max_nesting_depth, self._current_depth)
+   699→        self.generic_visit(node)
+   700→        self._current_depth -= 1
+   701→
+   702→    def visit_Try(self, node: ast.AST) -> None:  # type: ignore[override]
+   703→        self.try_blocks += 1
+   704→        for handler in getattr(node, "handlers", []):
+   705→            self.except_handlers += 1
+   706→            exc_type = getattr(handler, "type", None)
+   707→            if exc_type is None:
+   708→                self.bare_except_handlers += 1
+   709→        self.generic_visit(node)
+   710→
+   711→    # ── Helpers ──────────────────────────────────────────────────────────
+   712→
+   713→    def _analyse_function(self, node: ast.AST) -> None:
+   714→        """Analyse a function/method node."""
+   715→        name = getattr(node, "name", "")
+   716→        args = getattr(node, "args", None)
+   717→        lineno = getattr(node, "lineno", 0)
+   718→        end_lineno = getattr(node, "end_lineno", 0)
+   719→        func_loc = max(1, (end_lineno or lineno) - lineno + 1)
+   720→        docstring = ast.get_docstring(node)
+   721→        has_doc = docstring is not None
+   722→
+   723→        # Parameter analysis
+   724→        param_count = 0
+   725→        hinted_params = 0
+   726→        returns_hinted = False
+   727→
+   728→        if args:
+   729→            all_args = (
+   730→                list(getattr(args, "posonlyargs", [])) +
+   731→                list(getattr(args, "args", [])) +
+   732→                list(getattr(args, "kwonlyargs", []))
+   733→            )
+   734→            param_count = len(all_args)
+   735→            for arg in all_args:
+   736→                if getattr(arg, "annotation", None) is not None:
+   737→                    hinted_params += 1
+   738→            if getattr(args, "vararg", None) and getattr(args.vararg, "annotation", None):
+   739→                hinted_params += 1
+   740→                param_count += 1
+   741→            if getattr(args, "kwarg", None) and getattr(args.kwarg, "annotation", None):
+   742→                hinted_params += 1
+   743→                param_count += 1
+   744→
+   745→        self.total_params += param_count
+   746→        self.has_type_hints += hinted_params
+   747→
+   748→        if getattr(node, "returns", None) is not None:
+   749→            returns_hinted = True
+   750→
+   751→        # Count nested branches
+   752→        branch_count = 0
+   753→        for child in ast.walk(node):
+   754→            if isinstance(child, (ast.If, ast.For, ast.While, ast.With, ast.Try)):
+   755→                branch_count += 1
+   756→
+   757→        # Check naming (skip dunder methods and private)
+   758→        if (
+   759→            name
+   760→            and not name.startswith("__")
+   761→            and not name.startswith("_")
+   762→            and not _NAMING_PATTERNS["function"].match(name)
+   763→        ):
+   764→            self.naming_violations.append({
+   765→                "name": name, "kind": "function", "line": lineno,
+   766→            })
+   767→
+   768→        self.functions.append({
+   769→            "name": name,
+   770→            "loc": func_loc,
+   771→            "params": param_count,
+   772→            "hinted_params": hinted_params,
+   773→            "returns_hinted": returns_hinted,
+   774→            "has_docstring": has_doc,
+   775→            "branches": branch_count,
+   776→            "line": lineno,
+   777→        })
+   778→
+   779→        if has_doc:
+   780→            self.docstring_count += 1
+   781→        self.docstring_targets += 1
+   782→
+   783→
+   784→def _scan_security_patterns(source: str) -> List[Dict[str, Any]]:
+   785→    """Scan source text for security anti-patterns."""
+   786→    issues: List[Dict[str, Any]] = []
+   787→    for line_no, line in enumerate(source.splitlines(), 1):
+   788→        for pattern, description in _SECURITY_ANTI_PATTERNS:
+   789→            if re.search(pattern, line):
+   790→                issues.append({
+   791→                    "line": line_no,
+   792→                    "pattern": description,
+   793→                    "snippet": line.strip()[:100],
+   794→                })
+   795→    return issues
+   796→
+   797→
+   798→def _estimate_test_coverage(source_lines: List[str]) -> Dict[str, Any]:
+   799→    """Estimate test coverage heuristically from test file content.
+   800→
+   801→    This is NOT an actual coverage measurement — it estimates the
+   802→    *quality* of test files (assertions per function, etc.).
+   803→    """
+   804→    total_lines = len(source_lines)
+   805→    if total_lines == 0:
+   806→        return {"assert_count": 0, "test_function_count": 0, "quality_estimate": 0.0}
+   807→
+   808→    assert_count = sum(1 for line in source_lines if re.search(r"\bassert\b", line))
+   809→    test_funcs = sum(1 for line in source_lines if re.search(r"\bdef\s+test_", line))
+   810→    mock_count = sum(1 for line in source_lines if re.search(r"\b(mock|patch|MagicMock)\b", line))
+   811→
+   812→    # Heuristic: quality based on asserts-per-test-function ratio
+   813→    if test_funcs > 0:
+   814→        asserts_per_test = assert_count / test_funcs
+   815→    else:
+   816→        asserts_per_test = 0.0
+   817→
+   818→    # Score: more asserts per test, more mocks = better
+   819→    quality = min(100.0, asserts_per_test * 15 + mock_count * 2)
+   820→    quality = max(0.0, quality)
+   821→
+   822→    return {
+   823→        "assert_count": assert_count,
+   824→        "test_function_count": test_funcs,
+   825→        "mock_count": mock_count,
+   826→        "asserts_per_test": round(asserts_per_test, 2),
+   827→        "quality_estimate": round(quality, 1),
+   828→    }
+   829→
+   830→
+   831→def _compute_maintainability_index(
+   832→    total_loc: int,
+   833→    comment_lines: int,
+   834→    blank_lines: int,
+   835→    max_nesting: int,
+   836→    avg_func_loc: float,
+   837→) -> float:
+   838→    """Compute a maintainability index (0-100).
+   839→
+   840→    Inspired by the original Maintainability Index formula but
+   841→    adapted for simplicity and stdlib-only operation.
+   842→    """
+   843→    if total_loc == 0:
+   844→        return 100.0
+   845→
+   846→    code_loc = max(1, total_loc - comment_lines - blank_lines)
+   847→    comment_ratio = comment_lines / total_loc
+   848→
+   849→    # Penalise long functions
+   850→    func_length_penalty = max(0.0, (avg_func_loc - 30) / 70) * 30  # 30 LOC is ideal
+   851→
+   852→    # Penalise deep nesting
+   853→    nesting_penalty = max(0.0, (max_nesting - 3) / 7) * 25  # 3 levels is ideal
+   854→
+   855→    # Reward comments
+   856→    comment_bonus = comment_ratio * 20
+   857→
+   858→    raw = 100.0 - func_length_penalty - nesting_penalty + comment_bonus
+   859→    return max(0.0, min(100.0, round(raw, 1)))
+   860→
+   861→
+   862→def _assign_severity(score: float) -> str:
+   863→    """Map a quality score (0-100) to a ReconPro severity."""
+   864→    if score >= 80:
+   865→        return "low"
+   866→    elif score >= 60:
+   867→        return "medium"
+   868→    elif score >= 40:
+   869→        return "high"
+   870→    return "critical"
+   871→
+   872→
+   873→def _assign_grade(score: float) -> str:
+   874→    """Map a quality score (0-100) to a ReconPro grade."""
+   875→    for threshold, grade in GRADE_THRESHOLDS:
+   876→        if score >= threshold:
+   877→            return grade
+   878→    return "F"
+   879→
+   880→
+   881→def _assign_dimension_grade(score: float) -> str:
+   882→    """Stricter grade thresholds for individual dimensions."""
+   883→    if score >= 90:
+   884→        return "A+"
+   885→    elif score >= 80:
+   886→        return "A"
+   887→    elif score >= 70:
+   888→        return "B"
+   889→    elif score >= 55:
+   890→        return "C"
+   891→    elif score >= 40:
+   892→        return "D"
+   893→    return "F"
+   894→
+   895→
+   896→# ════════════════════════════════════════════════════════════════════════
+   897→# QualityIntelligence — Main orchestrator
+   898→# ════════════════════════════════════════════════════════════════════════
+   899→
+   900→
+   901→class QualityIntelligence:
+   902→    """Comprehensive quality analysis for Python source code.
+   903→
+   904→    Usage:
+   905→        qi = QualityIntelligence()
+   906→
+   907→        # Analyse a single file
+   908→        result = qi.analyze_code_quality("/path/to/file.py")
+   909→
+   910→        # Analyse entire repository
+   911→        repo_result = qi.analyze_repository_quality("/path/to/repo")
+   912→
+   913→        # Get composite score
+   914→        print(qi.get_quality_score())
+   915→
+   916→        # Get formatted report
+   917→        print(qi.get_quality_report())
+   918→    """
+   919→
+   920→    def __init__(
+   921→        self,
+   922→        repository_path: Optional[str] = None,
+   923→        weights: Optional[Dict[str, float]] = None,
+   924→    ) -> None:
+   925→        self._repo_path = repository_path
+   926→        self._weights = dict(weights or DEFAULT_DIMENSION_WEIGHTS)
+   927→        self._dimensions: Dict[str, QualityDimension] = {}
+   928→        self._file_analyses: Dict[str, Dict[str, Any]] = {}
+   929→        self._composite_score: float = 0.0
+   930→        self._thresholds: Dict[str, float] = {
+   931→            "_composite": 60.0,  # Default: reject below 60
+   932→        }
+   933→        self._trend = QualityTrend()
+   934→        self._gate = QualityGate()
+   935→        self._total_files: int = 0
+   936→        self._total_loc: int = 0
+   937→
+   938→        # Define a default "release" gate
+   939→        self._gate.define_gate(
+   940→            "release_ready",
+   941→            {"_composite": 60.0, "security": 50.0, "reliability": 40.0},
+   942→        )
+   943→
+   944→    # ── Public API ───────────────────────────────────────────────────────
+   945→
+   946→    def analyze_code_quality(self, file_path: str) -> Dict[str, Any]:
+   947→        """Analyse a single file's quality.
+   948→
+   949→        Returns a dict with per-dimension scores and file-level metrics.
+   950→        """
+   951→        file_path = os.path.abspath(file_path)
+   952→        logger.info("Analysing code quality: %s", file_path)
+   953→
+   954→        # Read source
+   955→        try:
+   956→            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+   957→                source = f.read()
+   958→        except OSError as exc:
+   959→            logger.error("Cannot read %s: %s", file_path, exc)
+   960→            return {
+   961→                "file": file_path,
+   962→                "error": f"Cannot read file: {exc}",
+   963→                "dimensions": {},
+   964→            }
+   965→
+   966→        source_lines = source.splitlines()
+   967→        tree = _parse_file_safe(file_path)
+   968→
+   969→        if tree is None:
+   970→            # Can't parse — give minimal analysis
+   971→            return {
+   972→                "file": file_path,
+   973→                "loc": len(source_lines),
+   974→                "error": "Failed to parse file (syntax error)",
+   975→                "dimensions": {},
+   976→                "overall_score": 0.0,
+   977→            }
+   978→
+   979→        # Run AST analyser
+   980→        analyser = _ASTAnalyzer(source_lines)
+   981→        analyser.visit(tree)
+   982→
+   983→        # Security pattern scan
+   984→        security_issues = _scan_security_patterns(source)
+   985→
+   986→        # Is this a test file?
+   987→        is_test = "/test" in file_path.replace("\\", "/") or file_path.endswith("_test.py")
+   988→
+   989→        # Compute dimension scores
+   990→        dimensions = self._compute_dimensions(
+   991→            analyser, security_issues, is_test, source
+   992→        )
+   993→
+   994→        # Store
+   995→        self._file_analyses[file_path] = {
+   996→            "dimensions": {k: v.to_dict() for k, v in dimensions.items()},
+   997→            "analyzer": analyser,
+   998→            "security_issues": security_issues,
+   999→            "loc": len(source_lines),
+  1000→        }
+  1001→
+  1002→        return {
+  1003→            "file": file_path,
+  1004→            "loc": len(source_lines),
+  1005→            "overall_score": round(self._weighted_score(dimensions), 1),
+  1006→            "dimensions": {k: v.to_dict() for k, v in dimensions.items()},
+  1007→            "security_issues": security_issues,
+  1008→            "functions": len(analyser.functions),
+  1009→            "classes": len(analyser.classes),
+  1010→        }
+  1011→
+  1012→    def analyze_repository_quality(
+  1013→        self,
+  1014→        repository_path: Optional[str] = None,
+  1015→    ) -> Dict[str, Any]:
+  1016→        """Analyse all Python files in a repository.
+  1017→
+  1018→        Args:
+  1019→            repository_path: Root directory. Defaults to the path
+  1020→                             provided at construction time.
+  1021→
+  1022→        Returns:
+  1023→            Repository-level quality analysis dict.
+  1024→        """
+  1025→        repo = repository_path or self._repo_path
+  1026→        if not repo:
+  1027→            logger.error("No repository path specified")
+  1028→            return {"error": "No repository path specified", "dimensions": {}}
+  1029→
+  1030→        repo = os.path.abspath(repo)
+  1031→        logger.info("Analysing repository quality: %s", repo)
+  1032→
+  1033→        # Collect all Python files
+  1034→        py_files: List[str] = []
+  1035→        for root, _dirs, files in os.walk(repo):
+  1036→            # Skip hidden directories, __pycache__, .git, etc.
+  1037→            skip_parts = {"__pycache__", ".git", ".tox", ".eggs", "node_modules", ".venv", "venv"}
+  1038→            if any(part in skip_parts for part in Path(root).parts):
+  1039→                continue
+  1040→            for fname in sorted(files):
+  1041→                if fname.endswith(".py"):
+  1042→                    py_files.append(os.path.join(root, fname))
+  1043→
+  1044→        if not py_files:
+  1045→            return {"error": "No Python files found", "dimensions": {}}
+  1046→
+  1047→        # Aggregate metrics across all files
+  1048→        aggregate = _ASTAnalyzer([])
+  1049→        total_security_issues: List[Dict[str, Any]] = []
+  1050→        all_dimensions: List[Dict[str, QualityDimension]] = []
+  1051→        total_loc = 0
+  1052→        file_count = 0
+  1053→
+  1054→        for fpath in py_files:
+  1055→            result = self.analyze_code_quality(fpath)
+  1056→            if "error" in result and "dimensions" not in result:
+  1057→                continue
+  1058→            if not result.get("dimensions"):
+  1059→                continue
+  1060→
+  1061→            file_count += 1
+  1062→            total_loc += result.get("loc", 0)
+  1063→            total_security_issues.extend(result.get("security_issues", []))
+  1064→
+  1065→            # Reconstruct dimensions for aggregation
+  1066→            file_dims: Dict[str, QualityDimension] = {}
+  1067→            for dim_name, dim_data in result.get("dimensions", {}).items():
+  1068→                file_dims[dim_name] = QualityDimension(
+  1069→                    name=dim_name,
+  1070→                    score=dim_data["score"],
+  1071→                    weight=dim_data["weight"],
+  1072→                    metrics=dim_data.get("metrics", {}),
+  1073→                )
+  1074→            all_dimensions.append(file_dims)
+  1075→
+  1076→        # Compute aggregate dimensions
+  1077→        agg_dimensions = self._aggregate_dimensions(all_dimensions)
+  1078→        self._dimensions = agg_dimensions
+  1079→        self._total_files = file_count
+  1080→        self._total_loc = total_loc
+  1081→
+  1082→        # Compute composite
+  1083→        self._composite_score = self._weighted_score(agg_dimensions)
+  1084→
+  1085→        # Record snapshot
+  1086→        dim_scores = {k: v.score for k, v in agg_dimensions.items()}
+  1087→        self._trend.record_snapshot(
+  1088→            composite_score=self._composite_score,
+  1089→            dimensions=dim_scores,
+  1090→            file_count=file_count,
+  1091→            total_loc=total_loc,
+  1092→            repository_path=repo,
+  1093→        )
+  1094→
+  1095→        # Evaluate default gate
+  1096→        gate_result = self._gate.evaluate(
+  1097→            "release_ready",
+  1098→            {"composite_score": self._composite_score, "dimensions": dim_scores},
+  1099→        )
+  1100→
+  1101→        # Trend analysis
+  1102→        comparison = self._trend.compare_with_previous()
+  1103→        trajectory = self._trend.project_trajectory()
+  1104→
+  1105→        return {
+  1106→            "repository": repo,
+  1107→            "file_count": file_count,
+  1108→            "total_loc": total_loc,
+  1109→            "composite_score": round(self._composite_score, 1),
+  1110→            "grade": _assign_grade(self._composite_score),
+  1111→            "dimensions": {k: v.to_dict() for k, v in agg_dimensions.items()},
+  1112→            "security_issues_total": len(total_security_issues),
+  1113→            "security_issues_sample": total_security_issues[:20],
+  1114→            "gate_result": gate_result.to_dict(),
+  1115→            "trend": comparison,
+  1116→            "trajectory": trajectory,
+  1117→            "timestamp": datetime.now(timezone.utc).isoformat(),
+  1118→        }
+  1119→
+  1120→    def get_quality_score(self) -> float:
+  1121→        """Return the current composite quality score (0-100).
+  1122→
+  1123→        If no analysis has been run yet, returns 0.0.
+  1124→        """
+  1125→        return round(self._composite_score, 1)
+  1126→
+  1127→    def get_quality_dimensions(self) -> Dict[str, Dict[str, Any]]:
+  1128→        """Return the current quality dimension breakdown.
+  1129→
+  1130→        Each dimension includes name, score, weight, severity, grade,
+  1131→        and detailed metrics.
+  1132→        """
+  1133→        if not self._dimensions:
+  1134→            return {}
+  1135→        return {k: v.to_dict() for k, v in self._dimensions.items()}
+  1136→
+  1137→    def track_quality_over_time(self) -> Dict[str, Any]:
+  1138→        """Return quality trend data.
+  1139→
+  1140→        Includes snapshots, comparison with previous, regression
+  1141→        detection, and trajectory projection.
+  1142→        """
+  1143→        snapshots = self._trend.get_snapshots()
+  1144→        comparison = self._trend.compare_with_previous()
+  1145→        regressions = self._trend.detect_regressions()
+  1146→        trajectory = self._trend.project_trajectory()
+  1147→
+  1148→        return {
+  1149→            "snapshot_count": len(snapshots),
+  1150→            "latest_snapshot": self._trend.get_latest().to_dict() if self._trend.get_latest() else None,
+  1151→            "comparison": comparison,
+  1152→            "regressions": regressions,
+  1153→            "trajectory": trajectory,
+  1154→            "snapshots": [s.to_dict() for s in snapshots[-20:]],  # Last 20
+  1155→        }
+  1156→
+  1157→    def get_quality_report(self) -> str:
+  1158→        """Generate a formatted quality report string."""
+  1159→        lines: List[str] = []
+  1160→        lines.append("=" * 70)
+  1161→        lines.append("  ReconPro Quality Intelligence Report")
+  1162→        lines.append(f"  Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+  1163→        lines.append("=" * 70)
+  1164→        lines.append("")
+  1165→
+  1166→        # Composite score
+  1167→        score = self._composite_score
+  1168→        grade = _assign_grade(score)
+  1169→        lines.append(f"COMPOSITE SCORE: {score:.1f}/100  (Grade: {grade})")
+  1170→        lines.append(f"Files analysed: {self._total_files}  |  Total LOC: {self._total_loc}")
+  1171→        lines.append("")
+  1172→
+  1173→        # Dimensions breakdown
+  1174→        lines.append("-" * 70)
+  1175→        lines.append(f"{'Dimension':<20s} {'Score':>6s} {'Weight':>7s} {'Grade':>6s} {'Severity':>10s}")
+  1176→        lines.append("-" * 70)
+  1177→
+  1178→        for dim_name, dim in self._dimensions.items():
+  1179→            lines.append(
+  1180→                f"{dim.name:<20s} {dim.score:>5.1f}/100 {dim.weight:>6.2f}  "
+  1181→                f"{dim.grade:>5s} {dim.severity:>10s}"
+  1182→            )
+  1183→        lines.append("")
+  1184→
+  1185→        # Dimension details
+  1186→        for dim_name, dim in self._dimensions.items():
+  1187→            if dim.details:
+  1188→                lines.append(f"  [{dim_name}] {dim.details}")
+  1189→                if dim.metrics:
+  1190→                    for mk, mv in dim.metrics.items():
+  1191→                        if isinstance(mv, float):
+  1192→                            lines.append(f"    - {mk}: {mv:.1f}")
+  1193→                        else:
+  1194→                            lines.append(f"    - {mk}: {mv}")
+  1195→        lines.append("")
+  1196→
+  1197→        # Trend info
+  1198→        trend_data = self.track_quality_over_time()
+  1199→        if trend_data["comparison"]:
+  1200→            comp = trend_data["comparison"]
+  1201→            lines.append("TREND: " + comp["direction"].upper())
+  1202→            lines.append(f"  Score delta: {comp['score_delta']:+.1f}")
+  1203→            if comp["regressions"]:
+  1204→                lines.append(f"  Regressed dimensions: {', '.join(comp['regressions'])}")
+  1205→            if comp["improvements"]:
+  1206→                lines.append(f"  Improved dimensions: {', '.join(comp['improvements'])}")
+  1207→        else:
+  1208→            lines.append("TREND: Insufficient data (need 2+ snapshots)")
+  1209→        lines.append("")
+  1210→
+  1211→        # Gate status
+  1212→        gate_history = self._gate.get_gate_history("release_ready")
+  1213→        if gate_history:
+  1214→            latest = gate_history[-1]
+  1215→            status = "PASSED" if latest["passed"] else "FAILED"
+  1216→            lines.append(f"GATE 'release_ready': {status} (score={latest['score']:.1f}, threshold={latest['threshold']:.1f})")
+  1217→            if latest["failures"]:
+  1218→                for fail in latest["failures"]:
+  1219→                    lines.append(f"  - {fail['message']}")
+  1220→        lines.append("")
+  1221→
+  1222→        lines.append("=" * 70)
+  1223→        lines.append("  End of Quality Intelligence Report")
+  1224→        lines.append("=" * 70)
+  1225→
+  1226→        return "\n".join(lines)
+  1227→
+  1228→    def set_quality_threshold(self, thresholds: Dict[str, float]) -> None:
+  1229→        """Set minimum acceptable quality thresholds.
+  1230→
+  1231→        Args:
+  1232→            thresholds: Dict mapping dimension name (or "_composite")
+  1233→                         to minimum acceptable score (0-100).
+  1234→        """
+  1235→        self._thresholds = dict(thresholds)
+  1236→        logger.info("Updated quality thresholds: %s", thresholds)
+  1237→
+  1238→    # ── Trend / Gate accessors ───────────────────────────────────────────
+  1239→
+  1240→    @property
+  1241→    def trend(self) -> QualityTrend:
+  1242→        """Access the quality trend tracker."""
+  1243→        return self._trend
+  1244→
+  1245→    @property
+  1246→    def gate(self) -> QualityGate:
+  1247→        """Access the quality gate system."""
+  1248→        return self._gate
+  1249→
+  1250→    # ── Internal: dimension computation ──────────────────────────────────
+  1251→
+  1252→    def _compute_dimensions(
+  1253→        self,
+  1254→        analyzer: _ASTAnalyzer,
+  1255→        security_issues: List[Dict[str, Any]],
+  1256→        is_test: bool,
+  1257→        source: str,
+  1258→    ) -> Dict[str, QualityDimension]:
+  1259→        """Compute all 8 quality dimensions for a single file."""
+  1260→        dimensions: Dict[str, QualityDimension] = {}
+  1261→
+  1262→        dimensions["complexity"] = self._dim_complexity(analyzer)
+  1263→        dimensions["coverage"] = self._dim_coverage(analyzer, is_test, source)
+  1264→        dimensions["type_safety"] = self._dim_type_safety(analyzer)
+  1265→        dimensions["documentation"] = self._dim_documentation(analyzer)
+  1266→        dimensions["security"] = self._dim_security(analyzer, security_issues)
+  1267→        dimensions["maintainability"] = self._dim_maintainability(analyzer)
+  1268→        dimensions["reliability"] = self._dim_reliability(analyzer)
+  1269→        dimensions["consistency"] = self._dim_consistency(analyzer)
+  1270→
+  1271→        return dimensions
+  1272→
+  1273→    def _dim_complexity(self, a: _ASTAnalyzer) -> QualityDimension:
+  1274→        """Score code complexity (LOC per function, nesting depth)."""
+  1275→        if not a.functions:
+  1276→            return QualityDimension(
+  1277→                name="complexity", score=100.0, weight=self._weights["complexity"],
+  1278→                severity="info", grade="A+", details="No functions to analyse.",
+  1279→            )
+  1280→
+  1281→        avg_loc = sum(f["loc"] for f in a.functions) / len(a.functions)
+  1282→        max_loc = max(f["loc"] for f in a.functions)
+  1283→        max_nesting = a.max_nesting_depth
+  1284→        total_branches = a.total_branches
+  1285→
+  1286→        # Scoring: penalise large functions and deep nesting
+  1287→        loc_score = max(0, 100 - (avg_loc - 20) * 2)  # 20 LOC = perfect
+  1288→        loc_score = max(0, min(100, loc_score))
+  1289→
+  1290→        nesting_score = max(0, 100 - (max_nesting - 2) * 12)  # 2 levels = perfect
+  1291→        nesting_score = max(0, min(100, nesting_score))
+  1292→
+  1293→        # Long function penalty
+  1294→        long_funcs = sum(1 for f in a.functions if f["loc"] > 50)
+  1295→        long_penalty = long_funcs * 5
+  1296→
+  1297→        score = max(0, min(100, (loc_score * 0.4 + nesting_score * 0.4 + 20) - long_penalty))
+  1298→
+  1299→        return QualityDimension(
+  1300→            name="complexity",
+  1301→            score=round(score, 1),
+  1302→            weight=self._weights["complexity"],
+  1303→            severity=_assign_severity(score),
+  1304→            grade=_assign_dimension_grade(score),
+  1305→            details=f"avg_func_loc={avg_loc:.0f}, max_func_loc={max_loc}, max_nesting={max_nesting}, branches={total_branches}",
+  1306→            metrics={
+  1307→                "avg_func_loc": round(avg_loc, 1),
+  1308→                "max_func_loc": max_loc,
+  1309→                "max_nesting_depth": max_nesting,
+  1310→                "total_branches": total_branches,
+  1311→                "long_functions": long_funcs,
+  1312→                "function_count": len(a.functions),
+  1313→            },
+  1314→        )
+  1315→
+  1316→    def _dim_coverage(self, a: _ASTAnalyzer, is_test: bool, source: str) -> QualityDimension:
+  1317→        """Score test coverage estimation."""
+  1318→        if is_test:
+  1319→            # Evaluate test quality instead
+  1320→            source_lines = source.splitlines()
+  1321→            est = _estimate_test_coverage(source_lines)
+  1322→            score = est["quality_estimate"]
+  1323→            return QualityDimension(
+  1324→                name="coverage",
+  1325→                score=score,
+  1326→                weight=self._weights["coverage"],
+  1327→                severity=_assign_severity(score),
+  1328→                grade=_assign_dimension_grade(score),
+  1329→                details=f"Test file quality: {est['test_function_count']} tests, {est['assert_count']} asserts, {est['asserts_per_test']:.1f} asserts/test",
+  1330→                metrics=est,
+  1331→            )
+  1332→
+  1333→        # For non-test files: estimate based on whether test file likely exists
+  1334→        # This is a heuristic — real coverage requires instrumentation
+  1335→        # We give a baseline score for non-test files since we can't
+  1336→        # truly measure coverage without running tests
+  1337→        score = 50.0  # Neutral estimate for non-test files
+  1338→
+  1339→        return QualityDimension(
+  1340→            name="coverage",
+  1341→            score=score,
+  1342→            weight=self._weights["coverage"],
+  1343→            severity="medium",
+  1344→            grade=_assign_dimension_grade(score),
+  1345→            details="Non-test file; coverage requires test execution (estimated baseline)",
+  1346→            metrics={"estimated": True, "note": "Real coverage requires running test suite"},
+  1347→        )
+  1348→
+  1349→    def _dim_type_safety(self, a: _ASTAnalyzer) -> QualityDimension:
+  1350→        """Score type hint coverage."""
+  1351→        if a.total_params == 0 and not a.functions:
+  1352→            return QualityDimension(
+  1353→                name="type_safety", score=100.0, weight=self._weights["type_safety"],
+  1354→                severity="info", grade="A+", details="No functions to analyse.",
+  1355→            )
+  1356→
+  1357→        if a.total_params == 0:
+  1358→            return QualityDimension(
+  1359→                name="type_safety", score=80.0, weight=self._weights["type_safety"],
+  1360→                severity="low", grade="A-", details="Functions exist but have no parameters.",
+  1361→            )
+  1362→
+  1363→        param_ratio = a.has_type_hints / a.total_params
+  1364→
+  1365→        # Check return type hints
+  1366→        funcs_with_return = 0
+  1367→        funcs_total = len(a.functions)
+  1368→        for f in a.functions:
+  1369→            if f["returns_hinted"]:
+  1370→                funcs_with_return += 1
+  1371→        return_ratio = funcs_with_return / funcs_total if funcs_total > 0 else 1.0
+  1372→
+  1373→        score = (param_ratio * 60 + return_ratio * 40)
+  1374→        score = max(0, min(100, score))
+  1375→
+  1376→        return QualityDimension(
+  1377→            name="type_safety",
+  1378→            score=round(score, 1),
+  1379→            weight=self._weights["type_safety"],
+  1380→            severity=_assign_severity(score),
+  1381→            grade=_assign_dimension_grade(score),
+  1382→            details=f"param_hints={a.has_type_hints}/{a.total_params} ({param_ratio:.0%}), return_hints={funcs_with_return}/{funcs_total} ({return_ratio:.0%})",
+  1383→            metrics={
+  1384→                "params_hinted": a.has_type_hints,
+  1385→                "total_params": a.total_params,
+  1386→                "param_hint_ratio": round(param_ratio, 3),
+  1387→                "returns_hinted": funcs_with_return,
+  1388→                "total_functions": funcs_total,
+  1389→                "return_hint_ratio": round(return_ratio, 3),
+  1390→            },
+  1391→        )
+  1392→
+  1393→    def _dim_documentation(self, a: _ASTAnalyzer) -> QualityDimension:
+  1394→        """Score docstring coverage."""
+  1395→        if a.docstring_targets == 0:
+  1396→            if a.total_loc > 20:
+  1397→                # File has code but no documentable targets
+  1398→                return QualityDimension(
+  1399→                    name="documentation",
+  1400→                    score=20.0,
+  1401→                    weight=self._weights["documentation"],
+  1402→                    severity="high",
+  1403→                    grade="D",
+  1404→                    details="File has code but no functions or classes with docstrings.",
+  1405→                    metrics={"docstring_count": 0, "targets": 0},
+  1406→                )
+  1407→            return QualityDimension(
+  1408→                name="documentation", score=100.0, weight=self._weights["documentation"],
+  1409→                severity="info", grade="A+", details="Empty file.",
+  1410→            )
+  1411→
+  1412→        ratio = a.docstring_count / a.docstring_targets
+  1413→        score = ratio * 100
+  1414→
+  1415→        return QualityDimension(
+  1416→            name="documentation",
+  1417→            score=round(score, 1),
+  1418→            weight=self._weights["documentation"],
+  1419→            severity=_assign_severity(score),
+  1420→            grade=_assign_dimension_grade(score),
+  1421→            details=f"docstrings={a.docstring_count}/{a.docstring_targets} ({ratio:.0%}), comments={a.comment_lines}",
+  1422→            metrics={
+  1423→                "docstring_count": a.docstring_count,
+  1424→                "documentable_targets": a.docstring_targets,
+  1425→                "docstring_ratio": round(ratio, 3),
+  1426→                "comment_lines": a.comment_lines,
+  1427→            },
+  1428→        )
+  1429→
+  1430→    def _dim_security(self, a: _ASTAnalyzer, issues: List[Dict[str, Any]]) -> QualityDimension:
+  1431→        """Score security (lower anti-pattern count = higher score)."""
+  1432→        issue_count = len(issues)
+  1433→
+  1434→        # Start at 100, deduct per issue
+  1435→        deductions = {
+  1436→            "use of eval()": 20,
+  1437→            "use of exec()": 20,
+  1438→            "pickle deserialization (unsafe)": 15,
+  1439→            "marshal deserialization (unsafe)": 15,
+  1440→            "os.system() command injection risk": 15,
+  1441→            "shell=True in subprocess": 12,
+  1442→            "SSL verification disabled": 10,
+  1443→            "certificate verification disabled": 8,
+  1444→            "hostname verification disabled": 8,
+  1445→            "yaml.load without Loader (unsafe)": 12,
+  1446→            "compile with exec mode": 15,
+  1447→            "weak hash algorithm (MD5)": 8,
+  1448→            "weak hash algorithm (SHA1)": 5,
+  1449→            "mktemp is insecure (race condition)": 10,
+  1450→            "dynamic import via __import__": 8,
+  1451→            "attribute name introspection": 3,
+  1452→            "dunder attribute access": 3,
+  1453→            "noqa comment (suppressed linting)": 2,
+  1454→            "type: ignore comment": 2,
+  1455→            "bare or overly broad except": 3,
+  1456→            "bare pass (possible stub)": 1,
+  1457→        }
+  1458→
+  1459→        total_deduction = 0
+  1460→        for issue in issues:
+  1461→            pattern_desc = issue.get("pattern", "")
+  1462→            total_deduction += deductions.get(pattern_desc, 3)
+  1463→
+  1464→        score = max(0, 100 - total_deduction)
+  1465→
+  1466→        # Also penalise bare except
+  1467→        if a.bare_except_handlers > 0:
+  1468→            score = max(0, score - a.bare_except_handlers * 8)
+  1469→
+  1470→        return QualityDimension(
+  1471→            name="security",
+  1472→            score=round(score, 1),
+  1473→            weight=self._weights["security"],
+  1474→            severity=_assign_severity(score),
+  1475→            grade=_assign_dimension_grade(score),
+  1476→            details=f"anti_patterns={issue_count}, bare_except={a.bare_except_handlers}, security_deduction={total_deduction}",
+  1477→            metrics={
+  1478→                "anti_pattern_count": issue_count,
+  1479→                "bare_except_handlers": a.bare_except_handlers,
+  1480→                "total_deduction": total_deduction,
+  1481→                "issues_sample": issues[:10],
+  1482→            },
+  1483→        )
+  1484→
+  1485→    def _dim_maintainability(self, a: _ASTAnalyzer) -> QualityDimension:
+  1486→        """Score maintainability index."""
+  1487→        avg_func_loc = (
+  1488→            sum(f["loc"] for f in a.functions) / len(a.functions)
+  1489→            if a.functions else 0
+  1490→        )
+  1491→
+  1492→        score = _compute_maintainability_index(
+  1493→            total_loc=a.total_loc,
+  1494→            comment_lines=a.comment_lines,
+  1495→            blank_lines=a.blank_lines,
+  1496→            max_nesting=a.max_nesting_depth,
+  1497→            avg_func_loc=avg_func_loc,
+  1498→        )
+  1499→
+  1500→        return QualityDimension(
+  1501→            name="maintainability",
+  1502→            score=score,
+  1503→            weight=self._weights["maintainability"],
+  1504→            severity=_assign_severity(score),
+  1505→            grade=_assign_dimension_grade(score),
+  1506→            details=f"loc={a.total_loc}, comments={a.comment_lines}, blank={a.blank_lines}, avg_func_loc={avg_func_loc:.0f}",
+  1507→            metrics={
+  1508→                "total_loc": a.total_loc,
+  1509→                "code_loc": a.total_loc - a.comment_lines - a.blank_lines,
+  1510→                "comment_lines": a.comment_lines,
+  1511→                "blank_lines": a.blank_lines,
+  1512→                "avg_func_loc": round(avg_func_loc, 1),
+  1513→                "max_nesting": a.max_nesting_depth,
+  1514→            },
+  1515→        )
+  1516→
+  1517→    def _dim_reliability(self, a: _ASTAnalyzer) -> QualityDimension:
+  1518→        """Score error handling quality."""
+  1519→        if not a.functions:
+  1520→            return QualityDimension(
+  1521→                name="reliability", score=100.0, weight=self._weights["reliability"],
+  1522→                severity="info", grade="A+", details="No functions to analyse.",
+  1523→            )
+  1524→
+  1525→        # Ratio of try blocks to functions (more error handling = better)
+  1526→        try_ratio = a.try_blocks / len(a.functions)
+  1527→
+  1528→        # Penalise bare excepts
+  1529→        bare_penalty = a.bare_except_handlers * 15
+  1530→
+  1531→        # Reward having any error handling
+  1532→        handling_bonus = min(40, try_ratio * 100)
+  1533→
+  1534→        # Base score
+  1535→        base = 50.0
+  1536→        score = max(0, min(100, base + handling_bonus - bare_penalty))
+  1537→
+  1538→        return QualityDimension(
+  1539→            name="reliability",
+  1540→            score=round(score, 1),
+  1541→            weight=self._weights["reliability"],
+  1542→            severity=_assign_severity(score),
+  1543→            grade=_assign_dimension_grade(score),
+  1544→            details=f"try_blocks={a.try_blocks}, except_handlers={a.except_handlers}, bare_except={a.bare_except_handlers}",
+  1545→            metrics={
+  1546→                "try_blocks": a.try_blocks,
+  1547→                "except_handlers": a.except_handlers,
+  1548→                "bare_except_handlers": a.bare_except_handlers,
+  1549→                "try_ratio": round(try_ratio, 3),
+  1550→                "functions": len(a.functions),
+  1551→            },
+  1552→        )
+  1553→
+  1554→    def _dim_consistency(self, a: _ASTAnalyzer) -> QualityDimension:
+  1555→        """Score naming/style consistency."""
+  1556→        violations = a.naming_violations
+  1557→        violation_count = len(violations)
+  1558→
+  1559→        # Score: start at 100, deduct per violation
+  1560→        score = max(0, 100 - violation_count * 8)
+  1561→
+  1562→        # Check for TODO/FIXME/HACK comments
+  1563→        todo_count = sum(
+  1564→            1 for line in a.source_lines
+  1565→            if re.search(r"\b(TODO|FIXME|HACK|XXX)\b", line, re.IGNORECASE)
+  1566→        )
+  1567→        todo_penalty = min(20, todo_count * 3)
+  1568→        score = max(0, score - todo_penalty)
+  1569→
+  1570→        # Check for mixed indentation (tabs vs spaces)
+  1571→        tab_lines = sum(1 for line in a.source_lines if "\t" in line)
+  1572→        tab_penalty = min(15, tab_lines * 0.5)
+  1573→        score = max(0, score - tab_penalty)
+  1574→
+  1575→        return QualityDimension(
+  1576→            name="consistency",
+  1577→            score=round(score, 1),
+  1578→            weight=self._weights["consistency"],
+  1579→            severity=_assign_severity(score),
+  1580→            grade=_assign_dimension_grade(score),
+  1581→            details=f"naming_violations={violation_count}, todos={todo_count}, tab_lines={tab_lines}",
+  1582→            metrics={
+  1583→                "naming_violations": violation_count,
+  1584→                "naming_violation_details": violations[:10],
+  1585→                "todo_count": todo_count,
+  1586→                "tab_lines": tab_lines,
+  1587→            },
+  1588→        )
+  1589→
+  1590→    # ── Internal: aggregation ────────────────────────────────────────────
+  1591→
+  1592→    def _aggregate_dimensions(
+  1593→        self,
+  1594→        file_dimensions: List[Dict[str, QualityDimension]],
+  1595→    ) -> Dict[str, QualityDimension]:
+  1596→        """Aggregate per-file dimensions into repository-level dimensions.
+  1597→
+  1598→        Uses weighted averages across all files.
+  1599→        """
+  1600→        if not file_dimensions:
+  1601→            return {}
+  1602→
+  1603→        dim_names = DEFAULT_DIMENSION_WEIGHTS.keys()
+  1604→        aggregated: Dict[str, QualityDimension] = {}
+  1605→
+  1606→        for dim_name in dim_names:
+  1607→            scores = []
+  1608→            all_metrics: List[Dict[str, Any]] = []
+  1609→            weight = self._weights.get(dim_name, 0.1)
+  1610→
+  1611→            for file_dims in file_dimensions:
+  1612→                dim = file_dims.get(dim_name)
+  1613→                if dim is not None:
+  1614→                    scores.append(dim.score)
+  1615→                    if dim.metrics:
+  1616→                        all_metrics.append(dim.metrics)
+  1617→
+  1618→            if not scores:
+  1619→                aggregated[dim_name] = QualityDimension(
+  1620→                    name=dim_name, score=0.0, weight=weight,
+  1621→                    severity="critical", grade="F",
+  1622→                    details="No data available.",
+  1623→                )
+  1624→                continue
+  1625→
+  1626→            avg_score = sum(scores) / len(scores)
+  1627→
+  1628→            # Merge metrics (sum numeric values)
+  1629→            merged_metrics: Dict[str, Any] = {}
+  1630→            for m in all_metrics:
+  1631→                for k, v in m.items():
+  1632→                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+  1633→                        merged_metrics[k] = merged_metrics.get(k, 0) + v
+  1634→
+  1635→            aggregated[dim_name] = QualityDimension(
+  1636→                name=dim_name,
+  1637→                score=round(avg_score, 1),
+  1638→                weight=weight,
+  1639→                severity=_assign_severity(avg_score),
+  1640→                grade=_assign_dimension_grade(avg_score),
+  1641→                details=f"average across {len(scores)} files",
+  1642→                metrics=merged_metrics,
+  1643→            )
+  1644→
+  1645→        return aggregated
+  1646→
+  1647→    def _weighted_score(self, dimensions: Dict[str, QualityDimension]) -> float:
+  1648→        """Compute weighted composite score from dimensions."""
+  1649→        if not dimensions:
+  1650→            return 0.0
+  1651→
+  1652→        total_weight = 0.0
+  1653→        weighted_sum = 0.0
+  1654→
+  1655→        for dim_name, dim in dimensions.items():
+  1656→            w = self._weights.get(dim_name, 0.1)
+  1657→            weighted_sum += dim.score * w
+  1658→            total_weight += w
+  1659→
+  1660→        if total_weight == 0:
+  1661→            return 0.0
+  1662→
+  1663→        return max(MIN_SCORE, min(MAX_SCORE, weighted_sum / total_weight))
+  1664→
+  1665→
+  1666→# ════════════════════════════════════════════════════════════════════════
+  1667→# Convenience functions
+  1668→# ════════════════════════════════════════════════════════════════════════
+  1669→
+  1670→
+  1671→def analyze_file(file_path: str) -> Dict[str, Any]:
+  1672→    """Quick-analyse a single file's quality."""
+  1673→    qi = QualityIntelligence()
+  1674→    return qi.analyze_code_quality(file_path)
+  1675→
+  1676→
+  1677→def analyze_repository(repository_path: str) -> Dict[str, Any]:
+  1678→    """Quick-analyse a repository's quality."""
+  1679→    qi = QualityIntelligence(repository_path=repository_path)
+  1680→    return qi.analyze_repository_quality()
+  1681→
+  1682→
+  1683→def get_quality_trend() -> Dict[str, Any]:
+  1684→    """Get quality trend data without running analysis."""
+  1685→    trend = QualityTrend()
+  1686→    qi = QualityIntelligence()
+  1687→    return qi.track_quality_over_time()
+  1688→
+  1689→
+  1690→__all__ = [
+  1691→    "QualityDimension",
+  1692→    "QualitySnapshot",
+  1693→    "QualityTrend",
+  1694→    "QualityGate",
+  1695→    "GateResult",
+  1696→    "QualityIntelligence",
+  1697→    "analyze_file",
+  1698→    "analyze_repository",
+  1699→    "get_quality_trend",
+  1700→]
+  1701→

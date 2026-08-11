@@ -1,0 +1,2002 @@
+     1→"""Nexus Agent — Agentic security engine.
+     2→
+     3→The core intelligence brain of ReconPro. Accepts a natural language goal,
+     4→reasons about what needs to be done, plans tool usage, executes step by step,
+     5→verifies results, and adapts the plan dynamically.
+     6→
+     7→Powered by a built-in rule-based planner — zero external API keys required.
+     8→Optionally supports OpenAI/Anthropic LLM backends when API keys are set.
+     9→
+    10→18 built-in tools covering scanning, recon, intel, and export.
+    11→Persistent per-target memory stored at ~/.reconpro/memory/agent_context.json.
+    12→"""
+    13→from __future__ import annotations
+    14→
+    15→import json
+    16→import math
+    17→import os
+    18→import re
+    19→import subprocess
+    20→from datetime import datetime, timezone
+    21→from pathlib import Path
+    22→from typing import Any, Callable, Dict, List, Optional, Tuple
+    23→
+    24→from rich.console import Console
+    25→from rich.panel import Panel
+    26→from rich.text import Text
+    27→
+    28→# ── Optional LLM dependency flags ─────────────────────────────────────
+    29→
+    30→try:
+    31→    import openai
+    32→    HAS_OPENAI = True
+    33→except ImportError:
+    34→    HAS_OPENAI = False
+    35→
+    36→try:
+    37→    import anthropic
+    38→    HAS_ANTHROPIC = True
+    39→except ImportError:
+    40→    HAS_ANTHROPIC = False
+    41→
+    42→console = Console()
+    43→
+    44→from .constants import MEMORY_DIR
+    45→CONTEXT_FILE = MEMORY_DIR / "agent_context.json"
+    46→MAX_ITERATIONS = 10
+    47→
+    48→
+    49→# ══════════════════════════════════════════════════════════════════════
+    50→#  TOOL RESULT & TOOL
+    51→# ══════════════════════════════════════════════════════════════════════
+    52→
+    53→
+    54→class ToolResult:
+    55→    """Result of a tool execution."""
+    56→
+    57→    def __init__(self, output: str, success: bool = True, data: Any = None):
+    58→        self.output = output
+    59→        self.success = success
+    60→        self.data = data
+    61→
+    62→    def to_dict(self) -> Dict:
+    63→        return {"output": self.output, "success": self.success, "data": self.data}
+    64→
+    65→
+    66→class Tool:
+    67→    """A callable tool the agent can use."""
+    68→
+    69→    def __init__(
+    70→        self,
+    71→        name: str,
+    72→        description: str,
+    73→        parameters: Dict[str, Any],
+    74→        execute: Callable[..., ToolResult],
+    75→        category: str = "scan",
+    76→        dangerous: bool = False,
+    77→    ):
+    78→        self.name = name
+    79→        self.description = description
+    80→        self.parameters = parameters
+    81→        self.execute = execute
+    82→        self.category = category
+    83→        self.dangerous = dangerous
+    84→
+    85→    def to_openai_tool(self) -> Dict:
+    86→        return {
+    87→            "type": "function",
+    88→            "function": {
+    89→                "name": self.name,
+    90→                "description": self.description,
+    91→                "parameters": {
+    92→                    "type": "object",
+    93→                    "properties": self.parameters,
+    94→                    "required": list(self.parameters.keys()),
+    95→                },
+    96→            },
+    97→        }
+    98→
+    99→    def to_anthropic_tool(self) -> Dict:
+   100→        return {
+   101→            "name": self.name,
+   102→            "description": self.description,
+   103→            "input_schema": {
+   104→                "type": "object",
+   105→                "properties": self.parameters,
+   106→                "required": list(self.parameters.keys()),
+   107→            },
+   108→        }
+   109→
+   110→
+   111→class ToolRegistry:
+   112→    """Registry of all available tools."""
+   113→
+   114→    def __init__(self):
+   115→        self.tools: Dict[str, Tool] = {}
+   116→
+   117→    def register(self, tool: Tool) -> None:
+   118→        self.tools[tool.name] = tool
+   119→
+   120→    def get(self, name: str) -> Optional[Tool]:
+   121→        return self.tools.get(name)
+   122→
+   123→    def execute(self, name: str, **kwargs) -> ToolResult:
+   124→        tool = self.tools.get(name)
+   125→        if not tool:
+   126→            return ToolResult(f"Tool '{name}' not found.", success=False)
+   127→        try:
+   128→            return tool.execute(**kwargs)
+   129→        except Exception as e:
+   130→            return ToolResult(f"Tool error: {e}", success=False)
+   131→
+   132→    def list_tools(self) -> List[Dict]:
+   133→        return [
+   134→            {"name": t.name, "description": t.description, "category": t.category}
+   135→            for t in self.tools.values()
+   136→        ]
+   137→
+   138→    def to_openai_tools(self) -> List[Dict]:
+   139→        return [t.to_openai_tool() for t in self.tools.values()]
+   140→
+   141→    def to_anthropic_tools(self) -> List[Dict]:
+   142→        return [t.to_anthropic_tool() for t in self.tools.values()]
+   143→
+   144→
+   145→# ══════════════════════════════════════════════════════════════════════
+   146→#  PERSISTENT MEMORY
+   147→# ══════════════════════════════════════════════════════════════════════
+   148→
+   149→
+   150→class AgentMemory:
+   151→    """Persistent memory for the Nexus agent across sessions."""
+   152→
+   153→    def __init__(self):
+   154→        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+   155→        self._data = self._load()
+   156→
+   157→    def _load(self) -> Dict:
+   158→        if CONTEXT_FILE.exists():
+   159→            try:
+   160→                return json.loads(CONTEXT_FILE.read_text())
+   161→            except Exception:
+   162→                pass
+   163→        return {
+   164→            "sessions": [],
+   165→            "target_contexts": {},
+   166→            "learned_patterns": [],
+   167→            "created": datetime.now(timezone.utc).isoformat(),
+   168→        }
+   169→
+   170→    def _save(self) -> None:
+   171→        # Keep only the last 50 sessions
+   172→        if len(self._data.get("sessions", [])) > 50:
+   173→            self._data["sessions"] = self._data["sessions"][-50:]
+   174→        try:
+   175→            CONTEXT_FILE.write_text(json.dumps(self._data, indent=2, default=str))
+   176→        except OSError:
+   177→            pass
+   178→
+   179→    def save_session(
+   180→        self,
+   181→        goal: str,
+   182→        target: str,
+   183→        plan: List[Dict],
+   184→        tool_results: List[Dict],
+   185→        summary: str,
+   186→    ) -> None:
+   187→        session = {
+   188→            "goal": goal,
+   189→            "target": target,
+   190→            "plan": plan,
+   191→            "tool_results": tool_results,
+   192→            "summary": summary,
+   193→            "timestamp": datetime.now(timezone.utc).isoformat(),
+   194→        }
+   195→        self._data.setdefault("sessions", []).append(session)
+   196→        # Update target context
+   197→        self._data.setdefault("target_contexts", {})[target] = {
+   198→            "last_score": self._extract_score(tool_results),
+   199→            "last_grade": self._extract_grade(tool_results),
+   200→            "last_run": session["timestamp"],
+   201→            "finding_count": self._extract_finding_count(tool_results),
+   202→            "known_issues": self._extract_issues(tool_results),
+   203→        }
+   204→        self._save()
+   205→
+   206→    def get_target_context(self, target: str) -> Optional[Dict]:
+   207→        return self._data.get("target_contexts", {}).get(target)
+   208→
+   209→    def get_recent_sessions(self, limit: int = 5) -> List[Dict]:
+   210→        return self._data.get("sessions", [])[-limit:]
+   211→
+   212→    @staticmethod
+   213→    def _extract_score(results: List[Dict]) -> Optional[int]:
+   214→        for r in results:
+   215→            d = r.get("data")
+   216→            if isinstance(d, dict) and "total_score" in d:
+   217→                return d["total_score"]
+   218→        return None
+   219→
+   220→    @staticmethod
+   221→    def _extract_grade(results: List[Dict]) -> Optional[str]:
+   222→        for r in results:
+   223→            d = r.get("data")
+   224→            if isinstance(d, dict) and "grade" in d:
+   225→                return d["grade"]
+   226→        return None
+   227→
+   228→    @staticmethod
+   229→    def _extract_finding_count(results: List[Dict]) -> int:
+   230→        total = 0
+   231→        for r in results:
+   232→            d = r.get("data")
+   233→            if isinstance(d, dict) and "findings" in d:
+   234→                total += len(d["findings"])
+   235→        return total
+   236→
+   237→    @staticmethod
+   238→    def _extract_issues(results: List[Dict]) -> List[str]:
+   239→        issues = []
+   240→        for r in results:
+   241→            d = r.get("data")
+   242→            if isinstance(d, dict) and "findings" in d:
+   243→                for f in d["findings"]:
+   244→                    if isinstance(f, dict) and f.get("severity") in ("critical", "high"):
+   245→                        issues.append(f.get("title", ""))
+   246→        return issues[:20]
+   247→
+   248→
+   249→# ══════════════════════════════════════════════════════════════════════
+   250→#  TOOL IMPLEMENTATIONS (18 tools)
+   251→# ══════════════════════════════════════════════════════════════════════
+   252→
+   253→
+   254→def _tool_remote_scan(
+   255→    target: str = "",
+   256→    modules: str = "",
+   257→    all_modules: bool = False,
+   258→    timeout: int = 10,
+   259→) -> ToolResult:
+   260→    """Full remote scan of a target domain/URL."""
+   261→    from .scanner import scan
+   262→    if not target:
+   263→        return ToolResult("No target specified.", success=False)
+   264→    mod_list = [m.strip().lower() for m in modules.split(",") if m.strip()] if modules else None
+   265→    result = scan(target, modules=mod_list, all_modules=all_modules, timeout=timeout)
+   266→    return ToolResult(
+   267→        f"Scanned {target}. Score: {result.total_score}/100 ({result.grade}). "
+   268→        f"{len(result.findings)} findings.",
+   269→        success=True,
+   270→        data=result.to_dict(),
+   271→    )
+   272→
+   273→
+   274→def _tool_vibesec_benchmark(target: str = "") -> ToolResult:
+   275→    """Quick VibeSec score check."""
+   276→    from .scanner import scan
+   277→    if not target:
+   278→        return ToolResult("No target specified.", success=False)
+   279→    result = scan(target, modules=["vibesec"])
+   280→    score = result.vibesec_score or result.total_score
+   281→    grade = result.vibesec_grade or result.grade
+   282→    return ToolResult(
+   283→        f"VibeSec benchmark for {target}: {score}/100 ({grade}).",
+   284→        success=True,
+   285→        data={
+   286→            "target": target, "vibesec_score": score,
+   287→            "vibesec_grade": grade, "findings": result.findings,
+   288→        },
+   289→    )
+   290→
+   291→
+   292→def _tool_local_audit(target_path: str = ".") -> ToolResult:
+   293→    """Full machine audit."""
+   294→    from .scanner import audit_scan
+   295→    result = audit_scan(target=target_path, all_modules=True)
+   296→    return ToolResult(
+   297→        f"Local audit of {target_path}. Score: {result.total_score}/100 ({result.grade}). "
+   298→        f"{len(result.findings)} findings.",
+   299→        success=True,
+   300→        data=result.to_dict(),
+   301→    )
+   302→
+   303→
+   304→def _tool_dev_scan(path: str = ".") -> ToolResult:
+   305→    """Developer project scan."""
+   306→    from .scanner import audit_scan
+   307→    result = audit_scan(target=path, modules=["dev"])
+   308→    return ToolResult(
+   309→        f"Dev scan of {path}. Score: {result.total_score}/100 ({result.grade}). "
+   310→        f"{len(result.findings)} findings.",
+   311→        success=True,
+   312→        data=result.to_dict(),
+   313→    )
+   314→
+   315→
+   316→def _tool_doctor_check() -> ToolResult:
+   317→    """Health check with fix suggestions."""
+   318→    from .scanner import audit_scan
+   319→    result = audit_scan(target="localhost", modules=["doctor"])
+   320→    return ToolResult(
+   321→        f"Doctor check complete. Score: {result.total_score}/100 ({result.grade}). "
+   322→        f"{len(result.findings)} findings.",
+   323→        success=True,
+   324→        data=result.to_dict(),
+   325→    )
+   326→
+   327→
+   328→def _tool_port_scan() -> ToolResult:
+   329→    """Check for open and risky ports on the local machine."""
+   330→    from .modules.host import _check_open_ports
+   331→    findings = _check_open_ports()
+   332→    if not findings:
+   333→        return ToolResult("No risky ports found.", success=True, data=[])
+   334→    lines = [f"{f.severity.upper()}: {f.title}" for f in findings]
+   335→    return ToolResult(
+   336→        f"Found {len(findings)} port issue(s):\n" + "\n".join(lines),
+   337→        success=True,
+   338→        data=[f.to_dict() for f in findings],
+   339→    )
+   340→
+   341→
+   342→def _tool_secret_hunt(path: str = ".") -> ToolResult:
+   343→    """Find secrets and credentials in a directory."""
+   344→    from .modules.host import _check_env_secrets
+   345→    from .modules.dev import _check_env_files, _check_hardcoded_secrets
+   346→    abs_path = os.path.abspath(path)
+   347→    all_f = (
+   348→        _check_env_secrets()
+   349→        + _check_env_files(abs_path)
+   350→        + _check_hardcoded_secrets(abs_path)
+   351→    )
+   352→    if not all_f:
+   353→        return ToolResult("No secrets found.", success=True, data=[])
+   354→    lines = [f"{f.severity.upper()}: {f.title}" for f in all_f[:20]]
+   355→    return ToolResult(
+   356→        f"Found {len(all_f)} secret(s):\n" + "\n".join(lines),
+   357→        success=True,
+   358→        data=[f.to_dict() for f in all_f],
+   359→    )
+   360→
+   361→
+   362→def _tool_subdomain_discover(domain: str = "") -> ToolResult:
+   363→    """Discover subdomains via CT logs and DNS."""
+   364→    from .subdomains import discover_subdomains
+   365→    if not domain:
+   366→        return ToolResult("No domain specified.", success=False)
+   367→    subs = discover_subdomains(domain)
+   368→    return ToolResult(
+   369→        f"Found {len(subs)} subdomain(s): {', '.join(subs[:20])}",
+   370→        success=True,
+   371→        data={"subdomains": subs},
+   372→    )
+   373→
+   374→
+   375→def _tool_blitz_scan(targets_str: str = "") -> ToolResult:
+   376→    """Parallel multi-target scan."""
+   377→    from .parallel import blitz_scan
+   378→    target_list = [t.strip() for t in targets_str.split(",") if t.strip()]
+   379→    if len(target_list) < 2:
+   380→        return ToolResult("Blitz requires at least 2 comma-separated targets.", success=False)
+   381→    result = blitz_scan(target_list, max_workers=min(4, len(target_list)), save=True)
+   382→    return ToolResult(
+   383→        f"Blitz: {result.get('total_findings', 0)} findings across "
+   384→        f"{result.get('targets_scanned', 0)} targets.",
+   385→        success=True,
+   386→        data=result,
+   387→    )
+   388→
+   389→
+   390→def _tool_ast_analyze(path: str = ".") -> ToolResult:
+   391→    """AST code analysis for security anti-patterns."""
+   392→    from .modules.ast_analyzer import ASTAnalyzer
+   393→    analyzer = ASTAnalyzer()
+   394→    findings = analyzer.analyze_directory(path)
+   395→    if not findings:
+   396→        return ToolResult(f"No code issues found in {path}.", success=True, data=[])
+   397→    summary = analyzer.summary()
+   398→    lines = [f"{f.severity.upper()}: {f.title} ({f.asset})" for f in findings[:20]]
+   399→    return ToolResult(
+   400→        f"AST analysis of {path}: {summary['total']} findings.\n" + "\n".join(lines),
+   401→        success=True,
+   402→        data={
+   403→            "findings": [f.to_dict() for f in findings],
+   404→            "summary": summary,
+   405→        },
+   406→    )
+   407→
+   408→
+   409→def _tool_cve_enrich(findings_json: str = "[]") -> ToolResult:
+   410→    """Enrich findings with CVE data from NVD."""
+   411→    from .cve_radar import CVERadar
+   412→    try:
+   413→        findings = json.loads(findings_json)
+   414→    except (json.JSONDecodeError, TypeError):
+   415→        return ToolResult("Invalid findings JSON.", success=False)
+   416→    if not findings or not isinstance(findings, list):
+   417→        return ToolResult("Empty or invalid findings list.", success=False)
+   418→    radar = CVERadar()
+   419→    enriched = radar.bulk_enrich(findings[:30])
+   420→    threat = radar.threat_summary(enriched)
+   421→    cve_count = threat.get("unique_cves_found", 0)
+   422→    return ToolResult(
+   423→        f"Enriched {len(enriched)} findings. Found {cve_count} unique CVEs. "
+   424→        f"{threat.get('recommendation', '')}",
+   425→        success=True,
+   426→        data={"enriched_findings": enriched, "threat_summary": threat},
+   427→    )
+   428→
+   429→
+   430→def _tool_knowledge_graph(action: str = "build", target: str = "") -> ToolResult:
+   431→    """Build or query the security knowledge graph."""
+   432→    from .knowledge_graph import SecurityKnowledgeGraph
+   433→    if not target:
+   434→        return ToolResult("No target specified.", success=False)
+   435→    kg = SecurityKnowledgeGraph()
+   436→    if action == "build":
+   437→        from .history import get_latest
+   438→        latest = get_latest(target=target)
+   439→        if not latest:
+   440→            latest = get_latest()
+   441→        if latest:
+   442→            kg.add_scan_result(latest)
+   443→        n_count = len(list(kg._g.nodes(data=False)))
+   444→        e_count = len(list(kg._g.edges(data=False)))
+   445→        return ToolResult(
+   446→            f"Knowledge graph built: {n_count} nodes, {e_count} edges for {target}.",
+   447→            success=True,
+   448→            data={"node_count": n_count, "edge_count": e_count, "target": target},
+   449→        )
+   450→    elif action == "attack_chains":
+   451→        chains = kg.find_attack_chains(max_depth=4)
+   452→        return ToolResult(
+   453→            f"Found {len(chains)} attack chain(s).", success=True,
+   454→            data={"attack_chains": chains},
+   455→        )
+   456→    else:
+   457→        return ToolResult(f"Unknown action: {action}. Use 'build' or 'attack_chains'.", success=False)
+   458→
+   459→
+   460→def _tool_adversarial_loop(target: str = "", rounds: int = 2) -> ToolResult:
+   461→    """Run hacker-coder-guardian adversarial loop."""
+   462→    from .adversarial import run_adversarial
+   463→    if not target:
+   464→        return ToolResult("No target specified.", success=False)
+   465→    is_local = target in ("localhost", ".", "local", "my machine")
+   466→    result = run_adversarial(target, max_rounds=rounds, is_local=is_local)
+   467→    return ToolResult(
+   468→        f"Adversarial loop: {result.total_findings_initial} initial findings, "
+   469→        f"{result.findings_fixed} fixed, {result.findings_unfixed} remaining. "
+   470→        f"Score: {result.initial_grade} ({result.initial_score}) -> "
+   471→        f"{result.final_grade} ({result.final_score})",
+   472→        success=True,
+   473→        data={
+   474→            "target": result.target,
+   475→            "initial_score": result.initial_score,
+   476→            "final_score": result.final_score,
+   477→            "initial_grade": result.initial_grade,
+   478→            "final_grade": result.final_grade,
+   479→            "findings_fixed": result.findings_fixed,
+   480→            "findings_unfixed": result.findings_unfixed,
+   481→            "converged": result.converged,
+   482→        },
+   483→    )
+   484→
+   485→
+   486→def _tool_swarm_run(target: str = "", mode: str = "recon") -> ToolResult:
+   487→    """Run the full swarm attack (SCOUT -> HACKER -> CODER -> GUARDIAN)."""
+   488→    from .swarm import run_swarm
+   489→    if not target:
+   490→        return ToolResult("No target specified.", success=False)
+   491→    result = run_swarm(target, mode=mode)
+   492→    total_findings = sum(len(a.findings) for a in result.agents.values())
+   493→    return ToolResult(
+   494→        f"Swarm complete ({mode} mode). {total_findings} total findings across "
+   495→        f"{len(result.agents)} agents.",
+   496→        success=True,
+   497→        data={
+   498→            "target": target, "mode": mode,
+   499→            "agents": {k: {"status": v.status.value, "findings_count": len(v.findings)}
+   500→                       for k, v in result.agents.items()},
+   501→        },
+   502→    )
+   503→
+   504→
+   505→def _tool_generate_report(format: str = "html") -> ToolResult:
+   506→    """Generate a report (HTML, MD, SARIF, JSON) from the last scan."""
+   507→    from .history import get_latest
+   508→    from .formats import export
+   509→    latest = get_latest()
+   510→    if not latest:
+   511→        return ToolResult("No scan data to export. Run a scan first.", success=False)
+   512→    target = latest.get("target", "unknown").replace(",", "").replace("/", "_")[:40]
+   513→    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+   514→    ext_map = {"html": ".html", "md": ".md", "sarif": ".sarif", "json": ".json"}
+   515→    ext = ext_map.get(format.lower(), ".html")
+   516→    filename = f"reconpro_report_{ts}_{target}{ext}"
+   517→    filepath = str(MEMORY_DIR / filename)
+   518→    path = export(latest, filepath, format=format.lower())
+   519→    return ToolResult(
+   520→        f"Report generated: {path}",
+   521→        success=True,
+   522→        data={"path": path, "format": format},
+   523→    )
+   524→
+   525→
+   526→def _tool_scan_history(limit: int = 10) -> ToolResult:
+   527→    """List past scans."""
+   528→    from .history import list_scans
+   529→    scans = list_scans(limit=limit)
+   530→    if not scans:
+   531→        return ToolResult("No scan history found.", success=True, data=[])
+   532→    lines = [
+   533→        f"  {s.get('total_score', '?')}/100 ({s.get('grade', '?')})  "
+   534→        f"{s.get('target', '?')[:30]}  {len(s.get('findings', []))} findings"
+   535→        for s in scans
+   536→    ]
+   537→    return ToolResult(
+   538→        f"Recent {len(scans)} scan(s):\n" + "\n".join(lines),
+   539→        success=True,
+   540→        data=scans,
+   541→    )
+   542→
+   543→
+   544→def _tool_diff_scans() -> ToolResult:
+   545→    """Compare the two most recent scans."""
+   546→    from .history import list_scans, diff_scans
+   547→    scans = list_scans(limit=2)
+   548→    if len(scans) < 2:
+   549→        return ToolResult("Need at least 2 scans to compare.", success=False)
+   550→    d = diff_scans(scans[0]["_file"], scans[1]["_file"])
+   551→    return ToolResult(
+   552→        f"A: {d['scan_a']['target']} {d['scan_a']['score']}/100 ({d['scan_a']['grade']})\n"
+   553→        f"B: {d['scan_b']['target']} {d['scan_b']['score']}/100 ({d['scan_b']['grade']})\n"
+   554→        f"Score change: {d['score_change']} pts | "
+   555→        f"Fixed: {len(d['fixed'])} | New: {len(d['new'])} | Persistent: {len(d['persistent'])}",
+   556→        success=True,
+   557→        data=d,
+   558→    )
+   559→
+   560→
+   561→def _tool_shell_command(command: str = "") -> ToolResult:
+   562→    """Run an arbitrary shell command. DANGEROUS — use with caution."""
+   563→    if not command:
+   564→        return ToolResult("No command specified.", success=False)
+   565→    dangerous_patterns = ["rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:", "chmod -R 777 /"]
+   566→    for dp in dangerous_patterns:
+   567→        if dp in command:
+   568→            return ToolResult(f"Blocked dangerous command pattern: {dp}", success=False)
+   569→    try:
+   570→        result = subprocess.run(
+   571→            command, shell=True, capture_output=True, text=True, timeout=30,
+   572→        )
+   573→        output = (result.stdout + result.stderr)[:2000]
+   574→        return ToolResult(
+   575→            f"Exit code: {result.returncode}\n{output}",
+   576→            success=result.returncode == 0,
+   577→        )
+   578→    except subprocess.TimeoutExpired:
+   579→        return ToolResult("Command timed out (30s).", success=False)
+   580→    except Exception as e:
+   581→        return ToolResult(f"Command error: {e}", success=False)
+   582→
+   583→
+   584→def _tool_geoip_enrich(**kwargs):
+   585→    """GeoIP enrichment for IP addresses"""
+   586→    from .geoip import GeoIPLookup
+   587→    ips = kwargs.get("ips", [])
+   588→    geo = GeoIPLookup()
+   589→    results = {}
+   590→    for ip in ips:
+   591→        results[ip] = geo.enrich_ip(ip)
+   592→    return ToolResult(output=json.dumps(results, indent=2, default=str))
+   593→
+   594→
+   595→def _tool_threat_feed_check(**kwargs):
+   596→    """Check IPs against threat feeds and DNSBLs"""
+   597→    from .threat_feeds import check_ip_reputation
+   598→    ip = kwargs.get("ip", "")
+   599→    result = check_ip_reputation(ip) if ip else {"error": "No IP provided"}
+   600→    return ToolResult(output=json.dumps(result, indent=2, default=str))
+   601→
+   602→
+   603→def _tool_ai_red_team(**kwargs):
+   604→    """AI endpoint discovery, vendor fingerprinting, and CVE matching"""
+   605→    from .ai_red_team import AIEndpointDiscovery, AIVendorFingerprinter, SecretExtractor
+   606→    from .ai_cve_db import AICVEDatabase
+   607→    base_url = kwargs.get("base_url", kwargs.get("url", ""))
+   608→    if not base_url:
+   609→        return ToolResult(output="Error: No URL provided")
+   610→    discovery = AIEndpointDiscovery()
+   611→    endpoints = discovery.discover(base_url)
+   612→    fingerprinter = AIVendorFingerprinter()
+   613→    vendors = fingerprinter.fingerprint(base_url)
+   614→    db = AICVEDatabase()
+   615→    summary = db.get_threat_summary()
+   616→    return ToolResult(output=json.dumps({"endpoints": len(endpoints), "vendors": vendors, "ai_threat_landscape": summary}, indent=2, default=str))
+   617→
+   618→
+   619→def _tool_ai_model_audit(**kwargs):
+   620→    """AI model analysis: watermarks, collapse, trauma imprints"""
+   621→    from .ai_red_team import WatermarkAnalyzer, ModelCollapseDetector, TraumaImprintDetector
+   622→    url = kwargs.get("url", "")
+   623→    if not url:
+   624→        return ToolResult(output="Error: No URL provided")
+   625→    import urllib.request
+   626→    try:
+   627→        resp = urllib.request.urlopen(url, timeout=10)
+   628→        body = resp.read().decode("utf-8", errors="ignore")
+   629→    except Exception as e:
+   630→        body = ""
+   631→    wm = WatermarkAnalyzer().analyze(body, dict(resp.headers) if 'resp' in dir() else {})
+   632→    mc = ModelCollapseDetector().detect(body)
+   633→    ti = TraumaImprintDetector().detect(body)
+   634→    return ToolResult(output=json.dumps({"watermark": wm, "collapse": mc, "trauma_imprint": ti}, indent=2, default=str))
+   635→
+   636→
+   637→def _tool_wishes_ritual(**kwargs):
+   638→    """Execute 22-Wish orchestration ritual"""
+   639→    from .wishes import WishesOrchestrator
+   640→    target = kwargs.get("target", "")
+   641→    if not target:
+   642→        return ToolResult(output="Error: No target provided")
+   643→    orchestrator = WishesOrchestrator()
+   644→    manifest = orchestrator.execute(target, f"https://{target}", timeout=8, verify_tls=True)
+   645→    return ToolResult(output=json.dumps(manifest, indent=2, default=str))
+   646→
+   647→
+   648→def _tool_cross_validate(**kwargs):
+   649→    """Cross-validate scan findings independently"""
+   650→    from .cross_validator import CrossValidator
+   651→    target = kwargs.get("target", "")
+   652→    findings = kwargs.get("findings", [])
+   653→    if not target:
+   654→        return ToolResult(output="Error: No target provided")
+   655→    cv = CrossValidator()
+   656→    result = cv.validate(target, findings)
+   657→    return ToolResult(output=json.dumps(result, indent=2, default=str))
+   658→
+   659→
+   660→# ══════════════════════════════════════════════════════════════════════
+   661→#  BUILD DEFAULT REGISTRY
+   662→# ══════════════════════════════════════════════════════════════════════
+   663→
+   664→
+   665→def build_registry() -> ToolRegistry:
+   666→    """Build the default tool registry with all 18 tools."""
+   667→    reg = ToolRegistry()
+   668→
+   669→    reg.register(Tool(
+   670→        "remote_scan",
+   671→        "Full remote security scan of a domain or URL. Runs all enabled modules (recon, auth, "
+   672→        "chain, oblivion, etc.) and returns score, grade, and detailed findings. "
+   673→        "Use all_modules=true for maximum coverage.",
+   674→        {
+   675→            "target": {"type": "string", "description": "Domain or URL to scan"},
+   676→            "modules": {"type": "string", "description": "Comma-separated module list (optional, e.g. 'recon,auth')"},
+   677→            "all_modules": {"type": "boolean", "description": "Run all available modules"},
+   678→            "timeout": {"type": "integer", "description": "Per-request timeout in seconds (default 10)"},
+   679→        },
+   680→        _tool_remote_scan, category="scan",
+   681→    ))
+   682→
+   683→    reg.register(Tool(
+   684→        "vibesec_benchmark",
+   685→        "Quick VibeSec security score benchmark. Returns a fast 0-100 score and grade "
+   686→        "for a target without running the full scan suite.",
+   687→        {
+   688→            "target": {"type": "string", "description": "Domain or URL to benchmark"},
+   689→        },
+   690→        _tool_vibesec_benchmark, category="scan",
+   691→    ))
+   692→
+   693→    reg.register(Tool(
+   694→        "local_audit",
+   695→        "Full local machine security audit. Checks open ports, firewall rules, users, SSH config, "
+   696→        "Docker security, environment secrets, file permissions, cron jobs, and network config.",
+   697→        {
+   698→            "target_path": {"type": "string", "description": "Directory to audit (default: current)"},
+   699→        },
+   700→        _tool_local_audit, category="local",
+   701→    ))
+   702→
+   703→    reg.register(Tool(
+   704→        "dev_scan",
+   705→        "Scan a developer project for security issues: package.json/requirements.txt vulnerabilities, "
+   706→        ".env file exposure, git secrets, Docker config, and hardcoded credentials.",
+   707→        {
+   708→            "path": {"type": "string", "description": "Project directory path (default: current)"},
+   709→        },
+   710→        _tool_dev_scan, category="scan",
+   711→    ))
+   712→
+   713→    reg.register(Tool(
+   714→        "doctor_check",
+   715→        "Run security health check on the local machine. Checks password policy, disk encryption, "
+   716→        "screen auto-lock, antivirus status, system updates, and browser security settings. "
+   717→        "Provides fix suggestions for each issue.",
+   718→        {},
+   719→        _tool_doctor_check, category="local",
+   720→    ))
+   721→
+   722→    reg.register(Tool(
+   723→        "port_scan",
+   724→        "Check for open and risky ports on the local machine. Identifies services that may be "
+   725→        "unnecessarily exposed (e.g., databases on public interfaces).",
+   726→        {},
+   727→        _tool_port_scan, category="recon",
+   728→    ))
+   729→
+   730→    reg.register(Tool(
+   731→        "secret_hunt",
+   732→        "Hunt for secrets and credentials in a directory tree. Scans .env files, hardcoded passwords, "
+   733→        "API keys, tokens, and other sensitive values in source code.",
+   734→        {
+   735→            "path": {"type": "string", "description": "Directory to scan (default: current)"},
+   736→        },
+   737→        _tool_secret_hunt, category="recon",
+   738→    ))
+   739→
+   740→    reg.register(Tool(
+   741→        "subdomain_discover",
+   742→        "Discover subdomains using certificate transparency logs (crt.sh) and DNS enumeration. "
+   743→        "Returns a list of all discovered subdomains for the given domain.",
+   744→        {
+   745→            "domain": {"type": "string", "description": "Domain to discover subdomains for"},
+   746→        },
+   747→        _tool_subdomain_discover, category="recon",
+   748→    ))
+   749→
+   750→    reg.register(Tool(
+   751→        "blitz_scan",
+   752→        "Scan multiple targets in parallel using thread pools. Provide comma-separated targets. "
+   753→        "Requires at least 2 targets. Uses up to 4 parallel workers.",
+   754→        {
+   755→            "targets_str": {"type": "string", "description": "Comma-separated list of domains/URLs"},
+   756→        },
+   757→        _tool_blitz_scan, category="scan",
+   758→    ))
+   759→
+   760→    reg.register(Tool(
+   761→        "ast_analyze",
+   762→        "Static AST code analysis for security anti-patterns in Python, JavaScript, and TypeScript. "
+   763→        "Detects eval/exec usage, SQL injection patterns, hardcoded secrets, weak crypto, "
+   764→        "unsafe deserialization, path traversal, command injection, and more.",
+   765→        {
+   766→            "path": {"type": "string", "description": "Directory or file to analyze (default: current)"},
+   767→        },
+   768→        _tool_ast_analyze, category="intel",
+   769→    ))
+   770→
+   771→    reg.register(Tool(
+   772→        "cve_enrich",
+   773→        "Enrich a list of findings with real CVE data from the NVD (National Vulnerability Database). "
+   774→        "Takes a JSON array of finding dicts and returns enriched findings with CVE references, "
+   775→        "CVSS scores, and a threat intelligence summary.",
+   776→        {
+   777→            "findings_json": {"type": "string", "description": "JSON array of finding dicts to enrich"},
+   778→        },
+   779→        _tool_cve_enrich, category="intel",
+   780→    ))
+   781→
+   782→    reg.register(Tool(
+   783→        "knowledge_graph",
+   784→        "Build or query the security knowledge graph. 'build' action ingests scan results into a graph. "
+   785→        "'attack_chains' action discovers potential attack paths through the graph.",
+   786→        {
+   787→            "action": {"type": "string", "description": "Action: 'build' or 'attack_chains'"},
+   788→            "target": {"type": "string", "description": "Target domain the graph is for"},
+   789→        },
+   790→        _tool_knowledge_graph, category="intel",
+   791→    ))
+   792→
+   793→    reg.register(Tool(
+   794→        "adversarial_loop",
+   795→        "Run the hacker-coder-guardian adversarial remediation loop. HACKER finds vulnerabilities, "
+   796→        "CODER generates fix commands, GUARDIAN verifies fixes. Repeats for multiple rounds.",
+   797→        {
+   798→            "target": {"type": "string", "description": "Domain/URL or 'localhost' for local audit"},
+   799→            "rounds": {"type": "integer", "description": "Number of HACKER->CODER->GUARDIAN rounds (default 2)"},
+   800→        },
+   801→        _tool_adversarial_loop, category="scan",
+   802→    ))
+   803→
+   804→    reg.register(Tool(
+   805→        "swarm_run",
+   806→        "Run the full multi-agent swarm attack system. Orchestrates SCOUT (recon), HACKER (deep vuln), "
+   807→        "CODER (remediation), and GUARDIAN (verification) agents in parallel. "
+   808→        "Modes: 'full', 'recon', 'attack', 'fix', 'verify'.",
+   809→        {
+   810→            "target": {"type": "string", "description": "Domain or URL to attack"},
+   811→            "mode": {"type": "string", "description": "Swarm mode: 'full', 'recon', 'attack', 'fix', or 'verify'"},
+   812→        },
+   813→        _tool_swarm_run, category="scan",
+   814→    ))
+   815→
+   816→    reg.register(Tool(
+   817→        "generate_report",
+   818→        "Generate a security report from the most recent scan data. Supports HTML, Markdown, SARIF, "
+   819→        "and JSON formats. SARIF is compatible with GitHub Code Scanning.",
+   820→        {
+   821→            "format": {"type": "string", "description": "Report format: 'html', 'md', 'sarif', or 'json'"},
+   822→        },
+   823→        _tool_generate_report, category="export",
+   824→    ))
+   825→
+   826→    reg.register(Tool(
+   827→        "scan_history",
+   828→        "List recent scan results from local history. Shows target, score, grade, and finding count.",
+   829→        {
+   830→            "limit": {"type": "integer", "description": "Number of scans to show (default 10)"},
+   831→        },
+   832→        _tool_scan_history, category="export",
+   833→    ))
+   834→
+   835→    reg.register(Tool(
+   836→        "diff_scans",
+   837→        "Compare the two most recent scans to see what changed. Shows score delta, fixed findings, "
+   838→        "new findings, and persistent issues.",
+   839→        {},
+   840→        _tool_diff_scans, category="export",
+   841→    ))
+   842→
+   843→    reg.register(Tool(
+   844→        "shell_command",
+   845→        "[DANGEROUS] Execute an arbitrary shell command. Use only when no other tool can accomplish "
+   846→        "the task. Certain destructive patterns are blocked.",
+   847→        {
+   848→            "command": {"type": "string", "description": "Shell command to execute"},
+   849→        },
+   850→        _tool_shell_command, category="system", dangerous=True,
+   851→    ))
+   852→
+   853→    reg.register(Tool(
+   854→        "geoip_enrich",
+   855→        "GeoIP enrichment for IP addresses",
+   856→        {"ips": {"type": "array", "items": {"type": "string"}}},
+   857→        _tool_geoip_enrich, category="recon",
+   858→    ))
+   859→
+   860→    reg.register(Tool(
+   861→        "threat_feed_check",
+   862→        "Check IPs against threat feeds and DNSBLs",
+   863→        {"ip": {"type": "string"}},
+   864→        _tool_threat_feed_check, category="recon",
+   865→    ))
+   866→
+   867→    reg.register(Tool(
+   868→        "ai_red_team",
+   869→        "AI endpoint discovery, vendor fingerprinting, CVE matching",
+   870→        {"base_url": {"type": "string"}},
+   871→        _tool_ai_red_team, category="scan",
+   872→    ))
+   873→
+   874→    reg.register(Tool(
+   875→        "ai_model_audit",
+   876→        "AI model analysis: watermarks, collapse, trauma imprints",
+   877→        {"url": {"type": "string"}},
+   878→        _tool_ai_model_audit, category="intel",
+   879→    ))
+   880→
+   881→    reg.register(Tool(
+   882→        "wishes_ritual",
+   883→        "Execute 22-Wish orchestration ritual",
+   884→        {"target": {"type": "string"}},
+   885→        _tool_wishes_ritual, category="scan",
+   886→    ))
+   887→
+   888→    reg.register(Tool(
+   889→        "cross_validate",
+   890→        "Cross-validate scan findings",
+   891→        {"target": {"type": "string"}},
+   892→        _tool_cross_validate, category="intel",
+   893→    ))
+   894→
+   895→    return reg
+   896→
+   897→
+   898→# ══════════════════════════════════════════════════════════════════════
+   899→#  CVSS-LIKE RISK SCORER
+   900→# ══════════════════════════════════════════════════════════════════════
+   901→
+   902→
+   903→class CVSSScorer:
+   904→    """CVSS-inspired risk scoring for security findings.
+   905→
+   906→    Computes a base score (0.0–10.0) using the CVSS v3.1 formula
+   907→    simplified for rule-based use:
+   908→      - Attack Vector (AV): Network=0.85, Adjacent=0.62, Local=0.55, Physical=0.20
+   909→      - Attack Complexity (AC): Low=0.77, High=0.44
+   910→      - Privileges Required (PR): None=0.85, Low=0.62, High=0.27
+   911→      - User Interaction (UI): None=0.85, Required=0.62
+   912→      - Impact (C/I/A): None=0.00, Low=0.22, High=0.56
+   913→
+   914→    BaseScore = roundup(min(Impact + Exploitability, 10))
+   915→    Impact = 1 - [(1-C)*(1-I)*(1-A)]
+   916→    Exploitability = 8.22 * AV * AC * PR * UI
+   917→    """
+   918→
+   919→    # Attack Vector metrics
+   920→    _AV = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.20}
+   921→    # Attack Complexity metrics
+   922→    _AC = {"L": 0.77, "H": 0.44}
+   923→    # Privileges Required metrics
+   924→    _PR = {"N": 0.85, "L": 0.62, "H": 0.27}
+   925→    # User Interaction metrics
+   926→    _UI = {"N": 0.85, "R": 0.62}
+   927→    # CIA Impact metrics
+   928→    _CIA = {"N": 0.00, "L": 0.22, "H": 0.56}
+   929→
+   930→    # Category-to-metric mappings. Keys are lowercase substrings matched
+   931→    # against finding titles/descriptions.
+   932→    _CATEGORY_PROFILES: List[Dict[str, Any]] = [
+   933→        # TLS / transport security
+   934→        {"patterns": ["hsts", "strict-transport", "tls", "ssl", "certificate", "https redirect",
+   935→                        "mixed content", "tls downgrade"],
+   936→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "L", "i": "H", "a": "N"},
+   937→        # Security headers
+   938→        {"patterns": ["x-frame", "csp", "content-security", "x-content-type", "x-xss",
+   939→                        "referrer-policy", "permissions-policy", "missing header"],
+   940→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "L", "i": "L", "a": "N"},
+   941→        # Admin panel exposure
+   942→        {"patterns": ["admin panel", "admin interface", "dashboard exposed", "wp-admin",
+   943→                        "phpmyadmin", "control panel"],
+   944→         "av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "H"},
+   945→        # Authentication weaknesses
+   946→        {"patterns": ["weak password", "brute force", "no rate limit", "default credential",
+   947→                        "auth bypass", "login", "session fix", "cookie"],
+   948→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "L"},
+   949→        # SQL injection / code injection
+   950→        {"patterns": ["sqli", "sql injection", "xss", "cross-site scripting", "command injection",
+   951→                        "code injection", "eval", "exec", "rce", "remote code"],
+   952→         "av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "H"},
+   953→        # Sensitive data exposure
+   954→        {"patterns": ["secret", "api key", "token", "credential", ".env", "hardcoded",
+   955→                        "private key", "leaked", "exposed", "password in"],
+   956→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "L", "a": "N"},
+   957→        # Open ports / network
+   958→        {"patterns": ["open port", "port ", "service exposed", "database exposed",
+   959→                        "redis", "mongodb", "mysql", "ssh exposed"],
+   960→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+   961→        # SSRF / redirect
+   962→        {"patterns": ["ssrf", "open redirect", "redirect", "url redirect", "server-side request"],
+   963→         "av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "L", "a": "L"},
+   964→        # Information disclosure
+   965→        {"patterns": ["info leak", "version disclose", "server header", "directory listing",
+   966→                        "git exposed", "debug mode", "stack trace", "error message"],
+   967→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "L", "i": "L", "a": "N"},
+   968→        # CSRF
+   969→        {"patterns": ["csrf", "cross-site request"],
+   970→         "av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "L", "i": "H", "a": "N"},
+   971→        # Dependency / supply chain
+   972→        {"patterns": ["outdated", "vulnerable dependency", "supply chain", "npm audit",
+   973→                        "pip audit", "known cve", "package vulnerability"],
+   974→         "av": "N", "ac": "H", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+   975→        # Docker / container
+   976→        {"patterns": ["docker", "container", "privileged", "kubernetes", "k8s"],
+   977→         "av": "N", "ac": "H", "pr": "L", "ui": "N", "c": "H", "i": "H", "a": "H"},
+   978→        # File permission / local
+   979→        {"patterns": ["file permission", "chmod", "world-readable", "writable",
+   980→                        "cron", "sudo", "privilege escalation"],
+   981→         "av": "L", "ac": "L", "pr": "L", "ui": "N", "c": "H", "i": "H", "a": "H"},
+   982→        # Bot / automation detection
+   983→        {"patterns": ["bot", "crawler", "automation", "c2", "command and control"],
+   984→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "L", "i": "L", "a": "L"},
+   985→        # Cloud / identity
+   986→        {"patterns": ["cloud", "aws", "azure", "gcp", "s3 bucket", "iam", "oauth",
+   987→                        "identity", "federation"],
+   988→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+   989→        # Default fallback
+   990→        {"patterns": [],
+   991→         "av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "L", "i": "L", "a": "N"},
+   992→    ]
+   993→
+   994→    @classmethod
+   995→    def score_finding(cls, finding: Dict) -> Dict[str, Any]:
+   996→        """Compute CVSS-like score for a single finding.
+   997→
+   998→        Returns a dict with: base_score, severity, av, ac, pr, ui, c, i, a, vector_string.
+   999→        """
+  1000→        title = (finding.get("title") or "").lower()
+  1001→        desc = (finding.get("description") or "").lower()
+  1002→        combined = f"{title} {desc}"
+  1003→        original_sev = (finding.get("severity") or "").lower()
+  1004→
+  1005→        # Find matching profile
+  1006→        profile = cls._CATEGORY_PROFILES[-1]  # default
+  1007→        for prof in cls._CATEGORY_PROFILES:
+  1008→            if prof["patterns"] and any(p in combined for p in prof["patterns"]):
+  1009→                profile = prof
+  1010→                break
+  1011→
+  1012→        # Override metrics based on original severity if it's explicitly critical
+  1013→        av = cls._AV[profile["av"]]
+  1014→        ac = cls._AC[profile["ac"]]
+  1015→        pr = cls._PR[profile["pr"]]
+  1016→        ui = cls._UI[profile["ui"]]
+  1017→        c = cls._CIA[profile["c"]]
+  1018→        i = cls._CIA[profile["i"]]
+  1019→        a = cls._CIA[profile["a"]]
+  1020→
+  1021→        # If the original severity is critical, boost impact to High
+  1022→        if original_sev == "critical":
+  1023→            c = max(c, cls._CIA["H"])
+  1024→            i = max(i, cls._CIA["H"])
+  1025→            a = max(a, cls._CIA["H"])
+  1026→        elif original_sev == "high":
+  1027→            c = max(c, cls._CIA["L"])
+  1028→            i = max(i, cls._CIA["L"])
+  1029→            a = max(a, cls._CIA["L"])
+  1030→
+  1031→        # CVSS base score calculation
+  1032→        iss = 1.0 - ((1.0 - c) * (1.0 - i) * (1.0 - a))
+  1033→        impact = 6.42 * iss
+  1034→        exploitability = 8.22 * av * ac * pr * ui
+  1035→
+  1036→        if impact <= 0:
+  1037→            base_score = 0.0
+  1038→        else:
+  1039→            base_score = min(impact + exploitability, 10.0)
+  1040→
+  1041→        # Round up to nearest 0.1
+  1042→        base_score = math.ceil(base_score * 10) / 10
+  1043→
+  1044→        # Derive severity from score
+  1045→        if base_score >= 9.0:
+  1046→            derived_sev = "critical"
+  1047→        elif base_score >= 7.0:
+  1048→            derived_sev = "high"
+  1049→        elif base_score >= 4.0:
+  1050→            derived_sev = "medium"
+  1051→        elif base_score > 0.0:
+  1052→            derived_sev = "low"
+  1053→        else:
+  1054→            derived_sev = "info"
+  1055→
+  1056→        # Use the more severe of original vs derived
+  1057→        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+  1058→        final_sev = original_sev if severity_order.get(original_sev, 99) <= severity_order.get(derived_sev, 99) else derived_sev
+  1059→
+  1060→        vector = f"CVSS:3.1/AV:{profile['av']}/AC:{profile['ac']}/PR:{profile['pr']}/UI:{profile['ui']}/C:{cls._cia_label(c)}/I:{cls._cia_label(i)}/A:{cls._cia_label(a)}"
+  1061→
+  1062→        return {
+  1063→            "base_score": base_score,
+  1064→            "severity": final_sev,
+  1065→            "cvss_vector": vector,
+  1066→            "metrics": {
+  1067→                "av": profile["av"], "ac": profile["ac"], "pr": profile["pr"],
+  1068→                "ui": profile["ui"], "c": cls._cia_label(c), "i": cls._cia_label(i),
+  1069→                "a": cls._cia_label(a),
+  1070→            },
+  1071→        }
+  1072→
+  1073→    @classmethod
+  1074→    def score_findings(cls, findings: List[Dict]) -> List[Dict]:
+  1075→        """Score a list of findings, returning enriched list."""
+  1076→        enriched = []
+  1077→        for f in findings:
+  1078→            scored = dict(f)
+  1079→            cvss = cls.score_finding(f)
+  1080→            scored["cvss_score"] = cvss["base_score"]
+  1081→            scored["cvss_severity"] = cvss["severity"]
+  1082→            scored["cvss_vector"] = cvss["cvss_vector"]
+  1083→            scored["cvss_metrics"] = cvss["metrics"]
+  1084→            enriched.append(scored)
+  1085→        return enriched
+  1086→
+  1087→    @staticmethod
+  1088→    def _cia_label(value: float) -> str:
+  1089→        if value >= 0.56:
+  1090→            return "H"
+  1091→        elif value >= 0.22:
+  1092→            return "L"
+  1093→        return "N"
+  1094→
+  1095→
+  1096→# ══════════════════════════════════════════════════════════════════════
+  1097→#  FINDING CORRELATION ENGINE
+  1098→# ══════════════════════════════════════════════════════════════════════
+  1099→
+  1100→
+  1101→class FindingCorrelationEngine:
+  1102→    """Cross-references individual findings to identify compound risks.
+  1103→
+  1104→    Each correlation rule specifies:
+  1105→      - triggers: list of lowercase pattern lists (OR between outer, AND within inner)
+  1106→      - compound_title: human-readable title for the compound finding
+  1107→      - compound_severity: severity to assign
+  1108→      - compound_description: explanation of the risk
+  1109→      - cvss_override: optional CVSS metrics for the compound finding
+  1110→
+  1111→    20+ correlation rules covering TLS, auth, data exposure, injection,
+  1112→    misconfig, cloud, and network compound risks.
+  1113→    """
+  1114→
+  1115→    CORRELATION_RULES: List[Dict[str, Any]] = [
+  1116→        # ── TLS / Transport compound risks ──
+  1117→        {
+  1118→            "id": "CORR-001",
+  1119→            "triggers": [["missing hsts", "strict-transport"], ["mixed content"]],
+  1120→            "compound_title": "TLS Downgrade Attack Vector",
+  1121→            "compound_severity": "high",
+  1122→            "compound_description": (
+  1123→                "Combination of missing HSTS and mixed content allows a man-in-the-middle "
+  1124→                "attacker to downgrade HTTPS connections and inject content over unencrypted channels."
+  1125→            ),
+  1126→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "L"},
+  1127→        },
+  1128→        {
+  1129→            "id": "CORR-002",
+  1130→            "triggers": [["certificate", "cert"], ["weak cipher", "tls", "ssl"]],
+  1131→            "compound_title": "Weak TLS Configuration Chain",
+  1132→            "compound_severity": "high",
+  1133→            "compound_description": (
+  1134→                "Certificate issues combined with weak TLS/SSL cipher suites create "
+  1135→                "multiple interception and decryption attack vectors."
+  1136→            ),
+  1137→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "N"},
+  1138→        },
+  1139→        {
+  1140→            "id": "CORR-003",
+  1141→            "triggers": [["https redirect"], ["mixed content"]],
+  1142→            "compound_title": "Partial Encryption with Content Leakage",
+  1143→            "compound_severity": "medium",
+  1144→            "compound_description": (
+  1145→                "HTTPS redirect is present but mixed content loads over HTTP, "
+  1146→                "leaking user data in transit."
+  1147→            ),
+  1148→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "L", "a": "N"},
+  1149→        },
+  1150→        # ── Authentication compound risks ──
+  1151→        {
+  1152→            "id": "CORR-004",
+  1153→            "triggers": [["admin panel", "admin interface", "dashboard", "wp-admin"],
+  1154→                         ["weak password", "default credential", "no rate limit"]],
+  1155→            "compound_title": "Brute-Force Attack Path to Admin Access",
+  1156→            "compound_severity": "critical",
+  1157→            "compound_description": (
+  1158→                "Exposed admin panel combined with weak or default credentials and no rate "
+  1159→                "limiting enables trivial brute-force attacks leading to full admin compromise."
+  1160→            ),
+  1161→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1162→        },
+  1163→        {
+  1164→            "id": "CORR-005",
+  1165→            "triggers": [["session"], ["no rate limit", "brute force"]],
+  1166→            "compound_title": "Session-Based Credential Stuffing Risk",
+  1167→            "compound_severity": "high",
+  1168→            "compound_description": (
+  1169→                "Session management issues combined with absent rate limiting enable "
+  1170→                "automated credential stuffing attacks at scale."
+  1171→            ),
+  1172→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "L"},
+  1173→        },
+  1174→        {
+  1175→            "id": "CORR-006",
+  1176→            "triggers": [["csrf", "cross-site request"], ["cookie", "session"]],
+  1177→            "compound_title": "Session Hijacking via CSRF",
+  1178→            "compound_severity": "high",
+  1179→            "compound_description": (
+  1180→                "Missing CSRF protection combined with insecure cookie/session handling "
+  1181→                "enables cross-site request forgery to hijack user sessions."
+  1182→            ),
+  1183→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "N"},
+  1184→        },
+  1185→        {
+  1186→            "id": "CORR-007",
+  1187→            "triggers": [["auth bypass"], ["admin panel", "dashboard", "privileged"]],
+  1188→            "compound_title": "Privilege Escalation to Admin",
+  1189→            "compound_severity": "critical",
+  1190→            "compound_description": (
+  1191→                "Authentication bypass combined with exposed admin interfaces allows "
+  1192→                "unauthenticated attackers to gain full administrative access."
+  1193→            ),
+  1194→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1195→        },
+  1196→        # ── Data exposure compound risks ──
+  1197→        {
+  1198→            "id": "CORR-008",
+  1199→            "triggers": [[".env", "env file", "environment"], ["git exposed", "git", ".git"]],
+  1200→            "compound_title": "Full Credential Exposure via Git + Env Leak",
+  1201→            "compound_severity": "critical",
+  1202→            "compound_description": (
+  1203→                "Exposed .git directory combined with .env file disclosure grants attackers "
+  1204→                "full source code access and all application secrets/credentials."
+  1205→            ),
+  1206→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1207→        },
+  1208→        {
+  1209→            "id": "CORR-009",
+  1210→            "triggers": [["directory listing"], ["sensitive data", "backup", "config", ".sql", ".zip"]],
+  1211→            "compound_title": "Sensitive File Exposure via Directory Listing",
+  1212→            "compound_severity": "high",
+  1213→            "compound_description": (
+  1214→                "Directory listing enabled combined with sensitive file patterns allows "
+  1215→                "attackers to discover and download backups, configs, or databases."
+  1216→            ),
+  1217→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "L", "a": "N"},
+  1218→        },
+  1219→        {
+  1220→            "id": "CORR-010",
+  1221→            "triggers": [["debug mode", "stack trace", "error message", "verbose"],
+  1222→                         ["info leak", "version disclose", "technology"]],
+  1223→            "compound_title": "Information Disclosure Enabling Targeted Attacks",
+  1224→            "compound_severity": "medium",
+  1225→            "compound_description": (
+  1226→                "Debug/error output combined with technology version disclosure provides "
+  1227→                "attackers with precise targeting information for exploit development."
+  1228→            ),
+  1229→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "L", "i": "L", "a": "N"},
+  1230→        },
+  1231→        {
+  1232→            "id": "CORR-011",
+  1233→            "triggers": [["hardcoded", "api key", "token"], ["source code", "github", "repo", ".git"]],
+  1234→            "compound_title": "Supply Chain Secret Compromise",
+  1235→            "compound_severity": "critical",
+  1236→            "compound_description": (
+  1237→                "Hardcoded secrets in source code accessible via public repos or exposed git "
+  1238→                "history enables complete infrastructure compromise."
+  1239→            ),
+  1240→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1241→        },
+  1242→        # ── Injection compound risks ──
+  1243→        {
+  1244→            "id": "CORR-012",
+  1245→            "triggers": [["sqli", "sql injection"], ["admin panel", "database", "login"]],
+  1246→            "compound_title": "SQL Injection to Database Compromise",
+  1247→            "compound_severity": "critical",
+  1248→            "compound_description": (
+  1249→                "SQL injection vulnerability on an admin or login endpoint allows "
+  1250→                "direct database exfiltration and potential full system compromise."
+  1251→            ),
+  1252→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "H"},
+  1253→        },
+  1254→        {
+  1255→            "id": "CORR-013",
+  1256→            "triggers": [["xss", "cross-site scripting"], ["cookie", "session", "auth"]],
+  1257→            "compound_title": "XSS to Session Hijack Chain",
+  1258→            "compound_severity": "high",
+  1259→            "compound_description": (
+  1260→                "Cross-site scripting in the presence of session cookies enables "
+  1261→                "attackers to steal session tokens and hijack authenticated users."
+  1262→            ),
+  1263→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "N"},
+  1264→        },
+  1265→        {
+  1266→            "id": "CORR-014",
+  1267→            "triggers": [["ssrf"], ["admin panel", "internal", "metadata", "cloud", "aws"]],
+  1268→            "compound_title": "SSRF to Cloud Metadata / Internal Network Pivot",
+  1269→            "compound_severity": "critical",
+  1270→            "compound_description": (
+  1271→                "Server-Side Request Forgery combined with cloud/internal infrastructure "
+  1272→                "access enables metadata endpoint abuse and lateral movement."
+  1273→            ),
+  1274→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "H"},
+  1275→        },
+  1276→        {
+  1277→            "id": "CORR-015",
+  1278→            "triggers": [["command injection", "rce", "remote code", "exec"],
+  1279→                         ["docker", "container", "privileged", "root"]],
+  1280→            "compound_title": "RCE to Container Escape / Root Access",
+  1281→            "compound_severity": "critical",
+  1282→            "compound_description": (
+  1283→                "Remote code execution in a privileged container environment may lead "
+  1284→                "to container escape and full host root access."
+  1285→            ),
+  1286→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "H"},
+  1287→        },
+  1288→        # ── Network / Infrastructure compound risks ──
+  1289→        {
+  1290→            "id": "CORR-016",
+  1291→            "triggers": [["open port"], ["no firewall", "firewall disabled", "iptables"]],
+  1292→            "compound_title": "Unprotected Network Services",
+  1293→            "compound_severity": "high",
+  1294→            "compound_description": (
+  1295→                "Open ports combined with absent or disabled firewall rules expose "
+  1296→                "services directly to the network without any filtering."
+  1297→            ),
+  1298→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1299→        },
+  1300→        {
+  1301→            "id": "CORR-017",
+  1302→            "triggers": [["open port", "redis", "mongodb", "mysql", "database exposed"],
+  1303→                         ["no auth", "no password", "default credential", "empty password"]],
+  1304→            "compound_title": "Unauthenticated Database Access",
+  1305→            "compound_severity": "critical",
+  1306→            "compound_description": (
+  1307→                "Exposed database port with no or default authentication allows any network "
+  1308→                "attacker to connect, read, modify, or delete all data."
+  1309→            ),
+  1310→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1311→        },
+  1312→        {
+  1313→            "id": "CORR-018",
+  1314→            "triggers": [["ssh exposed", "ssh", "port 22"], ["weak password", "default credential", "password auth"]],
+  1315→            "compound_title": "SSH Brute-Force / Credential Attack Vector",
+  1316→            "compound_severity": "critical",
+  1317→            "compound_description": (
+  1318→                "Exposed SSH service with password-based authentication and weak/default "
+  1319→                "credentials enables remote brute-force attacks leading to system compromise."
+  1320→            ),
+  1321→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1322→        },
+  1323→        # ── Misconfiguration compound risks ──
+  1324→        {
+  1325→            "id": "CORR-019",
+  1326→            "triggers": [["cors", "cross-origin"], ["credential", "cookie", "auth"]],
+  1327→            "compound_title": "CORS Misconfiguration with Credential Leak",
+  1328→            "compound_severity": "high",
+  1329→            "compound_description": (
+  1330→                "Overly permissive CORS policy combined with credential-bearing requests "
+  1331→                "enables cross-origin data exfiltration."
+  1332→            ),
+  1333→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "L", "a": "N"},
+  1334→        },
+  1335→        {
+  1336→            "id": "CORR-020",
+  1337→            "triggers": [["x-frame", "clickjacking"], ["cookie", "session", "auth", "login"]],
+  1338→            "compound_title": "Clickjacking to Credential Harvesting",
+  1339→            "compound_severity": "medium",
+  1340→            "compound_description": (
+  1341→                "Missing X-Frame-Options / CSP frame-ancestors combined with active sessions "
+  1342→                "enables clickjacking attacks to trick users into performing authenticated actions."
+  1343→            ),
+  1344→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "L", "i": "H", "a": "N"},
+  1345→        },
+  1346→        {
+  1347→            "id": "CORR-021",
+  1348→            "triggers": [["outdated", "vulnerable dependency", "known cve"],
+  1349→                         ["rce", "remote code", "sqli", "sql injection", "xss"]],
+  1350→            "compound_title": "Known Exploitable Vulnerability in Active Attack Path",
+  1351→            "compound_severity": "critical",
+  1352→            "compound_description": (
+  1353→                "Outdated dependency with known CVE combined with an active injection/attack "
+  1354→                "vector means publicly available exploits may be directly applicable."
+  1355→            ),
+  1356→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "H", "i": "H", "a": "H"},
+  1357→        },
+  1358→        {
+  1359→            "id": "CORR-022",
+  1360→            "triggers": [["docker", "container"], ["privileged", "root", "host network"]],
+  1361→            "compound_title": "Container Privilege Escalation Risk",
+  1362→            "compound_severity": "high",
+  1363→            "compound_description": (
+  1364→                "Docker containers running in privileged mode or with host networking "
+  1365→                "create a direct path to host system compromise."
+  1366→            ),
+  1367→            "cvss_override": {"av": "N", "ac": "H", "pr": "L", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1368→        },
+  1369→        {
+  1370→            "id": "CORR-023",
+  1371→            "triggers": [["s3 bucket", "cloud storage", "azure blob"], ["public", "no auth", "open access"]],
+  1372→            "compound_title": "Cloud Storage Data Breach",
+  1373→            "compound_severity": "critical",
+  1374→            "compound_description": (
+  1375→                "Publicly accessible cloud storage with no authentication allows anyone to "
+  1376→                "read, download, or potentially modify sensitive data at scale."
+  1377→            ),
+  1378→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1379→        },
+  1380→        {
+  1381→            "id": "CORR-024",
+  1382→            "triggers": [["subdomain", "wildcard"], ["takeover", "dangling dns", "cname"]],
+  1383→            "compound_title": "Subdomain Takeover Attack Surface",
+  1384→            "compound_severity": "high",
+  1385→            "compound_description": (
+  1386→                "Discovered subdomains combined with potential dangling DNS/CNAME records "
+  1387→                "create subdomain takeover opportunities for full domain compromise."
+  1388→            ),
+  1389→            "cvss_override": {"av": "N", "ac": "H", "pr": "N", "ui": "N", "c": "H", "i": "H", "a": "H"},
+  1390→        },
+  1391→        {
+  1392→            "id": "CORR-025",
+  1393→            "triggers": [["open redirect"], ["phishing", "social engineering", "credential"]],
+  1394→            "compound_title": "Open Redirect Enabling Phishing Chains",
+  1395→            "compound_severity": "medium",
+  1396→            "compound_description": (
+  1397→                "Open redirect vulnerability enables crafted phishing links on the trusted "
+  1398→                "domain, increasing likelihood of successful credential theft."
+  1399→            ),
+  1400→            "cvss_override": {"av": "N", "ac": "L", "pr": "N", "ui": "R", "c": "L", "i": "H", "a": "N"},
+  1401→        },
+  1402→    ]
+  1403→
+  1404→    @classmethod
+  1405→    def correlate(cls, findings: List[Dict]) -> List[Dict]:
+  1406→        """Run all correlation rules against findings and return compound findings.
+  1407→
+  1408→        Each finding is checked as a lowercase string of title + description.
+  1409→        A rule fires when ALL trigger groups have at least one pattern matched
+  1410→        across the full finding set.
+  1411→        """
+  1412→        if not findings:
+  1413→            return []
+  1414→
+  1415→        # Build a flat list of all finding text for matching
+  1416→        finding_texts: List[str] = []
+  1417→        for f in findings:
+  1418→            title = (f.get("title") or "").lower()
+  1419→            desc = (f.get("description") or "").lower()
+  1420→            finding_texts.append(f"{title} {desc}")
+  1421→
+  1422→        compound_findings: List[Dict] = []
+  1423→
+  1424→        for rule in cls.CORRELATION_RULES:
+  1425→            triggers = rule["triggers"]
+  1426→            rule_fired = True
+  1427→
+  1428→            for trigger_group in triggers:
+  1429→                # Each trigger group: at least one pattern must match across all findings
+  1430→                group_matched = False
+  1431→                for pattern in trigger_group:
+  1432→                    for ft in finding_texts:
+  1433→                        if pattern in ft:
+  1434→                            group_matched = True
+  1435→                            break
+  1436→                    if group_matched:
+  1437→                        break
+  1438→                if not group_matched:
+  1439→                    rule_fired = False
+  1440→                    break
+  1441→
+  1442→            if rule_fired:
+  1443→                compound = {
+  1444→                    "title": rule["compound_title"],
+  1445→                    "severity": rule["compound_severity"],
+  1446→                    "description": rule["compound_description"],
+  1447→                    "category": "compound",
+  1448→                    "correlation_id": rule["id"],
+  1449→                    "is_compound": True,
+  1450→                }
+  1451→                # Compute CVSS score for the compound finding
+  1452→                if "cvss_override" in rule:
+  1453→                    override = rule["cvss_override"]
+  1454→                    av = CVSSScorer._AV[override["av"]]
+  1455→                    ac = CVSSScorer._AC[override["ac"]]
+  1456→                    pr = CVSSScorer._PR[override["pr"]]
+  1457→                    ui = CVSSScorer._UI[override["ui"]]
+  1458→                    c_val = CVSSScorer._CIA[override["c"]]
+  1459→                    i_val = CVSSScorer._CIA[override["i"]]
+  1460→                    a_val = CVSSScorer._CIA[override["a"]]
+  1461→                    iss = 1.0 - ((1.0 - c_val) * (1.0 - i_val) * (1.0 - a_val))
+  1462→                    impact = 6.42 * iss
+  1463→                    exploitability = 8.22 * av * ac * pr * ui
+  1464→                    base_score = math.ceil(min(impact + exploitability, 10.0) * 10) / 10
+  1465→                    compound["cvss_score"] = base_score
+  1466→                    compound["cvss_vector"] = (
+  1467→                        f"CVSS:3.1/AV:{override['av']}/AC:{override['ac']}/"
+  1468→                        f"PR:{override['pr']}/UI:{override['ui']}/"
+  1469→                        f"C:{override['c']}/I:{override['i']}/A:{override['a']}"
+  1470→                    )
+  1471→
+  1472→                compound_findings.append(compound)
+  1473→
+  1474→        return compound_findings
+  1475→
+  1476→
+  1477→# ══════════════════════════════════════════════════════════════════════
+  1478→#  ATTACK SURFACE MAPPER
+  1479→# ══════════════════════════════════════════════════════════════════════
+  1480→
+  1481→
+  1482→class AttackSurfaceMapper:
+  1483→    """Computes an attack surface score (0–100, higher = more exposed).
+  1484→
+  1485→    Factors:
+  1486→      1. Open ports (0–25 pts): 0 ports=0, 1–2=5, 3–5=10, 6–10=15, 11+=25
+  1487→      2. Exposed paths/endpoints (0–20 pts): 0=0, 1–3=5, 4–7=10, 8–12=15, 13+=20
+  1488→      3. Missing security headers (0–20 pts): 0=0, 1=3, 2=6, 3=10, 4=14, 5+=20
+  1489→      4. Tech stack complexity (0–15 pts): 1–2 techs=2, 3–4=5, 5–6=8, 7–8=11, 9+=15
+  1490→      5. TLS grade (0–20 pts): A=0, B=5, C=10, D=15, F=20
+  1491→    """
+  1492→
+  1493→    @classmethod
+  1494→    def compute(cls, findings: List[Dict], scan_data: Optional[Dict] = None) -> Dict[str, Any]:
+  1495→        """Compute attack surface score and return breakdown."""
+  1496→        findings_lower = []
+  1497→        for f in findings:
+  1498→            title = (f.get("title") or "").lower()
+  1499→            desc = (f.get("description") or "").lower()
+  1500→            findings_lower.append(f"{title} {desc}")
+  1501→        all_text = " ".join(findings_lower)
+  1502→
+  1503→        # 1. Open ports
+  1504→        port_score = cls._score_ports(findings_lower, scan_data)
+  1505→        # 2. Exposed paths
+  1506→        path_score = cls._score_exposed_paths(findings_lower)
+  1507→        # 3. Missing headers
+  1508→        header_score = cls._score_missing_headers(findings_lower)
+  1509→        # 4. Tech stack complexity
+  1510→        tech_score = cls._score_tech_stack(all_text, scan_data)
+  1511→        # 5. TLS grade
+  1512→        tls_score = cls._score_tls_grade(findings_lower, scan_data)
+  1513→
+  1514→        total = min(port_score + path_score + header_score + tech_score + tls_score, 100)
+  1515→
+  1516→        # Risk rating
+  1517→        if total >= 80:
+  1518→            rating = "CRITICAL"
+  1519→        elif total >= 60:
+  1520→            rating = "HIGH"
+  1521→        elif total >= 40:
+  1522→            rating = "MODERATE"
+  1523→        elif total >= 20:
+  1524→            rating = "LOW"
+  1525→        else:
+  1526→            rating = "MINIMAL"
+  1527→
+  1528→        return {
+  1529→            "attack_surface_score": total,
+  1530→            "risk_rating": rating,
+  1531→            "breakdown": {
+  1532→                "open_ports": {"score": port_score, "max": 25},
+  1533→                "exposed_paths": {"score": path_score, "max": 20},
+  1534→                "missing_headers": {"score": header_score, "max": 20},
+  1535→                "tech_complexity": {"score": tech_score, "max": 15},
+  1536→                "tls_grade": {"score": tls_score, "max": 20},
+  1537→            },
+  1538→        }
+  1539→
+  1540→    @classmethod
+  1541→    def _score_ports(cls, findings_lower: List[str], scan_data: Optional[Dict]) -> int:
+  1542→        port_count = 0
+  1543→        for ft in findings_lower:
+  1544→            # Count port-related findings
+  1545→            if "open port" in ft or "port " in ft:
+  1546→                port_count += 1
+  1547→        # Also check scan data for port info
+  1548→        if scan_data and isinstance(scan_data, dict):
+  1549→            for f in scan_data.get("findings", []):
+  1550→                title = (f.get("title") or "").lower()
+  1551→                if "port" in title:
+  1552→                    port_count += 1
+  1553→        if port_count == 0:
+  1554→            return 0
+  1555→        elif port_count <= 2:
+  1556→            return 5
+  1557→        elif port_count <= 5:
+  1558→            return 10
+  1559→        elif port_count <= 10:
+  1560→            return 15
+  1561→        else:
+  1562→            return 25
+  1563→
+  1564→    @classmethod
+  1565→    def _score_exposed_paths(cls, findings_lower: List[str]) -> int:
+  1566→        path_indicators = [
+  1567→            "admin", "dashboard", "wp-admin", "phpmyadmin", "api",
+  1568→            ".env", ".git", "backup", "config", "debug", "console",
+  1569→            "actuator", "graphql", "swagger", "documentation",
+  1570→        ]
+  1571→        exposed_count = 0
+  1572→        for ft in findings_lower:
+  1573→            for indicator in path_indicators:
+  1574→                if indicator in ft:
+  1575→                    exposed_count += 1
+  1576→                    break
+  1577→        if exposed_count == 0:
+  1578→            return 0
+  1579→        elif exposed_count <= 3:
+  1580→            return 5
+  1581→        elif exposed_count <= 7:
+  1582→            return 10
+  1583→        elif exposed_count <= 12:
+  1584→            return 15
+  1585→        else:
+  1586→            return 20
+  1587→
+  1588→    @classmethod
+  1589→    def _score_missing_headers(cls, findings_lower: List[str]) -> int:
+  1590→        header_indicators = [
+  1591→            "x-frame", "csp", "content-security", "x-content-type",
+  1592→            "x-xss", "hsts", "strict-transport", "referrer-policy",
+  1593→            "permissions-policy", "missing header", "security header",
+  1594→        ]
+  1595→        missing_count = 0
+  1596→        for ft in findings_lower:
+  1597→            for h in header_indicators:
+  1598→                if h in ft:
+  1599→                    missing_count += 1
+  1600→                    break
+  1601→        if missing_count == 0:
+  1602→            return 0
+  1603→        elif missing_count == 1:
+  1604→            return 3
+  1605→        elif missing_count == 2:
+  1606→            return 6
+  1607→        elif missing_count == 3:
+  1608→            return 10
+  1609→        elif missing_count == 4:
+  1610→            return 14
+  1611→        else:
+  1612→            return 20
+  1613→
+  1614→    @classmethod
+  1615→    def _score_tech_stack(cls, all_text: str, scan_data: Optional[Dict]) -> int:
+  1616→        tech_keywords = [
+  1617→            "nginx", "apache", "iis", "tomcat", "node", "express", "react",
+  1618→            "vue", "angular", "django", "flask", "rails", "laravel", "spring",
+  1619→            "wordpress", "drupal", "joomla", "php", "python", "ruby",
+  1620→            "java", "go", "rust", "docker", "kubernetes", "redis",
+  1621→            "mongodb", "mysql", "postgresql", "postgres", "elasticsearch",
+  1622→            "cloudflare", "aws", "azure", "gcp", "firebase",
+  1623→        ]
+  1624→        detected = set()
+  1625→        for tech in tech_keywords:
+  1626→            if tech in all_text:
+  1627→                detected.add(tech)
+  1628→        count = len(detected)
+  1629→        if count <= 2:
+  1630→            return 2
+  1631→        elif count <= 4:
+  1632→            return 5
+  1633→        elif count <= 6:
+  1634→            return 8
+  1635→        elif count <= 8:
+  1636→            return 11
+  1637→        else:
+  1638→            return 15
+  1639→
+  1640→    @classmethod
+  1641→    def _score_tls_grade(cls, findings_lower: List[str], scan_data: Optional[Dict]) -> int:
+  1642→        # Check for TLS-related findings
+  1643→        tls_issues = 0
+  1644→        for ft in findings_lower:
+  1645→            if any(kw in ft for kw in ["tls", "ssl", "certificate", "cipher", "hsts",
+  1646→                                         "https", "mixed content"]):
+  1647→                tls_issues += 1
+  1648→        # If scan data has explicit grade info
+  1649→        if scan_data and isinstance(scan_data, dict):
+  1650→            grade = scan_data.get("grade", "") or scan_data.get("tls_grade", "")
+  1651→            if isinstance(grade, str):
+  1652→                grade = grade.upper().strip()
+  1653→                if grade.startswith("A"):
+  1654→                    return 0
+  1655→                elif grade.startswith("B"):
+  1656→                    return 5
+  1657→                elif grade.startswith("C"):
+  1658→                    return 10
+  1659→                elif grade.startswith("D"):
+  1660→                    return 15
+  1661→                elif grade.startswith("F"):
+  1662→                    return 20
+  1663→        # Derive from findings count
+  1664→        if tls_issues == 0:
+  1665→            return 0
+  1666→        elif tls_issues <= 1:
+  1667→            return 5
+  1668→        elif tls_issues <= 2:
+  1669→            return 10
+  1670→        elif tls_issues <= 3:
+  1671→            return 15
+  1672→        else:
+  1673→            return 20
+  1674→
+  1675→
+  1676→# ══════════════════════════════════════════════════════════════════════
+  1677→#  RISK MATRIX VISUALIZATION
+  1678→# ══════════════════════════════════════════════════════════════════════
+  1679→
+  1680→
+  1681→class RiskMatrixVisualizer:
+  1682→    """Generates a text-based risk matrix (Likelihood vs Impact) using
+  1683→    Unicode box-drawing characters.
+  1684→
+  1685→    Matrix layout (5x5):
+  1686→
+  1687→        Impact →
+  1688→        Negligible  Low    Medium   High    Critical
+  1689→    L   ┌─────────┬───────┬─────────┬────────┬──────────┐
+  1690→    i   │         │       │         │        │          │
+  1691→    k   │         │       │         │        │          │
+  1692→    e   ├─────────┼───────┼─────────┼────────┼──────────┤
+  1693→    l   │         │       │         │        │          │
+  1694→    i   │         │       │         │        │          │
+  1695→    h   ├─────────┼───────┼─────────┼────────┼──────────┤
+  1696→    o   │         │       │    ●    │   ●    │    ●     │
+  1697→    o   │         │       │         │        │          │
+  1698→    d   ├─────────┼───────┼─────────┼────────┼──────────┤
+  1699→        │         │       │         │  ●     │    ●     │
+  1700→    ↑   │         │       │         │        │          │
+  1701→        ├─────────┼───────┼─────────┼────────┼──────────┤
+  1702→        │         │       │         │        │          │
+  1703→        │         │       │         │        │          │
+  1704→        └─────────┴───────┴─────────┴────────┴──────────┘
+  1705→    """
+  1706→
+  1707→    # Likelihood and Impact bands from CVSS scores
+  1708→    _LIKELIHOOD_BANDS = [
+  1709→        ("Very High", 9.0, 10.1),
+  1710→        ("High", 7.0, 9.0),
+  1711→        ("Medium", 4.0, 7.0),
+  1712→        ("Low", 1.0, 4.0),
+  1713→        ("Very Low", 0.0, 1.0),
+  1714→    ]
+  1715→
+  1716→    _IMPACT_BANDS = [
+  1717→        ("Critical", 9.0, 10.1),
+  1718→        ("High", 7.0, 9.0),
+  1719→        ("Medium", 4.0, 7.0),
+  1720→        ("Low", 1.0, 4.0),
+  1721→        ("Negligible", 0.0, 1.0),
+  1722→    ]
+  1723→
+  1724→    # Color coding for cell density
+  1725→    _DENSITY_SYMBOLS = ["  ", " ·", " •", " ●", " ██"]
+  1726→
+  1727→    @classmethod
+  1728→    def render(cls, findings: List[Dict], width: int = 70) -> str:
+  1729→        """Render the risk matrix as a text string with Unicode box-drawing.
+  1730→
+  1731→        Args:
+  1732→            findings: List of finding dicts with 'cvss_score' (or 'base_score') keys.
+  1733→            width: Total width of the matrix output.
+  1734→
+  1735→        Returns:
+  1736→            Multi-line string with the matrix.
+  1737→        """
+  1738→        # Build a 5x5 grid of finding counts
+  1739→        # Grid[y][x] where y=0 is top (Very High likelihood), x=0 is left (Negligible impact)
+  1740→        grid: List[List[int]] = [[0] * 5 for _ in range(5)]
+  1741→        grid_labels: List[List[List[str]]] = [[[] for _ in range(5)] for _ in range(5)]
+  1742→
+  1743→        for f in findings:
+  1744→            score = f.get("cvss_score") or f.get("base_score") or 0.0
+  1745→            if not isinstance(score, (int, float)) or score <= 0:
+  1746→                continue
+  1747→            title = (f.get("title") or "")[:12]
+  1748→
+  1749→            # Determine likelihood (y-axis) and impact (x-axis) from CVSS score
+  1750→            # For simplicity, we use the CVSS score to derive both:
+  1751→            # - Impact uses the CIA-derived portion
+  1752→            # - Likelihood uses the exploitability portion
+  1753→            # Since we may not have the full breakdown, we approximate:
+  1754→            impact_idx = cls._score_to_band_index(score)
+  1755→            likelihood_idx = cls._score_to_likelihood(score, f)
+  1756→
+  1757→            if 0 <= likelihood_idx < 5 and 0 <= impact_idx < 5:
+  1758→                grid[likelihood_idx][impact_idx] += 1
+  1759→                if len(grid_labels[likelihood_idx][impact_idx]) < 3:
+  1760→                    grid_labels[likelihood_idx][impact_idx].append(title)
+  1761→
+  1762→        # Build the matrix string
+  1763→        col_width = 11
+  1764→        label_width = 12
+  1765→        lines: List[str] = []
+  1766→
+  1767→        # Header row
+  1768→        header = f"{'Likelihood / Impact':<{label_width + 2}}"
+  1769→        impact_names = [b[0] for b in cls._IMPACT_BANDS]
+  1770→        for name in impact_names:
+  1771→            header += f"{name[:col_width]:>{col_width}}"
+  1772→        lines.append(header)
+  1773→
+  1774→        # Top border
+  1775→        lines.append(f"{'':<{label_width + 2}}┌" + "─" * col_width + ("┬" + "─" * col_width) * 4 + "┐")
+  1776→
+  1777→        likelihood_names = [b[0] for b in cls._LIKELIHOOD_BANDS]
+  1778→        for y in range(5):
+  1779→            # Cell content lines (2 lines per row for readability)
+  1780→            label = likelihood_names[y]
+  1781→            # Line 1: density symbol
+  1782→            row1 = f"{label:>{label_width}}  │"
+  1783→            row2 = f"{'':>{label_width}}  │"
+  1784→            for x in range(5):
+  1785→                count = grid[y][x]
+  1786→                sym = cls._DENSITY_SYMBOLS[min(count, 4)]
+  1787→                row1 += f"{sym:^{col_width}}│"
+  1788→                labels = grid_labels[y][x]
+  1789→                if labels:
+  1790→                    row2 += f"{labels[0][:col_width]:^{col_width}}│"
+  1791→                else:
+  1792→                    row2 += f"{'':^{col_width}}│"
+  1793→
+  1794→            lines.append(row1)
+  1795→            lines.append(row2)
+  1796→
+  1797→            # Separator or bottom border
+  1798→            if y < 4:
+  1799→                lines.append(f"{'':<{label_width + 2}}├" + "─" * col_width + ("┼" + "─" * col_width) * 4 + "┤")
+  1800→            else:
+  1801→                lines.append(f"{'':<{label_width + 2}}└" + "─" * col_width + ("┴" + "─" * col_width) * 4 + "┘")
+  1802→
+  1803→        # Summary line
+  1804→        total = sum(grid[y][x] for y in range(5) for x in range(5))
+  1805→        critical_zone = sum(grid[y][x] for y in range(2) for x in range(3, 5))
+  1806→        lines.append("")
+  1807→        lines.append(f"  Total findings plotted: {total}")
+  1808→        lines.append(f"  Critical zone (High/Very High × High/Critical): {critical_zone}")
+  1809→
+  1810→        return "\n".join(lines)
+  1811→
+  1812→    @classmethod
+  1813→    def _score_to_band_index(cls, score: float) -> int:
+  1814→        """Map score to impact band index (0=Negligible, 4=Critical)."""
+  1815→        for i, (name, lo, hi) in enumerate(cls._IMPACT_BANDS):
+  1816→            if lo <= score < hi:
+  1817→                return 4 - i  # Reverse so Critical is rightmost
+  1818→        return 0
+  1819→
+  1820→    @classmethod
+  1821→    def _score_to_likelihood(cls, score: float, finding: Dict) -> int:
+  1822→        """Estimate likelihood from score and finding metadata.
+  1823→
+  1824→        Higher CVSS exploitability metrics → higher likelihood.
+  1825→        We approximate from score and severity.
+  1826→        """
+  1827→        severity = (finding.get("severity") or "").lower()
+  1828→        is_compound = finding.get("is_compound", False)
+  1829→        is_remote = True  # Most findings in recon are network-based
+  1830→
+  1831→        # Base likelihood from score
+  1832→        base = score / 10.0
+  1833→
+  1834→        # Boost for compound findings (more likely to be exploitable)
+  1835→        if is_compound:
+  1836→            base = min(base + 0.15, 1.0)
+  1837→
+  1838→        # Adjust for severity
+  1839→        sev_boost = {"critical": 0.1, "high": 0.05, "medium": 0, "low": -0.1, "info": -0.2}
+  1840→        base += sev_boost.get(severity, 0)
+  1841→        base = max(0.0, min(base, 1.0))
+  1842→
+  1843→        # Map to band index (0=Very Low, 4=Very High)
+  1844→        if base >= 0.85:
+  1845→            return 0
+  1846→        elif base >= 0.65:
+  1847→            return 1
+  1848→        elif base >= 0.40:
+  1849→            return 2
+  1850→        elif base >= 0.15:
+  1851→            return 3
+  1852→        else:
+  1853→            return 4
+  1854→
+  1855→
+  1856→# ══════════════════════════════════════════════════════════════════════
+  1857→#  POST-SCAN ADAPTIVE DEEPENING
+  1858→# ══════════════════════════════════════════════════════════════════════
+  1859→
+  1860→
+  1861→class AdaptiveDeepeningEngine:
+  1862→    """Suggests deeper follow-up scans based on initial findings.
+  1863→
+  1864→    Maps finding categories to recommended deep-dive modules/tools.
+  1865→    Each rule has:
+  1866→      - trigger_patterns: list of patterns to match in findings
+  1867→      - suggested_tool: tool name to suggest
+  1868→      - suggested_args: arguments for the suggested tool
+  1869→      - reason: human-readable explanation
+  1870→      - severity_threshold: minimum severity to trigger (default: medium)
+  1871→    """
+  1872→
+  1873→    DEEPENING_RULES: List[Dict[str, Any]] = [
+  1874→        {
+  1875→            "trigger_patterns": ["open port", "port scan", "service"],
+  1876→            "suggested_tool": "port_scan",
+  1877→            "suggested_args": {},
+  1878→            "reason": "Open ports detected — run deeper port scan for service fingerprinting",
+  1879→            "severity_threshold": "medium",
+  1880→        },
+  1881→        {
+  1882→            "trigger_patterns": [".env", "env file", "environment variable", "secret"],
+  1883→            "suggested_tool": "secret_hunt",
+  1884→            "suggested_args": {"path": "."},
+  1885→            "reason": "Potential secret exposure detected — run deep secrets scan",
+  1886→            "severity_threshold": "medium",
+  1887→        },
+  1888→        {
+  1889→            "trigger_patterns": ["missing header", "x-frame", "csp", "hsts", "security header",
+  1890→                                  "content-security", "referrer-policy"],
+  1891→            "suggested_tool": "remote_scan",
+  1892→            "suggested_args": {"modules": "recon"},
+  1893→            "reason": "Missing security headers detected — run deep header analysis with recon module",
+  1894→            "severity_threshold": "low",
+  1895→        },
+  1896→        {
+  1897→            "trigger_patterns": ["admin panel", "dashboard", "wp-admin", "login", "auth"],
+  1898→            "suggested_tool": "remote_scan",
+  1899→            "suggested_args": {"modules": "auth"},
+  1900→            "reason": "Authentication surfaces detected — run deep auth testing module",
+  1901→            "severity_threshold": "medium",
+  1902→        },
+  1903→        {
+  1904→            "trigger_patterns": ["sqli", "xss", "injection", "rce", "command injection"],
+  1905→            "suggested_tool": "remote_scan",
+  1906→            "suggested_args": {"modules": "gorgon"},
+  1907→            "reason": "Injection vulnerabilities detected — run deep Gorgon active scan",
+  1908→            "severity_threshold": "high",
+  1909→        },
+  1910→        {
+  1911→            "trigger_patterns": ["ssrf", "redirect", "open redirect", "chain"],
+  1912→            "suggested_tool": "remote_scan",
+  1913→            "suggested_args": {"modules": "chain"},
+  1914→            "reason": "SSRF/redirect vectors detected — run deep chain analysis",
+  1915→            "severity_threshold": "high",
+  1916→        },
+  1917→        {
+  1918→            "trigger_patterns": ["outdated", "dependency", "package", "npm", "pip", "vulnerability"],
+  1919→            "suggested_tool": "cve_enrich",
+  1920→            "suggested_args": {"findings_json": "__AUTO__"},  # Will be populated dynamically
+  1921→            "reason": "Vulnerable dependencies detected — enrich with CVE intelligence",
+  1922→            "severity_threshold": "medium",
+  1923→        },
+  1924→        {
+  1925→            "trigger_patterns": ["eval", "exec", "sql", "injection", "hardcoded", "deserialization",
+  1926→                                  "path traversal", "ast"],
+  1927→            "suggested_tool": "ast_analyze",
+  1928→            "suggested_args": {"path": "."},
+  1929→            "reason": "Code-level vulnerabilities detected — run deep AST analysis",
+  1930→            "severity_threshold": "medium",
+  1931→        },
+  1932→        {
+  1933→            "trigger_patterns": ["cloud", "aws", "azure", "gcp", "s3", "iam", "oauth"],
+  1934→            "suggested_tool": "remote_scan",
+  1935→            "suggested_args": {"modules": "nhi"},
+  1936→            "reason": "Cloud/identity surfaces detected — run deep cloud recon module",
+  1937→            "severity_threshold": "medium",
+  1938→        },
+  1939→        {
+  1940→            "trigger_patterns": ["tls", "ssl", "certificate", "cipher", "mixed content"],
+  1941→            "suggested_tool": "remote_scan",
+  1942→            "suggested_args": {"modules": "recon"},
+  1943→            "reason": "TLS issues detected — run deep TLS/certificate analysis",
+  1944→            "severity_threshold": "medium",
+  1945→        },
+  1946→        {
+  1947→            "trigger_patterns": ["docker", "container", "kubernetes", "privileged"],
+  1948→            "suggested_tool": "local_audit",
+  1949→            "suggested_args": {"target_path": "."},
+  1950→            "reason": "Container/infrastructure issues detected — run deep infrastructure audit",
+  1951→            "severity_threshold": "high",
+  1952→        },
+  1953→        {
+  1954→            "trigger_patterns": ["subdomain", "attack surface", "fingerprint"],
+  1955→            "suggested_tool": "subdomain_discover",
+  1956→            "suggested_args": {"domain": "__AUTO__"},  # Will be populated dynamically
+  1957→            "reason": "Attack surface expansion opportunity — run subdomain enumeration",
+  1958→            "severity_threshold": "medium",
+  1959→        },
+  1960→        {
+  1961→            "trigger_patterns": ["bot", "crawler", "c2", "automation"],
+  1962→            "suggested_tool": "remote_scan",
+  1963→            "suggested_args": {"modules": "bot"},
+  1964→            "reason": "Bot/automation indicators detected — run deep bot analysis module",
+  1965→            "severity_threshold": "high",
+  1966→        },
+  1967→        {
+  1968→            "trigger_patterns": ["info leak", "version disclose", "debug", "stack trace", "error"],
+  1969→            "suggested_tool": "remote_scan",
+  1970→            "suggested_args": {"modules": "oblivion"},
+  1971→            "reason": "Information disclosure detected — run deep Oblivion stealth scan",
+  1972→            "severity_threshold": "medium",
+  1973→        },
+  1974→    ]
+  1975→
+  1976→    _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+  1977→
+  1978→    @classmethod
+  1979→    def suggest(
+  1980→        cls,
+  1981→        findings: List[Dict],
+  1982→        domain: str = "",
+  1983→        already_planned: Optional[List[str]] = None,
+  1984→    ) -> List[Dict[str, Any]]:
+  1985→        """Analyze findings and suggest deepening steps.
+  1986→
+  1987→        Returns a list of suggestion dicts: {tool, args, reason, trigger_findings}.
+  1988→        """
+  1989→        already_planned = already_planned or []
+  1990→        suggestions: List[Dict[str, Any]] = []
+  1991→
+  1992→        for rule in cls.DEEPENING_RULES:
+  1993→            threshold = cls._SEVERITY_ORDER.get(rule["severity_threshold"], 2)
+  1994→            tool = rule["suggested_tool"]
+  1995→
+  1996→            # Skip if already planned
+  1997→            if tool in already_planned:
+  1998→                continue
+  1999→
+  2000→            # Check if any finding matches the trigger patterns
+
+[showing lines 1-2000 of 3419; use offset=2001 with limit to continue reading]
