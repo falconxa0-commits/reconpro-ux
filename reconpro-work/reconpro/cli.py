@@ -14,9 +14,10 @@ from rich.text import Text
 from . import __version__
 from .constants import SEV_COLORS, GRADE_COLORS
 from .scanner import (
-    scan, audit_scan, MODULE_REGISTRY, LOCAL_MODULES,
+    MODULE_REGISTRY, LOCAL_MODULES,
     ALL_MODULES, DEFAULT_MODULES, DEFAULT_LOCAL_MODULES,
 )
+from .engine import scan, audit_scan
 from .history import list_scans, get_latest, diff_scans, save_scan, clear_history
 from .reports import generate_html_report
 from .parallel import blitz_scan
@@ -297,6 +298,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--timeout", "-t", type=int, default=8)
     p.add_argument("--insecure", "-k", action="store_true")
     p.add_argument("--rate-limit", type=float, default=10.0)
+    p.add_argument("--engineering", action="store_true", help="Run engineering pipeline after scan")
 
     # ── vibesec ───────────────────────────────────────────────────
     p = sub.add_parser("vibesec", help="Quick VibeSec benchmark")
@@ -312,6 +314,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--modules", "-m", type=str)
     p.add_argument("--json", dest="json_output", action="store_true")
     p.add_argument("-o", "--output", dest="output_file", type=str)
+    p.add_argument("--engineering", action="store_true", help="Run engineering pipeline after audit")
 
     # ── dev ───────────────────────────────────────────────────────
     p = sub.add_parser("dev", help="Developer project scan (secrets, deps, git, docker)")
@@ -1406,8 +1409,19 @@ def main(argv: list[str] | None = None) -> None:
     if cmd == "audit":
         _banner(args)
         modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
-        result = _spinner_wrap("Auditing machine...", audit_scan, target="localhost", modules=modules)
+        run_eng = getattr(args, "engineering", False)
+        result = _spinner_wrap("Auditing machine...", audit_scan, target="localhost", modules=modules,
+                                run_engineering=run_eng)
         _output_result(result, args, title="HOST AUDIT", show_remediation=True)
+        if run_eng and result.engineering:
+            eng = result.engineering
+            console.print(Panel(
+                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
+                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
+                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
+                title="[bold]ENGINEERING PIPELINE[/bold]",
+                border_style="bright_cyan",
+            ))
         return
 
     # ── DEV ────────────────────────────────────────────────────────
@@ -1492,10 +1506,21 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
         modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
         _banner(args)
+        run_eng = getattr(args, "engineering", False)
         result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
                                 all_modules=args.all, timeout=args.timeout,
-                                verify_tls=not args.insecure, rate_limit=args.rate_limit)
+                                verify_tls=not args.insecure, rate_limit=args.rate_limit,
+                                run_engineering=run_eng)
         _output_result(result, args)
+        if run_eng and result.engineering:
+            eng = result.engineering
+            console.print(Panel(
+                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
+                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
+                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
+                title="[bold]ENGINEERING PIPELINE[/bold]",
+                border_style="bright_cyan",
+            ))
         return
 
     # ── Implicit scan (no subcommand) ──────────────────────────────

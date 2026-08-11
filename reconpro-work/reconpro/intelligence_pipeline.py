@@ -1,10 +1,10 @@
-"""ReconPro v10 — Intelligence Pipeline.
+"""ReconPro v11 — Intelligence Pipeline.
 
 Post-scan orchestration layer that composites the AI Analyst,
-Attack Graph, and Threat Intelligence engines into a single unified
-analysis pass.  Produces an IntelligenceResult with composite risk
-scores, attack paths, CVE/CWE/MITRE enrichment, and executive-ready
-summaries.
+Attack Graph, Threat Intelligence, and Knowledge Graph engines into
+a single unified analysis pass.  Produces an IntelligenceResult with
+composite risk scores, attack paths, CVE/CWE/MITRE enrichment,
+knowledge-graph entity/relationship data, and executive-ready summaries.
 
 Pure Python.  Zero external dependencies.
 """
@@ -64,6 +64,11 @@ class IntelligenceResult:
     cve_matches: List[str] = field(default_factory=list)
     cwe_matches: List[str] = field(default_factory=list)
     mitre_techniques: List[Dict[str, Any]] = field(default_factory=list)
+
+    # -- Knowledge Graph outputs -------------------------------------------------
+    knowledge_graph: Dict[str, Any] = field(default_factory=dict)
+    entity_count: int = 0
+    relationship_count: int = 0
 
     # ------------------------------------------------------------------------
     # Properties
@@ -125,6 +130,9 @@ class IntelligenceResult:
             "cve_matches": self.cve_matches,
             "cwe_matches": self.cwe_matches,
             "mitre_techniques": self.mitre_techniques,
+            "knowledge_graph": self.knowledge_graph,
+            "entity_count": self.entity_count,
+            "relationship_count": self.relationship_count,
         }
 
 
@@ -155,8 +163,9 @@ def _finding_to_dict(f: Any) -> Dict[str, Any]:
 class IntelligencePipeline:
     """Post-scan orchestration layer.
 
-    Composites AIAnalystEngine, AttackGraphEngine, and ThreatIntelEngine
-    into a single ``analyze()`` call that returns an ``IntelligenceResult``.
+    Composites AIAnalystEngine, AttackGraphEngine, ThreatIntelEngine, and
+    SecurityKnowledgeGraph into a single ``analyze()`` call that returns
+    an ``IntelligenceResult``.
     """
 
     def __init__(
@@ -165,10 +174,12 @@ class IntelligencePipeline:
         enable_ai_analyst: bool = True,
         enable_attack_graph: bool = True,
         enable_threat_intel: bool = True,
+        enable_knowledge_graph: bool = True,
     ) -> None:
         self.enable_ai_analyst = enable_ai_analyst
         self.enable_attack_graph = enable_attack_graph
         self.enable_threat_intel = enable_threat_intel
+        self.enable_knowledge_graph = enable_knowledge_graph
 
     def analyze(
         self,
@@ -211,6 +222,8 @@ class IntelligencePipeline:
             result.enabled_engines.append("attack_graph")
         if self.enable_threat_intel:
             result.enabled_engines.append("threat_intel")
+        if self.enable_knowledge_graph:
+            result.enabled_engines.append("knowledge_graph")
 
         logger.info("Intelligence pipeline starting", extra={"engines": result.enabled_engines, "finding_count": len(findings)})
 
@@ -222,7 +235,7 @@ class IntelligencePipeline:
                 if d and "title" in d:
                     valid.append(d)
             except Exception:
-                pass
+                logger.debug("Skipping invalid finding during normalization", exc_info=True)
 
         if not valid:
             # No valid findings — return zeroed result immediately
@@ -311,7 +324,34 @@ class IntelligencePipeline:
                 result.errors.append("threat_intel: internal error")
 
         # ----------------------------------------------------------------
-        # 4. Composite score computation (only when engines are enabled)
+        # 4. Knowledge Graph
+        # ----------------------------------------------------------------
+        if self.enable_knowledge_graph:
+            try:
+                from reconpro.knowledge_graph import SecurityKnowledgeGraph
+
+                kg = SecurityKnowledgeGraph()
+                for f in valid:
+                    kg.add_finding(f)
+                kg_stats = kg.stats()
+                result.knowledge_graph = {
+                    "entity_count": kg_stats.get("total_nodes", 0),
+                    "relationship_count": kg_stats.get("total_edges", 0),
+                    "nodes_by_type": kg_stats.get("nodes_by_type", {}),
+                    "edges_by_type": kg_stats.get("edges_by_type", {}),
+                    "severity_distribution": kg_stats.get("severity_distribution", {}),
+                }
+                result.entity_count = kg_stats.get("total_nodes", 0)
+                result.relationship_count = kg_stats.get("total_edges", 0)
+                # Remove from enabled_engines if nothing was added
+                if not result.knowledge_graph.get("entity_count"):
+                    result.enabled_engines.remove("knowledge_graph")
+            except Exception as exc:
+                logger.exception("knowledge_graph engine failed")
+                result.errors.append("knowledge_graph: internal error")
+
+        # ----------------------------------------------------------------
+        # 5. Composite score computation (only when engines are enabled)
         # ----------------------------------------------------------------
         if result.enabled_engines:
             self._compute_composite_scores(result, valid)
@@ -417,6 +457,7 @@ def run_intelligence_pipeline(
     enable_ai_analyst: Optional[bool] = None,
     enable_attack_graph: Optional[bool] = None,
     enable_threat_intel: Optional[bool] = None,
+    enable_knowledge_graph: Optional[bool] = None,
     scan_data: Optional[Dict[str, Any]] = None,
 ) -> IntelligenceResult:
     """Run the global intelligence pipeline (creates one if needed).
@@ -437,6 +478,8 @@ def run_intelligence_pipeline(
         kwargs["enable_attack_graph"] = enable_attack_graph
     if enable_threat_intel is not None:
         kwargs["enable_threat_intel"] = enable_threat_intel
+    if enable_knowledge_graph is not None:
+        kwargs["enable_knowledge_graph"] = enable_knowledge_graph
 
     # If any override was given we need a temporary instance
     if len(kwargs) > 1:  # more than just scan_data
@@ -444,6 +487,7 @@ def run_intelligence_pipeline(
             enable_ai_analyst=kwargs.get("enable_ai_analyst", _global_pipeline.enable_ai_analyst),
             enable_attack_graph=kwargs.get("enable_attack_graph", _global_pipeline.enable_attack_graph),
             enable_threat_intel=kwargs.get("enable_threat_intel", _global_pipeline.enable_threat_intel),
+            enable_knowledge_graph=kwargs.get("enable_knowledge_graph", _global_pipeline.enable_knowledge_graph),
         )
         return tmp.analyze(findings, scan_data=scan_data)
 

@@ -118,6 +118,7 @@ class TestIntelligencePipelineEmpty(unittest.TestCase):
             enable_ai_analyst=False,
             enable_attack_graph=False,
             enable_threat_intel=False,
+            enable_knowledge_graph=False,
         )
         findings = [_make_finding()]
         result = p.analyze(findings)

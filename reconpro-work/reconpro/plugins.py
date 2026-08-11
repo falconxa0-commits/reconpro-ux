@@ -7,9 +7,8 @@ that returns a list of Finding objects.
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
-import os
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -25,7 +24,7 @@ def _ensure_plugin_dir() -> None:
         logger.warning("Could not create plugin directory %s: %s", PLUGIN_DIR, e)
 
 
-def discover_plugins() -> Dict[str, Dict[str, Any]]:
+def discover_plugins(use_sandbox: bool = True) -> Dict[str, Dict[str, Any]]:
     """Discover all plugins in the plugin directory."""
     _ensure_plugin_dir()
     plugins = {}
@@ -59,7 +58,8 @@ def discover_plugins() -> Dict[str, Dict[str, Any]]:
 
 
 def run_plugin(plugin_id: str, target: str, base_url: str = "",
-               timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
+               timeout: int = 8, verify_tls: bool = True,
+               use_sandbox: bool = True) -> List[Finding]:
     """Run a specific plugin."""
     plugins = discover_plugins()
     if plugin_id not in plugins:
@@ -72,9 +72,46 @@ def run_plugin(plugin_id: str, target: str, base_url: str = "",
         )]
 
     runner = plugins[plugin_id]["runner"]
-    try:
+
+    if use_sandbox:
+        try:
+            from .security_hardening import PluginSandbox
+            sandbox = PluginSandbox(cpu_time_seconds=float(timeout))
+            sb_result = sandbox.execute(runner, plugin_name=plugin_id,
+                                        target=target, base_url=base_url,
+                                        timeout=timeout, verify_tls=verify_tls)
+            if isinstance(sb_result, dict) and sb_result.get("success"):
+                result = sb_result["findings"]
+            else:
+                error_msg = (sb_result.get("error", "unknown sandbox error")
+                             if isinstance(sb_result, dict) else str(sb_result))
+                return [Finding(
+                    title=f"Plugin '{plugin_id}' sandbox error: {error_msg}",
+                    severity="low", category="plugin",
+                    module="plugin",
+                    description=error_msg,
+                    evidence="", asset=target, points_deducted=0,
+                )]
+        except ImportError:
+            logger.warning(
+                "PluginSandbox not available, falling back to unsandboxed"
+                " execution for '%s'", plugin_id,
+            )
+            result = runner(target=target, base_url=base_url,
+                            timeout=timeout, verify_tls=verify_tls)
+        except Exception as e:
+            return [Finding(
+                title=f"Plugin '{plugin_id}' sandbox error: {e}",
+                severity="low", category="plugin",
+                module="plugin",
+                description=str(e),
+                evidence="", asset=target, points_deducted=0,
+            )]
+    else:
         result = runner(target=target, base_url=base_url,
                         timeout=timeout, verify_tls=verify_tls)
+
+    try:
         if isinstance(result, list):
             _REQUIRED_KEYS = {"title", "severity", "category"}
             validated = [
@@ -134,10 +171,6 @@ def run(target: str, base_url: str = "", timeout: int = 8, verify_tls: bool = Tr
 # ═══════════════════════════════════════════════════════════════════════════
 # PLUGIN HOOK SYSTEM — Event hooks for extending ReconPro behavior
 # ═══════════════════════════════════════════════════════════════════════════
-
-from typing import Callable, Dict, List, Optional, Any
-import json
-import os
 
 _HOOK_REGISTRY: Dict[str, List[Callable]] = {}
 _PLUGIN_META: Dict[str, Dict[str, Any]] = {}
@@ -242,7 +275,7 @@ class HookManager:
                 with open(_PLUGIN_HOOKS_FILE, "r") as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
-                pass
+                logger.debug("Failed to load hooks metadata from %s", _PLUGIN_HOOKS_FILE, exc_info=True)
         return {}
 
 
@@ -283,7 +316,7 @@ def get_registered_plugins() -> Dict[str, Dict[str, Any]]:
     return dict(_PLUGIN_META)
 
 
-def load_all_plugins() -> Dict[str, Dict[str, Any]]:
+def load_all_plugins(use_sandbox: bool = True) -> Dict[str, Dict[str, Any]]:
     """Discover and load all plugins, registering their hooks."""
     plugins = discover_plugins()
     for plugin_id, plugin_info in plugins.items():

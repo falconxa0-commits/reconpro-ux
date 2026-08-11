@@ -1,0 +1,1364 @@
+     1→"""Comprehensive tests for reconpro.security_hardening.
+     2→
+     3→Tests all four components:
+     4→1. SecurityPolicyEngine — policy definition, enforcement, compliance
+     5→2. PluginSandbox — static analysis, execution wrapping, output validation
+     6→3. SecretsManager — extended secret scanning, file scanning, reporting
+     7→4. TamperEvidenceLogger — hash-chain integrity, statistics, querying
+     8→"""
+     9→
+    10→import json
+    11→import os
+    12→import sys
+    13→import tempfile
+    14→import unittest
+    15→
+    16→sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+    17→
+    18→from reconpro.security_hardening import (
+    19→    PluginSandbox,
+    20→    PluginSandbox as PluginSandboxCls,
+    21→    PolicyRule,
+    22→    SandboxViolation,
+    23→    SecurityPolicy,
+    24→    SecurityPolicyEngine,
+    25→    SecretsManager,
+    26→    TamperEvidenceLogger,
+    27→    ResourceLimitExceeded,
+    28→    _EXTENDED_SECRET_PATTERNS,
+    29→    _FORBIDDEN_BUILTINS,
+    30→    _FORBIDDEN_MODULES,
+    31→    create_hardened_engine,
+    32→)
+    33→
+    34→
+    35→# ══════════════════════════════════════════════════════════════════════════════
+    36→# 1. SECURITY POLICY ENGINE TESTS
+    37→# ══════════════════════════════════════════════════════════════════════════════
+    38→
+    39→
+    40→class TestPolicyRule(unittest.TestCase):
+    41→    """Tests for the PolicyRule class."""
+    42→
+    43→    def test_evaluate_enabled_rule_matching_condition(self):
+    44→        rule = PolicyRule(
+    45→            name="test_rule",
+    46→            description="Test",
+    47→            condition=lambda ctx: ctx.get("flag", False),
+    48→            action=lambda ctx: "deny" if ctx.get("dangerous") else "allow",
+    49→        )
+    50→        action, name = rule.evaluate({"flag": True, "dangerous": True})
+    51→        self.assertEqual(action, "deny")
+    52→        self.assertEqual(name, "test_rule")
+    53→
+    54→    def test_evaluate_enabled_rule_non_matching_condition(self):
+    55→        rule = PolicyRule(
+    56→            name="test_rule",
+    57→            description="Test",
+    58→            condition=lambda ctx: ctx.get("flag", False),
+    59→            action=lambda ctx: "deny",
+    60→        )
+    61→        action, name = rule.evaluate({"flag": False})
+    62→        self.assertEqual(action, "skip")
+    63→
+    64→    def test_evaluate_disabled_rule(self):
+    65→        rule = PolicyRule(
+    66→            name="test_rule",
+    67→            description="Test",
+    68→            condition=lambda ctx: True,
+    69→            action=lambda ctx: "deny",
+    70→            enabled=False,
+    71→        )
+    72→        action, name = rule.evaluate({})
+    73→        self.assertEqual(action, "skip")
+    74→
+    75→    def test_evaluate_rule_with_error(self):
+    76→        """A rule that raises an exception should return 'skip'."""
+    77→        rule = PolicyRule(
+    78→            name="error_rule",
+    79→            description="Test",
+    80→            condition=lambda ctx: 1 / 0,  # type: ignore[return-value]
+    81→            action=lambda ctx: "deny",
+    82→        )
+    83→        action, name = rule.evaluate({})
+    84→        self.assertEqual(action, "skip")
+    85→
+    86→    def test_to_dict(self):
+    87→        rule = PolicyRule(
+    88→            name="my_rule",
+    89→            description="A test rule",
+    90→            condition=lambda ctx: True,
+    91→            action=lambda ctx: "allow",
+    92→            severity="high",
+    93→        )
+    94→        d = rule.to_dict()
+    95→        self.assertEqual(d["name"], "my_rule")
+    96→        self.assertEqual(d["description"], "A test rule")
+    97→        self.assertEqual(d["severity"], "high")
+    98→        self.assertTrue(d["enabled"])
+    99→
+   100→
+   101→class TestSecurityPolicy(unittest.TestCase):
+   102→    """Tests for the SecurityPolicy class."""
+   103→
+   104→    def test_create_empty_policy(self):
+   105→        policy = SecurityPolicy(name="test")
+   106→        self.assertEqual(policy.name, "test")
+   107→        self.assertEqual(len(policy.rules), 0)
+   108→
+   109→    def test_add_and_evaluate_rules(self):
+   110→        policy = SecurityPolicy(name="test")
+   111→        policy.add_rule(PolicyRule(
+   112→            name="r1",
+   113→            description="Always deny",
+   114→            condition=lambda ctx: True,
+   115→            action=lambda ctx: "deny",
+   116→        ))
+   117→        policy.add_rule(PolicyRule(
+   118→            name="r2",
+   119→            description="Never matches",
+   120→            condition=lambda ctx: False,
+   121→            action=lambda ctx: "warn",
+   122→        ))
+   123→        results = policy.evaluate({})
+   124→        self.assertEqual(len(results), 1)
+   125→        self.assertEqual(results[0]["rule_name"], "r1")
+   126→        self.assertEqual(results[0]["action"], "deny")
+   127→
+   128→    def test_to_dict(self):
+   129→        policy = SecurityPolicy(name="test_policy", description="Test")
+   130→        policy.add_rule(PolicyRule(
+   131→            name="r1", description="R1",
+   132→            condition=lambda ctx: True,
+   133→            action=lambda ctx: "allow",
+   134→        ))
+   135→        d = policy.to_dict()
+   136→        self.assertEqual(d["name"], "test_policy")
+   137→        self.assertEqual(d["rule_count"], 1)
+   138→        self.assertIn("created_at", d)
+   139→
+   140→
+   141→class TestSecurityPolicyEngine(unittest.TestCase):
+   142→    """Tests for the SecurityPolicyEngine class."""
+   143→
+   144→    def setUp(self):
+   145→        self.engine = SecurityPolicyEngine()
+   146→
+   147→    def test_builtin_policies_created(self):
+   148→        """All five built-in policies must be created."""
+   149→        policies = self.engine.list_policies()
+   150→        self.assertIn("plugin_sandbox_policy", policies)
+   151→        self.assertIn("input_validation_policy", policies)
+   152→        self.assertIn("network_policy", policies)
+   153→        self.assertIn("data_retention_policy", policies)
+   154→        self.assertIn("secrets_policy", policies)
+   155→        self.assertEqual(len(policies), 5)
+   156→
+   157→    def test_define_custom_policy(self):
+   158→        policy = self.engine.define_policy(
+   159→            name="custom",
+   160→            rules=[PolicyRule(
+   161→                name="r1", description="R1",
+   162→                condition=lambda ctx: True,
+   163→                action=lambda ctx: "allow",
+   164→            )],
+   165→            description="Custom policy",
+   166→        )
+   167→        self.assertIsNotNone(policy)
+   168→        self.assertIn("custom", self.engine.list_policies())
+   169→
+   170→    def test_remove_policy(self):
+   171→        self.engine.define_policy(name="removable", description="")
+   172→        self.assertTrue(self.engine.remove_policy("removable"))
+   173→        self.assertNotIn("removable", self.engine.list_policies())
+   174→
+   175→    def test_remove_nonexistent_policy(self):
+   176→        self.assertFalse(self.engine.remove_policy("nonexistent"))
+   177→
+   178→    def test_get_policy(self):
+   179→        policy = self.engine.get_policy("plugin_sandbox_policy")
+   180→        self.assertIsNotNone(policy)
+   181→        self.assertEqual(policy.name, "plugin_sandbox_policy")
+   182→
+   183→    def test_enforce_nonexistent_policy(self):
+   184→        result = self.engine.enforce_policy("nonexistent", {})
+   185→        self.assertFalse(result["allowed"])
+   186→        self.assertIn("error", result)
+   187→
+   188→    def test_enforce_plugin_sandbox_allows_clean(self):
+   189→        """Clean plugin execution context should be allowed."""
+   190→        ctx = {
+   191→            "operation_type": "plugin_exec",
+   192→            "uses_dangerous_builtins": False,
+   193→            "accesses_filesystem": False,
+   194→            "calls_subprocess": False,
+   195→            "accesses_network": False,
+   196→            "exceeded_memory_limit": False,
+   197→            "exceeded_cpu_limit": False,
+   198→        }
+   199→        result = self.engine.enforce_policy("plugin_sandbox_policy", ctx)
+   200→        self.assertTrue(result["allowed"])
+   201→        self.assertEqual(len(result["denied_by"]), 0)
+   202→
+   203→    def test_enforce_plugin_sandbox_denies_eval(self):
+   204→        """Plugin using dangerous builtins should be denied."""
+   205→        ctx = {
+   206→            "operation_type": "plugin_exec",
+   207→            "uses_dangerous_builtins": True,
+   208→            "accesses_filesystem": False,
+   209→            "calls_subprocess": False,
+   210→            "accesses_network": False,
+   211→        }
+   212→        result = self.engine.enforce_policy("plugin_sandbox_policy", ctx)
+   213→        self.assertFalse(result["allowed"])
+   214→        self.assertIn("no_dangerous_builtins", result["denied_by"])
+   215→
+   216→    def test_enforce_plugin_sandbox_denies_subprocess(self):
+   217→        """Plugin calling subprocess should be denied."""
+   218→        ctx = {
+   219→            "operation_type": "plugin_exec",
+   220→            "uses_dangerous_builtins": False,
+   221→            "accesses_filesystem": False,
+   222→            "calls_subprocess": True,
+   223→            "accesses_network": False,
+   224→        }
+   225→        result = self.engine.enforce_policy("plugin_sandbox_policy", ctx)
+   226→        self.assertFalse(result["allowed"])
+   227→        self.assertIn("no_subprocess_calls", result["denied_by"])
+   228→
+   229→    def test_enforce_input_validation_denies_null(self):
+   230→        """Input with null bytes should be denied."""
+   231→        ctx = {
+   232→            "contains_null_bytes": True,
+   233→        }
+   234→        result = self.engine.enforce_policy("input_validation_policy", ctx)
+   235→        self.assertFalse(result["allowed"])
+   236→        self.assertIn("no_null_bytes", result["denied_by"])
+   237→
+   238→    def test_enforce_input_validation_warns_control(self):
+   239→        """Input with control chars should produce a warning."""
+   240→        ctx = {
+   241→            "contains_control_chars": True,
+   242→            "contains_null_bytes": False,
+   243→            "has_target": False,
+   244→            "input_type": "text",
+   245→        }
+   246→        result = self.engine.enforce_policy("input_validation_policy", ctx)
+   247→        self.assertTrue(result["allowed"])
+   248→        self.assertIn("no_control_chars", result["warnings"])
+   249→
+   250→    def test_enforce_network_policy_denies_private_without_flag(self):
+   251→        """Scanning private targets without explicit flag should be denied."""
+   252→        ctx = {
+   253→            "is_private_target": True,
+   254→            "private_scan_explicitly_allowed": False,
+   255→        }
+   256→        result = self.engine.enforce_policy("network_policy", ctx)
+   257→        self.assertFalse(result["allowed"])
+   258→        self.assertIn("no_private_network_scans", result["denied_by"])
+   259→
+   260→    def test_enforce_network_policy_allows_private_with_flag(self):
+   261→        """Scanning private targets with explicit flag should be allowed."""
+   262→        ctx = {
+   263→            "is_private_target": True,
+   264→            "private_scan_explicitly_allowed": True,
+   265→            "makes_http_requests": True,
+   266→            "rate_limit_active": True,
+   267→            "timeout_configured": True,
+   268→            "tls_verify_enabled": True,
+   269→        }
+   270→        result = self.engine.enforce_policy("network_policy", ctx)
+   271→        self.assertTrue(result["allowed"])
+   272→
+   273→    def test_enforce_secrets_policy_denies_hardcoded(self):
+   274→        """Hardcoded secrets should be denied."""
+   275→        ctx = {
+   276→            "scans_for_secrets": True,
+   277→            "hardcoded_secrets_found": True,
+   278→        }
+   279→        result = self.engine.enforce_policy("secrets_policy", ctx)
+   280→        self.assertFalse(result["allowed"])
+   281→        self.assertIn("no_hardcoded_secrets", result["denied_by"])
+   282→
+   283→    def test_enforce_data_retention_denies_secrets_in_logs(self):
+   284→        """Secrets in logs should be denied."""
+   285→        ctx = {
+   286→            "secrets_in_logs": True,
+   287→        }
+   288→        result = self.engine.enforce_policy("data_retention_policy", ctx)
+   289→        self.assertFalse(result["allowed"])
+   290→        self.assertIn("no_secrets_in_logs", result["denied_by"])
+   291→
+   292→    def test_enforce_all(self):
+   293→        """enforce_all checks all policies."""
+   294→        ctx = {
+   295→            "operation_type": "plugin_exec",
+   296→            "uses_dangerous_builtins": True,
+   297→            "contains_null_bytes": False,
+   298→            "contains_control_chars": False,
+   299→        }
+   300→        result = self.engine.enforce_all(ctx)
+   301→        self.assertFalse(result["allowed"])
+   302→        self.assertIn("plugin_sandbox_policy", result["policy_results"])
+   303→        self.assertIn("input_validation_policy", result["policy_results"])
+   304→
+   305→    def test_evaluate_compliance_default(self):
+   306→        """Default components should all be compliant."""
+   307→        report = self.engine.evaluate_compliance()
+   308→        self.assertTrue(report["compliant"])
+   309→        self.assertGreater(report["total_checks"], 0)
+   310→        self.assertEqual(report["failed"], 0)
+   311→        self.assertIn("details", report)
+   312→
+   313→    def test_evaluate_compliance_with_non_compliant(self):
+   314→        """Custom components with violations should fail compliance."""
+   315→        components = {
+   316→            "bad_scanner": {
+   317→                "operation_type": "scan",
+   318→                "has_target": True,
+   319→                "target_sanitized": False,
+   320→                "contains_null_bytes": True,
+   321→                "contains_control_chars": True,
+   322→                "makes_http_requests": True,
+   323→                "rate_limit_active": False,
+   324→                "timeout_configured": False,
+   325→                "tls_verify_enabled": False,
+   326→                "produces_output": True,
+   327→                "output_secret_scan_enabled": True,
+   328→                "has_urls": True,
+   329→                "credentials_in_urls": True,
+   330→                "private_keys_in_output": True,
+   331→                "has_audit_log": True,
+   332→                "log_rotation_configured": False,
+   333→                "generates_reports": True,
+   334→                "data_minimization_enabled": False,
+   335→                "creates_temp_files": True,
+   336→                "temp_cleanup_enabled": False,
+   337→                "secrets_in_logs": True,
+   338→                "scans_for_secrets": True,
+   339→                "hardcoded_secrets_found": True,
+   340→            },
+   341→        }
+   342→        report = self.engine.evaluate_compliance(components)
+   343→        self.assertFalse(report["compliant"])
+   344→        self.assertGreater(report["failed"], 0)
+   345→
+   346→    def test_get_policy_report(self):
+   347→        """Policy report should contain all expected keys."""
+   348→        report = self.engine.get_policy_report()
+   349→        self.assertIn("policies", report)
+   350→        self.assertIn("compliance", report)
+   351→        self.assertIn("summary", report)
+   352→        self.assertIn("generated_at", report)
+   353→        self.assertGreater(len(report["policies"]), 0)
+   354→
+   355→    def test_compliance_cache_invalidation(self):
+   356→        """Defining a new policy should invalidate compliance cache."""
+   357→        self.engine.evaluate_compliance()
+   358→        self.engine.define_policy(
+   359→            name="cache_test",
+   360→            rules=[PolicyRule(
+   361→                name="r1", description="R1",
+   362→                condition=lambda ctx: True,
+   363→                action=lambda ctx: "allow",
+   364→            )],
+   365→        )
+   366→        # The next evaluate_compliance should include the new policy
+   367→        report = self.engine.evaluate_compliance()
+   368→        # cache_test should appear in details
+   369→        policy_names = set(d["policy"] for d in report["details"])
+   370→        self.assertIn("cache_test", policy_names)
+   371→
+   372→
+   373→# ══════════════════════════════════════════════════════════════════════════════
+   374→# 2. PLUGIN SANDBOX TESTS
+   375→# ══════════════════════════════════════════════════════════════════════════════
+   376→
+   377→
+   378→def _safe_plugin(target: str = "", base_url: str = "", timeout: int = 8, verify_tls: bool = True) -> list:
+   379→    """A well-behaved plugin that returns valid findings."""
+   380→    return [{
+   381→        "title": "Test Finding",
+   382→        "severity": "low",
+   383→        "category": "test",
+   384→        "module": "test_plugin",
+   385→        "description": "A test finding",
+   386→        "evidence": "evidence",
+   387→        "asset": target or "unknown",
+   388→        "points_deducted": 0,
+   389→    }]
+   390→
+   391→
+   392→def _multi_plugin(target: str = "", **kwargs) -> list:
+   393→    """Returns multiple findings."""
+   394→    return [
+   395→        {"title": f"F{i}", "severity": "info", "category": "c",
+   396→         "module": "m", "description": "d", "evidence": "e",
+   397→         "asset": target, "points_deducted": 0}
+   398→        for i in range(5)
+   399→    ]
+   400→
+   401→
+   402→def _bad_return_type(target: str = "") -> str:
+   403→    """Returns wrong type."""
+   404→    return "not a list"
+   405→
+   406→
+   407→def _missing_keys_plugin(target: str = "") -> list:
+   408→    """Returns dicts missing required keys."""
+   409→    return [{"title": "Missing keys"}]
+   410→
+   411→
+   412→def _empty_plugin(target: str = "") -> list:
+   413→    """Returns empty list."""
+   414→    return []
+   415→
+   416→
+   417→class TestPluginSandboxStaticAnalysis(unittest.TestCase):
+   418→    """Tests for PluginSandbox.check_code_for_violations()."""
+   419→
+   420→    def test_clean_code_no_violations(self):
+   421→        code = """
+   422→import json
+   423→import re
+   424→
+   425→def run(target, base_url="", timeout=8, verify_tls=True):
+   426→    result = json.loads('{"status": "ok"}')
+   427→    return [{"title": "OK", "severity": "info", "category": "test"}]
+   428→"""
+   429→        violations = PluginSandbox.check_code_for_violations(code)
+   430→        # json and re are not in forbidden modules
+   431→        self.assertEqual(len(violations), 0)
+   432→
+   433→    def test_detects_eval(self):
+   434→        code = 'result = eval("1+1")\n'
+   435→        violations = PluginSandbox.check_code_for_violations(code)
+   436→        types = [v["type"] for v in violations]
+   437→        self.assertIn("forbidden_builtin", types)
+   438→        self.assertIn("eval", [v["match"] for v in violations])
+   439→
+   440→    def test_detects_exec(self):
+   441→        code = 'exec("print(1)")\n'
+   442→        violations = PluginSandbox.check_code_for_violations(code)
+   443→        matches = [v["match"] for v in violations]
+   444→        self.assertIn("exec", matches)
+   445→
+   446→    def test_detects_compile(self):
+   447→        code = 'code = compile("print(1)", "<string>", "exec")\n'
+   448→        violations = PluginSandbox.check_code_for_violations(code)
+   449→        matches = [v["match"] for v in violations]
+   450→        self.assertIn("compile", matches)
+   451→
+   452→    def test_detects_open(self):
+   453→        code = 'f = open("/etc/passwd")\n'
+   454→        violations = PluginSandbox.check_code_for_violations(code)
+   455→        matches = [v["match"] for v in violations]
+   456→        self.assertIn("open", matches)
+   457→
+   458→    def test_detects_os_import(self):
+   459→        code = 'import os\n'
+   460→        violations = PluginSandbox.check_code_for_violations(code)
+   461→        types = [v["type"] for v in violations]
+   462→        self.assertIn("forbidden_module", types)
+   463→        matches = [v["match"] for v in violations]
+   464→        self.assertIn("os", matches)
+   465→
+   466→    def test_detects_subprocess_import(self):
+   467→        code = 'import subprocess\n'
+   468→        violations = PluginSandbox.check_code_for_violations(code)
+   469→        matches = [v["match"] for v in violations]
+   470→        self.assertIn("subprocess", matches)
+   471→
+   472→    def test_detects_from_os_import(self):
+   473→        code = 'from os import system\n'
+   474→        violations = PluginSandbox.check_code_for_violations(code)
+   475→        matches = [v["match"] for v in violations]
+   476→        self.assertIn("os", matches)
+   477→
+   478→    def test_detects_os_system(self):
+   479→        code = 'import os  # forbidden\nos.system("id")\n'
+   480→        violations = PluginSandbox.check_code_for_violations(code)
+   481→        types = [v["type"] for v in violations]
+   482→        self.assertIn("dangerous_pattern", types)
+   483→        self.assertIn("forbidden_module", types)
+   484→
+   485→    def test_detects_subprocess_call(self):
+   486→        code = 'import subprocess\nsubprocess.call(["ls"])\n'
+   487→        violations = PluginSandbox.check_code_for_violations(code)
+   488→        types = [v["type"] for v in violations]
+   489→        self.assertIn("dangerous_pattern", types)
+   490→
+   491→    def test_skips_comments(self):
+   492→        code = '# eval is dangerous\n# import os\nresult = []\n'
+   493→        violations = PluginSandbox.check_code_for_violations(code)
+   494→        self.assertEqual(len(violations), 0)
+   495→
+   496→    def test_skips_strings_containing_keywords(self):
+   497→        code = 'desc = "This code uses eval and exec for testing"\n'
+   498→        violations = PluginSandbox.check_code_for_violations(code)
+   499→        # Should not flag because they're inside string literals
+   500→        eval_violations = [v for v in violations if v["match"] == "eval"]
+   501→        self.assertEqual(len(eval_violations), 0)
+   502→
+   503→    def test_multiple_violations(self):
+   504→        code = '''import os
+   505→import subprocess
+   506→eval("1")
+   507→open("/etc/passwd")
+   508→os.system("id")
+   509→'''
+   510→        violations = PluginSandbox.check_code_for_violations(code)
+   511→        self.assertGreater(len(violations), 4)
+   512→
+   513→    def test_forbidden_builtins_set_completeness(self):
+   514→        """Verify all expected dangerous builtins are in the set."""
+   515→        self.assertIn("eval", _FORBIDDEN_BUILTINS)
+   516→        self.assertIn("exec", _FORBIDDEN_BUILTINS)
+   517→        self.assertIn("compile", _FORBIDDEN_BUILTINS)
+   518→        self.assertIn("open", _FORBIDDEN_BUILTINS)
+   519→        self.assertIn("__import__", _FORBIDDEN_BUILTINS)
+   520→        self.assertIn("input", _FORBIDDEN_BUILTINS)
+   521→
+   522→    def test_forbidden_modules_completeness(self):
+   523→        """Verify critical dangerous modules are forbidden."""
+   524→        for mod in ["os", "sys", "subprocess", "shutil", "importlib",
+   525→                    "ctypes", "socket", "signal", "pathlib"]:
+   526→            self.assertIn(mod, _FORBIDDEN_MODULES, f"{mod} should be forbidden")
+   527→
+   528→
+   529→class TestPluginSandboxExecution(unittest.TestCase):
+   530→    """Tests for PluginSandbox.execute()."""
+   531→
+   532→    def setUp(self):
+   533→        self.sandbox = PluginSandbox()
+   534→
+   535→    def test_execute_clean_plugin(self):
+   536→        result = self.sandbox.execute(
+   537→            _safe_plugin,
+   538→            plugin_name="safe_plugin",
+   539→            target="example.com",
+   540→            base_url="https://example.com",
+   541→        )
+   542→        self.assertTrue(result["success"])
+   543→        self.assertEqual(len(result["findings"]), 1)
+   544→        self.assertEqual(result["findings"][0]["title"], "Test Finding")
+   545→        self.assertGreater(result["execution_time"], 0)
+   546→
+   547→    def test_execute_multi_findings(self):
+   548→        result = self.sandbox.execute(
+   549→            _multi_plugin,
+   550→            plugin_name="multi_plugin",
+   551→            target="example.com",
+   552→        )
+   553→        self.assertTrue(result["success"])
+   554→        self.assertEqual(len(result["findings"]), 5)
+   555→
+   556→    def test_execute_empty_findings(self):
+   557→        result = self.sandbox.execute(
+   558→            _empty_plugin,
+   559→            plugin_name="empty_plugin",
+   560→        )
+   561→        self.assertTrue(result["success"])
+   562→        self.assertEqual(len(result["findings"]), 0)
+   563→
+   564→    def test_rejects_non_list_return(self):
+   565→        result = self.sandbox.execute(
+   566→            _bad_return_type,
+   567→            plugin_name="bad_type_plugin",
+   568→        )
+   569→        self.assertFalse(result["success"])
+   570→        self.assertIn("list", result["error"])
+   571→
+   572→    def test_rejects_missing_keys(self):
+   573→        result = self.sandbox.execute(
+   574→            _missing_keys_plugin,
+   575→            plugin_name="missing_keys_plugin",
+   576→        )
+   577→        self.assertFalse(result["success"])
+   578→        self.assertIn("missing required keys", result["error"])
+   579→
+   580→    def test_operation_log_populated(self):
+   581→        self.sandbox.clear_operation_log()
+   582→        self.sandbox.execute(_safe_plugin, plugin_name="test")
+   583→        log = self.sandbox.get_operation_log()
+   584→        self.assertGreater(len(log), 0)
+   585→        ops = [e["operation"] for e in log]
+   586→        self.assertIn("sandbox_enter", ops)
+   587→        self.assertIn("sandbox_exit", ops)
+   588→        self.assertIn("plugin_execute_start", ops)
+   589→        self.assertIn("plugin_execute_end", ops)
+   590→        self.assertIn("output_validated", ops)
+   591→
+   592→    def test_clear_operation_log(self):
+   593→        self.sandbox.execute(_safe_plugin, plugin_name="test")
+   594→        self.sandbox.clear_operation_log()
+   595→        self.assertEqual(len(self.sandbox.get_operation_log()), 0)
+   596→
+   597→    def test_execute_with_wrong_args(self):
+   598→        """Plugin called with wrong keyword args should fail."""
+   599→        def needs_foo(foo: str = "") -> list:
+   600→            return [{"title": "F", "severity": "info", "category": "c"}]
+   601→        result = self.sandbox.execute(
+   602→            needs_foo,
+   603→            plugin_name="needs_foo",
+   604→            target="example.com",  # wrong arg name
+   605→        )
+   606→        self.assertFalse(result["success"])
+   607→        self.assertIn("Plugin call failed", result["error"])
+   608→
+   609→    def test_output_size_limit(self):
+   610→        """Plugin output exceeding max_output_size should fail."""
+   611→        huge_data = [{"title": f"F{i}", "severity": "info", "category": "c",
+   612→                      "module": "m", "description": "d" * 5000, "evidence": "e",
+   613→                      "asset": "a", "points_deducted": 0}
+   614→                     for i in range(200)]
+   615→        def huge_plugin(target: str = "") -> list:
+   616→            return huge_data
+   617→        sandbox = PluginSandbox(max_output_size=100)
+   618→        result = sandbox.execute(huge_plugin, plugin_name="huge")
+   619→        self.assertFalse(result["success"])
+   620→        self.assertIn("Resource limit exceeded", result["error"])
+   621→
+   622→
+   623→class TestSandboxViolations(unittest.TestCase):
+   624→    """Tests for sandbox exception classes."""
+   625→
+   626→    def test_sandbox_violation(self):
+   627→        exc = SandboxViolation("eval", "Forbidden builtin")
+   628→        self.assertEqual(exc.operation, "eval")
+   629→        self.assertEqual(exc.reason, "Forbidden builtin")
+   630→        self.assertIn("eval", str(exc))
+   631→
+   632→    def test_resource_limit_exceeded(self):
+   633→        exc = ResourceLimitExceeded("memory", 67108864, 134217728)
+   634→        self.assertEqual(exc.resource, "memory")
+   635→        self.assertEqual(exc.limit, 67108864)
+   636→        self.assertEqual(exc.actual, 134217728)
+   637→        self.assertIn("memory", str(exc))
+   638→
+   639→
+   640→# ══════════════════════════════════════════════════════════════════════════════
+   641→# 3. SECRETS MANAGER TESTS
+   642→# ══════════════════════════════════════════════════════════════════════════════
+   643→
+   644→
+   645→class TestSecretsManagerCoreDetection(unittest.TestCase):
+   646→    """Tests for core secret detection (delegated to security.py)."""
+   647→
+   648→    def setUp(self):
+   649→        self.sm = SecretsManager()
+   650→
+   651→    def test_aws_key_detected(self):
+   652→        content = "AWS_KEY=AKIAIOSFODNN7EXAMPLE"
+   653→        results = self.sm.scan_for_secrets(content)
+   654→        types = [r["secret_type"] for r in results]
+   655→        self.assertIn("aws_key", types)
+   656→
+   657→    def test_github_token_detected(self):
+   658→        content = "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"
+   659→        results = self.sm.scan_for_secrets(content)
+   660→        types = [r["secret_type"] for r in results]
+   661→        self.assertIn("github_token", types)
+   662→
+   663→    def test_private_key_detected(self):
+   664→        content = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQ\n-----END RSA PRIVATE KEY-----"
+   665→        results = self.sm.scan_for_secrets(content)
+   666→        types = [r["secret_type"] for r in results]
+   667→        self.assertIn("private_key_rsa", types)
+   668→
+   669→    def test_empty_content(self):
+   670→        results = self.sm.scan_for_secrets("")
+   671→        self.assertEqual(len(results), 0)
+   672→
+   673→    def test_clean_content(self):
+   674→        results = self.sm.scan_for_secrets("Hello, this is a clean string with no secrets.")
+   675→        self.assertEqual(len(results), 0)
+   676→
+   677→    def test_jwt_detected(self):
+   678→        content = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+   679→        results = self.sm.scan_for_secrets(content)
+   680→        types = [r["secret_type"] for r in results]
+   681→        self.assertIn("jwt_token", types)
+   682→
+   683→
+   684→class TestSecretsManagerExtendedDetection(unittest.TestCase):
+   685→    """Tests for extended secret patterns."""
+   686→
+   687→    def setUp(self):
+   688→        self.sm = SecretsManager()
+   689→
+   690→    def test_slack_token_detected(self):
+   691→        content = "SLACK_TOKEN=xoxb-123456789012-aBcDeFgHiJkLmNoPqRsTuVwXyZ"
+   692→        results = self.sm.scan_for_secrets(content)
+   693→        types = [r["secret_type"] for r in results]
+   694→        self.assertIn("slack_token", types)
+   695→
+   696→    def test_google_api_key(self):
+   697→        content = "GOOGLE_KEY=AIzaSyA1234567890abcdefghijklmnopqrstuv"
+   698→        results = self.sm.scan_for_secrets(content)
+   699→        types = [r["secret_type"] for r in results]
+   700→        self.assertIn("google_api_key", types)
+   701→
+   702→    def test_stripe_secret_key(self):
+   703→        content = "STRIPE_KEY=sk_live_abcdefghijklmnopqrstuvwxyzabcd"
+   704→        results = self.sm.scan_for_secrets(content)
+   705→        types = [r["secret_type"] for r in results]
+   706→        self.assertIn("stripe_secret_key", types)
+   707→        severities = [r["severity"] for r in results if r["secret_type"] == "stripe_secret_key"]
+   708→        self.assertEqual(severities[0], "critical")
+   709→
+   710→    def test_sendgrid_api_key(self):
+   711→        content = "SG.abcdefghijklmnopqrstuvwxabcdefghijklmnopqrstuvwx.abcdefghijklmnopqrstuvwxabcdefghijklmnopqrstuvwx"
+   712→        results = self.sm.scan_for_secrets(content)
+   713→        types = [r["secret_type"] for r in results]
+   714→        self.assertIn("sendgrid_api_key", types)
+   715→
+   716→    def test_npm_token(self):
+   717→        content = "NPM_TOKEN=npm_abcdefghijklmnopqrstuvwxyz0123456789"
+   718→        results = self.sm.scan_for_secrets(content)
+   719→        types = [r["secret_type"] for r in results]
+   720→        self.assertIn("npm_token", types)
+   721→
+   722→    def test_ssh_openssh_private_key(self):
+   723→        content = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END OPENSSH PRIVATE KEY-----"
+   724→        results = self.sm.scan_for_secrets(content)
+   725→        types = [r["secret_type"] for r in results]
+   726→        self.assertIn("ssh_private_key", types)
+   727→        severities = [r["severity"] for r in results if r["secret_type"] == "ssh_private_key"]
+   728→        self.assertEqual(severities[0], "critical")
+   729→
+   730→    def test_pgp_private_key(self):
+   731→        content = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc\n-----END PGP PRIVATE KEY BLOCK-----"
+   732→        results = self.sm.scan_for_secrets(content)
+   733→        types = [r["secret_type"] for r in results]
+   734→        self.assertIn("pgp_private_key", types)
+   735→
+   736→    def test_pem_certificate(self):
+   737→        content = "-----BEGIN CERTIFICATE-----\nMIIBxjCCAW2gAwIBAgIJALmVV\n-----END CERTIFICATE-----"
+   738→        results = self.sm.scan_for_secrets(content)
+   739→        types = [r["secret_type"] for r in results]
+   740→        self.assertIn("pem_certificate", types)
+   741→
+   742→    def test_authorization_header(self):
+   743→        content = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc.def"
+   744→        results = self.sm.scan_for_secrets(content)
+   745→        types = [r["secret_type"] for r in results]
+   746→        self.assertIn("authorization_header", types)
+   747→
+   748→    def test_env_secret_aws(self):
+   749→        content = "export AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyzabcd"
+   750→        results = self.sm.scan_for_secrets(content)
+   751→        types = [r["secret_type"] for r in results]
+   752→        self.assertIn("env_secret", types)
+   753→
+   754→    def test_redaction_of_critical_secrets(self):
+   755→        """Critical secrets should be redacted in output."""
+   756→        content = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQ\n-----END RSA PRIVATE KEY-----"
+   757→        results = self.sm.scan_for_secrets(content)
+   758→        for r in results:
+   759→            if r["severity"] in ("critical", "high"):
+   760→                self.assertIn("REDACTED", r["match"])
+   761→
+   762→    def test_medium_secrets_not_redacted(self):
+   763→        """Medium severity secrets should NOT be redacted."""
+   764→        content = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456ghi789"
+   765→        results = self.sm.scan_for_secrets(content)
+   766→        for r in results:
+   767→            if r["severity"] == "medium":
+   768→                self.assertNotIn("REDACTED", r["match"])
+   769→
+   770→    def test_source_tracking(self):
+   771→        """Source parameter should be preserved in results."""
+   772→        results = self.sm.scan_for_secrets("AKIAIOSFODNN7EXAMPLE", source="my_file.py")
+   773→        for r in results:
+   774→            self.assertEqual(r["source"], "my_file.py")
+   775→
+   776→    def test_detector_field(self):
+   777→        """Core patterns should be labeled 'core', extended as 'extended'."""
+   778→        content = "AKIAIOSFODNN7EXAMPLE\nSG.abc123def45678901234567890.abc123def45678901234567890"
+   779→        results = self.sm.scan_for_secrets(content)
+   780→        detectors = set(r["detector"] for r in results)
+   781→        self.assertIn("core", detectors)
+   782→        self.assertIn("extended", detectors)
+   783→
+   784→
+   785→class TestSecretsManagerFileScanning(unittest.TestCase):
+   786→    """Tests for SecretsManager file and directory scanning."""
+   787→
+   788→    def setUp(self):
+   789→        self.sm = SecretsManager()
+   790→        self.tmpdir = tempfile.mkdtemp()
+   791→
+   792→    def tearDown(self):
+   793→        import shutil
+   794→        shutil.rmtree(self.tmpdir, ignore_errors=True)
+   795→
+   796→    def _write_file(self, name: str, content: str) -> str:
+   797→        path = os.path.join(self.tmpdir, name)
+   798→        with open(path, "w") as f:
+   799→            f.write(content)
+   800→        return path
+   801→
+   802→    def test_scan_file_with_secrets(self):
+   803→        path = self._write_file("config.py", "API_KEY=AKIAIOSFODNN7EXAMPLE")
+   804→        results = self.sm.scan_file(path)
+   805→        types = [r["secret_type"] for r in results]
+   806→        self.assertIn("aws_key", types)
+   807→
+   808→    def test_scan_file_without_secrets(self):
+   809→        path = self._write_file("clean.py", "x = 42\nprint(x)")
+   810→        results = self.sm.scan_file(path)
+   811→        self.assertEqual(len(results), 0)
+   812→
+   813→    def test_scan_nonexistent_file(self):
+   814→        results = self.sm.scan_file("/nonexistent/path/file.txt")
+   815→        self.assertEqual(len(results), 0)
+   816→
+   817→    def test_scan_directory(self):
+   818→        self._write_file("a.py", "AWS_KEY=AKIAIOSFODNN7EXAMPLE")
+   819→        self._write_file("b.py", "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij")
+   820→        self._write_file("clean.txt", "no secrets here")
+   821→        results = self.sm.scan_directory(self.tmpdir)
+   822→        types = [r["secret_type"] for r in results]
+   823→        self.assertIn("aws_key", types)
+   824→        self.assertIn("github_token", types)
+   825→
+   826→    def test_scan_directory_with_extension_filter(self):
+   827→        self._write_file("secrets.py", "AKIAIOSFODNN7EXAMPLE")
+   828→        self._write_file("secrets.js", "AKIAIOSFODNN7EXAMPLE")
+   829→        results = self.sm.scan_directory(self.tmpdir, extensions={".py"})
+   830→        # Should only find secrets in .py files
+   831→        sources = set(r["source"] for r in results)
+   832→        for src in sources:
+   833→            self.assertTrue(src.endswith(".py"))
+   834→
+   835→    def test_scan_directory_skips_hidden_files(self):
+   836→        self._write_file(".env", "AKIAIOSFODNN7EXAMPLE")
+   837→        results = self.sm.scan_directory(self.tmpdir)
+   838→        # Hidden files should be skipped
+   839→        types = [r["secret_type"] for r in results]
+   840→        self.assertNotIn("aws_key", types)
+   841→
+   842→    def test_scan_directory_max_files(self):
+   843→        for i in range(10):
+   844→            self._write_file(f"f{i}.py", "AKIAIOSFODNN7EXAMPLE")
+   845→        results = self.sm.scan_directory(self.tmpdir, max_files=3)
+   846→        # Should scan at most 3 files
+   847→        self.assertLessEqual(len(results), 3)
+   848→
+   849→
+   850→class TestSecretsManagerReport(unittest.TestCase):
+   851→    """Tests for SecretsManager.get_report()."""
+   852→
+   853→    def setUp(self):
+   854→        self.sm = SecretsManager()
+   855→
+   856→    def test_empty_report(self):
+   857→        report = self.sm.get_report()
+   858→        self.assertEqual(report["total_findings"], 0)
+   859→        self.assertEqual(report["by_severity"], {})
+   860→        self.assertEqual(report["by_type"], {})
+   861→
+   862→    def test_report_after_scan(self):
+   863→        self.sm.scan_for_secrets("AKIAIOSFODNN7EXAMPLE", source="test")
+   864→        report = self.sm.get_report()
+   865→        self.assertGreater(report["total_findings"], 0)
+   866→        self.assertIn("high", report["by_severity"])
+   867→        self.assertIn("aws_key", report["by_type"])
+   868→
+   869→    def test_report_includes_stats(self):
+   870→        self.sm.scan_for_secrets("AKIAIOSFODNN7EXAMPLE")
+   871→        report = self.sm.get_report()
+   872→        self.assertIn("scan_stats", report)
+   873→        self.assertEqual(report["scan_stats"]["content_scans"], 1)
+   874→
+   875→    def test_report_critical_findings(self):
+   876→        self.sm.scan_for_secrets("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
+   877→        report = self.sm.get_report()
+   878→        self.assertGreater(len(report["critical_findings"]), 0)
+   879→
+   880→    def test_clear_findings(self):
+   881→        self.sm.scan_for_secrets("AKIAIOSFODNN7EXAMPLE")
+   882→        self.sm.clear_findings()
+   883→        report = self.sm.get_report()
+   884→        self.assertEqual(report["total_findings"], 0)
+   885→        self.assertEqual(report["scan_stats"]["content_scans"], 0)
+   886→
+   887→    def test_report_has_generated_at(self):
+   888→        self.sm.scan_for_secrets("AKIAIOSFODNN7EXAMPLE")
+   889→        report = self.sm.get_report()
+   890→        self.assertIn("generated_at", report)
+   891→
+   892→
+   893→class TestSecretsManagerRedaction(unittest.TestCase):
+   894→    """Tests for the redaction logic."""
+   895→
+   896→    def test_redact_critical_long(self):
+   897→        result = SecretsManager._redact_match("AKIAIOSFODNN7EXAMPLE", "critical")
+   898→        self.assertEqual(result, "AKIA***REDACTED***MPLE")
+   899→
+   900→    def test_redact_critical_short(self):
+   901→        result = SecretsManager._redact_match("short", "critical")
+   902→        self.assertEqual(result, "***REDACTED***")
+   903→
+   904→    def test_redact_high(self):
+   905→        result = SecretsManager._redact_match("some-long-api-key-value-here", "high")
+   906→        self.assertEqual(result, "some***REDACTED***here")
+   907→
+   908→    def test_no_redact_medium(self):
+   909→        original = "some-medium-key-value"
+   910→        result = SecretsManager._redact_match(original, "medium")
+   911→        self.assertEqual(result, original)
+   912→
+   913→    def test_no_redact_low(self):
+   914→        original = "some-low-value"
+   915→        result = SecretsManager._redact_match(original, "low")
+   916→        self.assertEqual(result, original)
+   917→
+   918→
+   919→# ══════════════════════════════════════════════════════════════════════════════
+   920→# 4. TAMPER-EVIDENT LOGGER TESTS
+   921→# ══════════════════════════════════════════════════════════════════════════════
+   922→
+   923→
+   924→class TestTamperEvidenceLoggerBasic(unittest.TestCase):
+   925→    """Basic tests for TamperEvidenceLogger."""
+   926→
+   927→    def setUp(self):
+   928→        self.tmpdir = tempfile.mkdtemp()
+   929→        chain_file = os.path.join(self.tmpdir, "test_chain.log")
+   930→        self.logger = TamperEvidenceLogger(
+   931→            log_dir=self.tmpdir,
+   932→            chain_file=chain_file,
+   933→        )
+   934→
+   935→    def tearDown(self):
+   936→        import shutil
+   937→        shutil.rmtree(self.tmpdir, ignore_errors=True)
+   938→
+   939→    def test_log_entry_has_required_fields(self):
+   940→        entry = self.logger.log("INFO", "TEST_EVENT", target="example.com")
+   941→        self.assertIn("sequence", entry)
+   942→        self.assertIn("timestamp", entry)
+   943→        self.assertIn("level", entry)
+   944→        self.assertIn("event_type", entry)
+   945→        self.assertIn("module", entry)
+   946→        self.assertIn("target", entry)
+   947→        self.assertIn("details", entry)
+   948→        self.assertIn("previous_hash", entry)
+   949→        self.assertIn("entry_hash", entry)
+   950→
+   951→    def test_sequence_increments(self):
+   952→        e1 = self.logger.log("INFO", "E1")
+   953→        e2 = self.logger.log("INFO", "E2")
+   954→        self.assertEqual(e1["sequence"], 1)
+   955→        self.assertEqual(e2["sequence"], 2)
+   956→
+   957→    def test_genesis_seed(self):
+   958→        entry = self.logger.log("INFO", "FIRST")
+   959→        self.assertEqual(entry["previous_hash"], "GENESIS")
+   960→
+   961→    def test_hash_chain_links(self):
+   962→        e1 = self.logger.log("INFO", "E1")
+   963→        e2 = self.logger.log("INFO", "E2")
+   964→        self.assertEqual(e2["previous_hash"], e1["entry_hash"])
+   965→
+   966→    def test_invalid_level_normalized(self):
+   967→        entry = self.logger.log("CRITICAL", "TEST")
+   968→        self.assertEqual(entry["level"], "INFO")
+   969→
+   970→    def test_valid_levels(self):
+   971→        for level in ["INFO", "WARN", "ALERT"]:
+   972→            entry = self.logger.log(level, f"TEST_{level}")
+   973→            self.assertEqual(entry["level"], level)
+   974→
+   975→    def test_log_with_details(self):
+   976→        entry = self.logger.log(
+   977→            "WARN", "SECRETS_DETECTED",
+   978→            target="example.com",
+   979→            details={"count": 3, "types": ["aws_key"]},
+   980→        )
+   981→        self.assertEqual(entry["details"]["count"], 3)
+   982→        self.assertEqual(entry["details"]["types"], ["aws_key"])
+   983→
+   984→    def test_crlf_sanitized_in_target(self):
+   985→        entry = self.logger.log("INFO", "TEST", target="evil\nINJECTED")
+   986→        self.assertNotIn("\n", entry["target"])
+   987→
+   988→
+   989→class TestTamperEvidenceChainVerification(unittest.TestCase):
+   990→    """Tests for chain integrity verification."""
+   991→
+   992→    def setUp(self):
+   993→        self.tmpdir = tempfile.mkdtemp()
+   994→        chain_file = os.path.join(self.tmpdir, "test_chain.log")
+   995→        self.tl = TamperEvidenceLogger(
+   996→            log_dir=self.tmpdir,
+   997→            chain_file=chain_file,
+   998→        )
+   999→
+  1000→    def tearDown(self):
+  1001→        import shutil
+  1002→        shutil.rmtree(self.tmpdir, ignore_errors=True)
+  1003→
+  1004→    def test_valid_chain(self):
+  1005→        for i in range(10):
+  1006→            self.tl.log("INFO", f"EVENT_{i}")
+  1007→        result = self.tl.verify_chain()
+  1008→        self.assertTrue(result["valid"])
+  1009→        self.assertEqual(result["entries_checked"], 10)
+  1010→        self.assertEqual(len(result["violations"]), 0)
+  1011→
+  1012→    def test_tampered_entry_detected(self):
+  1013→        """Modifying an entry's content should break the chain."""
+  1014→        for i in range(5):
+  1015→            self.tl.log("INFO", f"EVENT_{i}")
+  1016→        # Tamper with entry 2's level
+  1017→        self.tl._entries[2]["level"] = "ALERT"
+  1018→        result = self.tl.verify_chain()
+  1019→        self.assertFalse(result["valid"])
+  1020→        self.assertGreater(len(result["violations"]), 0)
+  1021→
+  1022→    def test_tampered_hash_detected(self):
+  1023→        """Modifying an entry's hash should break the chain."""
+  1024→        self.tl.log("INFO", "E1")
+  1025→        self.tl.log("INFO", "E2")
+  1026→        self.tl._entries[1]["entry_hash"] = "deadbeef" * 8
+  1027→        result = self.tl.verify_chain()
+  1028→        self.assertFalse(result["valid"])
+  1029→
+  1030→    def test_tampered_previous_hash_detected(self):
+  1031→        """Modifying an entry's previous_hash should break the chain."""
+  1032→        self.tl.log("INFO", "E1")
+  1033→        self.tl.log("INFO", "E2")
+  1034→        self.tl.log("INFO", "E3")
+  1035→        self.tl._entries[2]["previous_hash"] = "cafebabe" * 8
+  1036→        result = self.tl.verify_chain()
+  1037→        self.assertFalse(result["valid"])
+  1038→
+  1039→    def test_first_violation_reported(self):
+  1040→        """First violation should include entry index and issues."""
+  1041→        for i in range(5):
+  1042→            self.tl.log("INFO", f"EVENT_{i}")
+  1043→        self.tl._entries[2]["level"] = "TAMPERED"
+  1044→        result = self.tl.verify_chain()
+  1045→        self.assertIsNotNone(result["first_violation"])
+  1046→        self.assertEqual(result["first_violation"]["entry_index"], 2)
+  1047→        self.assertGreater(len(result["first_violation"]["issues"]), 0)
+  1048→
+  1049→    def test_empty_chain_valid(self):
+  1050→        result = self.tl.verify_chain()
+  1051→        self.assertTrue(result["valid"])
+  1052→        self.assertEqual(result["entries_checked"], 0)
+  1053→
+  1054→
+  1055→class TestTamperEvidenceLoggerPersistence(unittest.TestCase):
+  1056→    """Tests for chain file persistence."""
+  1057→
+  1058→    def setUp(self):
+  1059→        self.tmpdir = tempfile.mkdtemp()
+  1060→        self.chain_file = os.path.join(self.tmpdir, "persist_chain.log")
+  1061→
+  1062→    def tearDown(self):
+  1063→        import shutil
+  1064→        shutil.rmtree(self.tmpdir, ignore_errors=True)
+  1065→
+  1066→    def test_chain_persisted_to_disk(self):
+  1067→        tl = TamperEvidenceLogger(
+  1068→            log_dir=self.tmpdir,
+  1069→            chain_file=self.chain_file,
+  1070→        )
+  1071→        tl.log("INFO", "PERSISTED_EVENT")
+  1072→        self.assertTrue(os.path.isfile(self.chain_file))
+  1073→        with open(self.chain_file) as f:
+  1074→            lines = [l.strip() for l in f if l.strip()]
+  1075→        self.assertEqual(len(lines), 1)
+  1076→        entry = json.loads(lines[0])
+  1077→        self.assertEqual(entry["event_type"], "PERSISTED_EVENT")
+  1078→
+  1079→    def test_chain_loaded_from_disk(self):
+  1080→        """A new TamperEvidenceLogger should continue an existing chain."""
+  1081→        tl1 = TamperEvidenceLogger(
+  1082→            log_dir=self.tmpdir,
+  1083→            chain_file=self.chain_file,
+  1084→        )
+  1085→        tl1.log("INFO", "FIRST")
+  1086→        tl1.log("WARN", "SECOND")
+  1087→
+  1088→        # Create new logger pointing to same file
+  1089→        tl2 = TamperEvidenceLogger(
+  1090→            log_dir=self.tmpdir,
+  1091→            chain_file=self.chain_file,
+  1092→        )
+  1093→        # New entry should continue the chain
+  1094→        entry = tl2.log("ALERT", "THIRD")
+  1095→        self.assertEqual(entry["sequence"], 3)
+  1096→
+  1097→    def test_loaded_chain_verifies(self):
+  1098→        """Chain loaded from disk should verify correctly."""
+  1099→        tl1 = TamperEvidenceLogger(
+  1100→            log_dir=self.tmpdir,
+  1101→            chain_file=self.chain_file,
+  1102→        )
+  1103→        for i in range(5):
+  1104→            tl1.log("INFO", f"E{i}")
+  1105→
+  1106→        tl2 = TamperEvidenceLogger(
+  1107→            log_dir=self.tmpdir,
+  1108→            chain_file=self.chain_file,
+  1109→        )
+  1110→        result = tl2.verify_chain()
+  1111→        self.assertTrue(result["valid"])
+  1112→        self.assertEqual(result["entries_checked"], 5)
+  1113→
+  1114→
+  1115→class TestTamperEvidenceLoggerStatistics(unittest.TestCase):
+  1116→    """Tests for TamperEvidenceLogger.get_statistics()."""
+  1117→
+  1118→    def setUp(self):
+  1119→        self.tmpdir = tempfile.mkdtemp()
+  1120→        self.tl = TamperEvidenceLogger(
+  1121→            log_dir=self.tmpdir,
+  1122→            chain_file=os.path.join(self.tmpdir, "stats_chain.log"),
+  1123→        )
+  1124→
+  1125→    def tearDown(self):
+  1126→        import shutil
+  1127→        shutil.rmtree(self.tmpdir, ignore_errors=True)
+  1128→
+  1129→    def test_empty_statistics(self):
+  1130→        stats = self.tl.get_statistics()
+  1131→        self.assertEqual(stats["total_entries"], 0)
+  1132→        self.assertEqual(stats["by_level"], {"INFO": 0, "WARN": 0, "ALERT": 0})
+  1133→        self.assertIsNone(stats["first_entry"])
+  1134→        self.assertIsNone(stats["last_entry"])
+  1135→        self.assertTrue(stats["chain_valid"])
+  1136→
+  1137→    def test_statistics_after_logging(self):
+  1138→        self.tl.log("INFO", "E1")
+  1139→        self.tl.log("INFO", "E2")
+  1140→        self.tl.log("WARN", "E3")
+  1141→        self.tl.log("ALERT", "E4")
+  1142→        stats = self.tl.get_statistics()
+  1143→        self.assertEqual(stats["total_entries"], 4)
+  1144→        self.assertEqual(stats["by_level"]["INFO"], 2)
+  1145→        self.assertEqual(stats["by_level"]["WARN"], 1)
+  1146→        self.assertEqual(stats["by_level"]["ALERT"], 1)
+  1147→        self.assertIsNotNone(stats["first_entry"])
+  1148→        self.assertIsNotNone(stats["last_entry"])
+  1149→
+  1150→    def test_event_type_counts(self):
+  1151→        self.tl.log("INFO", "SCAN_START")
+  1152→        self.tl.log("INFO", "SCAN_START")
+  1153→        self.tl.log("WARN", "FINDING")
+  1154→        stats = self.tl.get_statistics()
+  1155→        self.assertEqual(stats["by_event_type"]["SCAN_START"], 2)
+  1156→        self.assertEqual(stats["by_event_type"]["FINDING"], 1)
+  1157→
+  1158→
+  1159→class TestTamperEvidenceLoggerQuerying(unittest.TestCase):
+  1160→    """Tests for TamperEvidenceLogger.get_entries()."""
+  1161→
+  1162→    def setUp(self):
+  1163→        self.tmpdir = tempfile.mkdtemp()
+  1164→        self.tl = TamperEvidenceLogger(
+  1165→            log_dir=self.tmpdir,
+  1166→            chain_file=os.path.join(self.tmpdir, "query_chain.log"),
+  1167→        )
+  1168→        self.tl.log("INFO", "TYPE_A")
+  1169→        self.tl.log("WARN", "TYPE_B")
+  1170→        self.tl.log("ALERT", "TYPE_A")
+  1171→        self.tl.log("INFO", "TYPE_C")
+  1172→
+  1173→    def tearDown(self):
+  1174→        import shutil
+  1175→        shutil.rmtree(self.tmpdir, ignore_errors=True)
+  1176→
+  1177→    def test_get_all_entries(self):
+  1178→        entries = self.tl.get_entries()
+  1179→        self.assertEqual(len(entries), 4)
+  1180→
+  1181→    def test_filter_by_level(self):
+  1182→        entries = self.tl.get_entries(level="WARN")
+  1183→        self.assertEqual(len(entries), 1)
+  1184→        self.assertEqual(entries[0]["event_type"], "TYPE_B")
+  1185→
+  1186→    def test_filter_by_event_type(self):
+  1187→        entries = self.tl.get_entries(event_type="TYPE_A")
+  1188→        self.assertEqual(len(entries), 2)
+  1189→
+  1190→    def test_limit(self):
+  1191→        entries = self.tl.get_entries(limit=2)
+  1192→        self.assertEqual(len(entries), 2)
+  1193→
+  1194→    def test_offset(self):
+  1195→        entries = self.tl.get_entries(offset=2)
+  1196→        self.assertEqual(len(entries), 2)
+  1197→        self.assertEqual(entries[0]["event_type"], "TYPE_A")  # 3rd entry
+  1198→
+  1199→    def test_combined_filters(self):
+  1200→        entries = self.tl.get_entries(level="INFO", event_type="TYPE_A")
+  1201→        self.assertEqual(len(entries), 1)
+  1202→
+  1203→
+  1204→class TestTamperEvidenceLoggerClear(unittest.TestCase):
+  1205→    """Tests for TamperEvidenceLogger.clear()."""
+  1206→
+  1207→    def setUp(self):
+  1208→        self.tmpdir = tempfile.mkdtemp()
+  1209→        self.tl = TamperEvidenceLogger(
+  1210→            log_dir=self.tmpdir,
+  1211→            chain_file=os.path.join(self.tmpdir, "clear_chain.log"),
+  1212→        )
+  1213→
+  1214→    def tearDown(self):
+  1215→        import shutil
+  1216→        shutil.rmtree(self.tmpdir, ignore_errors=True)
+  1217→
+  1218→    def test_clear_resets_state(self):
+  1219→        self.tl.log("INFO", "E1")
+  1220→        self.tl.log("WARN", "E2")
+  1221→        self.tl.clear()
+  1222→        stats = self.tl.get_statistics()
+  1223→        self.assertEqual(stats["total_entries"], 0)
+  1224→
+  1225→    def test_clear_resets_chain(self):
+  1226→        self.tl.log("INFO", "E1")
+  1227→        self.tl.clear()
+  1228→        entry = self.tl.log("INFO", "E_AFTER_CLEAR")
+  1229→        self.assertEqual(entry["sequence"], 1)
+  1230→        self.assertEqual(entry["previous_hash"], "GENESIS")
+  1231→
+  1232→
+  1233→# ══════════════════════════════════════════════════════════════════════════════
+  1234→# 5. INTEGRATION TESTS
+  1235→# ══════════════════════════════════════════════════════════════════════════════
+  1236→
+  1237→
+  1238→class TestCreateHardenedEngine(unittest.TestCase):
+  1239→    """Tests for the create_hardened_engine factory function."""
+  1240→
+  1241→    def setUp(self):
+  1242→        self.tmpdir = tempfile.mkdtemp()
+  1243→
+  1244→    def tearDown(self):
+  1245→        import shutil
+  1246→        shutil.rmtree(self.tmpdir, ignore_errors=True)
+  1247→
+  1248→    def test_returns_all_components(self):
+  1249→        engine, sandbox, secrets, tamper = create_hardened_engine(
+  1250→            log_dir=self.tmpdir,
+  1251→        )
+  1252→        self.assertIsInstance(engine, SecurityPolicyEngine)
+  1253→        self.assertIsInstance(sandbox, PluginSandbox)
+  1254→        self.assertIsInstance(secrets, SecretsManager)
+  1255→        self.assertIsInstance(tamper, TamperEvidenceLogger)
+  1256→
+  1257→    def test_engine_has_policies(self):
+  1258→        engine, _, _, _ = create_hardened_engine(log_dir=self.tmpdir)
+  1259→        policies = engine.list_policies()
+  1260→        self.assertEqual(len(policies), 5)
+  1261→
+  1262→    def test_tamper_logger_uses_custom_dir(self):
+  1263→        _, _, _, tamper = create_hardened_engine(log_dir=self.tmpdir)
+  1264→        tamper.log("INFO", "INTEGRATION_TEST")
+  1265→        self.assertTrue(os.path.isdir(self.tmpdir))
+  1266→
+  1267→
+  1268→class TestIntegrationPolicyAndSandbox(unittest.TestCase):
+  1269→    """Integration: policy engine + sandbox working together."""
+  1270→
+  1271→    def test_clean_plugin_passes_policy(self):
+  1272→        engine = SecurityPolicyEngine()
+  1273→        code = '''
+  1274→import json
+  1275→
+  1276→def run(target, base_url="", timeout=8, verify_tls=True):
+  1277→    return [{"title": "OK", "severity": "info", "category": "test"}]
+  1278→'''
+  1279→        violations = PluginSandbox.check_code_for_violations(code)
+  1280→        ctx = {
+  1281→            "operation_type": "plugin_exec",
+  1282→            "uses_dangerous_builtins": len([v for v in violations if v["type"] == "forbidden_builtin"]) > 0,
+  1283→            "accesses_filesystem": False,
+  1284→            "calls_subprocess": len([v for v in violations if v["match"] == "subprocess"]) > 0,
+  1285→            "accesses_network": False,
+  1286→        }
+  1287→        result = engine.enforce_policy("plugin_sandbox_policy", ctx)
+  1288→        self.assertTrue(result["allowed"])
+  1289→
+  1290→    def test_malicious_plugin_fails_policy(self):
+  1291→        engine = SecurityPolicyEngine()
+  1292→        code = 'import os\nos.system("id")\n'
+  1293→        violations = PluginSandbox.check_code_for_violations(code)
+  1294→        ctx = {
+  1295→            "operation_type": "plugin_exec",
+  1296→            "uses_dangerous_builtins": False,
+  1297→            "accesses_filesystem": False,
+  1298→            "calls_subprocess": True,
+  1299→            "accesses_network": False,
+  1300→        }
+  1301→        result = engine.enforce_policy("plugin_sandbox_policy", ctx)
+  1302→        self.assertFalse(result["allowed"])
+  1303→
+  1304→
+  1305→class TestIntegrationSecretsAndPolicy(unittest.TestCase):
+  1306→    """Integration: secrets manager + policy engine."""
+  1307→
+  1308→    def test_clean_content_passes_secrets_policy(self):
+  1309→        engine = SecurityPolicyEngine()
+  1310→        sm = SecretsManager()
+  1311→        findings = sm.scan_for_secrets("Hello, clean content")
+  1312→        ctx = {
+  1313→            "scans_for_secrets": True,
+  1314→            "hardcoded_secrets_found": len(findings) > 0,
+  1315→            "produces_output": True,
+  1316→            "output_secret_scan_enabled": True,
+  1317→            "has_urls": False,
+  1318→            "credentials_in_urls": False,
+  1319→            "private_keys_in_output": False,
+  1320→        }
+  1321→        result = engine.enforce_policy("secrets_policy", ctx)
+  1322→        self.assertTrue(result["allowed"])
+  1323→
+  1324→    def test_secrets_content_fails_secrets_policy(self):
+  1325→        engine = SecurityPolicyEngine()
+  1326→        sm = SecretsManager()
+  1327→        findings = sm.scan_for_secrets("-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----")
+  1328→        # Note: the secrets_policy checks hardcoded_secrets_found which is about
+  1329→        # the code containing secrets, not the output. Here we simulate.
+  1330→        ctx = {
+  1331→            "scans_for_secrets": True,
+  1332→            "hardcoded_secrets_found": True,
+  1333→            "produces_output": True,
+  1334→            "output_secret_scan_enabled": True,
+  1335→            "has_urls": False,
+  1336→            "credentials_in_urls": False,
+  1337→            "private_keys_in_output": False,
+  1338→        }
+  1339→        result = engine.enforce_policy("secrets_policy", ctx)
+  1340→        self.assertFalse(result["allowed"])
+  1341→
+  1342→
+  1343→class TestExtendedPatternsCompilation(unittest.TestCase):
+  1344→    """Verify all extended secret patterns compile and match expected types."""
+  1345→
+  1346→    def test_all_patterns_are_tuples_of_four(self):
+  1347→        """Each extended pattern should be a 4-tuple."""
+  1348→        for pattern in _EXTENDED_SECRET_PATTERNS:
+  1349→            self.assertEqual(len(pattern), 4, f"Pattern {pattern[0]} should be a 4-tuple")
+  1350→            name, regex, severity, description = pattern
+  1351→            self.assertIsInstance(name, str)
+  1352→            self.assertIsInstance(severity, str)
+  1353→            self.assertIsInstance(description, str)
+  1354→            self.assertTrue(hasattr(regex, "match"), f"{name} should have a compiled regex")
+  1355→
+  1356→    def test_all_severities_valid(self):
+  1357→        valid = {"critical", "high", "medium", "low"}
+  1358→        for pattern in _EXTENDED_SECRET_PATTERNS:
+  1359→            self.assertIn(pattern[2], valid, f"{pattern[0]} has invalid severity {pattern[2]}")
+  1360→
+  1361→
+  1362→if __name__ == "__main__":
+  1363→    unittest.main()
+  1364→

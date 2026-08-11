@@ -33,7 +33,7 @@ from .registry import (
     MODULE_REGISTRY,
 )
 from .scanner import ReconProResult
-from .http_layer import Finding, RateLimiter
+from .http_layer import Finding
 from .utils import compute_grade, badge_markdown, compute_score
 
 
@@ -166,6 +166,13 @@ class ScanEngine:
         When ``True`` the engine calls ``async_run()`` on modules that
         expose it; otherwise every module is wrapped in
         ``asyncio.to_thread``.
+    run_engineering : bool
+        When ``True``, the engineering pipeline runs automatically after
+        each scan completes.  Default ``False`` to preserve existing
+        behaviour.
+    engineering_repo_path : str
+        Repository path passed to the
+        ``ContinuousEngineeringOrchestrator`` when engineering is enabled.
     """
 
     def __init__(
@@ -174,11 +181,15 @@ class ScanEngine:
         concurrency: int = 5,
         rate_limit: float = 50.0,
         use_async: bool = True,
+        run_engineering: bool = False,
+        engineering_repo_path: str = ".",
     ) -> None:
         self._callback = event_callback
         self._concurrency = concurrency
         self._default_rate_limit = rate_limit
         self._use_async = use_async
+        self._run_engineering = run_engineering
+        self._engineering_repo_path = engineering_repo_path
 
     # -- internal helpers --------------------------------------------------
 
@@ -312,11 +323,13 @@ class ScanEngine:
                                 from .plugins import HookManager
                                 HookManager.fire("post_finding", finding=f)
                             except Exception:
-                                pass
+                                logger.debug("Hook 'post_finding' error", exc_info=True)
                     module_results[mod_id] = {
                         "findings": [f.to_dict() for f in mod_findings],
                         "count": len(mod_findings),
                     }
+
+                _module_health.record_success(mod_id)
 
                 self._emit(
                     ScanEvent(
@@ -328,6 +341,8 @@ class ScanEngine:
                 )
             except Exception as exc:
                 duration = time.monotonic() - t0
+                _module_health.record_failure(mod_id)
+                logger.error("Module '%s' failed: %s", mod_id, exc, exc_info=True)
                 # Emit a finding-like error so the scan doesn't silently
                 # swallow module failures.
                 err_finding = Finding(
@@ -413,7 +428,7 @@ class ScanEngine:
             from .plugins import HookManager
             HookManager.fire("pre_scan", target=target, modules=mods)
         except Exception:
-            pass
+            logger.debug("Hook 'pre_scan' error", exc_info=True)
         scan_t0 = time.monotonic()
 
         semaphore = asyncio.Semaphore(self._concurrency)
@@ -431,6 +446,10 @@ class ScanEngine:
                 entry = MODULE_REGISTRY.get(mod_id)
 
             if entry is None:
+                continue
+
+            if not _module_health.is_healthy(mod_id):
+                logger.warning("Module '%s' is unhealthy (circuit breaker open), skipping", mod_id)
                 continue
 
             runner = entry.get("runner")
@@ -514,7 +533,24 @@ class ScanEngine:
             from .plugins import HookManager
             HookManager.fire("post_scan", target=target, result=result, duration=scan_duration)
         except Exception:
-            pass
+            logger.debug("Hook 'post_scan' error", exc_info=True)
+
+        # ── Post-scan Engineering Pipeline (if enabled) ──────────────
+        if self._run_engineering and all_findings:
+            try:
+                from .engineering_workflow import ContinuousEngineeringOrchestrator
+                eng_orchestrator = ContinuousEngineeringOrchestrator(self._engineering_repo_path)
+                eng_result = eng_orchestrator.run_full_cycle(self._engineering_repo_path)
+                # Store engineering result metadata in result for later retrieval
+                result.engineering = eng_result.to_dict()
+                logger.info(
+                    "Engineering pipeline completed: status=%s stages=%d duration=%.2fs",
+                    eng_result.overall_status,
+                    len(eng_result.stages),
+                    eng_result.total_duration_s,
+                )
+            except Exception as e:
+                logger.warning("Engineering pipeline error: %s", e, exc_info=True)
 
         return result
 
@@ -528,6 +564,8 @@ class ScanEngine:
         verify_tls: bool = True,
         rate_limit: Optional[float] = None,
         is_local: bool = False,
+        run_engineering: bool = False,
+        engineering_repo_path: str = ".",
     ) -> ReconProResult:
         """Synchronous wrapper around :meth:`run`.
 
@@ -537,6 +575,11 @@ class ScanEngine:
         Parameters are identical to :meth:`run` except ``all_modules`` is
         not exposed — pass an explicit ``modules`` list instead.
         """
+        # Override instance-level engineering settings if caller provides them.
+        if run_engineering:
+            self._run_engineering = True
+        if engineering_repo_path != ".":
+            self._engineering_repo_path = engineering_repo_path
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -571,6 +614,55 @@ class ScanEngine:
                 is_local=is_local,
             )
         )
+
+
+# ── Module Health Tracking ────────────────────────────────────────────
+
+
+class ModuleHealthState:
+    """Tracks health of scanner modules for circuit-breaker logic."""
+
+    def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 60.0):
+        self._failure_counts: Dict[str, int] = {}
+        self._last_failure_time: Dict[str, float] = {}
+        self._failure_threshold = failure_threshold
+        self._cooldown_seconds = cooldown_seconds
+
+    def record_success(self, module_id: str) -> None:
+        self._failure_counts.pop(module_id, None)
+        self._last_failure_time.pop(module_id, None)
+
+    def record_failure(self, module_id: str) -> None:
+        self._failure_counts[module_id] = self._failure_counts.get(module_id, 0) + 1
+        self._last_failure_time[module_id] = time.monotonic()
+
+    def is_healthy(self, module_id: str) -> bool:
+        """Check if a module is healthy enough to run."""
+        count = self._failure_counts.get(module_id, 0)
+        if count < self._failure_threshold:
+            return True
+        # In cooldown?
+        last_fail = self._last_failure_time.get(module_id, 0)
+        if time.monotonic() - last_fail > self._cooldown_seconds:
+            # Cooldown expired, reset
+            self.record_success(module_id)
+            return True
+        return False
+
+    def get_status(self) -> Dict[str, Dict[str, Any]]:
+        """Return health status for all tracked modules."""
+        return {
+            mid: {
+                "failure_count": count,
+                "is_healthy": self.is_healthy(mid),
+                "in_cooldown": not self.is_healthy(mid),
+            }
+            for mid, count in self._failure_counts.items()
+        }
+
+
+# Global module health tracker
+_module_health = ModuleHealthState()
 
 
 # ── Module-level convenience functions ───────────────────────────────────
@@ -611,6 +703,8 @@ def scan(
     timeout: int = 8,
     verify_tls: bool = True,
     rate_limit: float = 10.0,
+    run_engineering: bool = False,
+    engineering_repo_path: str = ".",
 ) -> ReconProResult:
     """Drop-in replacement for ``scanner.scan`` with concurrent module execution.
 
@@ -632,6 +726,8 @@ def scan(
         concurrency=5,
         rate_limit=rate_limit,
         use_async=True,
+        run_engineering=run_engineering,
+        engineering_repo_path=engineering_repo_path,
     )
     return engine.scan_one(
         target=target,
@@ -639,6 +735,8 @@ def scan(
         timeout=timeout,
         verify_tls=verify_tls,
         rate_limit=rate_limit,
+        run_engineering=run_engineering,
+        engineering_repo_path=engineering_repo_path,
     )
 
 
@@ -646,6 +744,8 @@ def audit_scan(
     target: str = ".",
     modules: Optional[List[str]] = None,
     all_modules: bool = False,
+    run_engineering: bool = False,
+    engineering_repo_path: str = ".",
 ) -> ReconProResult:
     """Drop-in replacement for ``scanner.audit_scan`` with concurrent module execution.
 
@@ -655,6 +755,8 @@ def audit_scan(
         concurrency=5,
         rate_limit=10.0,
         use_async=True,
+        run_engineering=run_engineering,
+        engineering_repo_path=engineering_repo_path,
     )
     return engine.scan_one(
         target=target,
@@ -662,6 +764,8 @@ def audit_scan(
         timeout=8,
         verify_tls=True,
         is_local=True,
+        run_engineering=run_engineering,
+        engineering_repo_path=engineering_repo_path,
     )
 
 

@@ -10,8 +10,11 @@ All constants come from constants.py.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from .registry import (
     MODULE_REGISTRY, LOCAL_MODULES, ALL_MODULES,
@@ -38,6 +41,7 @@ class ReconProResult:
     vibesec_grade: Optional[str] = None
     module_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     intelligence: Optional[Dict[str, Any]] = None
+    engineering: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -53,6 +57,7 @@ class ReconProResult:
             "module_results": self.module_results,
             "findings": self.findings,
             "intelligence": self.intelligence,
+            "engineering": self.engineering,
         }
 
 
@@ -108,29 +113,34 @@ def scan(
         if runner is None:
             continue
 
-        # vibesec returns (findings, score, grade, badge_md)
-        if mod_id == "vibesec":
-            findings, score, grade, badge_md = runner(
-                target, base_url, timeout=timeout, verify_tls=verify_tls,
-                limiter=limiter,
-            )
-            all_findings.extend(findings)
-            vibesec_score = score
-            vibesec_grade = grade
-            vibesec_badge = badge_md
-            module_results["vibesec"] = {
-                "findings": [f.to_dict() for f in findings],
-                "score": score, "grade": grade, "badge": badge_md,
-            }
-        else:
-            findings = runner(target, base_url,
-                              timeout=timeout, verify_tls=verify_tls,
-                              limiter=limiter)
-            all_findings.extend(findings)
-            module_results[mod_id] = {
-                "findings": [f.to_dict() for f in findings],
-                "count": len(findings),
-            }
+        try:
+            # vibesec returns (findings, score, grade, badge_md)
+            if mod_id == "vibesec":
+                findings, score, grade, badge_md = runner(
+                    target, base_url, timeout=timeout, verify_tls=verify_tls,
+                    limiter=limiter,
+                )
+                all_findings.extend(findings)
+                vibesec_score = score
+                vibesec_grade = grade
+                vibesec_badge = badge_md
+                module_results["vibesec"] = {
+                    "findings": [f.to_dict() for f in findings],
+                    "score": score, "grade": grade, "badge": badge_md,
+                }
+            else:
+                findings = runner(target, base_url,
+                                  timeout=timeout, verify_tls=verify_tls,
+                                  limiter=limiter)
+                all_findings.extend(findings)
+                module_results[mod_id] = {
+                    "findings": [f.to_dict() for f in findings],
+                    "count": len(findings),
+                }
+        except Exception as exc:
+            logger.error("Module '%s' failed: %s", mod_id, exc, exc_info=True)
+            module_results[mod_id] = {"error": str(exc), "findings": []}
+            continue  # One failed module must NEVER stop other modules
 
     # Calculate overall score using shared utility
     total_score = compute_score(all_findings)
@@ -184,12 +194,17 @@ def audit_scan(
         runner = get_module_runner(mod_id)
         if runner is None:
             continue
-        findings = runner(target=target, base_url="", timeout=8, verify_tls=True)
-        all_findings.extend(findings)
-        module_results[mod_id] = {
-            "findings": [f.to_dict() for f in findings],
-            "count": len(findings),
-        }
+        try:
+            findings = runner(target=target, base_url="", timeout=8, verify_tls=True)
+            all_findings.extend(findings)
+            module_results[mod_id] = {
+                "findings": [f.to_dict() for f in findings],
+                "count": len(findings),
+            }
+        except Exception as exc:
+            logger.error("Module '%s' failed: %s", mod_id, exc, exc_info=True)
+            module_results[mod_id] = {"error": str(exc), "findings": []}
+            continue  # One failed module must NEVER stop other modules
 
     # Calculate score using shared utility
     total_score = compute_score(all_findings)
