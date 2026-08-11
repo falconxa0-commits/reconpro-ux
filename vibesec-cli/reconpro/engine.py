@@ -170,11 +170,13 @@ class ScanEngine:
         concurrency: int = 5,
         rate_limit: float = 50.0,
         use_async: bool = True,
+        intelligence_callback: Optional[Callable[["ReconProResult"], None]] = None,
     ) -> None:
         self._callback = event_callback
         self._concurrency = concurrency
         self._default_rate_limit = rate_limit
         self._use_async = use_async
+        self._intelligence_callback = intelligence_callback
 
     # -- internal helpers --------------------------------------------------
 
@@ -480,6 +482,13 @@ class ScanEngine:
             )
         )
 
+        # Post-scan intelligence enrichment (optional, backward compatible).
+        if self._intelligence_callback is not None:
+            try:
+                self._intelligence_callback(result)
+            except Exception:
+                pass  # intelligence must never break the scan
+
         return result
 
     # -- sync wrapper ------------------------------------------------------
@@ -597,6 +606,8 @@ def scan(
         rate_limit=rate_limit,
         use_async=True,
     )
+    # NOTE: intelligence_callback not wired for the module-level scan()
+    #       to keep the drop-in replacement backward compatible.
     return engine.scan_one(
         target=target,
         modules=modules,
@@ -620,6 +631,8 @@ def audit_scan(
         rate_limit=10.0,
         use_async=True,
     )
+    # NOTE: intelligence_callback not wired for the module-level audit_scan()
+    #       to keep the drop-in replacement backward compatible.
     return engine.scan_one(
         target=target,
         modules=modules,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .modules import (
     run_recon, run_vibesec, run_auth, run_chain,
@@ -92,6 +92,24 @@ class ReconProResult:
         }
 
 
+# Module-level post-scan intelligence hook (optional).
+# Set to a callable(reconpro_result) to trigger intelligence enrichment.
+_intelligence_hook: Optional[Callable[["ReconProResult"], None]] = None
+
+
+def set_intelligence_hook(
+    hook: Optional[Callable[["ReconProResult"], None]],
+) -> Optional[Callable[["ReconProResult"], None]]:
+    """Set or clear the module-level intelligence hook.
+
+    Returns the previous hook (if any) so it can be restored.
+    """
+    global _intelligence_hook
+    prev = _intelligence_hook
+    _intelligence_hook = hook
+    return prev
+
+
 def scan(
     target: str,
     modules: Optional[List[str]] = None,
@@ -172,7 +190,7 @@ def scan(
         s = f.severity
         sev_counts[s] = sev_counts.get(s, 0) + 1
 
-    return ReconProResult(
+    result = ReconProResult(
         target=host,
         modules_run=mods,
         findings=[f.to_dict() for f in all_findings],
@@ -184,6 +202,15 @@ def scan(
         vibesec_grade=vibesec_grade,
         module_results=module_results,
     )
+
+    # Post-scan intelligence hook (optional, backward compatible).
+    if _intelligence_hook is not None:
+        try:
+            _intelligence_hook(result)
+        except Exception:
+            pass  # intelligence must never break the scan
+
+    return result
 
 
 def audit_scan(
@@ -236,7 +263,7 @@ def audit_scan(
         s = f.severity
         sev_counts[s] = sev_counts.get(s, 0) + 1
 
-    return ReconProResult(
+    audit_result = ReconProResult(
         target=target if target != "." else "local-audit",
         modules_run=mods,
         findings=[f.to_dict() for f in all_findings],
@@ -246,3 +273,12 @@ def audit_scan(
         badge_markdown=badge,
         module_results=module_results,
     )
+
+    # Post-scan intelligence hook (optional, backward compatible).
+    if _intelligence_hook is not None:
+        try:
+            _intelligence_hook(audit_result)
+        except Exception:
+            pass  # intelligence must never break the scan
+
+    return audit_result

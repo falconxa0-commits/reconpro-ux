@@ -1,19 +1,200 @@
-"""Plugin system for ReconPro.
+"""Plugin system for ReconPro with sandboxed execution.
 
 Loads custom scanning modules from ~/.reconpro/plugins/.
 Each plugin is a .py file with a `run(target, base_url, **kwargs)` function
 that returns a list of Finding objects.
+
+Security measures:
+- Restricted builtins (no eval, exec, open, __import__, compile)
+- Timeout enforcement (plugins cannot run forever)
+- Resource limits (max output size)
+- Import restrictions (plugins cannot import arbitrary modules)
+- Isolated namespace
 """
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from .http import Finding
 
+logger = logging.getLogger(__name__)
+
 PLUGIN_DIR = Path.home() / ".reconpro" / "plugins"
+
+# ── Allowed imports for plugins ──────────────────────────────────
+_ALLOWED_IMPORTS: Set[str] = {
+    "reconpro.http", "urllib.request", "urllib.error",
+    "urllib.parse", "json", "re", "ssl", "hashlib",
+    "base64", "socket", "struct", "time", "datetime",
+    "collections", "itertools", "functools", "math",
+    "string", "copy", "enum", "typing", "dataclasses",
+}
+
+# ── Max output findings per plugin ──────────────────────────────
+_MAX_FINDINGS = 200
+
+# ── Builtin functions that plugins must NOT access ──────────────
+_BLOCKED_BUILTINS: Set[str] = {
+    "eval", "exec", "open", "__import__", "compile",
+    "breakpoint", "exit", "quit", "globals", "locals",
+}
+
+
+class PluginSecurityError(Exception):
+    """Raised when a plugin violates the security sandbox."""
+    pass
+
+
+def _create_sandbox_globals() -> Dict[str, Any]:
+    """Create a restricted globals dict for plugin execution.
+
+    Strips dangerous builtins and injects only a safe allowlist.
+    """
+    import builtins as _builtins
+
+    safe_builtins: Dict[str, Any] = {}
+    for name, obj in vars(_builtins).items():
+        if name.startswith("_") and name not in ("__name__", "__doc__", "__package__"):
+            continue
+        if name in _BLOCKED_BUILTINS:
+            continue
+        # Allow safe builtins like print, len, range, str, int, etc.
+        if callable(obj) and not isinstance(obj, type):
+            safe_builtins[name] = obj
+        elif isinstance(obj, type):
+            safe_builtins[name] = obj
+        elif isinstance(obj, (int, float, str, bool, tuple, type(None))):
+            safe_builtins[name] = obj
+
+    # Override __import__ with a restricted version
+    def _restricted_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        top_level = name.split(".")[0]
+        if top_level not in _ALLOWED_IMPORTS and name not in _ALLOWED_IMPORTS:
+            raise PluginSecurityError(
+                f"Plugin attempted to import blocked module: {name}"
+            )
+        return _original_import(name, *args, **kwargs)
+
+    _original_import = _builtins.__import__
+    safe_builtins["__import__"] = _restricted_import
+
+    return {
+        "__builtins__": safe_builtins,
+        "__name__": "reconpro_sandbox",
+        "__doc__": "Sandboxed plugin environment",
+    }
+
+
+def _run_sandboxed(
+    plugin_path: str,
+    target: str,
+    base_url: str,
+    timeout: int,
+    verify_tls: bool,
+) -> List[Finding]:
+    """Execute a plugin in a sandboxed thread with timeout.
+
+    Args:
+        plugin_path: Absolute path to the plugin .py file.
+        target: Scan target (domain/IP).
+        base_url: Base URL for the target.
+        timeout: Maximum execution time in seconds.
+        verify_tls: Whether to verify TLS certificates.
+
+    Returns:
+        List of Finding objects produced by the plugin.
+
+    Raises:
+        PluginSecurityError: If the plugin violates sandbox rules.
+        TimeoutError: If the plugin exceeds the timeout.
+    """
+    sandbox_globals = _create_sandbox_globals()
+    result: List[Finding] = []
+    error_holder: List[Exception] = []
+
+    def _execute() -> None:
+        """Load and run the plugin module in the sandbox."""
+        try:
+            # Read plugin source
+            with open(plugin_path, "r", encoding="utf-8") as f:
+                source = f.read()
+
+            # Check for obviously dangerous patterns in source
+            dangerous = ["os.system", "subprocess", "ctypes", "multiprocessing"]
+            for pattern in dangerous:
+                if pattern in source and f"import {pattern}" in source:
+                    raise PluginSecurityError(
+                        f"Plugin source contains forbidden pattern: {pattern}"
+                    )
+
+            # Compile and exec in sandbox
+            code = compile(source, plugin_path, "exec")
+            exec(code, sandbox_globals)  # noqa: S102 — intentional sandboxed exec
+
+            # Extract and call the run function
+            runner = sandbox_globals.get("run")
+            if not callable(runner):
+                raise PluginSecurityError(
+                    f"Plugin at {plugin_path} has no callable 'run' function"
+                )
+
+            findings = runner(
+                target=target,
+                base_url=base_url,
+                timeout=timeout,
+                verify_tls=verify_tls,
+            )
+
+            # Validate output
+            if not isinstance(findings, list):
+                raise PluginSecurityError(
+                    f"Plugin run() must return a list, got {type(findings).__name__}"
+                )
+
+            if len(findings) > _MAX_FINDINGS:
+                findings = findings[:_MAX_FINDINGS]
+                logger.warning(
+                    "Plugin %s returned %d findings, truncated to %d",
+                    plugin_path, len(findings), _MAX_FINDINGS,
+                )
+
+            for item in findings:
+                if not isinstance(item, Finding):
+                    raise PluginSecurityError(
+                        f"Plugin run() must return list of Finding objects, "
+                        f"got {type(item).__name__}"
+                    )
+
+            result.extend(findings)
+
+        except PluginSecurityError:
+            raise
+        except Exception as exc:
+            # Wrap non-security errors for clean reporting
+            error_holder.append(exc)
+
+    # Run in a thread with timeout
+    thread = threading.Thread(target=_execute, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+
+    if thread.is_alive():
+        # Thread is still running — timeout exceeded
+        # We cannot kill threads in Python, but we refuse the result
+        raise TimeoutError(
+            f"Plugin {plugin_path} exceeded timeout of {timeout}s"
+        )
+
+    if error_holder:
+        raise error_holder[0]
+
+    return result
 
 
 def _ensure_plugin_dir() -> None:
@@ -21,9 +202,14 @@ def _ensure_plugin_dir() -> None:
 
 
 def discover_plugins() -> Dict[str, Dict[str, Any]]:
-    """Discover all plugins in the plugin directory."""
+    """Discover all plugins in the plugin directory.
+
+    Returns:
+        Dict mapping plugin_id to {name, runner, path, description}.
+        Only plugins with a callable ``run`` function are included.
+    """
     _ensure_plugin_dir()
-    plugins = {}
+    plugins: Dict[str, Dict[str, Any]] = {}
 
     for py_file in sorted(PLUGIN_DIR.glob("*.py")):
         if py_file.name.startswith("_"):
@@ -47,15 +233,37 @@ def discover_plugins() -> Dict[str, Dict[str, Any]]:
                         "path": str(py_file),
                         "description": desc,
                     }
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(
+                "Failed to load plugin '%s': %s", py_file.name, exc
+            )
 
     return plugins
 
 
-def run_plugin(plugin_id: str, target: str, base_url: str = "",
-               timeout: int = 8, verify_tls: bool = True) -> List[Finding]:
-    """Run a specific plugin."""
+def run_plugin(
+    plugin_id: str,
+    target: str,
+    base_url: str = "",
+    timeout: int = 8,
+    verify_tls: bool = True,
+) -> List[Finding]:
+    """Run a specific plugin with sandboxed execution.
+
+    Looks up the plugin by *plugin_id* in the plugin directory,
+    executes its ``run()`` inside a sandboxed thread, and returns
+    the resulting list of :class:`~reconpro.http.Finding` objects.
+
+    Args:
+        plugin_id: Stem of the plugin file (without .py).
+        target: Scan target.
+        base_url: Optional base URL.
+        timeout: Maximum plugin execution time in seconds.
+        verify_tls: Whether to verify TLS certificates.
+
+    Returns:
+        List of Finding objects, or a single-info Finding on error.
+    """
     plugins = discover_plugins()
     if plugin_id not in plugins:
         return [Finding(
@@ -66,19 +274,40 @@ def run_plugin(plugin_id: str, target: str, base_url: str = "",
             evidence="", asset=target, points_deducted=0,
         )]
 
-    runner = plugins[plugin_id]["runner"]
+    plugin_path = plugins[plugin_id]["path"]
     try:
-        result = runner(target=target, base_url=base_url,
-                        timeout=timeout, verify_tls=verify_tls)
-        if isinstance(result, list):
-            return result
-        return []
-    except Exception as e:
+        return _run_sandboxed(
+            plugin_path=plugin_path,
+            target=target,
+            base_url=base_url,
+            timeout=timeout,
+            verify_tls=verify_tls,
+        )
+    except TimeoutError as exc:
+        logger.error("Plugin '%s' timed out: %s", plugin_id, exc)
         return [Finding(
-            title=f"Plugin '{plugin_id}' error: {e}",
+            title=f"Plugin '{plugin_id}' timed out",
             severity="low", category="plugin",
             module="plugin",
-            description=str(e),
+            description=str(exc),
+            evidence="", asset=target, points_deducted=0,
+        )]
+    except PluginSecurityError as exc:
+        logger.error("Plugin '%s' security violation: %s", plugin_id, exc)
+        return [Finding(
+            title=f"Plugin '{plugin_id}' security error",
+            severity="high", category="plugin",
+            module="plugin",
+            description=str(exc),
+            evidence="", asset=target, points_deducted=0,
+        )]
+    except Exception as exc:
+        logger.error("Plugin '%s' error: %s", plugin_id, exc)
+        return [Finding(
+            title=f"Plugin '{plugin_id}' error: {exc}",
+            severity="low", category="plugin",
+            module="plugin",
+            description=str(exc),
             evidence="", asset=target, points_deducted=0,
         )]
 

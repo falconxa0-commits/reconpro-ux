@@ -30,6 +30,18 @@ Powers:
     plugin     Custom module system
     screenshot Browser screenshots (Playwright)
 
+Intelligence (Age IV):
+    intelligence  Central pipeline coordinating all intelligence subsystems
+    confidence    Finding confidence scoring based on evidence strength
+    target-intel   Target profiling and risk assessment
+    eng-score     Post-scan engineering score calculation
+    recommend     Prioritized fix recommendations
+    learning      Learn from scan history, detect regressions
+    decision      Autonomous scan orchestration decisions
+    validate      Automated code quality validation
+    prompt-def    Prompt injection defense for AI features
+    security-audit Codebase security scanning
+
 Usage:
     reconpro example.com                    # Remote scan
     reconpro chat                          # Talk to it
@@ -41,7 +53,7 @@ Usage:
     reconpro serve                          # API server
 """
 
-__version__ = "8.0.0"
+__version__ = "9.0.0"
 __all__ = ["scan", "ReconProResult", "audit_scan", "__version__"]
 
 from .scanner import scan, ReconProResult, audit_scan  # noqa: E402

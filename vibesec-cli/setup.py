@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="reconpro",
-    version="8.0.0",
+    version="9.0.0",
     author="ReconPro Security",
     author_email="security@reconpro.io",
     description=(
