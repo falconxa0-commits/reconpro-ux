@@ -42,6 +42,12 @@ Intelligence (Age IV):
     prompt-def    Prompt injection defense for AI features
     security-audit Codebase security scanning
 
+Autonomous Systems (Age V):
+    auto-plan     Goal-driven autonomous execution planning
+    agents        Multi-agent orchestration (planner, recon, intel, correlation, reporting)
+    correlate     Evidence correlation: dedup, confidence boost, severity upgrade
+    executive     Executive intelligence reports (risk matrix, attack timeline, remediation)
+
 Usage:
     reconpro example.com                    # Remote scan
     reconpro chat                          # Talk to it
@@ -53,7 +59,7 @@ Usage:
     reconpro serve                          # API server
 """
 
-__version__ = "9.0.0"
+__version__ = "10.0.0"
 __all__ = ["scan", "ReconProResult", "audit_scan", "__version__"]
 
 from .scanner import scan, ReconProResult, audit_scan  # noqa: E402

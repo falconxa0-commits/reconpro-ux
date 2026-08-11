@@ -1,0 +1,734 @@
+     1→     1→"""Autonomous Planning Engine — Goal-Driven Scan Orchestration.
+     2→     2→
+     3→     3→Transforms ReconPro from a fixed-workflow scanner into a goal-driven
+     4→     4→autonomous system. Users state GOALS, not modules. The planner converts
+     5→     5→goals into phased execution strategies with dependencies, parallelism,
+     6→     6→and resource estimates.
+     7→     7→
+     8→     8→Goal types supported:
+     9→     9→    recon, audit, compliance, attack_surface, full_assessment, cloud_audit, code_review
+    10→    10→"""
+    11→    11→from __future__ import annotations
+    12→    12→
+    13→    13→import logging
+    14→    14→import re
+    15→    15→from dataclasses import dataclass, field
+    16→    16→from typing import Any, Dict, List, Optional, Set, Tuple
+    17→    17→
+    18→    18→from .decision_engine import DecisionEngine, _MODULE_TIME, _TARGET_MODULE_HINTS
+    19→    19→from .scanner import MODULE_REGISTRY, LOCAL_MODULES, ALL_MODULES
+    20→    20→
+    21→    21→logger = logging.getLogger(__name__)
+    22→    22→
+    23→    23→
+    24→    24→# ── Goal type keywords ──────────────────────────────────────────────────
+    25→    25→
+    26→    26→_GOAL_KEYWORDS: Dict[str, List[str]] = {
+    27→    27→    "recon": ["recon", "reconnaissance", "enumerate", "discover", "map", "footprint"],
+    28→    28→    "audit": ["audit", "assess", "evaluate", "test", "scan", "check", "examine", "pen"],
+    29→    29→    "compliance": ["compliance", "compliant", "regulation", "pci", "hipaa", "gdpr", "soc2",
+    30→    30→                    "standard", "policy", "framework", "baseline"],
+    31→    31→    "attack_surface": ["attack surface", "attack vectors", "exposure", "entry points",
+    32→    32→                        "external attack", "internet-facing"],
+    33→    33→    "full_assessment": ["full", "comprehensive", "complete", "thorough", "deep",
+    34→    34→                         "everything", "all modules", "maximum"],
+    35→    35→    "cloud_audit": ["cloud", "aws", "azure", "gcp", "s3", "container", "kubernetes",
+    36→    36→                    "docker", "iac", "terraform", "infrastructure"],
+    37→    37→    "code_review": ["code", "source", "repository", "repo", "sast", "static analysis",
+    38→    38→                     "dependency", "dependencies", "supply chain", "sbom"],
+    39→    39→}
+    40→    40→
+    41→    41→# ── Goal → module mappings (heuristic) ──────────────────────────────────
+    42→    42→# Each entry: (remote_modules, local_modules, dependency_graph)
+    43→    43→
+    44→    44→_GOAL_MODULE_MAP: Dict[str, Dict[str, Any]] = {
+    45→    45→    "recon": {
+    46→    46→        "remote": ["recon", "subdomains", "nhi", "cloud_recon"],
+    47→    47→        "local": [],
+    48→    48→        "dependencies": {"subdomains": ["recon"], "nhi": ["recon"], "cloud_recon": ["recon"]},
+    49→    49→        "success_criteria": {"min_findings": 1, "coverage": "dns_enumeration"},
+    50→    50→    },
+    51→    51→    "audit": {
+    52→    52→        "remote": ["recon", "auth", "chain", "oblivion", "gorgon", "bot", "pegasus", "vibesec"],
+    53→    53→        "local": ["host", "dev", "doctor"],
+    54→    54→        "dependencies": {"auth": ["recon"], "chain": ["recon"],
+    55→    55→                         "oblivion": ["recon"], "gorgon": ["recon", "auth"],
+    56→    56→                         "bot": ["recon"], "pegasus": ["recon", "auth", "chain"]},
+    57→    57→        "success_criteria": {"min_findings": 0, "severity_coverage": ["critical", "high", "medium", "low"]},
+    58→    58→    },
+    59→    59→    "compliance": {
+    60→    60→        "remote": ["recon", "auth", "nhi"],
+    61→    61→        "local": ["doctor", "iac_audit", "dev", "container_sec"],
+    62→    62→        "dependencies": {"auth": ["recon"], "nhi": ["recon"],
+    63→    63→                         "iac_audit": ["recon"], "container_sec": ["recon"]},
+    64→    64→        "success_criteria": {"compliance_score": 70.0, "categories_covered": 4},
+    65→    65→    },
+    66→    66→    "attack_surface": {
+    67→    67→        "remote": ["recon", "cloud_recon"],
+    68→    68→        "local": ["host"],
+    69→    69→        "dependencies": {"host": ["recon"],
+    70→    70→                         "cloud_recon": ["recon"]},
+    71→    71→        "success_criteria": {"min_findings": 1, "exposure_types": ["subdomain", "host", "cloud"]},
+    72→    72→    },
+    73→    73→    "full_assessment": {
+    74→    74→        "remote": list(MODULE_REGISTRY.keys()),
+    75→    75→        "local": list(LOCAL_MODULES.keys()),
+    76→    76→        "dependencies": {"auth": ["recon"], "chain": ["recon"],
+    77→    77→                         "bot": ["recon"], "gorgon": ["recon", "auth"],
+    78→    78→                         "oblivion": ["recon"], "nhi": ["recon"],
+    79→    79→                         "pegasus": ["recon", "auth", "chain"],
+    80→    80→                         "cloud_recon": ["recon", "subdomains"],
+    81→    81→                         "subdomains": ["recon"],
+    82→    82→                         "vibesec": ["recon", "auth", "chain"],
+    83→    83→                         "host": ["recon"], "dev": ["recon"],
+    84→    84→                         "iac_audit": ["recon", "dev"], "container_sec": ["recon"]},
+    85→    85→        "success_criteria": {"min_findings": 0, "all_modules_complete": True},
+    86→    86→    },
+    87→    87→    "cloud_audit": {
+    88→    88→        "remote": ["recon", "cloud_recon", "subdomains"],
+    89→    89→        "local": ["iac_audit", "container_sec", "dev"],
+    90→    90→        "dependencies": {"cloud_recon": ["recon"], "subdomains": ["recon"],
+    91→    91→                         "iac_audit": ["recon"], "container_sec": ["recon", "cloud_recon"],
+    92→    92→                         "dev": ["recon"]},
+    93→    93→        "success_criteria": {"cloud_services_found": 1, "iac_issues": 0},
+    94→    94→    },
+    95→    95→    "code_review": {
+    96→    96→        "remote": ["recon", "nhi"],
+    97→    97→        "local": ["dev", "doctor"],
+    98→    98→        "dependencies": {"nhi": ["recon"], "dev": ["recon"], "doctor": ["dev"]},
+    99→    99→        "success_criteria": {"dependency_issues": 0, "code_quality_score": 70.0},
+   100→   100→    },
+   101→   101→}
+   102→   102→
+   103→   103→# ── Module resource cost profiles ───────────────────────────────────────
+   104→   104→
+   105→   105→_MODULE_CPU: Dict[str, str] = {
+   106→   106→    "recon": "low", "auth": "medium", "chain": "medium", "bot": "low",
+   107→   107→    "gorgon": "high", "oblivion": "high", "vibesec": "medium", "nhi": "low",
+   108→   108→    "host": "low", "dev": "medium", "doctor": "low", "subdomains": "medium",
+   109→   109→    "pegasus": "high", "cloud_recon": "medium", "api_discovery": "medium",
+   110→   110→    "browser": "high", "fuzzer": "high", "cve_radar": "medium",
+   111→   111→    "compliance": "low", "passive_intel": "low", "iac_audit": "medium",
+   112→   112→    "container_sec": "medium", "team": "low",
+   113→   113→}
+   114→   114→
+   115→   115→_CPU_WEIGHT: Dict[str, int] = {"low": 1, "medium": 2, "high": 3}
+   116→   116→
+   117→   117→
+   118→   118→# ── Data classes ────────────────────────────────────────────────────────
+   119→   119→
+   120→   120→
+   121→   121→@dataclass
+   122→   122→class ExecutionPhase:
+   123→   123→    """A single phase within an execution strategy.
+   124→   124→
+   125→   125→    Each phase groups one or more modules that share the same execution
+   126→   126→    constraints (timeout, retry, parallelism, dependencies).
+   127→   127→    """
+   128→   128→    name: str
+   129→   129→    module_group: List[str]
+   130→   130→    parallel: bool = True
+   131→   131→    timeout: float = 120.0
+   132→   132→    retry_count: int = 1
+   133→   133→    depends_on: List[str] = field(default_factory=list)
+   134→   134→    success_criteria: Dict[str, Any] = field(default_factory=dict)
+   135→   135→
+   136→   136→    def to_dict(self) -> Dict[str, Any]:
+   137→   137→        return {
+   138→   138→            "name": self.name,
+   139→   139→            "module_group": self.module_group,
+   140→   140→            "parallel": self.parallel,
+   141→   141→            "timeout": self.timeout,
+   142→   142→            "retry_count": self.retry_count,
+   143→   143→            "depends_on": self.depends_on,
+   144→   144→            "success_criteria": self.success_criteria,
+   145→   145→        }
+   146→   146→
+   147→   147→
+   148→   148→@dataclass
+   149→   149→class ResourceEstimate:
+   150→   150→    """Estimated resource requirements for an execution strategy."""
+   151→   151→    cpu_estimate: str  # low / medium / high
+   152→   152→    ram_estimate_mb: int
+   153→   153→    network_requests: int
+   154→   154→    wall_time_seconds: float
+   155→   155→    concurrency_level: int
+   156→   156→
+   157→   157→    def to_dict(self) -> Dict[str, Any]:
+   158→   158→        return {
+   159→   159→            "cpu_estimate": self.cpu_estimate,
+   160→   160→            "ram_estimate_mb": self.ram_estimate_mb,
+   161→   161→            "network_requests": self.network_requests,
+   162→   162→            "wall_time_seconds": round(self.wall_time_seconds, 1),
+   163→   163→            "concurrency_level": self.concurrency_level,
+   164→   164→        }
+   165→   165→
+   166→   166→
+   167→   167→@dataclass
+   168→   168→class ExecutionStrategy:
+   169→   169→    """Complete execution plan produced by the AutonomousPlanner.
+   170→   170→
+   171→   171→    Contains phased module execution with dependency ordering,
+   172→   172→    parallelism groups, resource estimates, and a rollback plan.
+   173→   173→    """
+   174→   174→    goal_type: str
+   175→   175→    target: str
+   176→   176→    phases: List[ExecutionPhase]
+   177→   177→    total_estimated_time: float
+   178→   178→    required_modules: List[str]
+   179→   179→    dependencies: Dict[str, List[str]]
+   180→   180→    confidence_threshold: float = 0.7
+   181→   181→    parallel_groups: List[List[str]] = field(default_factory=list)
+   182→   182→    rollback_plan: List[str] = field(default_factory=list)
+   183→   183→
+   184→   184→    def to_dict(self) -> Dict[str, Any]:
+   185→   185→        return {
+   186→   186→            "goal_type": self.goal_type,
+   187→   187→            "target": self.target,
+   188→   188→            "phases": [p.to_dict() for p in self.phases],
+   189→   189→            "total_estimated_time": round(self.total_estimated_time, 1),
+   190→   190→            "required_modules": self.required_modules,
+   191→   191→            "dependencies": self.dependencies,
+   192→   192→            "confidence_threshold": self.confidence_threshold,
+   193→   193→            "parallel_groups": self.parallel_groups,
+   194→   194→            "rollback_plan": self.rollback_plan,
+   195→   195→        }
+   196→   196→
+   197→   197→
+   198→   198→# ── Goal Parser ─────────────────────────────────────────────────────────
+   199→   199→
+   200→   200→
+   201→   201→class GoalParser:
+   202→   202→    """Parses natural language goal text into structured objectives.
+   203→   203→
+   204→   204→    Extracts target, classifies goal type, and identifies constraints
+   205→   205→    such as timeout limits, scan depth, and explicit module selections.
+   206→   206→    """
+   207→   207→
+   208→   208→    # Regex patterns for target extraction
+   209→   209→    _URL_RE = re.compile(r"https?://[\w\-._~:/?#\[\]@!$&'()*+,;=%]+")
+   210→   210→    _DOMAIN_RE = re.compile(r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)"
+   211→   211→                            r"[a-zA-Z]{2,}\b")
+   212→   212→    _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+   213→   213→    _TIMEOUT_RE = re.compile(r"(?:timeout|time.?limit|within)?\s*(\d+)\s*(?:sec|seconds?|mins?|minutes?|hours?)")
+   214→   214→    _DEPTH_RE = re.compile(r"depth[\s:=-]+(shallow|medium|deep|aggressive)")
+   215→   215→    _MODULE_RE = re.compile(r"(?:module|only|just)[s\s:]+([\w,\s]+)")
+   216→   216→
+   217→   217→    def parse(self, goal: str) -> Dict[str, Any]:
+   218→   218→        """Parse a natural language goal into a structured objective.
+   219→   219→
+   220→   220→        Args:
+   221→   221→            goal: Natural language goal string.
+   222→   222→
+   223→   223→        Returns:
+   224→   224→            Dict with keys: target, goal_type, constraints.
+   225→   225→        """
+   226→   226→        goal_lower = goal.lower()
+   227→   227→        target = self._extract_target(goal)
+   228→   228→        goal_type = self._classify_goal(goal_lower)
+   229→   229→        constraints = self._extract_constraints(goal, goal_lower)
+   230→   230→
+   231→   231→        logger.info("Parsed goal: type=%s target=%s constraints=%s",
+   232→   232→                     goal_type, target or "<none>", constraints)
+   233→   233→
+   234→   234→        return {
+   235→   235→            "target": target,
+   236→   236→            "goal_type": goal_type,
+   237→   237→            "constraints": constraints,
+   238→   238→            "raw_goal": goal,
+   239→   239→        }
+   240→   240→
+   241→   241→    def _extract_target(self, text: str) -> Optional[str]:
+   242→   242→        """Extract the target (URL, domain, or IP) from goal text."""
+   243→   243→        # Try URL first (most specific).
+   244→   244→        url_match = self._URL_RE.search(text)
+   245→   245→        if url_match:
+   246→   246→            return url_match.group(0)
+   247→   247→
+   248→   248→        # Try IP address.
+   249→   249→        ip_match = self._IP_RE.search(text)
+   250→   250→        if ip_match:
+   251→   251→            candidate = ip_match.group(0)
+   252→   252→            # Make sure it's not a version number like 9.0.0
+   253→   253→            parts = candidate.split(".")
+   254→   254→            if all(0 <= int(p) <= 255 for p in parts):
+   255→   255→                return candidate
+   256→   256→
+   257→   257→        # Try domain (pick last domain-like token that isn't a keyword).
+   258→   258→        domain_match = self._DOMAIN_RE.search(text)
+   259→   259→        if domain_match:
+   260→   260→            candidate = domain_match.group(0)
+   261→   261→            noise = {"com", "org", "net", "io", "dev", "http", "https", "www"}
+   262→   262→            if candidate.lower().rstrip(".") not in noise:
+   263→   263→                return candidate
+   264→   264→
+   265→   265→        return None
+   266→   266→
+   267→   267→    def _classify_goal(self, text: str) -> str:
+   268→   268→        """Classify the goal type based on keyword matching.
+   269→   269→
+   270→   270→        Returns one of the recognized goal type strings.  Tries more
+   271→   271→        specific types before falling back to generic 'audit'.
+   272→   272→        """
+   273→   273→        # Score each goal type by number of keyword hits.
+   274→   274→        scores: Dict[str, int] = {}
+   275→   275→        for goal_type, keywords in _GOAL_KEYWORDS.items():
+   276→   276→            score = sum(1 for kw in keywords if kw in text)
+   277→   277→            scores[goal_type] = score
+   278→   278→
+   279→   279→        if not scores or max(scores.values()) == 0:
+   280→   280→            return "audit"  # sensible default
+   281→   281→
+   282→   282→        # Prefer the highest-scoring type; break ties by specificity order.
+   283→   283→        priority_order = [
+   284→   284→            "compliance", "cloud_audit", "code_review", "attack_surface",
+   285→   285→            "full_assessment", "recon", "audit",
+   286→   286→        ]
+   287→   287→        max_score = max(scores.values())
+   288→   288→        for gt in priority_order:
+   289→   289→            if scores.get(gt, 0) == max_score:
+   290→   290→                return gt
+   291→   291→
+   292→   292→        return max(scores, key=scores.get)  # type: ignore[arg-type]
+   293→   293→
+   294→   294→    def _extract_constraints(self, text: str, text_lower: str) -> Dict[str, Any]:
+   295→   295→        """Extract constraints from goal text.
+   296→   296→
+   297→   297→        Looks for timeout, depth, and explicit module specifications.
+   298→   298→        """
+   299→   299→        constraints: Dict[str, Any] = {}
+   300→   300→
+   301→   301→        # Timeout.
+   302→   302→        timeout_match = self._TIMEOUT_RE.search(text_lower)
+   303→   303→        if timeout_match:
+   304→   304→            value = int(timeout_match.group(1))
+   305→   305→            unit = timeout_match.group(0).split()[-1]
+   306→   306→            if unit.startswith("min"):
+   307→   307→                value *= 60
+   308→   308→            elif unit.startswith("hour"):
+   309→   309→                value *= 3600
+   310→   310→            constraints["timeout"] = float(value)
+   311→   311→
+   312→   312→        # Depth.
+   313→   313→        depth_match = self._DEPTH_RE.search(text_lower)
+   314→   314→        if depth_match:
+   315→   315→            constraints["depth"] = depth_match.group(1)
+   316→   316→
+   317→   317→        # Explicit modules.
+   318→   318→        module_match = self._MODULE_RE.search(text_lower)
+   319→   319→        if module_match:
+   320→   320→            mods = [m.strip() for m in module_match.group(1).split(",")
+   321→   321→                    if m.strip() in ALL_MODULES]
+   322→   322→            if mods:
+   323→   323→                constraints["modules"] = mods
+   324→   324→
+   325→   325→        return constraints
+   326→   326→
+   327→   327→
+   328→   328→# ── Autonomous Planner ──────────────────────────────────────────────────
+   329→   329→
+   330→   330→
+   331→   331→class AutonomousPlanner:
+   332→   332→    """Goal-driven autonomous scan planner.
+   333→   333→
+   334→   334→    Converts natural language goals into phased ExecutionStrategy objects
+   335→   335→    with dependency ordering, parallel execution groups, and resource
+   336→   336→    estimates.  Integrates with DecisionEngine for target classification
+   337→   337→    and module relevance scoring.
+   338→   338→    """
+   339→   339→
+   340→   340→    def __init__(self) -> None:
+   341→   341→        self._parser = GoalParser()
+   342→   342→        self._decision = DecisionEngine()
+   343→   343→
+   344→   344→    def plan(self, goal: str, context: Optional[Dict[str, Any]] = None) -> ExecutionStrategy:
+   345→   345→        """Create an ExecutionStrategy from a natural language goal.
+   346→   346→
+   347→   347→        Args:
+   348→   348→            goal:    Natural language description of the security goal.
+   349→   349→            context: Optional dict with extra context (e.g. previous results,
+   350→   350→                     environment hints, learning data).
+   351→   351→
+   352→   352→        Returns:
+   353→   353→            ExecutionStrategy ready for execution by ScanEngine.
+   354→   354→        """
+   355→   355→        ctx = context or {}
+   356→   356→        parsed = self._parser.parse(goal)
+   357→   357→        goal_type = parsed["goal_type"]
+   358→   358→        target = parsed["target"] or ctx.get("target", "unknown")
+   359→   359→        constraints = parsed["constraints"]
+   360→   360→
+   361→   361→        # Merge any context-level constraints.
+   362→   362→        if "timeout" in ctx and "timeout" not in constraints:
+   363→   363→            constraints["timeout"] = float(ctx["timeout"])
+   364→   364→        if "modules" in ctx and "modules" not in constraints:
+   365→   365→            constraints["modules"] = ctx["modules"]
+   366→   366→
+   367→   367→        # Get the goal module template.
+   368→   368→        template = _GOAL_MODULE_MAP.get(goal_type, _GOAL_MODULE_MAP["audit"])
+   369→   369→
+   370→   370→        # Resolve available modules (intersection of template and registry).
+   371→   371→        available_remote = [m for m in template["remote"] if m in MODULE_REGISTRY]
+   372→   372→        available_local = [m for m in template["local"] if m in LOCAL_MODULES]
+   373→   373→
+   374→   374→        # Apply explicit module constraint if provided.
+   375→   375→        if "modules" in constraints:
+   376→   376→            allowed = set(constraints["modules"])
+   377→   377→            available_remote = [m for m in available_remote if m in allowed]
+   378→   378→            available_local = [m for m in available_local if m in allowed]
+   379→   379→
+   380→   380→        # Build dependency graph (only for available modules).
+   381→   381→        raw_deps = template.get("dependencies", {})
+   382→   382→        all_available = set(available_remote + available_local)
+   383→   383→        dependencies: Dict[str, List[str]] = {
+   384→   384→            m: [d for d in deps if d in all_available]
+   385→   385→            for m, deps in raw_deps.items()
+   386→   386→            if m in all_available
+   387→   387→        }
+   388→   388→
+   389→   389→        # Build phases using topological grouping.
+   390→   390→        phases = self._build_phases(
+   391→   391→            available_remote, available_local, dependencies,
+   392→   392→            constraints, template.get("success_criteria", {}),
+   393→   393→        )
+   394→   394→
+   395→   395→        # Compute parallel groups from phases.
+   396→   396→        parallel_groups = [
+   397→   397→            phase.module_group for phase in phases if phase.parallel and phase.module_group
+   398→   398→        ]
+   399→   399→
+   400→   400→        # Estimate total time.
+   401→   401→        all_modules = available_remote + available_local
+   402→   402→        total_time = sum(_MODULE_TIME.get(m, 15.0) for m in all_modules)
+   403→   403→        if "timeout" in constraints:
+   404→   404→            total_time = min(total_time, constraints["timeout"])
+   405→   405→
+   406→   406→        # Build rollback plan.
+   407→   407→        rollback_plan = self._build_rollback(all_modules, goal_type)
+   408→   408→
+   409→   409→        # Confidence threshold depends on goal specificity.
+   410→   410→        confidence = 0.7 if goal_type in ("recon", "audit") else 0.8
+   411→   411→        if "depth" in constraints and constraints["depth"] in ("deep", "aggressive"):
+   412→   412→            confidence = 0.9
+   413→   413→
+   414→   414→        strategy = ExecutionStrategy(
+   415→   415→            goal_type=goal_type,
+   416→   416→            target=target,
+   417→   417→            phases=phases,
+   418→   418→            total_estimated_time=round(total_time, 1),
+   419→   419→            required_modules=all_modules,
+   420→   420→            dependencies=dependencies,
+   421→   421→            confidence_threshold=confidence,
+   422→   422→            parallel_groups=parallel_groups,
+   423→   423→            rollback_plan=rollback_plan,
+   424→   424→        )
+   425→   425→
+   426→   426→        logger.info("Planned strategy: %d phases, %d modules, ~%.1fs",
+   427→   427→                     len(phases), len(all_modules), total_time)
+   428→   428→        return strategy
+   429→   429→
+   430→   430→    def replan(
+   431→   431→        self,
+   432→   432→        strategy: ExecutionStrategy,
+   433→   433→        results: Dict[str, Any],
+   434→   434→    ) -> ExecutionStrategy:
+   435→   435→        """Adjust an existing strategy based on partial execution results.
+   436→   436→
+   437→   437→        Removes completed modules, adds newly-discovered modules,
+   438→   438→        adjusts timeouts, and re-orders remaining work.
+   439→   439→
+   440→   440→        Args:
+   441→   441→            strategy: The original ExecutionStrategy.
+   442→   442→            results:  Dict of module_id -> result data (findings, errors, etc.).
+   443→   443→
+   444→   444→        Returns:
+   445→   445→            A new ExecutionStrategy reflecting the updated plan.
+   446→   446→        """
+   447→   447→        completed = set()
+   448→   448→        failed = set()
+   449→   449→        findings_count = 0
+   450→   450→
+   451→   451→        for mod_id, result in results.items():
+   452→   452→            if isinstance(result, dict) and result.get("error"):
+   453→   453→                failed.add(mod_id)
+   454→   454→            else:
+   455→   455→                completed.add(mod_id)
+   456→   456→                if isinstance(result, dict):
+   457→   457→                    findings_count += result.get("findings_count", result.get("count", 0))
+   458→   458→
+   459→   459→        # Remove completed and failed modules from required list.
+   460→   460→        remaining = [m for m in strategy.required_modules
+   461→   461→                     if m not in completed and m not in failed]
+   462→   462→
+   463→   463→        # If many findings, lower confidence threshold (we have enough data).
+   464→   464→        new_confidence = strategy.confidence_threshold
+   465→   465→        if findings_count > 20:
+   466→   466→            new_confidence = max(0.5, new_confidence - 0.1)
+   467→   467→
+   468→   468→        # Rebuild phases with only remaining modules.
+   469→   469→        remaining_deps = {
+   470→   470→            m: [d for d in deps if d not in completed]
+   471→   471→            for m, deps in strategy.dependencies.items()
+   472→   472→            if m in remaining
+   473→   473→        }
+   474→   474→
+   475→   475→        remaining_remote = [m for m in remaining if m in MODULE_REGISTRY]
+   476→   476→        remaining_local = [m for m in remaining if m in LOCAL_MODULES]
+   477→   477→
+   478→   478→        new_phases = self._build_phases(
+   479→   479→            remaining_remote, remaining_local, remaining_deps,
+   480→   480→            {}, strategy.phases[0].success_criteria if strategy.phases else {},
+   481→   481→        )
+   482→   482→
+   483→   483→        new_time = sum(_MODULE_TIME.get(m, 15.0) for m in remaining)
+   484→   484→
+   485→   485→        new_parallel = [
+   486→   486→            p.module_group for p in new_phases if p.parallel and p.module_group
+   487→   487→        ]
+   488→   488→
+   489→   489→        replanned = ExecutionStrategy(
+   490→   490→            goal_type=strategy.goal_type,
+   491→   491→            target=strategy.target,
+   492→   492→            phases=new_phases,
+   493→   493→            total_estimated_time=round(new_time, 1),
+   494→   494→            required_modules=remaining,
+   495→   495→            dependencies=remaining_deps,
+   496→   496→            confidence_threshold=round(new_confidence, 2),
+   497→   497→            parallel_groups=new_parallel,
+   498→   498→            rollback_plan=strategy.rollback_plan,
+   499→   499→        )
+   500→   500→
+   501→   501→        logger.info("Replanned: %d modules remaining (completed=%d, failed=%d)",
+   502→   502→                     len(remaining), len(completed), len(failed))
+   503→   503→        return replanned
+   504→   504→
+   505→   505→    def estimate_resources(self, strategy: ExecutionStrategy) -> ResourceEstimate:
+   506→   506→        """Estimate resource requirements for an execution strategy.
+   507→   507→
+   508→   508→        Args:
+   509→   509→            strategy: The ExecutionStrategy to estimate resources for.
+   510→   510→
+   511→   511→        Returns:
+   512→   512→            ResourceEstimate with CPU, RAM, network, and time projections.
+   513→   513→        """
+   514→   514→        modules = strategy.required_modules
+   515→   515→        if not modules:
+   516→   516→            return ResourceEstimate("low", 50, 0, 0.0, 1)
+   517→   517→
+   518→   518→        # CPU: aggregate by highest-cost module.
+   519→   519→        cpu_scores = [_CPU_WEIGHT.get(_MODULE_CPU.get(m, "low"), 1) for m in modules]
+   520→   520→        max_cpu = max(cpu_scores) if cpu_scores else 1
+   521→   521→        avg_cpu = sum(cpu_scores) / len(cpu_scores)
+   522→   522→        if max_cpu >= 3 or avg_cpu >= 2.5:
+   523→   523→            cpu_label = "high"
+   524→   524→        elif avg_cpu >= 1.5:
+   525→   525→            cpu_label = "medium"
+   526→   526→        else:
+   527→   527→            cpu_label = "low"
+   528→   528→
+   529→   529→        # RAM: base 80MB + per-module cost.
+   530→   530→        ram = 80 + len(modules) * 25
+   531→   531→        if any(_MODULE_CPU.get(m) == "high" for m in modules):
+   532→   532→            ram += 128  # heavy modules need more memory
+   533→   533→
+   534→   534→        # Network requests: heuristic based on module types.
+   535→   535→        remote_count = sum(1 for m in modules if m in MODULE_REGISTRY)
+   536→   536→        network = remote_count * 50  # ~50 requests per remote module on average
+   537→   537→
+   538→   538→        # Wall time from strategy or recalculate.
+   539→   539→        wall_time = strategy.total_estimated_time
+   540→   540→
+   541→   541→        # Concurrency: number of parallel groups or modules in largest group.
+   542→   542→        concurrency = 1
+   543→   543→        if strategy.parallel_groups:
+   544→   544→            concurrency = max(len(g) for g in strategy.parallel_groups)
+   545→   545→            concurrency = max(concurrency, len(strategy.parallel_groups))
+   546→   546→
+   547→   547→        return ResourceEstimate(
+   548→   548→            cpu_estimate=cpu_label,
+   549→   549→            ram_estimate_mb=ram,
+   550→   550→            network_requests=network,
+   551→   551→            wall_time_seconds=wall_time,
+   552→   552→            concurrency_level=concurrency,
+   553→   553→        )
+   554→   554→
+   555→   555→    def validate_strategy(self, strategy: ExecutionStrategy) -> List[str]:
+   556→   556→        """Validate an execution strategy and return any warnings.
+   557→   557→
+   558→   558→        Checks for:
+   559→   559→        - Missing modules (referenced in dependencies but not in required_modules)
+   560→   560→        - Circular dependencies
+   561→   561→        - Empty phases
+   562→   562→        - Timeout feasibility
+   563→   563→        - Unknown modules
+   564→   564→
+   565→   565→        Args:
+   566→   566→            strategy: The ExecutionStrategy to validate.
+   567→   567→
+   568→   568→        Returns:
+   569→   569→            List of warning strings (empty if valid).
+   570→   570→        """
+   571→   571→        warnings: List[str] = []
+   572→   572→        req_set = set(strategy.required_modules)
+   573→   573→
+   574→   574→        # Check for modules in dependencies that aren't required.
+   575→   575→        for mod, deps in strategy.dependencies.items():
+   576→   576→            if mod not in req_set:
+   577→   577→                warnings.append(f"Dependency source '{mod}' not in required_modules")
+   578→   578→            for dep in deps:
+   579→   579→                if dep not in req_set:
+   580→   580→                    warnings.append(f"Dependency '{dep}' of '{mod}' not in required_modules")
+   581→   581→
+   582→   582→        # Check for circular dependencies.
+   583→   583→        if self._has_cycle(strategy.dependencies, req_set):
+   584→   584→            warnings.append("Circular dependency detected in module graph")
+   585→   585→
+   586→   586→        # Check for empty phases.
+   587→   587→        for phase in strategy.phases:
+   588→   588→            if not phase.module_group:
+   589→   589→                warnings.append(f"Phase '{phase.name}' has no modules")
+   590→   590→
+   591→   591→        # Check timeout feasibility.
+   592→   592→        estimated = sum(_MODULE_TIME.get(m, 15.0) for m in strategy.required_modules)
+   593→   593→        if strategy.total_estimated_time < estimated * 0.5:
+   594→   594→            warnings.append(
+   595→   595→                f"Total timeout ({strategy.total_estimated_time}s) is less than 50% "
+   596→   596→                f"of estimated module time ({estimated:.1f}s)"
+   597→   597→            )
+   598→   598→
+   599→   599→        # Check for unknown modules.
+   600→   600→        known = set(MODULE_REGISTRY.keys()) | set(LOCAL_MODULES.keys())
+   601→   601→        for mod in strategy.required_modules:
+   602→   602→            if mod not in known:
+   603→   603→                warnings.append(f"Unknown module '{mod}' in required_modules")
+   604→   604→
+   605→   605→        return warnings
+   606→   606→
+   607→   607→    # ── Private helpers ──────────────────────────────────────────────
+   608→   608→
+   609→   609→    def _build_phases(
+   610→   610→        self,
+   611→   611→        remote_modules: List[str],
+   612→   612→        local_modules: List[str],
+   613→   613→        dependencies: Dict[str, List[str]],
+   614→   614→        constraints: Dict[str, Any],
+   615→   615→        success_criteria: Dict[str, Any],
+   616→   616→    ) -> List[ExecutionPhase]:
+   617→   617→        """Build ordered execution phases using topological sort.
+   618→   618→
+   619→   619→        Groups modules into phases based on dependency depth.
+   620→   620→        Modules at the same depth can run in parallel.
+   621→   621→        """
+   622→   622→        all_mods = list(remote_modules + local_modules)
+   623→   623→        if not all_mods:
+   624→   624→            return []
+   625→   625→
+   626→   626→        mod_set = set(all_mods)
+   627→   627→        timeout_override = constraints.get("timeout")
+   628→   628→        depth_level = constraints.get("depth", "medium")
+   629→   629→
+   630→   630→        # Compute dependency depth for each module.
+   631→   631→        depths: Dict[str, int] = {m: 0 for m in all_mods}
+   632→   632→        for _ in range(len(all_mods) + 1):  # iteratively resolve
+   633→   633→            changed = False
+   634→   634→            for m in all_mods:
+   635→   635→                dep_list = dependencies.get(m, [])
+   636→   636→                valid_deps = [d for d in dep_list if d in mod_set]
+   637→   637→                if valid_deps:
+   638→   638→                    new_depth = max(depths.get(d, 0) for d in valid_deps) + 1
+   639→   639→                    if new_depth > depths[m]:
+   640→   640→                        depths[m] = new_depth
+   641→   641→                        changed = True
+   642→   642→            if not changed:
+   643→   643→                break
+   644→   644→
+   645→   645→        # Group modules by depth level.
+   646→   646→        depth_groups: Dict[int, List[str]] = {}
+   647→   647→        for m, d in depths.items():
+   648→   648→            depth_groups.setdefault(d, []).append(m)
+   649→   649→
+   650→   650→        # Build phases.
+   651→   651→        phases: List[ExecutionPhase] = []
+   652→   652→        sorted_depths = sorted(depth_groups.keys())
+   653→   653→        for idx, depth in enumerate(sorted_depths):
+   654→   654→            group = depth_groups[depth]
+   655→   655→            # Sort group: remote modules before local for each phase.
+   656→   656→            group_sorted = sorted(group, key=lambda m: (0 if m in MODULE_REGISTRY else 1, m))
+   657→   657→
+   658→   658→            # Determine which earlier phases this depends on.
+   659→   659→            depends_on = []
+   660→   660→            if idx > 0:
+   661→   661→                depends_on = [f"phase_{d}" for d in sorted_depths[:idx]]
+   662→   662→
+   663→   663→            # Phase timeout: proportional to number of modules.
+   664→   664→            phase_timeout = sum(_MODULE_TIME.get(m, 15.0) for m in group) * 2.0
+   665→   665→            if timeout_override:
+   666→   666→                phase_timeout = min(phase_timeout, timeout_override)
+   667→   667→            phase_timeout = min(phase_timeout, 300.0)  # cap at 5 minutes per phase
+   668→   668→
+   669→   669→            # Retry count based on depth and scan depth setting.
+   670→   670→            retry = 1
+   671→   671→            if depth_level in ("deep", "aggressive"):
+   672→   672→                retry = 2
+   673→   673→            if depth == 0:
+   674→   674→                retry = max(retry, 1)  # first phase always gets at least 1 retry
+   675→   675→
+   676→   676→            phase = ExecutionPhase(
+   677→   677→                name=f"phase_{depth}",
+   678→   678→                module_group=group_sorted,
+   679→   679→                parallel=len(group_sorted) > 1,
+   680→   680→                timeout=round(phase_timeout, 1),
+   681→   681→                retry_count=retry,
+   682→   682→                depends_on=depends_on,
+   683→   683→                success_criteria=success_criteria if depth == max(sorted_depths) else {},
+   684→   684→            )
+   685→   685→            phases.append(phase)
+   686→   686→
+   687→   687→        return phases
+   688→   688→
+   689→   689→    def _build_rollback(self, modules: List[str], goal_type: str) -> List[str]:
+   690→   690→        """Generate a rollback plan for cleanup after failure.
+   691→   691→
+   692→   692→        Args:
+   693→   693→            modules:   List of module IDs in the strategy.
+   694→   694→            goal_type: The classified goal type.
+   695→   695→
+   696→   696→        Returns:
+   697→   697→            List of cleanup step descriptions.
+   698→   698→        """
+   699→   699→        steps: List[str] = []
+   700→   700→        if any(m in modules for m in ("host", "dev", "doctor")):
+   701→   701→            steps.append("Revert any local configuration changes made by host/dev/doctor modules")
+   702→   702→        if any(m in modules for m in ("container_sec", "iac_audit")):
+   703→   703→            steps.append("Remove any temporary container images or IAC scan artifacts")
+   704→   704→        if any(m in modules for m in MODULE_REGISTRY):
+   705→   705→            steps.append("Clear DNS and HTTP connection pools")
+   706→   706→        if goal_type == "cloud_audit":
+   707→   707→            steps.append("Revoke any temporary cloud API credentials or sessions")
+   708→   708→        if not steps:
+   709→   709→            steps.append("No rollback actions required")
+   710→   710→        return steps
+   711→   711→
+   712→   712→    @staticmethod
+   713→   713→    def _has_cycle(
+   714→   714→        deps: Dict[str, List[str]],
+   715→   715→        nodes: Set[str],
+   716→   716→    ) -> bool:
+   717→   717→        """Detect circular dependencies using DFS."""
+   718→   718→        WHITE, GRAY, BLACK = 0, 1, 2
+   719→   719→        color: Dict[str, int] = {n: WHITE for n in nodes}
+   720→   720→
+   721→   721→        def dfs(node: str) -> bool:
+   722→   722→            color[node] = GRAY
+   723→   723→            for dep in deps.get(node, []):
+   724→   724→                if dep not in color:
+   725→   725→                    continue
+   726→   726→                if color[dep] == GRAY:
+   727→   727→                    return True
+   728→   728→                if color[dep] == WHITE and dfs(dep):
+   729→   729→                    return True
+   730→   730→            color[node] = BLACK
+   731→   731→            return False
+   732→   732→
+   733→   733→        return any(dfs(n) for n in nodes if color[n] == WHITE)
+   734→   734→

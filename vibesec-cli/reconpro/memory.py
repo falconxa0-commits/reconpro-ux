@@ -758,6 +758,34 @@ class UnifiedMemoryStore:
             # Flush findings for this target
             self._flush_findings_target(target)
 
+    def add_finding_from_scan(self, finding: Dict[str, Any]) -> None:
+        """Feed a scan finding into the knowledge graph.
+
+        Extracts target, severity, title, category from the finding
+        and creates appropriate nodes and edges in the graph.  Ensures
+        the target field is present so the graph can link correctly.
+
+        Parameters
+        ----------
+        finding : dict
+            A single finding dict from ``ReconProResult.findings``.
+            Expected keys: title/name, severity, target/host, category/type,
+            technologies, evidence, cves.
+        """
+        with self._lock:
+            # Normalise target — findings often inherit it from the scan context
+            target = finding.get("target") or finding.get("host", "")
+            if not target:
+                return
+
+            # Enrich the finding dict before handing to the graph, ensuring
+            # the target key is always present (add_finding falls back to
+            # "unknown" otherwise).
+            enriched = dict(finding)
+            enriched.setdefault("target", target)
+
+            self._graph.add_finding(enriched)
+
     def export_all(self) -> Dict[str, Any]:
         """Export everything for backup.
 

@@ -192,6 +192,13 @@ class IntelligencePipeline:
         except Exception as exc:
             logger.debug("Memory store error: %s", exc)
 
+        # 1b. Feed findings into knowledge graph for attack surface analysis.
+        try:
+            for finding in findings:
+                self.memory.add_finding_from_scan(finding)
+        except Exception as exc:
+            logger.debug("Knowledge graph feed error: %s", exc)
+
         # 2. Score confidence.
         confidence_scores: List[Dict[str, Any]] = []
         try:

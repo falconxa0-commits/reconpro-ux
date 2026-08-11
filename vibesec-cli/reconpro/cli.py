@@ -531,6 +531,29 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--health", action="store_true", help="Health check: verify z.ai connectivity")
     p.add_argument("--model", type=str, default="glm-4-flash", help="Model name (default: glm-4-flash)")
 
+    # ── AGE V: AUTONOMOUS SYSTEM ────────────────────────────────────
+    # ── auto-plan ───────────────────────────────────────────────────
+    p = sub.add_parser("auto-plan", help="Autonomous planner: convert goal to execution strategy")
+    p.add_argument("goal", help="Natural language goal (e.g. 'Assess attack surface for example.com')")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ── agents ─────────────────────────────────────────────────────
+    p = sub.add_parser("agents", help="Run autonomous multi-agent pipeline against a target")
+    p.add_argument("target", help="Target domain, URL, IP, or 'localhost'")
+    p.add_argument("--goal", default="full assessment", help="Goal description (default: full assessment)")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ── correlate ──────────────────────────────────────────────────
+    p = sub.add_parser("correlate", help="Evidence correlation: merge, deduplicate, boost confidence")
+    p.add_argument("--target", help="Target to correlate findings for (default: last scan)")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # ── executive ──────────────────────────────────────────────────
+    p = sub.add_parser("executive", help="Executive intelligence report: summary, risk matrix, remediation")
+    p.add_argument("--target", help="Target for report (default: last scan)")
+    p.add_argument("--markdown", action="store_true", help="Output as Markdown")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+
     # ── Parse ─────────────────────────────────────────────────────
     global _cli_args
     args, remaining = parser.parse_known_args(argv)
@@ -1589,6 +1612,140 @@ def main(argv: list[str] | None = None) -> None:
             analysis = client.analyze_findings(findings, scan_target)
             console.print(analysis)
         console.print(f"  [dim]{'─' * 60}[/]")
+        return
+
+    # ── AGE V: AUTO-PLAN ──────────────────────────────────────────
+    if cmd == "auto-plan":
+        from .autonomous_planner import AutonomousPlanner
+        _banner(args)
+        planner = AutonomousPlanner()
+        strategy = _spinner_wrap(
+            f"Planning: [cyan]{args.goal}[/]...",
+            planner.plan, args.goal,
+        )
+        if getattr(args, "json", False):
+            console.print_json(data=strategy.to_dict())
+        else:
+            d = strategy.to_dict()
+            console.print(f"\n  [bold]Autonomous Plan[/]")
+            console.print(f"  Goal:       [cyan]{d['goal']}[/]")
+            console.print(f"  Target:     [cyan]{d['target']}[/]")
+            console.print(f"  Goal Type:  [bright_cyan]{d['goal_type']}[/]")
+            console.print(f"  Est. Time:  {d['estimated_time']}s")
+            console.print(f"  Phases:     {len(d['phases'])}")
+            for i, phase in enumerate(d['phases'], 1):
+                mods = ', '.join(phase['module_group'])
+                par = '[bright_green]parallel[/]' if phase['parallel'] else 'sequential'
+                console.print(f"    Phase {i}: [{par}] {mods}")
+                if phase.get('depends_on'):
+                    console.print(f"      depends: {', '.join(phase['depends_on'])}")
+            if d.get('warnings'):
+                for w in d['warnings']:
+                    console.print(f"  [yellow]Warning: {w}[/]")
+        return
+
+    # ── AGE V: AGENTS ──────────────────────────────────────────────
+    if cmd == "agents":
+        from .agent_runtime import AgentOrchestrator
+        _banner(args)
+        orchestrator = AgentOrchestrator()
+        target = args.target
+        goal = getattr(args, "goal", "full assessment")
+        console.print(f"\n  [bold]Autonomous Agent Pipeline[/]")
+        console.print(f"  Target: [cyan]{target}[/]")
+        console.print(f"  Goal:   [cyan]{goal}[/]")
+        result = _spinner_wrap(
+            "Running agent pipeline...",
+            orchestrator.run_goal, goal, target,
+        )
+        if getattr(args, "json", False):
+            console.print_json(data=result)
+        else:
+            console.print(f"\n  [bold]Agent Pipeline Complete[/]")
+            total_findings = len(result.get('findings', []))
+            console.print(f"  Total Findings: [bold]{total_findings}[/]")
+            console.print(f"  Agent Results:   {len(result.get('agent_results', []))}")
+            for ar in result.get('agent_results', []):
+                console.print(f"    [cyan]{ar['agent_id']:12}[/] {ar['role']:16} {ar['findings_count']:4} findings  {ar['processing_time_ms']:.0f}ms")
+            console.print(f"  Total Time:     {result.get('total_time_ms', 0):.0f}ms")
+        return
+
+    # ── AGE V: CORRELATE ──────────────────────────────────────────
+    if cmd == "correlate":
+        from .evidence_correlation import EvidenceCorrelator
+        _banner(args)
+        target = getattr(args, "target", None)
+        findings = []
+        if target:
+            result = _spinner_wrap(f"Scanning {target}...", scan, target)
+            findings = result.findings
+        else:
+            latest = get_latest()
+            if latest:
+                findings = latest.get("findings", [])
+                console.print(f"  [dim]Using last scan: {latest.get('target', 'unknown')} ({len(findings)} findings)[/]")
+            else:
+                console.print("  [yellow]No target specified and no scan history found.[/]")
+                return
+        correlator = EvidenceCorrelator()
+        correlation = correlator.correlate(findings)
+        if getattr(args, "json", False):
+            console.print_json(data=correlation.to_dict())
+        else:
+            console.print(f"\n  [bold]Evidence Correlation[/]")
+            console.print(f"  Chains:          {len(correlation.chains)}")
+            console.print(f"  Deduplicated:    {correlation.deduplicated_count}")
+            console.print(f"  Confidence Boosted: {correlation.confidence_boosted}")
+            console.print(f"  Severity Upgrades:  {len(correlation.severity_upgrades)}")
+            for chain in correlation.chains[:10]:
+                sev = chain.severity
+                c = SEV_COLORS.get(sev, "white")
+                console.print(f"    [{c}]{sev.upper():8}[/{c}] {chain.primary_finding.get('title', 'unknown'):30} conf={chain.confidence:.2f}  sources={','.join(chain.source_modules)}")
+        return
+
+    # ── AGE V: EXECUTIVE ──────────────────────────────────────────
+    if cmd == "executive":
+        from .executive_intelligence import ExecutiveIntelligence
+        from .evidence_correlation import EvidenceCorrelator
+        _banner(args)
+        target = getattr(args, "target", None)
+        scan_data = None
+        if target:
+            result = _spinner_wrap(f"Scanning {target}...", scan, target)
+            scan_data = result.to_dict()
+        else:
+            latest = get_latest()
+            if latest:
+                scan_data = latest
+                console.print(f"  [dim]Using last scan: {latest.get('target', 'unknown')}[/]")
+            else:
+                console.print("  [yellow]No target specified and no scan history found.[/]")
+                return
+        ei = ExecutiveIntelligence()
+        correlator = EvidenceCorrelator()
+        correlation = correlator.correlate(scan_data.get("findings", []))
+        report = ei.generate(scan_data, correlation_result=correlation.to_dict())
+        if getattr(args, "json", False):
+            console.print_json(data=report.to_dict())
+        elif getattr(args, "markdown", False):
+            console.print(report.to_markdown())
+        else:
+            d = report.to_dict()
+            console.print(f"\n  [bold]Executive Intelligence Report[/]")
+            console.print(f"  Target:     [cyan]{report.target}[/]")
+            console.print(f"  Score:      [bold]{d['scan_summary']['total_score']}/100 ({d['scan_summary']['grade']})[/]")
+            console.print(f"  Findings:   {d['scan_summary']['total_findings']}")
+            console.print(f"  Risk Items: {len(report.risk_matrix)}")
+            console.print(f"  Chains:     {len(report.evidence_chains)}")
+            console.print()
+            if report.executive_summary:
+                console.print(Panel(report.executive_summary, title="Executive Summary", border_style="cyan"))
+            if report.remediation_plan:
+                console.print(f"\n  [bold]Top Remediations:[/]")
+                for r in report.remediation_plan[:5]:
+                    sev = r.get("severity", "info")
+                    c = SEV_COLORS.get(sev, "white")
+                    console.print(f"    [{c}]{sev.upper():8}[/{c}] {r.get('title', r.get('category', 'unknown'))}")
         return
 
     # ── No args ─────────────────────────────────────────────────────
