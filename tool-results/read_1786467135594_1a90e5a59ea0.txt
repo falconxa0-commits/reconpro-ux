@@ -1,0 +1,971 @@
+  1062→    def execute(
+  1063→        self,
+  1064→        plugin_func: Callable,
+  1065→        plugin_name: str = "unknown",
+  1066→        **kwargs: Any,
+  1067→    ) -> Dict[str, Any]:
+  1068→        """Execute a plugin function inside the sandbox.
+  1069→
+  1070→        The plugin function is called with **kwargs as arguments.
+  1071→        Its execution is wrapped with:
+  1072→        - Restricted builtins
+  1073→        - CPU time limits (where supported)
+  1074→        - Memory usage checks
+  1075→        - Output validation
+  1076→        - Full audit logging
+  1077→
+  1078→        Args:
+  1079→            plugin_func: The plugin's callable (typically its ``run`` function).
+  1080→            plugin_name: Human-readable plugin name for logging.
+  1081→            **kwargs: Arguments forwarded to the plugin function.
+  1082→
+  1083→        Returns:
+  1084→            Dict with keys:
+  1085→            - success: bool
+  1086→            - findings: list of validated finding dicts (on success)
+  1087→            - error: str (on failure)
+  1088→            - execution_time: float (seconds)
+  1089→            - memory_used: int (bytes, 0 if unmeasurable)
+  1090→            - operations: count of sandbox-tracked operations
+  1091→        """
+  1092→        self._log_operation("sandbox_enter", {"plugin": plugin_name})
+  1093→        start_time = time.monotonic()
+  1094→        memory_before = self._check_memory_usage()
+  1095→
+  1096→        try:
+  1097→            # Set CPU time limit
+  1098→            self._enforce_cpu_limit()
+  1099→            self._log_operation("cpu_limit_set", {
+  1100→                "limit_seconds": self.cpu_time_seconds,
+  1101→            })
+  1102→
+  1103→            # Execute the plugin function
+  1104→            # Note: Python does not provide true sandboxing. The restricted
+  1105→            # builtins are applied when the plugin code uses exec/eval.
+  1106→            # For direct function calls, we wrap and monitor.
+  1107→            self._log_operation("plugin_execute_start", {
+  1108→                "plugin": plugin_name,
+  1109→                "args": list(kwargs.keys()),
+  1110→            })
+  1111→
+  1112→            try:
+  1113→                result = plugin_func(**kwargs)
+  1114→            except TypeError as e:
+  1115→                raise SandboxViolation(
+  1116→                    "plugin_call",
+  1117→                    f"Plugin call failed: {e}",
+  1118→                )
+  1119→
+  1120→            self._log_operation("plugin_execute_end", {
+  1121→                "plugin": plugin_name,
+  1122→                "result_type": type(result).__name__,
+  1123→            })
+  1124→
+  1125→            # Validate output
+  1126→            findings = self._validate_output(result)
+  1127→            self._log_operation("output_validated", {
+  1128→                "plugin": plugin_name,
+  1129→                "finding_count": len(findings),
+  1130→            })
+  1131→
+  1132→            memory_after = self._check_memory_usage()
+  1133→            if (memory_after > 0
+  1134→                    and memory_before > 0):
+  1135→                memory_delta = memory_after - memory_before
+  1136→                if memory_delta > self.memory_limit_bytes:
+  1137→                    raise ResourceLimitExceeded(
+  1138→                        "memory",
+  1139→                        self.memory_limit_bytes,
+  1140→                        memory_delta,
+  1141→                    )
+  1142→
+  1143→            return {
+  1144→                "success": True,
+  1145→                "findings": findings,
+  1146→                "execution_time": time.monotonic() - start_time,
+  1147→                "memory_used": max(0, memory_after - memory_before),
+  1148→                "operations": len(self._operation_log),
+  1149→            }
+  1150→
+  1151→        except SandboxViolation as exc:
+  1152→            self._log_operation("sandbox_violation", {
+  1153→                "plugin": plugin_name,
+  1154→                "operation": exc.operation,
+  1155→                "reason": exc.reason,
+  1156→            })
+  1157→            return {
+  1158→                "success": False,
+  1159→                "error": str(exc),
+  1160→                "execution_time": time.monotonic() - start_time,
+  1161→                "memory_used": 0,
+  1162→                "operations": len(self._operation_log),
+  1163→            }
+  1164→
+  1165→        except ResourceLimitExceeded as exc:
+  1166→            self._log_operation("resource_limit_exceeded", {
+  1167→                "plugin": plugin_name,
+  1168→                "resource": exc.resource,
+  1169→                "limit": exc.limit,
+  1170→                "actual": exc.actual,
+  1171→            })
+  1172→            return {
+  1173→                "success": False,
+  1174→                "error": str(exc),
+  1175→                "execution_time": time.monotonic() - start_time,
+  1176→                "memory_used": 0,
+  1177→                "operations": len(self._operation_log),
+  1178→            }
+  1179→
+  1180→        except Exception as exc:
+  1181→            self._log_operation("plugin_error", {
+  1182→                "plugin": plugin_name,
+  1183→                "error_type": type(exc).__name__,
+  1184→                "error": str(exc)[:500],
+  1185→            })
+  1186→            return {
+  1187→                "success": False,
+  1188→                "error": f"Plugin execution error: {type(exc).__name__}: {exc}",
+  1189→                "execution_time": time.monotonic() - start_time,
+  1190→                "memory_used": 0,
+  1191→                "operations": len(self._operation_log),
+  1192→            }
+  1193→
+  1194→        finally:
+  1195→            # Restore CPU limits
+  1196→            self._restore_cpu_limit()
+  1197→            self._log_operation("sandbox_exit", {"plugin": plugin_name})
+  1198→
+  1199→    def get_operation_log(self) -> List[Dict[str, Any]]:
+  1200→        """Return a copy of the sandbox operation audit log."""
+  1201→        with self._log_lock:
+  1202→            return copy.deepcopy(self._operation_log)
+  1203→
+  1204→    def clear_operation_log(self) -> None:
+  1205→        """Clear the operation log."""
+  1206→        with self._log_lock:
+  1207→            self._operation_log.clear()
+  1208→
+  1209→    @staticmethod
+  1210→    def check_code_for_violations(code: str) -> List[Dict[str, Any]]:
+  1211→        """Statically analyze code for sandbox violations.
+  1212→
+  1213→        Checks for:
+  1214→        - Use of forbidden builtins (eval, exec, compile, open, __import__)
+  1215→        - Import of forbidden modules
+  1216→        - Use of dangerous attributes (os.system, subprocess.call, etc.)
+  1217→
+  1218→        Args:
+  1219→            code: Python source code to analyze.
+  1220→
+  1221→        Returns:
+  1222→            List of violation dicts with keys:
+  1223→            - type: violation type
+  1224→            - match: the matching text
+  1225→            - line: line number
+  1226→            - severity: "critical" or "high"
+  1227→        """
+  1228→        violations: List[Dict[str, Any]] = []
+  1229→        lines = code.split("\n")
+  1230→
+  1231→        # Check for forbidden builtins
+  1232→        forbidden_builtins_pattern = re.compile(
+  1233→            r'\b(' + '|'.join(re.escape(b) for b in _FORBIDDEN_BUILTINS) + r')\b'
+  1234→        )
+  1235→        for line_num, line in enumerate(lines, start=1):
+  1236→            # Skip comments
+  1237→            stripped = line.strip()
+  1238→            if stripped.startswith("#"):
+  1239→                continue
+  1240→            # Check for string contexts (simple heuristic)
+  1241→            # Remove string literals to avoid false positives
+  1242→            clean_line = re.sub(r'"[^"]*"', '""', line)
+  1243→            clean_line = re.sub(r"'[^']*'", "''", clean_line)
+  1244→
+  1245→            for match in forbidden_builtins_pattern.finditer(clean_line):
+  1246→                builtin = match.group(1)
+  1247→                # Avoid flagging __import__ when it's just a string reference
+  1248→                if builtin == "__import__" and "__import__" not in clean_line.split("=")[-1]:
+  1249→                    violations.append({
+  1250→                        "type": "forbidden_builtin",
+  1251→                        "match": builtin,
+  1252→                        "line": line_num,
+  1253→                        "severity": "critical",
+  1254→                    })
+  1255→                elif builtin != "__import__":
+  1256→                    violations.append({
+  1257→                        "type": "forbidden_builtin",
+  1258→                        "match": builtin,
+  1259→                        "line": line_num,
+  1260→                        "severity": "critical",
+  1261→                    })
+  1262→
+  1263→        # Check for forbidden imports
+  1264→        import_pattern = re.compile(
+  1265→            r'\b(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)'
+  1266→        )
+  1267→        for line_num, line in enumerate(lines, start=1):
+  1268→            stripped = line.strip()
+  1269→            if stripped.startswith("#"):
+  1270→                continue
+  1271→            for match in import_pattern.finditer(line):
+  1272→                module = match.group(1)
+  1273→                if module in _FORBIDDEN_MODULES:
+  1274→                    violations.append({
+  1275→                        "type": "forbidden_module",
+  1276→                        "match": module,
+  1277→                        "line": line_num,
+  1278→                        "severity": "high",
+  1279→                    })
+  1280→
+  1281→        # Check for dangerous attribute access patterns
+  1282→        dangerous_patterns = [
+  1283→            (r'\bos\.system\b', "os.system", "critical"),
+  1284→            (r'\bos\.popen\b', "os.popen", "critical"),
+  1285→            (r'\bsubprocess\.', "subprocess", "critical"),
+  1286→            (r'\bshutil\.', "shutil", "high"),
+  1287→            (r'\bctypes\.', "ctypes", "critical"),
+  1288→            (r'\b__builtins__\b', "__builtins__", "high"),
+  1289→            (r'\bglobals\(\)', "globals()", "high"),
+  1290→            (r'\blocals\(\)', "locals()", "medium"),
+  1291→            (r'\bgetattr\s*\(\s*__builtins__', "getattr(__builtins__", "critical"),
+  1292→        ]
+  1293→        for line_num, line in enumerate(lines, start=1):
+  1294→            stripped = line.strip()
+  1295→            if stripped.startswith("#"):
+  1296→                continue
+  1297→            for pattern, name, severity in dangerous_patterns:
+  1298→                if re.search(pattern, line):
+  1299→                    violations.append({
+  1300→                        "type": "dangerous_pattern",
+  1301→                        "match": name,
+  1302→                        "line": line_num,
+  1303→                        "severity": severity,
+  1304→                    })
+  1305→
+  1306→        return violations
+  1307→
+  1308→
+  1309→# ══════════════════════════════════════════════════════════════════════════════
+  1310→# 3. SECRETS MANAGER
+  1311→# ══════════════════════════════════════════════════════════════════════════════
+  1312→
+  1313→# Additional secret patterns beyond what security.py provides.
+  1314→_EXTENDED_SECRET_PATTERNS: List[Tuple[str, re.Pattern[str], str, str]] = [
+  1315→    # Slack tokens
+  1316→    ("slack_token", re.compile(r'xox[baprs]-[0-9]{10,13}-[0-9a-zA-Z]{24,}'), "high",
+  1317→     "Slack bot/user/app token"),
+  1318→    # Google API key
+  1319→    ("google_api_key", re.compile(r'AIza[0-9A-Za-z\-_]{35}'), "high",
+  1320→     "Google API key"),
+  1321→    # Google OAuth
+  1322→    ("google_oauth", re.compile(r'[0-9]+-[a-z0-9_]{32}\.apps\.googleusercontent\.com'), "high",
+  1323→     "Google OAuth client ID"),
+  1324→    # Stripe
+  1325→    ("stripe_secret_key", re.compile(r'sk_live_[0-9a-zA-Z]{24,}'), "critical",
+  1326→     "Stripe live secret key"),
+  1327→    ("stripe_publishable_key", re.compile(r'pk_live_[0-9a-zA-Z]{24,}'), "medium",
+  1328→     "Stripe publishable key"),
+  1329→    # Twilio
+  1330→    ("twilio_api_key", re.compile(r'SK[0-9a-fA-F]{32}'), "high",
+  1331→     "Twilio API key"),
+  1332→    # SendGrid
+  1333→    ("sendgrid_api_key", re.compile(r'SG\.[a-zA-Z0-9_-]{22,}\.[a-zA-Z0-9_-]{22,}'), "high",
+  1334→     "SendGrid API key"),
+  1335→    # Mailgun
+  1336→    ("mailgun_api_key", re.compile(r'key-[0-9a-zA-Z]{32}'), "high",
+  1337→     "Mailgun API key"),
+  1338→    # Heroku
+  1339→    ("heroku_api_key",
+  1340→     re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'),
+  1341→     "medium", "Heroku-style UUID (possible API key)"),
+  1342→    # Docker Hub
+  1343→    ("docker_hub_token", re.compile(r'dockerhub[_.\-]?token[\s]*[=:][\s]*["\']?[a-zA-Z0-9_\-]{20,}',
+  1344→                                       re.IGNORECASE), "medium", "Docker Hub token"),
+  1345→    # npm token
+  1346→    ("npm_token", re.compile(r'npm_[a-zA-Z0-9]{36}'), "high", "npm token"),
+  1347→    # PyPI token
+  1348→    ("pypi_token", re.compile(r'pypi-[a-zA-Z0-9-]{36,}'), "high", "PyPI token"),
+  1349→    # Azure
+  1350→    ("azure_client_secret", re.compile(r'[a-zA-Z0-9_-]{36,}\.(onmicrosoft|azurewebsites)\.net',
+  1351→                                         re.IGNORECASE), "medium", "Possible Azure credential"),
+  1352→    # Generic high-entropy strings that look like secrets
+  1353→    ("generic_base64_secret",
+  1354→     re.compile(r'(?:secret|token|key|password|credential|auth)[\s]*[=:][\s]*["\']?([A-Za-z0-9+/]{40,}={0,2})["\']?',
+  1355→               re.IGNORECASE), "medium", "Generic base64-encoded secret"),
+  1356→    # PEM certificates
+  1357→    ("pem_certificate", re.compile(r'-----BEGIN\s+CERTIFICATE-----'), "high",
+  1358→     "PEM certificate"),
+  1359→    ("pem_certificate_request", re.compile(r'-----BEGIN\s+CERTIFICATE\s+REQUEST-----'), "medium",
+  1360→     "PEM certificate request"),
+  1361→    # SSH private key (additional pattern)
+  1362→    ("ssh_private_key", re.compile(r'-----BEGIN\s+OPENSSH\s+PRIVATE\s+KEY-----'), "critical",
+  1363→     "OpenSSH private key"),
+  1364→    ("ssh_private_key_dsa", re.compile(r'-----BEGIN\s+DSA\s+PRIVATE\s+KEY-----'), "critical",
+  1365→     "DSA private key"),
+  1366→    ("ssh_private_key_ecdsa", re.compile(r'-----BEGIN\s+ECDSA\s+PRIVATE\s+KEY-----'), "critical",
+  1367→     "ECDSA private key"),
+  1368→    ("ssh_private_key_ed25519", re.compile(r'-----BEGIN\s+ED25519\s+PRIVATE\s+KEY-----'), "critical",
+  1369→     "Ed25519 private key"),
+  1370→    # PGP private key
+  1371→    ("pgp_private_key", re.compile(r'-----BEGIN\s+PGP\s+PRIVATE\s+KEY\s+BLOCK-----'), "critical",
+  1372→     "PGP private key"),
+  1373→    # Environment variable secrets
+  1374→    ("env_secret",
+  1375→     re.compile(r'(?:export\s+)?(?:AWS|STRIPE|TWILIO|SENDGRID|SLACK|GITHUB|GITLAB|NPM|PYPI|DOCKER|AZURE|GOOGLE)_[A-Z_]+[\s]*=[\s]*["\']?[A-Za-z0-9_\-/+=]{20,}'),
+  1376→     "high", "Environment variable with secret value"),
+  1377→    # Authorization header
+  1378→    ("authorization_header",
+  1379→     re.compile(r'[Aa]uthorization[\s]*:[\s]*(?:Bearer|Basic|Token)\s+[A-Za-z0-9_\-\.]+'),
+  1380→     "high", "Authorization header with credential"),
+  1381→    # Cookie with session
+  1382→    ("session_cookie",
+  1383→     re.compile(r'(?:session|auth|token|sid)=[a-f0-9]{32,}', re.IGNORECASE),
+  1384→     "medium", "Session cookie value"),
+  1385→]
+  1386→
+  1387→
+  1388→@dataclass
+  1389→class SecretFinding:
+  1390→    """A single secret detection finding.
+  1391→
+  1392→    Attributes:
+  1393→        secret_type: Category of the secret (e.g., "aws_key", "private_key_rsa").
+  1394→        match: The matched text (redacted for high-severity findings).
+  1395→        line: Line number where found (1-based), or 0 if not line-based.
+  1396→        offset: Character offset within the line.
+  1397→        severity: "critical", "high", "medium", or "low".
+  1398→        description: Human-readable description of what was found.
+  1399→        source: Where the content came from (e.g., filename, "string_input").
+  1400→    """
+  1401→    secret_type: str
+  1402→    match: str
+  1403→    line: int
+  1404→    offset: int
+  1405→    severity: str
+  1406→    description: str
+  1407→    source: str = "unknown"
+  1408→
+  1409→
+  1410→class SecretsManager:
+  1411→    """Enhanced secret detection and management.
+  1412→
+  1413→    Builds on top of security.detect_secrets_in_text() with:
+  1414→    - Additional patterns (Slack, Google, Stripe, Twilio, SSH, PGP, etc.)
+  1415→    - File scanning capability
+  1416→    - Structured severity reporting
+  1417→    - Summary statistics
+  1418→
+  1419→    Usage::
+  1420→
+  1421→        sm = SecretsManager()
+  1422→        findings = sm.scan_content("some text with AKIAIOSFODNN7EXAMPLE key")
+  1423→        report = sm.get_report()
+  1424→    """
+  1425→
+  1426→    SEVERITY_ORDER: Dict[str, int] = {
+  1427→        "critical": 0,
+  1428→        "high": 1,
+  1429→        "medium": 2,
+  1430→        "low": 3,
+  1431→    }
+  1432→
+  1433→    def __init__(self, audit_logger: Optional[SecurityAuditLogger] = None) -> None:
+  1434→        self._findings: List[SecretFinding] = []
+  1435→        self._audit = audit_logger
+  1436→        self._scan_count = 0
+  1437→        self._files_scanned = 0
+  1438→        self._lock = threading.Lock()
+  1439→
+  1440→    def scan_for_secrets(
+  1441→        self,
+  1442→        content: str,
+  1443→        source: str = "string_input",
+  1444→    ) -> List[Dict[str, Any]]:
+  1445→        """Scan content for secrets using both built-in and extended patterns.
+  1446→
+  1447→        This method first uses the existing detect_secrets_in_text() from
+  1448→        security.py, then applies additional patterns from this module.
+  1449→
+  1450→        Args:
+  1451→            content: Text content to scan.
+  1452→            source: Identifier for where the content came from.
+  1453→
+  1454→        Returns:
+  1455→            List of dicts with keys:
+  1456→            - secret_type: str
+  1457→            - match: str (redacted for critical/high)
+  1458→            - line: int
+  1459→            - offset: int
+  1460→            - severity: str
+  1461→            - description: str
+  1462→            - source: str
+  1463→            - detector: str ("core" or "extended")
+  1464→        """
+  1465→        if not content:
+  1466→            return []
+  1467→
+  1468→        self._scan_count += 1
+  1469→        results: List[Dict[str, Any]] = []
+  1470→        lines = content.split("\n")
+  1471→
+  1472→        # Phase 1: Use existing core detection from security.py
+  1473→        core_findings = detect_secrets_in_text(content)
+  1474→        for finding in core_findings:
+  1475→            redacted = self._redact_match(finding["match"], finding["confidence"])
+  1476→            results.append({
+  1477→                "secret_type": finding["type"],
+  1478→                "match": redacted,
+  1479→                "line": finding["line"],
+  1480→                "offset": finding["offset"],
+  1481→                "severity": finding["confidence"],
+  1482→                "description": self._describe_finding(finding["type"]),
+  1483→                "source": source,
+  1484→                "detector": "core",
+  1485→            })
+  1486→
+  1487→        # Phase 2: Extended patterns
+  1488→        for secret_type, pattern, severity, description in _EXTENDED_SECRET_PATTERNS:
+  1489→            for line_num, line in enumerate(lines, start=1):
+  1490→                for match in pattern.finditer(line):
+  1491→                    matched_text = match.group(0)
+  1492→                    redacted = self._redact_match(matched_text, severity)
+  1493→                    results.append({
+  1494→                        "secret_type": secret_type,
+  1495→                        "match": redacted,
+  1496→                        "line": line_num,
+  1497→                        "offset": match.start(),
+  1498→                        "severity": severity,
+  1499→                        "description": description,
+  1500→                        "source": source,
+  1501→                        "detector": "extended",
+  1502→                    })
+  1503→
+  1504→        # Store findings
+  1505→        with self._lock:
+  1506→            for r in results:
+  1507→                self._findings.append(SecretFinding(
+  1508→                    secret_type=r["secret_type"],
+  1509→                    match=r["match"],
+  1510→                    line=r["line"],
+  1511→                    offset=r["offset"],
+  1512→                    severity=r["severity"],
+  1513→                    description=r["description"],
+  1514→                    source=source,
+  1515→                ))
+  1516→
+  1517→        # Audit log
+  1518→        if results and self._audit:
+  1519→            severity_counts: Dict[str, int] = {}
+  1520→            for r in results:
+  1521→                s = r["severity"]
+  1522→                severity_counts[s] = severity_counts.get(s, 0) + 1
+  1523→            self._audit.warn(
+  1524→                "SECRETS_DETECTED",
+  1525→                target=source,
+  1526→                details={
+  1527→                    "total": len(results),
+  1528→                    "severity_counts": severity_counts,
+  1529→                    "types": list(set(r["secret_type"] for r in results)),
+  1530→                },
+  1531→            )
+  1532→
+  1533→        return results
+  1534→
+  1535→    def scan_file(self, filepath: str) -> List[Dict[str, Any]]:
+  1536→        """Scan a file for secrets.
+  1537→
+  1538→        Args:
+  1539→            filepath: Path to the file to scan.
+  1540→
+  1541→        Returns:
+  1542→            Same format as scan_for_secrets().
+  1543→        """
+  1544→        if not os.path.isfile(filepath):
+  1545→            return []
+  1546→
+  1547→        try:
+  1548→            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+  1549→                content = f.read()
+  1550→        except OSError as exc:
+  1551→            logger.warning("Cannot read file for secret scanning: %s: %s", filepath, exc)
+  1552→            return []
+  1553→
+  1554→        self._files_scanned += 1
+  1555→        return self.scan_for_secrets(content, source=filepath)
+  1556→
+  1557→    def scan_directory(
+  1558→        self,
+  1559→        dirpath: str,
+  1560→        extensions: Optional[Set[str]] = None,
+  1561→        max_files: int = 1000,
+  1562→    ) -> List[Dict[str, Any]]:
+  1563→        """Recursively scan a directory for secrets.
+  1564→
+  1565→        Args:
+  1566→            dirpath: Root directory to scan.
+  1567→            extensions: Set of file extensions to scan (e.g., {".py", ".js"}).
+  1568→                      If None, scans all files.
+  1569→            max_files: Maximum number of files to scan.
+  1570→
+  1571→        Returns:
+  1572→            Combined list of all findings.
+  1573→        """
+  1574→        all_results: List[Dict[str, Any]] = []
+  1575→        files_scanned = 0
+  1576→
+  1577→        if not os.path.isdir(dirpath):
+  1578→            return []
+  1579→
+  1580→        for root, _dirs, files in os.walk(dirpath):
+  1581→            if files_scanned >= max_files:
+  1582→                break
+  1583→            for fname in sorted(files):
+  1584→                if files_scanned >= max_files:
+  1585→                    break
+  1586→                # Skip hidden files and common non-text files
+  1587→                if fname.startswith("."):
+  1588→                    continue
+  1589→                if fname.endswith((".pyc", ".pyo", ".so", ".dll", ".exe",
+  1590→                                  ".png", ".jpg", ".jpeg", ".gif", ".ico",
+  1591→                                  ".zip", ".tar", ".gz", ".bz2", ".xz")):
+  1592→                    continue
+  1593→
+  1594→                filepath = os.path.join(root, fname)
+  1595→                if extensions is not None:
+  1596→                    _, ext = os.path.splitext(fname)
+  1597→                    if ext.lower() not in extensions:
+  1598→                        continue
+  1599→
+  1600→                results = self.scan_file(filepath)
+  1601→                all_results.extend(results)
+  1602→                files_scanned += 1
+  1603→
+  1604→        return all_results
+  1605→
+  1606→    def get_report(self) -> Dict[str, Any]:
+  1607→        """Generate a comprehensive secrets scanning report.
+  1608→
+  1609→        Returns:
+  1610→            Dict with keys:
+  1611→            - total_findings: int
+  1612→            - by_severity: dict mapping severity -> count
+  1613→            - by_type: dict mapping secret_type -> count
+  1614→            - by_source: dict mapping source -> count
+  1615→            - by_detector: dict mapping detector -> count
+  1616→            - critical_findings: list of critical/high severity findings
+  1617→            - scan_stats: scanning statistics
+  1618→        """
+  1619→        with self._lock:
+  1620→            findings = list(self._findings)
+  1621→
+  1622→        by_severity: Dict[str, int] = {}
+  1623→        by_type: Dict[str, int] = {}
+  1624→        by_source: Dict[str, int] = {}
+  1625→        by_detector: Dict[str, int] = {}
+  1626→        critical_findings: List[Dict[str, Any]] = []
+  1627→
+  1628→        for f in findings:
+  1629→            by_severity[f.severity] = by_severity.get(f.severity, 0) + 1
+  1630→            by_type[f.secret_type] = by_type.get(f.secret_type, 0) + 1
+  1631→            by_source[f.source] = by_source.get(f.source, 0) + 1
+  1632→            _CORE_TYPES = {
+  1633→                "aws_key", "github_token", "github_token_fine_grained",
+  1634→                "generic_api_key", "private_key_rsa", "private_key_ec",
+  1635→                "private_key_generic", "password_in_url", "db_connection_string",
+  1636→                "jwt_token",
+  1637→            }
+  1638→            detector = "core" if f.secret_type in _CORE_TYPES else "extended"
+  1639→            by_detector[detector] = by_detector.get(detector, 0) + 1
+  1640→
+  1641→            if f.severity in ("critical", "high"):
+  1642→                critical_findings.append({
+  1643→                    "type": f.secret_type,
+  1644→                    "line": f.line,
+  1645→                    "severity": f.severity,
+  1646→                    "description": f.description,
+  1647→                    "source": f.source,
+  1648→                })
+  1649→
+  1650→        return {
+  1651→            "total_findings": len(findings),
+  1652→            "by_severity": by_severity,
+  1653→            "by_type": by_type,
+  1654→            "by_source": by_source,
+  1655→            "by_detector": by_detector,
+  1656→            "critical_findings": critical_findings,
+  1657→            "scan_stats": {
+  1658→                "content_scans": self._scan_count,
+  1659→                "files_scanned": self._files_scanned,
+  1660→            },
+  1661→            "generated_at": datetime.now(timezone.utc).isoformat(),
+  1662→        }
+  1663→
+  1664→    def clear_findings(self) -> None:
+  1665→        """Clear all stored findings."""
+  1666→        with self._lock:
+  1667→            self._findings.clear()
+  1668→            self._scan_count = 0
+  1669→            self._files_scanned = 0
+  1670→
+  1671→    @staticmethod
+  1672→    def _redact_match(match: str, severity: str) -> str:
+  1673→        """Redact a secret match for safe logging.
+  1674→
+  1675→        Critical/high: show only first 4 and last 4 chars.
+  1676→        Medium/low: show full match.
+  1677→        """
+  1678→        if severity in ("critical", "high"):
+  1679→            if len(match) > 12:
+  1680→                return match[:4] + "***REDACTED***" + match[-4:]
+  1681→            return "***REDACTED***"
+  1682→        return match
+  1683→
+  1684→    @staticmethod
+  1685→    def _describe_finding(secret_type: str) -> str:
+  1686→        """Return a human-readable description for a secret type."""
+  1687→        descriptions: Dict[str, str] = {
+  1688→            "aws_key": "AWS Access Key ID",
+  1689→            "github_token": "GitHub Personal Access Token",
+  1690→            "github_token_fine_grained": "GitHub Fine-Grained PAT",
+  1691→            "generic_api_key": "Generic API Key",
+  1692→            "private_key_rsa": "RSA Private Key",
+  1693→            "private_key_ec": "EC Private Key",
+  1694→            "private_key_generic": "Private Key",
+  1695→            "password_in_url": "Password in URL",
+  1696→            "db_connection_string": "Database Connection String",
+  1697→            "jwt_token": "JSON Web Token",
+  1698→        }
+  1699→        return descriptions.get(secret_type, secret_type)
+  1700→
+  1701→
+  1702→# ══════════════════════════════════════════════════════════════════════════════
+  1703→# 4. TAMPER-EVIDENT SECURITY AUDIT LOGGER
+  1704→# ══════════════════════════════════════════════════════════════════════════════
+  1705→
+  1706→
+  1707→class TamperEvidenceLogger:
+  1708→    """Tamper-evident security event logger.
+  1709→
+  1710→    Extends the concept of SecurityAuditLogger with hash-chained entries
+  1711→    that make it detectable if log entries have been added, removed, or
+  1712→    modified.
+  1713→
+  1714→    Each log entry includes:
+  1715→    - sequence number (monotonically increasing)
+  1716→    - timestamp (ISO 8601 UTC)
+  1717→    - level (INFO, WARN, ALERT)
+  1718→    - event_type
+  1719→    - module
+  1720→    - target
+  1721→    - details (dict)
+  1722→    - previous_hash: SHA-256 of the previous entry's canonical form
+  1723→    - entry_hash: SHA-256 of this entry (including previous_hash)
+  1724→
+  1725→    The chain can be verified at any time to detect tampering.
+  1726→    """
+  1727→
+  1728→    def __init__(
+  1729→        self,
+  1730→        log_dir: Optional[str] = None,
+  1731→        module_name: str = "security_hardening",
+  1732→        chain_file: Optional[str] = None,
+  1733→    ) -> None:
+  1734→        self.module_name = module_name
+  1735→        if log_dir is None:
+  1736→            log_dir = os.path.join(os.path.expanduser("~"), ".reconpro")
+  1737→        self.log_dir = log_dir
+  1738→        os.makedirs(log_dir, exist_ok=True)
+  1739→
+  1740→        if chain_file is None:
+  1741→            chain_file = os.path.join(log_dir, "security_chain.log")
+  1742→        self.chain_file = chain_file
+  1743→
+  1744→        self._entries: List[Dict[str, Any]] = []
+  1745→        self._last_hash: str = "GENESIS"  # Seed for the chain
+  1746→        self._sequence: int = 0
+  1747→        self._lock = threading.Lock()
+  1748→        self._event_counts: Dict[str, int] = {}
+  1749→        self._level_counts: Dict[str, int] = {"INFO": 0, "WARN": 0, "ALERT": 0}
+  1750→
+  1751→        # Try to load existing chain
+  1752→        self._load_chain()
+  1753→
+  1754→    def _load_chain(self) -> None:
+  1755→        """Load existing chain from disk to continue the hash sequence."""
+  1756→        if not os.path.isfile(self.chain_file):
+  1757→            return
+  1758→        try:
+  1759→            with open(self.chain_file, "r", encoding="utf-8") as f:
+  1760→                for line in f:
+  1761→                    line = line.strip()
+  1762→                    if not line:
+  1763→                        continue
+  1764→                    try:
+  1765→                        entry = json.loads(line)
+  1766→                        self._entries.append(entry)
+  1767→                        self._sequence = entry.get("sequence", 0)
+  1768→                        self._last_hash = entry.get("entry_hash", "GENESIS")
+  1769→                        level = entry.get("level", "INFO")
+  1770→                        if level in self._level_counts:
+  1771→                            self._level_counts[level] += 1
+  1772→                        event_type = entry.get("event_type", "")
+  1773→                        self._event_counts[event_type] = self._event_counts.get(event_type, 0) + 1
+  1774→                    except (json.JSONDecodeError, KeyError):
+  1775→                        continue
+  1776→        except OSError:
+  1777→            pass
+  1778→
+  1779→    def _compute_hash(self, canonical: str) -> str:
+  1780→        """Compute SHA-256 hash of a canonical string."""
+  1781→        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+  1782→
+  1783→    def _make_canonical(self, entry: Dict[str, Any]) -> str:
+  1784→        """Create a canonical string representation for hashing.
+  1785→
+  1786→        The canonical form includes all fields in a deterministic order.
+  1787→        """
+  1788→        # Build a deterministic representation
+  1789→        parts = [
+  1790→            str(entry.get("sequence", "")),
+  1791→            str(entry.get("timestamp", "")),
+  1792→            str(entry.get("level", "")),
+  1793→            str(entry.get("event_type", "")),
+  1794→            str(entry.get("module", "")),
+  1795→            sanitize_log(str(entry.get("target", ""))),
+  1796→            str(entry.get("previous_hash", "")),
+  1797→            json.dumps(entry.get("details", {}), sort_keys=True, default=str),
+  1798→        ]
+  1799→        return "|".join(parts)
+  1800→
+  1801→    def log(
+  1802→        self,
+  1803→        level: str,
+  1804→        event_type: str,
+  1805→        target: str = "",
+  1806→        details: Optional[Dict[str, Any]] = None,
+  1807→    ) -> Dict[str, Any]:
+  1808→        """Append a tamper-evident log entry.
+  1809→
+  1810→        Args:
+  1811→            level: "INFO", "WARN", or "ALERT".
+  1812→            event_type: Category of security event.
+  1813→            target: Target associated with the event.
+  1814→            details: Optional dict of additional details.
+  1815→
+  1816→        Returns:
+  1817→            The complete log entry dict including hashes.
+  1818→        """
+  1819→        if level not in ("INFO", "WARN", "ALERT"):
+  1820→            level = "INFO"
+  1821→
+  1822→        with self._lock:
+  1823→            self._sequence += 1
+  1824→            entry: Dict[str, Any] = {
+  1825→                "sequence": self._sequence,
+  1826→                "timestamp": datetime.now(timezone.utc).isoformat(),
+  1827→                "level": level,
+  1828→                "event_type": event_type,
+  1829→                "module": self.module_name,
+  1830→                "target": sanitize_log(target),
+  1831→                "details": details or {},
+  1832→                "previous_hash": self._last_hash,
+  1833→            }
+  1834→
+  1835→            # Compute hash of this entry
+  1836→            canonical = self._make_canonical(entry)
+  1837→            entry["entry_hash"] = self._compute_hash(canonical)
+  1838→
+  1839→            self._last_hash = entry["entry_hash"]
+  1840→            self._entries.append(entry)
+  1841→
+  1842→            # Update statistics
+  1843→            self._level_counts[level] = self._level_counts.get(level, 0) + 1
+  1844→            self._event_counts[event_type] = self._event_counts.get(event_type, 0) + 1
+  1845→
+  1846→            # Persist to disk
+  1847→            self._persist_entry(entry)
+  1848→
+  1849→            return dict(entry)
+  1850→
+  1851→    def _persist_entry(self, entry: Dict[str, Any]) -> None:
+  1852→        """Append a single entry to the chain file on disk."""
+  1853→        try:
+  1854→            with open(self.chain_file, "a", encoding="utf-8") as f:
+  1855→                f.write(json.dumps(entry, default=str) + "\n")
+  1856→        except OSError as exc:
+  1857→            logger.error("Failed to persist security log entry: %s", exc)
+  1858→
+  1859→    def verify_chain(self) -> Dict[str, Any]:
+  1860→        """Verify the integrity of the entire log chain.
+  1861→
+  1862→        Checks that:
+  1863→        1. Sequence numbers are monotonically increasing.
+  1864→        2. Each entry's hash matches its content.
+  1865→        3. Each entry's previous_hash matches the prior entry's hash.
+  1866→
+  1867→        Returns:
+  1868→            Dict with keys:
+  1869→            - valid: bool (True if chain is intact)
+  1870→            - entries_checked: int
+  1871→            - first_violation: dict describing the first issue found (if any)
+  1872→            - violations: list of all violation descriptions
+  1873→        """
+  1874→        violations: List[str] = []
+  1875→        first_violation: Optional[Dict[str, Any]] = None
+  1876→        prev_hash = "GENESIS"
+  1877→        expected_sequence = 1
+  1878→
+  1879→        for i, entry in enumerate(self._entries):
+  1880→            entry_issues: List[str] = []
+  1881→
+  1882→            # Check sequence
+  1883→            if entry.get("sequence") != expected_sequence:
+  1884→                issue = (
+  1885→                    f"Entry {i}: expected sequence {expected_sequence}, "
+  1886→                    f"got {entry.get('sequence')}"
+  1887→                )
+  1888→                entry_issues.append(issue)
+  1889→
+  1890→            # Check previous_hash
+  1891→            if entry.get("previous_hash") != prev_hash:
+  1892→                issue = (
+  1893→                    f"Entry {i}: previous_hash mismatch. "
+  1894→                    f"Expected {prev_hash[:16]}..., got {str(entry.get('previous_hash', ''))[:16]}..."
+  1895→                )
+  1896→                entry_issues.append(issue)
+  1897→
+  1898→            # Check entry_hash
+  1899→            entry_copy = {k: v for k, v in entry.items() if k != "entry_hash"}
+  1900→            canonical = self._make_canonical(entry_copy)
+  1901→            computed_hash = self._compute_hash(canonical)
+  1902→            if entry.get("entry_hash") != computed_hash:
+  1903→                issue = (
+  1904→                    f"Entry {i}: hash mismatch. "
+  1905→                    f"Stored {str(entry.get('entry_hash', ''))[:16]}..., "
+  1906→                    f"computed {computed_hash[:16]}..."
+  1907→                )
+  1908→                entry_issues.append(issue)
+  1909→
+  1910→            if entry_issues:
+  1911→                if first_violation is None:
+  1912→                    first_violation = {
+  1913→                        "entry_index": i,
+  1914→                        "sequence": entry.get("sequence"),
+  1915→                        "issues": entry_issues,
+  1916→                    }
+  1917→                violations.extend(entry_issues)
+  1918→
+  1919→            prev_hash = entry.get("entry_hash", "")
+  1920→            expected_sequence += 1
+  1921→
+  1922→        return {
+  1923→            "valid": len(violations) == 0,
+  1924→            "entries_checked": len(self._entries),
+  1925→            "first_violation": first_violation,
+  1926→            "violations": violations,
+  1927→            "verified_at": datetime.now(timezone.utc).isoformat(),
+  1928→        }
+  1929→
+  1930→    def get_statistics(self) -> Dict[str, Any]:
+  1931→        """Return statistics about logged security events.
+  1932→
+  1933→        Returns:
+  1934→            Dict with keys:
+  1935→            - total_entries: int
+  1936→            - by_level: dict mapping level -> count
+  1937→            - by_event_type: dict mapping event_type -> count
+  1938→            - chain_valid: bool
+  1939→            - first_entry: ISO timestamp of first entry
+  1940→            - last_entry: ISO timestamp of last entry
+  1941→        """
+  1942→        first_ts = (
+  1943→            self._entries[0]["timestamp"]
+  1944→            if self._entries
+  1945→            else None
+  1946→        )
+  1947→        last_ts = (
+  1948→            self._entries[-1]["timestamp"]
+  1949→            if self._entries
+  1950→            else None
+  1951→        )
+  1952→
+  1953→        return {
+  1954→            "total_entries": len(self._entries),
+  1955→            "by_level": dict(self._level_counts),
+  1956→            "by_event_type": dict(self._event_counts),
+  1957→            "chain_valid": self.verify_chain()["valid"],
+  1958→            "first_entry": first_ts,
+  1959→            "last_entry": last_ts,
+  1960→        }
+  1961→
+  1962→    def get_entries(
+  1963→        self,
+  1964→        level: Optional[str] = None,
+  1965→        event_type: Optional[str] = None,
+  1966→        limit: int = 100,
+  1967→        offset: int = 0,
+  1968→    ) -> List[Dict[str, Any]]:
+  1969→        """Query log entries with optional filters.
+  1970→
+  1971→        Args:
+  1972→            level: Filter by level (INFO, WARN, ALERT).
+  1973→            event_type: Filter by event type.
+  1974→            limit: Maximum entries to return.
+  1975→            offset: Skip this many entries from the start.
+  1976→
+  1977→        Returns:
+  1978→            List of matching log entry dicts.
+  1979→        """
+  1980→        filtered: List[Dict[str, Any]] = []
+  1981→        for entry in self._entries:
+  1982→            if level and entry.get("level") != level:
+  1983→                continue
+  1984→            if event_type and entry.get("event_type") != event_type:
+  1985→                continue
+  1986→            filtered.append(dict(entry))
+  1987→
+  1988→        return filtered[offset:offset + limit]
+  1989→
+  1990→    def clear(self) -> None:
+  1991→        """Clear all in-memory entries and reset the chain.
+  1992→
+  1993→        Does NOT delete the on-disk file.
+  1994→        """
+  1995→        with self._lock:
+  1996→            self._entries.clear()
+  1997→            self._last_hash = "GENESIS"
+  1998→            self._sequence = 0
+  1999→            self._event_counts.clear()
+  2000→            self._level_counts = {"INFO": 0, "WARN": 0, "ALERT": 0}
+  2001→
+  2002→
+  2003→# ══════════════════════════════════════════════════════════════════════════════
+  2004→# CONVENIENCE: Create a pre-wired engine instance
+  2005→# ══════════════════════════════════════════════════════════════════════════════
+  2006→
+  2007→
+  2008→def create_hardened_engine(
+  2009→    log_dir: Optional[str] = None,
+  2010→) -> Tuple[SecurityPolicyEngine, PluginSandbox, SecretsManager, TamperEvidenceLogger]:
+  2011→    """Create a fully-wired set of security hardening components.
+  2012→
+  2013→    All four components share a single audit logger and tamper-evident
+  2014→    logger for unified security event tracking.
+  2015→
+  2016→    Args:
+  2017→        log_dir: Override directory for log files. Defaults to ~/.reconpro/
+  2018→
+  2019→    Returns:
+  2020→        Tuple of (policy_engine, plugin_sandbox, secrets_manager, tamper_logger).
+  2021→    """
+  2022→    if log_dir is None:
+  2023→        log_dir = os.path.join(os.path.expanduser("~"), ".reconpro")
+  2024→
+  2025→    audit = SecurityAuditLogger(log_dir=log_dir, module_name="hardening")
+  2026→    tamper = TamperEvidenceLogger(log_dir=log_dir, module_name="hardening")
+  2027→    engine = SecurityPolicyEngine(audit_logger=audit)
+  2028→    sandbox = PluginSandbox(audit_logger=audit)
+  2029→    secrets = SecretsManager(audit_logger=audit)
+  2030→
+  2031→    return engine, sandbox, secrets, tamper
+  2032→

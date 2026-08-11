@@ -1378,6 +1378,7 @@ class WishesOrchestrator:
 
         return "\n".join(lines)
 
+    # DEAD CODE: consider removal
     def get_progress(self) -> List[Dict[str, Any]]:
         """Return the current status of all 22 wishes.
 
@@ -1389,6 +1390,7 @@ class WishesOrchestrator:
 
 # ── Convenience ─────────────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
 def run_wishes_ritual(
     target: str,
     base_url: str,

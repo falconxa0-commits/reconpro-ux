@@ -1831,6 +1831,7 @@ def generate_pdf_report(
 # ── JSON ────────────────────────────────────────────────────────────────
 
 
+# DEAD CODE: consider removal
 def generate_json_report(
     findings: Any,
     output_path: str,
@@ -1898,6 +1899,7 @@ _EXT_MAP: Dict[str, str] = {
 }
 
 
+# DEAD CODE: consider removal
 def generate_report_auto(
     findings: Any,
     output_path: str,
@@ -1956,6 +1958,356 @@ __all__ = [
     "generate_pdf_report",
     "generate_json_report",
     "generate_report_auto",
+    "generate_production_report",
     "_findings_to_dicts",
 ]
 
+
+# ── Production Report Generation (v11) ─────────────────────────────────
+
+
+def generate_production_report(
+    scan_data: Dict[str, Any],
+    format: str = "markdown",
+) -> str:
+    """Generate a comprehensive production report from scan data.
+
+    Supports ``"markdown"`` and ``"json"`` formats.  The report includes:
+      - Executive summary (risk score, grade, top findings)
+      - Module breakdown table
+      - Intelligence analysis summary
+      - Engineering metrics summary
+      - Recommendations
+      - Trend data (from history if available)
+
+    Parameters
+    ----------
+    scan_data : dict
+        Full scan result dictionary (as returned by ``history.get_latest()``).
+    format : str
+        ``"markdown"`` or ``"json"``.
+
+    Returns
+    -------
+    str
+        The generated report string.
+    """
+    if format == "json":
+        return _production_report_json(scan_data)
+    return _production_report_markdown(scan_data)
+
+
+def _production_report_json(scan_data: Dict[str, Any]) -> str:
+    """Build a machine-readable JSON production report."""
+    target = scan_data.get("target", "Unknown")
+    score = scan_data.get("total_score", 0)
+    grade = scan_data.get("grade", "N/A")
+    findings = scan_data.get("findings", [])
+    modules_run = scan_data.get("modules_run", [])
+    severity_counts = scan_data.get("severity_counts", {})
+    ts = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Severity breakdown
+    sev_breakdown = {}
+    for sev in ("critical", "high", "medium", "low", "info"):
+        sev_breakdown[sev] = severity_counts.get(sev, 0)
+
+    # Top findings (critical + high first)
+    sorted_findings = sorted(
+        findings,
+        key=lambda f: _SEVERITY_ORDER.get(str(f.get("severity", "info")).lower(), 0),
+        reverse=True,
+    )
+    top_findings = sorted_findings[:10]
+
+    # Module breakdown
+    module_breakdown = []
+    by_module: Dict[str, List[Dict[str, Any]]] = {}
+    for f in findings:
+        mod = f.get("module", "unknown")
+        by_module.setdefault(mod, []).append(f)
+    for mod in modules_run:
+        mod_findings = by_module.get(mod, [])
+        module_breakdown.append({
+            "module": mod,
+            "total_findings": len(mod_findings),
+            "critical": sum(1 for x in mod_findings if x.get("severity") == "critical"),
+            "high": sum(1 for x in mod_findings if x.get("severity") == "high"),
+            "medium": sum(1 for x in mod_findings if x.get("severity") == "medium"),
+            "low": sum(1 for x in mod_findings if x.get("severity") == "low"),
+        })
+
+    # Recommendations (actionable remediations)
+    recommendations = []
+    seen_fixes: set = set()
+    for f in sorted_findings:
+        if f.get("severity") in ("critical", "high") and f.get("remediation"):
+            fix = f.get("remediation", "").strip()
+            if fix and fix not in seen_fixes:
+                seen_fixes.add(fix)
+                recommendations.append({
+                    "severity": f.get("severity"),
+                    "title": f.get("title", ""),
+                    "remediation": fix[:500],
+                })
+
+    # Trend data
+    trend_data = []
+    try:
+        from .history import list_scans
+        recent = list_scans(target=target, limit=10)
+        for s in recent:
+            trend_data.append({
+                "date": s.get("_saved_at", "")[:16],
+                "score": s.get("total_score", 0),
+                "grade": s.get("grade", "?"),
+                "findings": len(s.get("findings", [])),
+            })
+    except Exception:
+        pass
+
+    report = {
+        "generator": "ReconPro",
+        "version": _VERSION,
+        "timestamp": ts,
+        "report_type": "production",
+        "target": target,
+        "executive_summary": {
+            "risk_score": score,
+            "grade": grade,
+            "total_findings": len(findings),
+            "severity_breakdown": sev_breakdown,
+            "top_findings": top_findings,
+        },
+        "module_breakdown": module_breakdown,
+        "engineering_metrics": {
+            "modules_run": len(modules_run),
+            "modules_total": len(modules_run),
+        },
+        "recommendations": recommendations,
+        "trend": trend_data,
+    }
+
+    return json.dumps(report, indent=2, ensure_ascii=False, default=str)
+
+
+def _production_report_markdown(scan_data: Dict[str, Any]) -> str:
+    """Build a comprehensive Markdown production report."""
+    target = scan_data.get("target", "Unknown")
+    score = scan_data.get("total_score", 0)
+    grade = scan_data.get("grade", "N/A")
+    findings = scan_data.get("findings", [])
+    modules_run = scan_data.get("modules_run", [])
+    severity_counts = scan_data.get("severity_counts", {})
+    module_results = scan_data.get("module_results", {})
+    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    # Sort findings by severity
+    sorted_findings = sorted(
+        findings,
+        key=lambda f: _SEVERITY_ORDER.get(str(f.get("severity", "info")).lower(), 0),
+        reverse=True,
+    )
+    top_findings = sorted_findings[:10]
+
+    # Severity counts
+    crit = severity_counts.get("critical", 0)
+    high = severity_counts.get("high", 0)
+    med = severity_counts.get("medium", 0)
+    low = severity_counts.get("low", 0)
+    info = severity_counts.get("info", 0)
+
+    # Risk posture label
+    if score >= 80:
+        risk_posture = "Low Risk"
+    elif score >= 60:
+        risk_posture = "Moderate Risk"
+    elif score >= 40:
+        risk_posture = "Elevated Risk"
+    else:
+        risk_posture = "High Risk"
+
+    md: List[str] = []
+
+    # ── Header ─────────────────────────────────────────────────────
+    md.append(f"# ReconPro v{_VERSION} Production Security Report")
+    md.append("")
+    md.append(f"**Target:** {target}  ")
+    md.append(f"**Date:** {ts}  ")
+    md.append(f"**Grade:** {grade} ({score}/100)  ")
+    md.append(f"**Risk Posture:** {risk_posture}  ")
+    md.append(f"**Total Findings:** {len(findings)}")
+    md.append("")
+
+    # ── Executive Summary ──────────────────────────────────────────
+    md.append("---")
+    md.append("")
+    md.append("## Executive Summary")
+    md.append("")
+    md.append(
+        f"A security assessment was conducted against **{target}**. "
+        f"The target received an overall security score of **{score}/100** "
+        f"(Grade: **{grade}**), indicating a **{risk_posture}** posture."
+    )
+    md.append("")
+    md.append(
+        f"The assessment identified {crit} critical, {high} high, "
+        f"{med} medium, {low} low, and {info} informational findings "
+        f"across {len(modules_run)} modules."
+    )
+    md.append("")
+
+    if top_findings:
+        md.append("**Top Findings:**")
+        md.append("")
+        for i, f in enumerate(top_findings, 1):
+            sev = f.get("severity", "info").upper()
+            title = f.get("title", "Unknown")
+            md.append(f"{i}. **[{sev}]** {title}")
+        md.append("")
+
+    # ── Severity Overview ──────────────────────────────────────────
+    md.append("---")
+    md.append("")
+    md.append("## Severity Overview")
+    md.append("")
+    md.append("| Severity | Count |")
+    md.append("|----------|-------|")
+    for sev, label in [("critical", "CRITICAL"), ("high", "HIGH"), ("medium", "MEDIUM"), ("low", "LOW"), ("info", "INFO")]:
+        c = severity_counts.get(sev, 0)
+        md.append(f"| {label} | {c} |")
+    md.append("")
+
+    # ── Module Breakdown ───────────────────────────────────────────
+    md.append("---")
+    md.append("")
+    md.append("## Module Breakdown")
+    md.append("")
+    md.append("| Module | Findings | Critical | High | Medium | Low |")
+    md.append("|--------|----------|----------|------|--------|-----|")
+    by_module: Dict[str, List[Dict[str, Any]]] = {}
+    for f in findings:
+        mod = f.get("module", "unknown")
+        by_module.setdefault(mod, []).append(f)
+    for mod in modules_run:
+        mf = by_module.get(mod, [])
+        mc = sum(1 for x in mf if x.get("severity") == "critical")
+        mh = sum(1 for x in mf if x.get("severity") == "high")
+        mm = sum(1 for x in mf if x.get("severity") == "medium")
+        ml = sum(1 for x in mf if x.get("severity") == "low")
+        status = "PASS" if not mf else ("FAIL" if mc > 0 or mh > 0 else "WARN")
+        md.append(f"| {mod} | {len(mf)} ({status}) | {mc} | {mh} | {mm} | {ml} |")
+    md.append("")
+
+    # ── Intelligence Analysis Summary ──────────────────────────────
+    md.append("---")
+    md.append("")
+    md.append("## Intelligence Analysis")
+    md.append("")
+
+    # Category distribution
+    cat_counts: Dict[str, int] = {}
+    for f in findings:
+        cat = f.get("category", "uncategorized")
+        cat_counts[cat] = cat_counts.get(cat, 0) + 1
+    if cat_counts:
+        md.append("### Finding Categories")
+        md.append("")
+        md.append("| Category | Count |")
+        md.append("|----------|-------|")
+        for cat, cnt in sorted(cat_counts.items(), key=lambda x: x[1], reverse=True)[:15]:
+            md.append(f"| {cat} | {cnt} |")
+        md.append("")
+    else:
+        md.append("> No category data available.")
+        md.append("")
+
+    # DREAD analysis for top findings
+    dread_findings = [f for f in top_findings if f.get("dread")]
+    if dread_findings:
+        md.append("### DREAD Risk Analysis (Top Findings)")
+        md.append("")
+        md.append("| Finding | D | R | E | A | D | Avg |")
+        md.append("|---------|---|---|---|---|---|-----|")
+        for f in dread_findings[:8]:
+            d = f.get("dread", {})
+            vals = [d.get(k, 0) for k in ("damage", "reproducibility", "exploitability", "affected_users", "discoverability")]
+            avg = sum(vals) / len(vals) if vals else 0
+            md.append(f"| {f.get('title', '')[:40]} | {vals[0]} | {vals[1]} | {vals[2]} | {vals[3]} | {vals[4]} | {avg:.1f} |")
+        md.append("")
+
+    # ── Engineering Metrics ────────────────────────────────────────
+    md.append("---")
+    md.append("")
+    md.append("## Engineering Metrics")
+    md.append("")
+    md.append(f"- **Modules Executed:** {len(modules_run)}")
+    md.append(f"- **Total Findings:** {len(findings)}")
+    md.append(f"- **Points Deducted:** {100 - score}")
+    md.append(f"- **Score:** {score}/100")
+    md.append("")
+
+    # Module timing if available
+    if module_results:
+        md.append("### Module Timing")
+        md.append("")
+        md.append("| Module | Findings | Duration (s) |")
+        md.append("|--------|----------|-------------|")
+        for mod_id, mod_data in module_results.items():
+            n_findings = len(mod_data.get("findings", []))
+            duration = mod_data.get("duration", 0)
+            md.append(f"| {mod_id} | {n_findings} | {duration:.2f} |")
+        md.append("")
+
+    # ── Recommendations ────────────────────────────────────────────
+    critical_high = [f for f in sorted_findings if f.get("severity") in ("critical", "high")]
+    md.append("---")
+    md.append("")
+    if critical_high:
+        md.append("## Recommendations")
+        md.append("")
+        seen_fixes: set = set()
+        rec_num = 0
+        for f in critical_high:
+            fix = (f.get("remediation") or "").strip()
+            if fix and fix not in seen_fixes:
+                seen_fixes.add(fix)
+                rec_num += 1
+                sev = f.get("severity", "").upper()
+                md.append(f"### {rec_num}. [{sev}] {f.get('title', 'Unknown')}")
+                md.append("")
+                md.append(f"{fix}")
+                md.append("")
+    else:
+        md.append("## Recommendations")
+        md.append("")
+        md.append("> No critical or high-severity findings. Target demonstrates a reasonable security posture.")
+        md.append("")
+
+    # ── Trend Data ─────────────────────────────────────────────────
+    try:
+        from .history import list_scans as _list_scans
+        recent = _list_scans(target=target, limit=10)
+        if len(recent) > 1:
+            md.append("---")
+            md.append("")
+            md.append("## Score Trend")
+            md.append("")
+            md.append("| Date | Score | Grade | Findings |")
+            md.append("|------|-------|-------|----------|")
+            for s in recent:
+                md.append(
+                    f"| {s.get('_saved_at', '')[:16]} | {s.get('total_score', '?')} | "
+                    f"{s.get('grade', '?')} | {len(s.get('findings', []))} |"
+                )
+            md.append("")
+    except Exception:
+        pass
+
+    # ── Footer ─────────────────────────────────────────────────────
+    md.append("---")
+    md.append("")
+    md.append(f"*Generated by ReconPro v{_VERSION} — {ts}*")
+    md.append("")
+
+    return "\n".join(md)

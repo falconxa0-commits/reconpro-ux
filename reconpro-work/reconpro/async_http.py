@@ -690,6 +690,7 @@ class AsyncSession:
 # ── async_probe ─────────────────────────────────────────────────────────
 
 
+# DEAD CODE: consider removal
 async def async_probe(
     url: str,
     method: str = "GET",
@@ -779,6 +780,7 @@ async def async_probe(
 # ── probe_sync ──────────────────────────────────────────────────────────
 
 
+# DEAD CODE: consider removal
 def probe_sync(
     url: str,
     method: str = "GET",
@@ -862,6 +864,7 @@ async def batch_probe(
     _limiter = limiter or default_adaptive_limiter
     semaphore = asyncio.Semaphore(concurrency)
 
+    # DEAD CODE: consider removal
     async def _bounded_probe(url: str) -> Dict[str, Any]:
         """Probe a single URL under the concurrency semaphore."""
         async with semaphore:

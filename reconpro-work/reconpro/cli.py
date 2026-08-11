@@ -4,6 +4,8 @@ import argparse
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -18,8 +20,10 @@ from .scanner import (
     ALL_MODULES, DEFAULT_MODULES, DEFAULT_LOCAL_MODULES,
 )
 from .engine import scan, audit_scan
+from .engine import _module_health
+from .registry import visualize_dependencies, get_execution_order, MODULE_DEPENDENCIES
 from .history import list_scans, get_latest, diff_scans, save_scan, clear_history
-from .reports import generate_html_report
+from .reports import generate_html_report, generate_production_report
 from .parallel import blitz_scan
 
 console = Console()
@@ -38,6 +42,49 @@ BANNER = r"""[bold bright_white]
 
 
 # ── Rich rendering ──────────────────────────────────────────────────────
+
+
+def _render_engineering_panel(result) -> None:
+    """Display engineering pipeline results in a Rich panel.
+
+    Shows engineering score, quality intelligence, stage summary, and
+    top recommendations.  Used by audit, scan, and implicit scan commands.
+    """
+    if result.engineering:
+        eng = result.engineering
+        eng_metrics = eng.get('metrics', {})
+        passed = eng_metrics.get('passed', 0)
+        total = eng_metrics.get('total_stages', 0)
+        failed = eng_metrics.get('failed', 0)
+        eng_score = eng.get('engineering_score', result.engineering_score)
+        qi_score = eng.get('quality_score', 0)
+        rec_count = eng.get('recommendations_count', 0)
+        score_color = "bright_green" if eng_score >= 70 else "yellow" if eng_score >= 40 else "bright_red"
+
+        lines = [
+            f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]  |  "
+            f"Engineering Score: [bold {score_color}]{eng_score:.1f}/100[/]  |  "
+            f"Duration: {eng.get('total_duration_s', 0):.2f}s",
+            f"Stages: {passed}/{total} passed" + (f"  |  {failed} failed" if failed else ""),
+        ]
+        if qi_score > 0:
+            lines.append(f"Quality Score: {qi_score:.1f}/100  (Grade: {eng.get('quality_grade', 'N/A')})")
+        if rec_count > 0:
+            lines.append(f"Recommendations: {rec_count}")
+
+        console.print(Panel(
+            "\n".join(lines),
+            title="[bold]ENGINEERING PIPELINE[/bold]",
+            border_style="bright_cyan",
+        ))
+    elif result.engineering_score > 0:
+        # Show engineering score even without full pipeline
+        score_color = "bright_green" if result.engineering_score >= 70 else "yellow" if result.engineering_score >= 40 else "bright_red"
+        console.print(Panel(
+            f"Engineering Score: [bold {score_color}]{result.engineering_score:.1f}/100[/]",
+            title="[bold]ENGINEERING SCORE[/bold]",
+            border_style="bright_cyan",
+        ))
 
 
 def _render_summary(result, title: str = "RECONPRO") -> None:
@@ -227,6 +274,251 @@ def _print_findings(findings, args, title: str = "SCAN") -> None:
     console.print()
 
 
+# ── Dashboard data collection ──────────────────────────────────────────
+
+
+def _collect_dashboard_data() -> dict:
+    """Gather all metrics for the status dashboard.
+
+    Returns a dict with keys:
+      security_score, security_grade, module_health_pct,
+      healthy_modules, total_modules, quality_score, engineering_score,
+      coverage, regression_status, regression_count, memory_entries,
+      last_scan_ago, architecture_score
+    """
+    data: dict = {}
+
+    # ── Security score from latest scan ───────────────────────────
+    latest = get_latest()
+    if latest:
+        data["security_score"] = latest.get("total_score", 0)
+        data["security_grade"] = latest.get("grade", "N/A")
+        data["last_scan_target"] = latest.get("target", "")
+        saved_at = latest.get("_saved_at", "")
+        if saved_at:
+            try:
+                dt = datetime.fromisoformat(saved_at)
+                ago = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+                data["last_scan_ago"] = _format_ago(ago)
+                data["last_scan_seconds"] = ago
+            except Exception:
+                data["last_scan_ago"] = "unknown"
+                data["last_scan_seconds"] = None
+        else:
+            data["last_scan_ago"] = "unknown"
+            data["last_scan_seconds"] = None
+    else:
+        data["security_score"] = None
+        data["security_grade"] = "N/A"
+        data["last_scan_ago"] = "no scans"
+        data["last_scan_seconds"] = None
+        data["last_scan_target"] = ""
+
+    # ── Module health from engine ─────────────────────────────────
+    try:
+        from .engine import _module_health
+        all_mods = set(ALL_MODULES) | set(LOCAL_MODULES.keys())
+        healthy = sum(1 for m in all_mods if _module_health.is_healthy(m))
+        total = len(all_mods)
+        data["healthy_modules"] = healthy
+        data["total_modules"] = total
+        data["module_health_pct"] = round(healthy / total * 100, 0) if total else 0
+    except Exception:
+        data["healthy_modules"] = 0
+        data["total_modules"] = 0
+        data["module_health_pct"] = 0
+
+    # ── Quality score from repository memory / quality intelligence ──
+    data["quality_score"] = None
+    data["engineering_score"] = None
+    data["coverage"] = None
+    data["architecture_score"] = None
+    try:
+        from .repository_memory import RepositoryMemory
+        mem = RepositoryMemory()
+        q_fact = mem.recall("quality.composite_score")
+        if q_fact:
+            val = q_fact.value
+            if isinstance(val, (int, float)):
+                data["quality_score"] = int(val)
+        e_fact = mem.recall("engineering.pipeline_score")
+        if e_fact:
+            val = e_fact.value
+            if isinstance(val, (int, float)):
+                data["engineering_score"] = int(val)
+        c_fact = mem.recall("quality.coverage")
+        if c_fact:
+            val = c_fact.value
+            if isinstance(val, (int, float)):
+                data["coverage"] = int(val)
+        a_fact = mem.recall("engineering.architecture_score")
+        if a_fact:
+            val = a_fact.value
+            if isinstance(val, (int, float)):
+                data["architecture_score"] = int(val)
+    except Exception:
+        pass
+
+    # Fallback: try quality_intelligence snapshot file
+    if data["quality_score"] is None:
+        try:
+            from .constants import MEMORY_DIR
+            snap_file = MEMORY_DIR / "quality_snapshots.json"
+            if snap_file.exists():
+                with open(snap_file) as f:
+                    snapshots = json.load(f)
+                if isinstance(snapshots, list) and snapshots:
+                    last_snap = snapshots[-1]
+                    data["quality_score"] = int(last_snap.get("composite_score", 0))
+                    dims = last_snap.get("dimensions", {})
+                    cov = dims.get("coverage", {}).get("score")
+                    if cov:
+                        data["coverage"] = int(cov)
+        except Exception:
+            pass
+
+    # ── Regression status ─────────────────────────────────────────
+    data["regression_status"] = "STABLE"
+    data["regression_count"] = 0
+    try:
+        from .regression_intelligence import RegressionIntelligence
+        ri = RegressionIntelligence()
+        regressions = ri.detect_regression()
+        if regressions:
+            data["regression_count"] = len(regressions)
+            data["regression_status"] = "UNSTABLE"
+    except Exception:
+        pass
+
+    # ── Memory entries ─────────────────────────────────────────────
+    data["memory_entries"] = 0
+    try:
+        from .repository_memory import RepositoryMemory
+        mem = RepositoryMemory()
+        data["memory_entries"] = mem.count()
+    except Exception:
+        pass
+
+    return data
+
+
+def _format_ago(seconds: float) -> str:
+    """Format a duration in seconds as a human-readable string."""
+    if seconds < 60:
+        return f"{int(seconds)} seconds ago"
+    if seconds < 3600:
+        m = int(seconds // 60)
+        s = int(seconds % 60)
+        return f"{m} minute{'' if m == 1 else 's'} ago"
+    if seconds < 86400:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h}h {m}m ago"
+    d = int(seconds // 86400)
+    h = int((seconds % 86400) // 3600)
+    return f"{d}d {h}h ago"
+
+
+def _render_dashboard(data: dict) -> None:
+    """Render the status dashboard using rich.Panel and rich.Table."""
+    # ── Main status panel ─────────────────────────────────────────
+    score = data.get("security_score")
+    grade = data.get("security_grade", "N/A")
+    grade_color = GRADE_COLORS.get(grade, "bold bright_red")
+    score_str = f"{score}/100 ({grade})" if score is not None else "N/A (no scans)"
+
+    health_pct = data.get("module_health_pct", 0)
+    healthy = data.get("healthy_modules", 0)
+    total = data.get("total_modules", 0)
+    health_color = "green" if health_pct >= 80 else ("yellow" if health_pct >= 50 else "red")
+
+    quality = data.get("quality_score")
+    quality_str = f"{quality}/100" if quality is not None else "N/A"
+
+    eng = data.get("engineering_score")
+    eng_str = f"{eng}/100" if eng is not None else "N/A"
+
+    cov = data.get("coverage")
+    cov_str = f"{cov}%" if cov is not None else "N/A"
+
+    reg_status = data.get("regression_status", "STABLE")
+    reg_count = data.get("regression_count", 0)
+    reg_color = "green" if reg_status == "STABLE" else "red"
+    reg_str = f"{reg_status} ({reg_count} regression{'' if reg_count == 1 else 's'})"
+
+    mem_count = data.get("memory_entries", 0)
+    mem_str = f"{mem_count:,}"
+
+    last_scan = data.get("last_scan_ago", "no scans")
+
+    arch = data.get("architecture_score")
+    arch_str = f"{arch}/100" if arch is not None else "N/A"
+
+    main_table = Table(show_header=False, box=None, border_style="bright_cyan", padding=(0, 2))
+    main_table.add_column("Label", style="bold bright_white", width=22)
+    main_table.add_column("Value", style="bright_white")
+    main_table.add_row("Security Score:", f"[{grade_color}]{score_str}[/{grade_color}]")
+    main_table.add_row("Module Health:", f"[{health_color}]{health_pct:.0f}% ({healthy}/{total} healthy)[/{health_color}]")
+    main_table.add_row("Quality Score:", quality_str)
+    main_table.add_row("Engineering Score:", eng_str)
+    main_table.add_row("Coverage:", cov_str)
+    main_table.add_row("Regression Status:", f"[{reg_color}]{reg_str}[/{reg_color}]")
+    main_table.add_row("Memory Entries:", mem_str)
+    main_table.add_row("Last Scan:", last_scan)
+    main_table.add_row("Architecture Score:", arch_str)
+
+    console.print(Panel(
+        main_table,
+        title=f"[bold bright_white]RECONPRO v{__version__} STATUS DASHBOARD[/bold bright_white]",
+        border_style="bright_cyan",
+        title_align="center",
+        padding=(1, 2),
+    ))
+
+    # ── Module health breakdown ────────────────────────────────────
+    try:
+        from .engine import _module_health
+        status = _module_health.get_status()
+        if status:
+            t = Table(title="Module Health Detail", border_style="dim", header_style="bold dim")
+            t.add_column("Module", style="cyan", width=22)
+            t.add_column("Failures", justify="right", width=10)
+            t.add_column("Status", width=12)
+            for mid, info in sorted(status.items()):
+                fail_count = info.get("failure_count", 0)
+                is_healthy = info.get("is_healthy", True)
+                status_str = "[green]HEALTHY[/]" if is_healthy else "[red]UNHEALTHY[/]"
+                t.add_row(mid, str(fail_count), status_str)
+            console.print()
+            console.print(t)
+    except Exception:
+        pass
+
+    # ── Recent scans ───────────────────────────────────────────────
+    recent = list_scans(limit=5)
+    if recent:
+        t = Table(title="Recent Scans", border_style="dim", header_style="bold dim")
+        t.add_column("Date", style="dim", width=16)
+        t.add_column("Target", style="cyan", width=25)
+        t.add_column("Score", style="bold", width=8)
+        t.add_column("Grade", style="bold", width=6)
+        t.add_column("Findings", width=10)
+        for s in recent:
+            g = s.get("grade", "?")
+            gc = GRADE_COLORS.get(g, "white")
+            t.add_row(
+                s.get("_saved_at", "?")[:16],
+                s.get("target", "?")[:25],
+                str(s.get("total_score", "?")),
+                f"[{gc}]{g}[/{gc}]",
+                str(len(s.get("findings", []))),
+            )
+        console.print()
+        console.print(t)
+
+    console.print()
+
+
 # ── CLI entry point ─────────────────────────────────────────────────────
 
 
@@ -299,6 +591,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--insecure", "-k", action="store_true")
     p.add_argument("--rate-limit", type=float, default=10.0)
     p.add_argument("--engineering", action="store_true", help="Run engineering pipeline after scan")
+    p.add_argument("--intelligence", action="store_true", help="Enable intelligence pipeline (default: on)")
+    p.add_argument("--no-intelligence", action="store_true", help="Disable intelligence pipeline")
+    p.add_argument("--quality", action="store_true", help="Enable quality intelligence scoring")
+    p.add_argument("--defense", action="store_true", help="Enable prompt defense validation on AI inputs")
 
     # ── vibesec ───────────────────────────────────────────────────
     p = sub.add_parser("vibesec", help="Quick VibeSec benchmark")
@@ -315,6 +611,10 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--json", dest="json_output", action="store_true")
     p.add_argument("-o", "--output", dest="output_file", type=str)
     p.add_argument("--engineering", action="store_true", help="Run engineering pipeline after audit")
+    p.add_argument("--intelligence", action="store_true", help="Enable intelligence pipeline (default: on)")
+    p.add_argument("--no-intelligence", action="store_true", help="Disable intelligence pipeline")
+    p.add_argument("--quality", action="store_true", help="Enable quality intelligence scoring")
+    p.add_argument("--defense", action="store_true", help="Enable prompt defense validation on AI inputs")
 
     # ── dev ───────────────────────────────────────────────────────
     p = sub.add_parser("dev", help="Developer project scan (secrets, deps, git, docker)")
@@ -377,8 +677,16 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--port", "-p", type=int, default=7890)
 
     # ── report ────────────────────────────────────────────────────
-    p = sub.add_parser("report", help="Generate HTML report from last scan")
+    p = sub.add_parser("report", help="Generate production report (markdown/JSON/HTML) from last scan")
     p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output JSON report")
+    p.add_argument("--html", action="store_true", help="Output HTML report (default if omitted without --json)")
+    p.add_argument("--markdown", action="store_true", help="Output Markdown report (default text format)")
+    p.add_argument("-o", "--output", dest="output_file", type=str, help="Write report to file instead of stdout")
+
+    # ── dashboard ─────────────────────────────────────────────────
+    p = sub.add_parser("dashboard", help="Unified status dashboard")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
 
     # ── history ───────────────────────────────────────────────────
     p = sub.add_parser("history", help="View scan history")
@@ -672,6 +980,15 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--detect", action="store_true", help="Detect regressions vs baseline")
     p.add_argument("--report", action="store_true", help="Generate regression report")
     p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    # ── health ──────────────────────────────────────────────────
+    p_health = sub.add_parser("health", help="Show module health scores and circuit breaker status")
+    p_health.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+
+    # ── deps ────────────────────────────────────────────────────
+    p_deps = sub.add_parser("deps", help="Visualize module dependency graph")
+    p_deps.add_argument("--modules", "-m", type=str, default=None, help="Comma-separated module list (default: all)")
+    p_deps.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
 
     # ── Parse ─────────────────────────────────────────────────────
     global _cli_args
@@ -1290,19 +1607,57 @@ def main(argv: list[str] | None = None) -> None:
         run_server(port=args.port)
         return
 
-    # ── REPORT ─────────────────────────────────────────────────────
+    # ── DASHBOARD ───────────────────────────────────────────────
+    if cmd == "dashboard":
+        if getattr(args, "json_output", False):
+            data = _collect_dashboard_data()
+            # Remove internal keys not useful for JSON output
+            data.pop("last_scan_seconds", None)
+            console.print_json(data=data)
+        else:
+            data = _collect_dashboard_data()
+            _render_dashboard(data)
+        return
+
+    # ── REPORT ──────────────────────────────────────────────────
     if cmd == "report":
         data = None
         if getattr(args, "input", None):
+            import json as _json_load
             with open(args.input) as f:
-                data = json.load(f)
+                data = _json_load.load(f)
         else:
             data = get_latest()
         if not data:
             console.print("  [yellow]No scan data. Run a scan first or use -i <file>.[/]")
             sys.exit(1)
-        path = _spinner_wrap("Generating HTML report...", generate_html_report, data)
-        console.print(f"  [green]Report saved: [cyan]{path}[/][/]")
+
+        use_json = getattr(args, "json_output", False)
+        use_html = getattr(args, "html", False)
+        use_md = getattr(args, "markdown", False)
+        output_file = getattr(args, "output_file", None)
+
+        # Default: markdown to stdout unless --html or --json
+        if use_json:
+            report = generate_production_report(data, format="json")
+            if output_file:
+                with open(output_file, "w") as fp:
+                    fp.write(report)
+                console.print(f"  [green]JSON report saved: [cyan]{output_file}[/][/]")
+            else:
+                console.print(report)
+        elif use_html:
+            path = _spinner_wrap("Generating HTML report...", generate_html_report, data)
+            console.print(f"  [green]Report saved: [cyan]{path}[/][/]")
+        else:
+            # Markdown report (default)
+            report = generate_production_report(data, format="markdown")
+            if output_file:
+                with open(output_file, "w") as fp:
+                    fp.write(report)
+                console.print(f"  [green]Markdown report saved: [cyan]{output_file}[/][/]")
+            else:
+                console.print(report)
         return
 
     # ── HISTORY ───────────────────────────────────────────────────
@@ -1410,18 +1765,22 @@ def main(argv: list[str] | None = None) -> None:
         _banner(args)
         modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
         run_eng = getattr(args, "engineering", False)
+        run_intel = not getattr(args, "no_intelligence", False)
+        run_qual = getattr(args, "quality", False)
+        run_def = getattr(args, "defense", False)
         result = _spinner_wrap("Auditing machine...", audit_scan, target="localhost", modules=modules,
-                                run_engineering=run_eng)
+                                run_engineering=run_eng, run_intelligence=run_intel,
+                                run_quality=run_qual, run_defense=run_def)
         _output_result(result, args, title="HOST AUDIT", show_remediation=True)
-        if run_eng and result.engineering:
-            eng = result.engineering
+        if result.quality:
+            qs = result.quality.get("composite_score", 0)
             console.print(Panel(
-                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
-                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
-                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
-                title="[bold]ENGINEERING PIPELINE[/bold]",
-                border_style="bright_cyan",
+                f"Quality Score: [bold]{qs:.1f}/100[/bold]",
+                title="[bold]QUALITY INTELLIGENCE[/bold]",
+                border_style="bright_green",
             ))
+        if run_eng:
+            _render_engineering_panel(result)
         return
 
     # ── DEV ────────────────────────────────────────────────────────
@@ -1507,20 +1866,24 @@ def main(argv: list[str] | None = None) -> None:
         modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
         _banner(args)
         run_eng = getattr(args, "engineering", False)
+        run_intel = not getattr(args, "no_intelligence", False)
+        run_qual = getattr(args, "quality", False)
+        run_def = getattr(args, "defense", False)
         result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
                                 all_modules=args.all, timeout=args.timeout,
                                 verify_tls=not args.insecure, rate_limit=args.rate_limit,
-                                run_engineering=run_eng)
+                                run_engineering=run_eng, run_intelligence=run_intel,
+                                run_quality=run_qual, run_defense=run_def)
         _output_result(result, args)
-        if run_eng and result.engineering:
-            eng = result.engineering
+        if result.quality:
+            qs = result.quality.get("composite_score", 0)
             console.print(Panel(
-                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
-                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
-                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
-                title="[bold]ENGINEERING PIPELINE[/bold]",
-                border_style="bright_cyan",
+                f"Quality Score: [bold]{qs:.1f}/100[/bold]",
+                title="[bold]QUALITY INTELLIGENCE[/bold]",
+                border_style="bright_green",
             ))
+        if run_eng:
+            _render_engineering_panel(result)
         return
 
     # ── Implicit scan (no subcommand) ──────────────────────────────
@@ -1530,20 +1893,17 @@ def main(argv: list[str] | None = None) -> None:
         modules = [m.strip().lower() for m in scan_args.modules.split(",")] if scan_args.modules else None
         _banner(scan_args)
         run_eng = getattr(scan_args, "engineering", False)
+        run_intel = not getattr(scan_args, "no_intelligence", False)
+        run_qual = getattr(scan_args, "quality", False)
+        run_def = getattr(scan_args, "defense", False)
         result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
                                 all_modules=scan_args.all, timeout=scan_args.timeout,
                                 verify_tls=not scan_args.insecure, rate_limit=scan_args.rate_limit,
-                                run_engineering=run_eng)
+                                run_engineering=run_eng, run_intelligence=run_intel,
+                                run_quality=run_qual, run_defense=run_def)
         _output_result(result, scan_args)
-        if run_eng and result.engineering:
-            eng = result.engineering
-            console.print(Panel(
-                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
-                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
-                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
-                title="[bold]ENGINEERING PIPELINE[/bold]",
-                border_style="bright_cyan",
-            ))
+        if run_eng:
+            _render_engineering_panel(result)
         return
 
     # ── ZAI (z.ai live stream) ──────────────────────────────────────
@@ -2074,14 +2434,71 @@ def main(argv: list[str] | None = None) -> None:
         if getattr(args, "json_output", False):
             console.print(_json.dumps(result.to_dict(), indent=2, default=str))
         else:
+            # Build detailed engineering output
+            total_stages = len(result.stages)
+            passed = result.metrics.get("passed", 0)
+            failed = result.metrics.get("failed", 0)
+            eng_score = result.engineering_score
+            score_color = "bright_green" if eng_score >= 70 else "yellow" if eng_score >= 40 else "bright_red"
+
+            # Stage breakdown table
+            stage_table = Table(border_style="dim", header_style="bold", show_lines=False)
+            stage_table.add_column("Stage", style="cyan", max_width=30)
+            stage_table.add_column("Status", justify="center", max_width=10)
+            stage_table.add_column("Duration", justify="right", max_width=10)
+            for sr in result.stages:
+                st_color = "green" if sr.status == "pass" else "red" if sr.status == "fail" else "yellow"
+                stage_table.add_row(sr.stage.value, f"[{st_color}]{sr.status}[/{st_color}]", f"{sr.duration_s:.3f}s")
+
+            # Quality intelligence detail
+            qi_lines = []
+            if result.quality_score > 0:
+                qi_color = "bright_green" if result.quality_score >= 70 else "yellow" if result.quality_score >= 40 else "bright_red"
+                qi_lines.append(f"Quality Score: [bold {qi_color}]{result.quality_score:.1f}/100[/] (Grade: {result.quality_grade or 'N/A'})")
+                # Find quality intelligence stage data
+                for sr in result.stages:
+                    if sr.stage.value == "quality_intelligence" and sr.data:
+                        qi_lines.append(f"Files Analyzed: {sr.data.get('files_analyzed', 0)}")
+                        qi_lines.append(f"Total LOC: {sr.data.get('total_loc', 0)}")
+                        sec_issues = sr.data.get('security_issues_total', 0)
+                        if sec_issues > 0:
+                            qi_lines.append(f"[red]Security Issues: {sec_issues}[/]")
+                        gate = sr.data.get('gate_result', {})
+                        if gate:
+                            gate_passed = gate.get('passed', None)
+                            if gate_passed is not None:
+                                g_status = "[green]PASSED[/]" if gate_passed else "[red]FAILED[/]"
+                                qi_lines.append(f"Quality Gate: {g_status}")
+                        trend = sr.data.get('trend')
+                        if trend:
+                            qi_lines.append(f"Trend: {trend.get('direction', 'N/A').upper()}")
+                        break
+
+            # Recommendations summary
+            rec_lines = []
+            if result.recommendations_count > 0:
+                rec_lines.append(f"[yellow]{result.recommendations_count} recommendation(s) generated[/]")
+                for sr in result.stages:
+                    if sr.stage.value == "recommendations" and sr.data:
+                        for rec in sr.data.get("recommendations", [])[:5]:
+                            sev = rec.get("severity", "info")
+                            sev_c = "red" if sev == "critical" else "yellow" if sev in ("high", "medium") else "green"
+                            rec_lines.append(f"  [{sev_c}]{sev.upper()}[/{sev_c}] {rec.get('title', 'N/A')}")
+                        break
+
             console.print(Panel(
-                f"Status: [bold]{result.overall_status.upper()}[/bold]\n"
-                f"Stages: {result.stages_run}/{result.total_stages}\n"
-                f"Duration: {result.total_duration:.2f}s\n"
-                f"Failures: {sum(1 for s in result.stage_results.values() if s.status == 'fail')}",
+                Group(
+                    Text(f"Status: [bold]{result.overall_status.upper()}[/bold]  |  "
+                         f"Engineering Score: [bold {score_color}]{eng_score:.1f}/100[/]  |  "
+                         f"Duration: {result.total_duration_s:.2f}s"),
+                    Text(f"Stages: {passed}/{total_stages} passed" + (f"  |  {failed} failed" if failed else "")),
+                    *(Text(l) for l in qi_lines) if qi_lines else (),
+                    *(Text(l) for l in rec_lines) if rec_lines else (),
+                ),
                 title="[bold]ENGINEERING PIPELINE[/bold]",
                 border_style="bright_cyan",
             ))
+            console.print(stage_table)
         return
 
     if cmd == "validate":
@@ -2140,12 +2557,57 @@ def main(argv: list[str] | None = None) -> None:
             if not active:
                 console.print("\n  [green]No recommendations. Everything looks good.[/]")
             else:
-                for r in active[:20]:
-                    sev_color = "red" if r.severity == "critical" else "yellow" if r.severity == "high" else "green"
-                    console.print(f"  [{sev_color}]{r.severity.upper()}[/{sev_color}] {r.title}")
+                # Summary stats
+                stats = recommender.get_recommendation_stats()
+                console.print(Panel(
+                    f"Active: [bold]{stats['active']}[/]  |  "
+                    f"Dismissed: {stats['dismissed']}  |  "
+                    f"Avg Priority: [bold]{stats.get('average_priority', 0):.1f}[/]  |  "
+                    f"Avg Confidence: {stats.get('average_confidence', 0):.0%}",
+                    title="[bold]RECOMMENDATIONS[/bold]",
+                    border_style="bright_cyan",
+                ))
+
+                # Actionable table
+                rec_table = Table(border_style="dim", header_style="bold", show_lines=False)
+                rec_table.add_column("#", justify="right", style="dim", max_width=4)
+                rec_table.add_column("Severity", justify="center", max_width=10)
+                rec_table.add_column("Recommendation", style="white")
+                rec_table.add_column("Category", style="cyan", max_width=14)
+                rec_table.add_column("Effort", justify="center", max_width=8)
+                rec_table.add_column("Confidence", justify="right", max_width=10)
+                rec_table.add_column("Priority", justify="right", max_width=8)
+
+                for idx, r in enumerate(active[:20], 1):
+                    sev_color = "red" if r.severity == "critical" else "yellow" if r.severity in ("high", "medium") else "green"
+                    rec_table.add_row(
+                        str(idx),
+                        f"[{sev_color}]{r.severity.upper()}[/{sev_color}]",
+                        r.title,
+                        r.category,
+                        r.effort_estimate,
+                        f"{r.confidence:.0%}",
+                        f"{r.priority_score:.1f}",
+                    )
+                console.print(rec_table)
+
+                # Show detailed description for top 3
+                console.print()
+                console.print("  [bold]Top Actionable Items:[/bold]")
+                for r in active[:3]:
+                    sev_color = "red" if r.severity == "critical" else "yellow" if r.severity in ("high", "medium") else "green"
+                    console.print(f"\n  [{sev_color}]{r.severity.upper()}[/{sev_color}] {r.title}")
+                    if r.description:
+                        # Show first 200 chars of description
+                        desc = r.description[:200] + ("..." if len(r.description) > 200 else "")
+                        console.print(f"    [dim]{desc}[/]")
                     if r.affected_files:
-                        console.print(f"    [dim]Files: {', '.join(r.affected_files[:3])}[/]")
-                console.print(f"\n  [dim]Total: {len(active)} recommendations[/]")
+                        files_str = ", ".join(r.affected_files[:3])
+                        console.print(f"    [cyan]Files:[/] {files_str}")
+                    console.print(f"    [dim]Effort: {r.effort_estimate} | Confidence: {r.confidence:.0%} | ID: {r.id}[/]")
+
+                console.print(f"\n  [dim]Total: {len(active)} active recommendations (showing top 20)[/]")
+                console.print("  [dim]Use: reconpro recommendations --dismiss ID to dismiss a recommendation[/]")
         return
 
     if cmd == "memory":
@@ -2253,6 +2715,73 @@ def main(argv: list[str] | None = None) -> None:
             console.print(Panel(report, title="[bold]REGRESSION REPORT[/bold]", border_style="bright_cyan"))
             return
         console.print("  Use: reconpro regression --baseline | --detect | --report")
+        return
+
+    # ── HEALTH ─────────────────────────────────────────────────
+    if cmd == "health":
+        import json as _json
+        health = _module_health.get_all_module_health()
+        if getattr(args, "json_output", False):
+            console.print(_json.dumps(health, indent=2, default=str))
+        else:
+            if not health:
+                console.print("  [green]All modules healthy — no failures recorded.[/]")
+                console.print("  [dim]Run a scan first to populate health data.[/]")
+            else:
+                table = Table(title="Module Health", show_header=True, header_style="bold")
+                table.add_column("Module", style="cyan")
+                table.add_column("Score", justify="right")
+                table.add_column("Status")
+                table.add_column("Fails")
+                table.add_column("Consec")
+                table.add_column("Quarantine")
+                for mid, info in sorted(health.items()):
+                    score = info["health_score"]
+                    score_color = "green" if score >= 0.8 else "yellow" if score >= 0.5 else "red"
+                    if info["is_quarantined"]:
+                        status = "[red]QUARANTINED[/]"
+                    elif not info["is_healthy"]:
+                        status = "[yellow]CIRCUIT OPEN[/]"
+                    elif info.get("is_probe"):
+                        status = "[bright_cyan]PROBE[/]"
+                    else:
+                        status = "[green]OK[/]"
+                    qr = info["quarantine_remaining_s"]
+                    q_str = f"{qr:.0f}s" if qr > 0 else "—"
+                    table.add_row(
+                        mid,
+                        f"[{score_color}]{score:.2f}[/{score_color}]",
+                        status,
+                        str(info["failure_count"]),
+                        str(info["consecutive_failures"]),
+                        q_str,
+                    )
+                console.print(table)
+        console.print()
+        return
+
+    # ── DEPS ───────────────────────────────────────────────────
+    if cmd == "deps":
+        import json as _json
+        mods_arg = getattr(args, "modules", None)
+        if mods_arg:
+            mod_list = [m.strip().lower() for m in mods_arg.split(",")]
+        else:
+            mod_list = None
+        if getattr(args, "json_output", False):
+            out = {
+                "dependencies": {k: v for k, v in MODULE_DEPENDENCIES.items() if mod_list is None or k in mod_list},
+            }
+            try:
+                if mod_list:
+                    out["execution_order"] = get_execution_order(mod_list)
+            except ValueError as e:
+                out["error"] = str(e)
+            console.print(_json.dumps(out, indent=2))
+        else:
+            graph = visualize_dependencies(mod_list)
+            console.print(Panel(graph, title="[bold]MODULE DEPENDENCY GRAPH[/bold]", border_style="bright_cyan", padding=(1, 2)))
+        console.print()
         return
 
     # ── No args ─────────────────────────────────────────────────────

@@ -33,6 +33,7 @@ def _require_playwright() -> None:
         )
 
 
+# DEAD CODE: consider removal
 def take_screenshot(url: str, output_path: str = "", full_page: bool = True,
                      timeout: int = 30000) -> str:
     """Take a screenshot of a URL. Returns the file path."""
@@ -53,6 +54,8 @@ def take_screenshot(url: str, output_path: str = "", full_page: bool = True,
     return os.path.abspath(output_path)
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def spider(url: str, max_pages: int = 50, timeout: int = 15000) -> List[Dict[str, Any]]:
     """Crawl a website and return discovered pages.
 

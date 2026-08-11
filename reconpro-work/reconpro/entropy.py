@@ -437,6 +437,7 @@ class SecretClassifier:
         return has_upper and has_lower and has_digit
 
     @staticmethod
+    # DEAD CODE: consider removal
     def _infer_type(signals: List[str], value: str) -> str:
         """Guess the secret type from context signals when no prefix matched."""
         for sig in signals:
@@ -477,6 +478,7 @@ _ASSIGNMENT_RE = re.compile(
 _ENTROPY_FLOOR = 2.5
 
 
+# DEAD CODE: consider removal
 def scan_string(
     value: str,
     variable_name: str = "",
@@ -505,6 +507,7 @@ def scan_string(
     return result
 
 
+# DEAD CODE: consider removal
 def scan_file(path: str) -> List[SecretMatch]:
     """Read a file, extract string literals, and classify each as a potential secret.
 
@@ -668,6 +671,7 @@ def scan_directory(
 
 # ── File Entropy Analysis ─────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
 def file_entropy(filepath: str) -> Dict[str, Any]:
     """Calculate Shannon entropy of a file. Returns {entropy, bits_per_byte, size, path, assessment}."""
     try:
@@ -687,6 +691,7 @@ def file_entropy(filepath: str) -> Dict[str, Any]:
         return {"entropy": 0.0, "bits_per_byte": 0.0, "size": 0, "path": filepath, "assessment": f"error: {e}"}
 
 
+# DEAD CODE: consider removal
 def directory_entropy_scan(directory: str, extensions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Scan all files in a directory for high entropy (potential encrypted/compiled secrets)."""
     results = []

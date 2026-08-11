@@ -614,6 +614,7 @@ def compare_with_last(target: str) -> Optional[DeltaReport]:
     return reporter.compare(scan_a, scan_b)
 
 
+# DEAD CODE: consider removal
 def generate_delta_report(target: str, format: str = "markdown") -> str:
     """Generate a delta report string for *target*.
 
@@ -649,6 +650,8 @@ import time as _time
 
 _SNAPSHOT_DIR = Path.home() / ".reconpro" / "snapshots"
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def save_snapshot(data: Dict[str, Any], label: str = "", target: str = "") -> str:
     """Save a scan result as a named snapshot for comparison."""
     _SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -677,6 +680,7 @@ def list_snapshots(target: str = "") -> List[Dict[str, str]]:
         result = [s for s in result if s["target"] == target]
     return result
 
+# DEAD CODE: consider removal
 def load_snapshot(path: str) -> Optional[Dict[str, Any]]:
     """Load a specific snapshot."""
     try:

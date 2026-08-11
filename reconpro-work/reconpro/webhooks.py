@@ -687,6 +687,7 @@ class WebhookServer(HTTPServer):
         self.port = port
         super().__init__((host, port), _WebhookRequestHandler)
 
+    # DEAD CODE: consider removal
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         print(f"  [bright_green]ReconPro Webhook Server v11.0.0[/] running on [cyan]http://{self.host}:{self.port}[/]")
         print(f"  [dim]POST /webhook/github  |  POST /webhook/gitlab  |  GET /webhook/config[/]")
@@ -698,6 +699,7 @@ class WebhookServer(HTTPServer):
             self.server_close()
 
 
+# DEAD CODE: consider removal
 def run_webhook_server(port: int = 7891) -> None:
     """Start the webhook server (convenience function)."""
     server = WebhookServer(port=port)
@@ -816,6 +818,7 @@ class TeamsWebhook(NotificationWebhook):
         "medium": "FFAA00", "low": "00CC00", "info": "0088FF",
     }
 
+    # DEAD CODE: consider removal
     def send(self, message: str, severity: str = "info", title: str = "ReconPro Scan",
              findings: Optional[List[Dict]] = None, score: Optional[int] = None) -> bool:
         severity = severity.lower()

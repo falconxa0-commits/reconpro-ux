@@ -277,47 +277,57 @@ class TestPluginExecutionIsolation(unittest.TestCase):
 
     @patch("reconpro.plugins._ensure_plugin_dir")
     def test_non_list_return_filtered(self, mock_ensure):
-        """Plugins returning non-list must be handled gracefully (empty list)."""
+        """Plugins returning non-list must be caught by the sandbox.
+
+        The mandatory sandbox validates output type — non-list returns
+        produce a sandbox error Finding.
+        """
         _write_plugin(self.tmp, "bad_return", NON_LIST_PLUGIN)
 
         with patch("reconpro.plugins.PLUGIN_DIR", self.tmp):
-            result = run_plugin("bad_return", "example.com", use_sandbox=False)
+            result = run_plugin("bad_return", "example.com")
 
         self.assertIsInstance(result, list)
-        # Non-list results are replaced with empty list
-        self.assertEqual(result, [])
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], Finding)
+        self.assertIn("sandbox error", result[0].title.lower())
+        self.assertIn("list", result[0].description.lower())
 
     @patch("reconpro.plugins._ensure_plugin_dir")
     def test_none_return_filtered(self, mock_ensure):
-        """Plugins returning None must be handled gracefully."""
+        """Plugins returning None must be caught by the sandbox.
+
+        The mandatory sandbox validates output type — None returns
+        produce a sandbox error Finding.
+        """
         _write_plugin(self.tmp, "none_return", NONE_PLUGIN)
 
         with patch("reconpro.plugins.PLUGIN_DIR", self.tmp):
-            result = run_plugin("none_return", "example.com", use_sandbox=False)
+            result = run_plugin("none_return", "example.com")
 
         self.assertIsInstance(result, list)
-        self.assertEqual(result, [])
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], Finding)
+        self.assertIn("sandbox error", result[0].title.lower())
+        self.assertIn("list", result[0].description.lower())
 
     @patch("reconpro.plugins._ensure_plugin_dir")
     def test_missing_required_keys_filtered(self, mock_ensure):
-        """Findings missing required keys (title, severity, category) must be dropped."""
+        """Findings missing required keys are rejected by the sandbox.
+
+        The sandbox validates each finding dict has {title, severity, category}.
+        Items missing keys produce a sandbox violation.
+        """
         _write_plugin(self.tmp, "partial_findings", PARTIAL_FINDINGS_PLUGIN)
 
         with patch("reconpro.plugins.PLUGIN_DIR", self.tmp):
-            result = run_plugin("partial_findings", "example.com", use_sandbox=False)
+            result = run_plugin("partial_findings", "example.com")
 
         self.assertIsInstance(result, list)
-        # Only the 2 properly formed dicts should survive
-        # Actually the code filters: _REQUIRED_KEYS = {"title", "severity", "category"}
-        # Items 1, 4 are good; 2 misses severity; 3 misses title+category; 5 is not a dict
-        # Wait, item index: 0=Good(all keys), 1=missing severity, 2=missing title+category,
-        # 3="not a dict", 4=Also good(all keys)
-        # So 2 should survive.
-        self.assertEqual(len(result), 2)
-        for item in result:
-            self.assertIn("title", item)
-            self.assertIn("severity", item)
-            self.assertIn("category", item)
+        # Sandbox rejects the entire output because some items lack keys
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], Finding)
+        self.assertIn("sandbox error", result[0].title.lower())
 
     @patch("reconpro.plugins._ensure_plugin_dir")
     def test_exception_in_plugin_returns_error_finding(self, mock_ensure):
@@ -339,16 +349,21 @@ class TestPluginExecutionIsolation(unittest.TestCase):
 
     @patch("reconpro.plugins._ensure_plugin_dir")
     def test_exception_without_sandbox_propagates(self, mock_ensure):
-        """Without sandbox, a crashing plugin exception propagates.
+        """Sandbox is now mandatory — no unsandboxed path exists.
 
-        This is a known gap — the unsandboxed path lacks a try/except
-        around the runner call at plugins.py:111-113.
+        Previously, a crashing plugin without sandbox would propagate the
+        exception (a security gap). Now the sandbox catches all exceptions
+        and returns a sandbox error Finding.
         """
         _write_plugin(self.tmp, "crasher", CRASH_PLUGIN)
 
         with patch("reconpro.plugins.PLUGIN_DIR", self.tmp):
-            with self.assertRaises(RuntimeError):
-                run_plugin("crasher", "example.com", use_sandbox=False)
+            result = run_plugin("crasher", "example.com")
+
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], Finding)
+        self.assertIn("sandbox error", result[0].title.lower())
 
 
 # ══════════════════════════════════════════════════════════════════════════════

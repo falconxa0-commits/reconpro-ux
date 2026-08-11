@@ -1659,6 +1659,7 @@ class FuzzSession:
         """Return only results classified as vulnerable."""
         return [r for r in self.results if r.is_vulnerable]
 
+    # DEAD CODE: consider removal
     def summary(self) -> dict:
         """Return a summary of the fuzzing session."""
         total = len(self.results)
@@ -1684,6 +1685,8 @@ class FuzzSession:
 # Module-level convenience helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def quick_scan(
     target: str,
     params: list[str],

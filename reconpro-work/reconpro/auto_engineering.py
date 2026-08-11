@@ -1322,6 +1322,7 @@ class EngineeringPipeline:
             return 100.0
         return round(passed / total * 100.0, 2)
 
+    # DEAD CODE: consider removal
     def _check_repository_health(self) -> Dict[str, Any]:
         """Run repository-specific health checks.
 
@@ -1387,6 +1388,8 @@ class EngineeringPipeline:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def run_engineering_workflow(
     repo_path: str = ".",
     thresholds: Optional[Dict[str, float]] = None,
@@ -1421,6 +1424,7 @@ def run_engineering_workflow(
     return pipeline.engineering_workflow(record_metrics=record_metrics)
 
 
+# DEAD CODE: consider removal
 def run_quality_gate(
     repo_path: str = ".",
     thresholds: Optional[Dict[str, float]] = None,

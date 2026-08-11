@@ -1532,6 +1532,45 @@ class SecretsManager:
 
         return results
 
+    def scan_findings(
+        self,
+        findings: List[Any],
+        source_prefix: str = "scan_finding",
+    ) -> List[Dict[str, Any]]:
+        """Scan a list of findings for leaked secrets.
+
+        Each finding is serialized to text and scanned.  Accepts both
+        Finding objects (with a ``to_dict()`` method) and plain dicts.
+
+        Args:
+            findings: List of Finding objects or dicts.
+            source_prefix: Prefix for the source field (e.g.
+                ``"scan_finding"`` → ``"scan_finding:recon"``).
+
+        Returns:
+            Combined list of all secret detection results.
+        """
+        all_results: List[Dict[str, Any]] = []
+        for f in findings:
+            try:
+                if hasattr(f, "to_dict"):
+                    text = json.dumps(f.to_dict(), default=str)
+                    module = getattr(f, "module", "unknown")
+                elif isinstance(f, dict):
+                    text = json.dumps(f, default=str)
+                    module = f.get("module", "unknown")
+                else:
+                    text = str(f)
+                    module = "unknown"
+                source = f"{source_prefix}:{module}"
+                results = self.scan_for_secrets(text, source=source)
+                all_results.extend(results)
+            except Exception as exc:
+                logger.debug(
+                    "Secret scan failed for finding: %s", exc, exc_info=True,
+                )
+        return all_results
+
     def scan_file(self, filepath: str) -> List[Dict[str, Any]]:
         """Scan a file for secrets.
 
@@ -1987,6 +2026,7 @@ class TamperEvidenceLogger:
 
         return filtered[offset:offset + limit]
 
+    # DEAD CODE: consider removal
     def clear(self) -> None:
         """Clear all in-memory entries and reset the chain.
 
@@ -2005,6 +2045,7 @@ class TamperEvidenceLogger:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+# DEAD CODE: consider removal
 def create_hardened_engine(
     log_dir: Optional[str] = None,
 ) -> Tuple[SecurityPolicyEngine, PluginSandbox, SecretsManager, TamperEvidenceLogger]:

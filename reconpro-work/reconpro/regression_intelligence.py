@@ -1641,6 +1641,7 @@ class RegressionIntelligence:
                 return True
         return False
 
+    # DEAD CODE: consider removal
     def dismiss_regression(
         self,
         regression_id: str,
@@ -1668,6 +1669,8 @@ class RegressionIntelligence:
 
 # ── Convenience Exports ─────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def capture_baseline(
     key: str,
     data: Dict[str, Any],
@@ -1679,6 +1682,7 @@ def capture_baseline(
     return ri.capture_baseline(key, data, label=label, metadata=metadata)
 
 
+# DEAD CODE: consider removal
 def detect_regressions(
     current_results: Dict[str, Any],
     baseline_key: Optional[str] = None,

@@ -1595,6 +1595,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# DEAD CODE: consider removal
 def _weighted_avg(a_conf: float, a_sup: int, b_conf: float, b_sup: int) -> float:
     """Support-weighted average of two confidence values."""
     total = a_sup + b_sup
@@ -1611,6 +1612,8 @@ def _weighted_avg(a_conf: float, a_sup: int, b_conf: float, b_sup: int) -> float
 _global_learner: Optional[RepositoryLearner] = None
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def get_repository_learner() -> RepositoryLearner:
     """Get the global RepositoryLearner instance (creates one if needed)."""
     global _global_learner

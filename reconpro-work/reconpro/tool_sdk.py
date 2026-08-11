@@ -526,6 +526,7 @@ class PluginToolLoader:
 #  TEMPLATE GENERATORS
 # ══════════════════════════════════════════════════════════════════════
 
+# DEAD CODE: consider removal
 def create_tool_template(name: str) -> str:
     """Write a Python plugin tool template to ``~/.reconpro/tools/{name}.py``.
 

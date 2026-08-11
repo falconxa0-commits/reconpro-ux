@@ -44,6 +44,8 @@ _ANSI_RE = re.compile(
 )
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def strip_ansi(text: str) -> str:
     """Remove ANSI escape sequences for plain text extraction.
 

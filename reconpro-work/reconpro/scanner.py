@@ -42,6 +42,8 @@ class ReconProResult:
     module_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     intelligence: Optional[Dict[str, Any]] = None
     engineering: Optional[Dict[str, Any]] = None
+    quality: Optional[Dict[str, Any]] = None
+    engineering_score: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -58,6 +60,8 @@ class ReconProResult:
             "findings": self.findings,
             "intelligence": self.intelligence,
             "engineering": self.engineering,
+            "quality": self.quality,
+            "engineering_score": round(self.engineering_score, 1),
         }
 
 

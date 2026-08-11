@@ -1725,6 +1725,7 @@ class EngineeringRecommender:
 _global_recommender: Optional[EngineeringRecommender] = None
 
 
+# DEAD CODE: consider removal
 def get_recommender() -> EngineeringRecommender:
     """Return the global EngineeringRecommender instance (creates one if needed)."""
     global _global_recommender
@@ -1733,6 +1734,7 @@ def get_recommender() -> EngineeringRecommender:
     return _global_recommender
 
 
+# DEAD CODE: consider removal
 def reset_recommender() -> None:
     """Reset the global recommender so the next call creates a fresh one."""
     global _global_recommender

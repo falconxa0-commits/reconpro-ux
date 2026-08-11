@@ -1,4 +1,5 @@
-"""econpro.subdomains — Comprehensive subdomain enumeration engine (v9.0.0)
+"""
+econpro.subdomains — Comprehensive subdomain enumeration engine (v9.0.0)
 
 Pure-Python OSINT subdomain discovery using 10+ free sources.
 Zero external dependencies — only Python stdlib.
@@ -374,6 +375,7 @@ class SubdomainEnumerator:
         results: List[Dict[str, Any]] = []
         seen_ips: Set[str] = set()
 
+        # DEAD CODE: consider removal
         def _resolve(fqdn: str) -> Optional[Dict[str, Any]]:
             ips: List[str] = []
             try:
@@ -408,6 +410,8 @@ class SubdomainEnumerator:
 # ── Backward-compatible wrapper functions ──────────────────────────────────────
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def discover_ctlogs(domain: str, timeout: float = DEFAULT_TIMEOUT) -> List[str]:
     """Discover subdomains via Certificate Transparency logs (crt.sh).
 

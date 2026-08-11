@@ -137,6 +137,7 @@ DEFAULT_MODULES: List[str] = [
 DEFAULT_LOCAL_MODULES: List[str] = ["host", "dev", "doctor"]
 
 
+# DEAD CODE: consider removal
 def get_module_runner(module_id: str) -> Optional[Callable]:
     """Get the runner function for a module ID. Returns None if not found."""
     if module_id in MODULE_REGISTRY:
@@ -146,6 +147,8 @@ def get_module_runner(module_id: str) -> Optional[Callable]:
     return None
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def is_local_module(module_id: str) -> bool:
     """Check if a module ID is a local (machine audit) module."""
     return module_id in LOCAL_MODULES
@@ -156,6 +159,7 @@ def is_remote_module(module_id: str) -> bool:
     return module_id in MODULE_REGISTRY
 
 
+# DEAD CODE: consider removal
 def get_module_info(module_id: str) -> Optional[Dict[str, Any]]:
     """Get full module info including metadata."""
     if module_id in MODULE_REGISTRY:
@@ -165,11 +169,13 @@ def get_module_info(module_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+# DEAD CODE: consider removal
 def list_remote_modules() -> List[str]:
     """List remote module IDs sorted alphabetically."""
     return sorted(MODULE_REGISTRY.keys())
 
 
+# DEAD CODE: consider removal
 def list_local_modules() -> List[str]:
     """List local module IDs sorted alphabetically."""
     return sorted(LOCAL_MODULES.keys())
@@ -179,3 +185,128 @@ def get_module_color(module_id: str) -> str:
     """Get display color for a module."""
     entry = get_module_info(module_id)
     return entry.get("color", "white") if entry else "white"
+
+
+# ── Module Dependency Graph ──────────────────────────────────────────
+
+
+MODULE_DEPENDENCIES: Dict[str, List[str]] = {
+    # Core remote modules
+    "recon": [],                              # no deps — base data gathering
+    "auth": ["recon"],                       # needs recon results (subdomains, endpoints)
+    "chain": ["recon"],                      # needs recon for asset chain analysis
+    "bot": ["recon", "chain"],              # needs recon + chain for bot detection patterns
+    "gorgon": ["recon"],                     # needs recon for deep analysis
+    "oblivion": ["recon"],                   # needs recon endpoints
+    "vibesec": ["recon", "auth"],           # needs recon + auth for scoring
+    "nhi": ["recon", "chain"],              # needs recon + chain for graph
+    "pegasus": ["recon"],                    # needs recon for pegasus pattern matching
+    "cloud_recon": ["recon"],                # needs recon for cloud correlation
+    "team": ["recon"],                       # needs recon for team analysis
+
+    # Advanced modules (v9.2+)
+    "quantum_fingerprint": ["recon"],        # needs recon for HTTP timing
+    "dark_web_monitor": [],                   # independent — passive monitoring
+    "info_ops": ["recon"],                   # needs recon for deception analysis
+    "steganography_detector": ["recon"],     # needs recon responses to analyze
+    "covert_channel": ["recon"],             # needs recon for traffic analysis
+    "zero_day_hunter": ["recon"],            # needs recon for pattern matching
+    "infrastructure_ghost": ["recon"],       # needs recon for infra cloning
+    "signal_intelligence": ["recon"],        # needs recon for traffic patterns
+    "nation_state_attributor": ["recon", "signal_intelligence"],  # needs sigint context
+    "weaponized_report": ["recon"],          # needs recon findings
+    "honeypot_dance": ["recon"],             # needs recon for honeypot detection
+    "dead_drop": ["recon"],                  # needs recon for dead drop analysis
+
+    # Local modules
+    "host": [],                               # independent — local audit
+    "dev": [],                                # independent — code scanning
+    "doctor": ["host"],                      # needs host audit results
+    "container_sec": ["dev"],                # needs dev results for container analysis
+    "iac_audit": ["dev"],                    # needs dev results for IaC scanning
+}
+
+
+def get_execution_order(modules: List[str]) -> List[List[str]]:
+    """Topologically sort *modules* respecting :data:`MODULE_DEPENDENCIES`.
+
+    Returns a list of **groups** (lists of module IDs).  Modules in the
+    same group have no dependency on each other and can safely run in
+    parallel.  Groups must be executed in order.
+
+    Raises
+    ------
+    ValueError
+        If a circular dependency is detected among the requested modules.
+    """
+    # Build a sub-graph restricted to the requested modules.
+    available = set(modules)
+    graph: Dict[str, List[str]] = {}
+    in_degree: Dict[str, int] = {}
+    for m in modules:
+        deps = [d for d in MODULE_DEPENDENCIES.get(m, []) if d in available]
+        graph[m] = deps
+        in_degree[m] = len(deps)
+
+    # Kahn's algorithm
+    queue = [m for m in modules if in_degree[m] == 0]
+    groups: List[List[str]] = []
+
+    while queue:
+        groups.append(sorted(queue))  # deterministic ordering within a group
+        next_queue: List[str] = []
+        for m in queue:
+            for dependent in modules:
+                if m in graph.get(dependent, []):
+                    in_degree[dependent] -= 1
+                    if in_degree[dependent] == 0:
+                        next_queue.append(dependent)
+        queue = next_queue
+
+    # Check for cycles
+    processed = set(m for g in groups for m in g)
+    if processed != available:
+        cycle = available - processed
+        raise ValueError(
+            f"Circular dependency detected among modules: {', '.join(sorted(cycle))}"
+        )
+
+    return groups
+
+
+def visualize_dependencies(modules: Optional[List[str]] = None) -> str:
+    """Return a text-art dependency graph.
+
+    If *modules* is ``None``, all known modules are shown.
+    """
+    if modules is None:
+        modules = sorted(MODULE_DEPENDENCIES.keys())
+
+    lines: List[str] = []
+    lines.append("Module Dependency Graph")
+    lines.append("=" * 50)
+
+    for m in modules:
+        deps = MODULE_DEPENDENCIES.get(m, [])
+        if not deps:
+            lines.append(f"  {m}")
+        else:
+            lines.append(f"  {m}")
+            for d in deps:
+                lines.append(f"    └── {d}")
+
+    lines.append("")
+
+    # Execution order
+    try:
+        order = get_execution_order(modules)
+        lines.append("Execution Order (parallel groups):")
+        lines.append("-" * 50)
+        for i, group in enumerate(order):
+            label = " (can run in parallel)" if len(group) > 1 else ""
+            lines.append(f"  Wave {i + 1}: {', '.join(group)}{label}")
+    except ValueError as e:
+        lines.append(f"  ERROR: {e}")
+
+    return "\n".join(lines)
+

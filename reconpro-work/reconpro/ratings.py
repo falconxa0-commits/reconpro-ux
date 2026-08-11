@@ -526,6 +526,7 @@ def get_all_ratings() -> List[ModuleRating]:
     return sorted(MODULE_RATINGS.values(), key=lambda r: r.score, reverse=True)
 
 
+# DEAD CODE: consider removal
 def compute_team_score() -> tuple:
     """Compute the aggregate team rating for all 12 modules combined.
 
@@ -560,6 +561,7 @@ def compute_team_score() -> tuple:
     return avg_score, grade, total_loc, total_cats, total_sigs
 
 
+# DEAD CODE: consider removal
 def format_rating_table() -> str:
     """Format ratings as a readable table string."""
     lines = []

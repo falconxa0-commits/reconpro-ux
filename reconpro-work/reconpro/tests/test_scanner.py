@@ -142,6 +142,7 @@ class TestReconProResultToDict(unittest.TestCase):
             "severity_counts", "total_score", "grade",
             "badge_markdown", "vibesec_score", "vibesec_grade",
             "module_results", "findings", "intelligence", "engineering",
+            "quality", "engineering_score",
         }
         self.assertEqual(set(d.keys()), expected_keys)
 

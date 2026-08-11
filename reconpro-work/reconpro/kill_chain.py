@@ -2906,6 +2906,7 @@ class KillChainEngine:
             "cdn_protection": has_cdn,
         }
 
+    # DEAD CODE: consider removal
     def _analyze_alternate_exfiltration(self) -> List[Dict[str, Any]]:
         """Analyse alternate exfiltration protocol opportunities."""
         protocols: List[Dict[str, Any]] = []
@@ -2971,6 +2972,7 @@ class KillChainEngine:
 # Module-level convenience function
 # ---------------------------------------------------------------------------
 
+# DEAD CODE: consider removal
 def run_kill_chain_scan(
     target: str,
     base_url: str,

@@ -23,7 +23,8 @@ import urllib.request
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
-from .http_layer import Finding, http_probe, compute_grade, badge_markdown, default_limiter
+from .http_layer import Finding, http_probe, default_limiter
+from .utils import compute_grade, badge_markdown
 
 
 # ── JS Endpoint Extractor ────────────────────────────────────────────────
@@ -929,6 +930,7 @@ class GrpcIntrospector:
             except Exception:
                 pass
 
+    # DEAD CODE: consider removal
     def _probe_twirp(self):
         """Probe Twirp (gRPC-compatible) endpoints."""
         twirp_paths = [
@@ -968,6 +970,7 @@ class GrpcIntrospector:
 # ── Orchestrator ──────────────────────────────────────────────────────────
 
 
+# DEAD CODE: consider removal
 def discover_api(
     target: str,
     base_url: str,

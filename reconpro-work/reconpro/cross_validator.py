@@ -502,6 +502,7 @@ class CrossValidator:
         return self._fail("no independent verification possible")
 
     @staticmethod
+    # DEAD CODE: consider removal
     def _fail(reason: str) -> Dict[str, Any]:
         return {
             "verified": False,
@@ -515,6 +516,7 @@ class CrossValidator:
 # Convenience function
 # ────────────────────────────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
 def cross_validate(target: str, findings: List[Dict[str, Any]],
                    base_url: str = "") -> CrossValidationResult:
     """Convenience function for cross-validation.

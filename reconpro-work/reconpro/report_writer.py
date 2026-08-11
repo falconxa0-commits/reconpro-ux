@@ -397,6 +397,7 @@ class MarkdownReportBuilder:
     def __init__(self) -> None:
         self._summary_gen = ExecutiveSummaryGenerator()
 
+    # DEAD CODE: consider removal
     def build_report(
         self,
         scan_data: Dict[str, Any],
@@ -530,6 +531,8 @@ _summary_generator = ExecutiveSummaryGenerator()
 _report_builder = MarkdownReportBuilder()
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def generate_narrative(scan_data: Dict[str, Any], audience: str = "technical") -> str:
     """Generate a narrative summary for the given audience."""
     return _summary_generator.generate(scan_data, audience)

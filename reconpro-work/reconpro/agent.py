@@ -14,7 +14,8 @@ from .scanner import scan, audit_scan
 from .subdomains import discover_subdomains
 from .parallel import blitz_scan
 from .history import save_scan
-from .http_layer import Finding, compute_grade
+from .http_layer import Finding
+from .utils import compute_grade
 
 console = Console()
 

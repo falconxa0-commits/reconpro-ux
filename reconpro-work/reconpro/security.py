@@ -389,6 +389,7 @@ def _measure_depth(obj: Any, current: int = 1) -> int:
     return current
 
 
+# DEAD CODE: consider removal
 def safe_url_parse(url: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Safely parse a URL with scheme whitelist and length limits.
 
@@ -436,6 +437,7 @@ def safe_url_parse(url: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     }, None
 
 
+# DEAD CODE: consider removal
 def safe_xml_parse(text: str) -> Tuple[Optional[str], Optional[str]]:
     """Safely parse XML with entity expansion prevention.
 
@@ -569,6 +571,7 @@ class SecurityAuditLogger:
         """Return the path to the audit log file."""
         return self._log_path
 
+    # DEAD CODE: consider removal
     def close(self) -> None:
         """Close the logger and release resources."""
         self._handler.close()
@@ -577,6 +580,7 @@ class SecurityAuditLogger:
 
 # ── Signature Verification ───────────────────────────────────────────────
 
+# DEAD CODE: consider removal
 def compute_file_hash(filepath: str, algorithm: str = "sha256") -> str:
     """Compute the hash of a file.
 
@@ -602,6 +606,7 @@ def compute_file_hash(filepath: str, algorithm: str = "sha256") -> str:
         return ""
 
 
+# DEAD CODE: consider removal
 def verify_module_signature(module_name: str, source_hash: str) -> bool:
     """Placeholder for future code-signing verification.
 
@@ -623,6 +628,7 @@ def verify_module_signature(module_name: str, source_hash: str) -> bool:
 
 # ── Supply Chain ─────────────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
 def check_dependency_integrity() -> Dict[str, Any]:
     """Check that reconpro has no unexpected dependencies.
 

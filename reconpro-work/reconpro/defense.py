@@ -1275,6 +1275,7 @@ class DefenseBundle:
             echo "========================================="
         """)
 
+    # DEAD CODE: consider removal
     def to_report(self) -> str:
         """Generate a human-readable summary of all generated defenses."""
         all_defenses = self.generate_all()
@@ -1369,6 +1370,7 @@ class DefenseBundle:
 # ---------------------------------------------------------------------------
 
 
+# DEAD CODE: consider removal
 def generate_defense(finding: dict) -> dict[str, Any]:
     """Generate all defenses for a single vulnerability finding.
 

@@ -23,6 +23,7 @@ SEVERITY_LEVELS: dict[str, int] = {
 VALID_SEVERITIES: frozenset[str] = frozenset(SEVERITY_LEVELS.keys())
 
 # Sort key function for findings
+# DEAD CODE: consider removal
 def severity_sort_key(severity: str) -> int:
     """Return sort key for severity (lower = more severe)."""
     return SEVERITY_LEVELS.get(severity.lower(), 99)

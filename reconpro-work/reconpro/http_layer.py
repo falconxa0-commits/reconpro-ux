@@ -11,7 +11,7 @@ from .constants import USER_AGENT as UA
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field  # DEAD CODE: consider removal
 from typing import Any, Dict, List, Optional, Tuple
 from threading import Lock
 

@@ -711,6 +711,7 @@ class SupplyChainAnalyzer:
 
         return findings
 
+    # DEAD CODE: consider removal
     def _check_suspicious(
         self, content: str, fname: str, fpath: str,
         findings: List[Dict[str, Any]],
@@ -751,6 +752,7 @@ class SupplyChainAnalyzer:
 
 # ── Module Entry Point ────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
 def run_supply_chain(
     target: str,
     base_url: str = '',

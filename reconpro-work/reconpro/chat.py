@@ -95,6 +95,13 @@ class ChatSession:
         self.last_result: Optional[Any] = None
         self.last_target: Optional[str] = None
         self.context: Dict[str, Any] = {}
+        # Prompt defense — scans every user input for injection threats
+        self._defense: Optional[Any] = None
+        try:
+            from .prompt_defense import PromptDefense
+            self._defense = PromptDefense(enable_logging=True)
+        except Exception:
+            pass
 
     def start(self):
         console.print(BANNER_SMALL)
@@ -114,6 +121,24 @@ class ChatSession:
             self._process(user_input)
 
     def _process(self, text: str):
+        # ── Prompt Defense (Agent 10) ───────────────────────────
+        # Every user input goes through PromptDefense before processing
+        if self._defense is not None:
+            try:
+                defense_result = self._defense.scan(text, source="chat")
+                if not defense_result.is_safe:
+                    threat_names = ", ".join(t.pattern_name for t in defense_result.threats[:3])
+                    console.print(
+                        f"  [bold bright_red]Blocked[/]: Potential prompt injection detected ({threat_names})."
+                    )
+                    console.print(
+                        f"  [dim]Max severity: {defense_result.max_severity.value} | "
+                        f"Threats: {len(defense_result.threats)}[/]"
+                    )
+                    return
+            except Exception:
+                pass  # Allow input through if defense fails
+
         low = text.lower().strip()
 
         # ── Exit ────────────────────────────────────────────────

@@ -1650,6 +1650,7 @@ class QualityIntelligence:
 
         return aggregated
 
+    # DEAD CODE: consider removal
     def _weighted_score(self, dimensions: Dict[str, QualityDimension]) -> float:
         """Compute weighted composite score from dimensions."""
         if not dimensions:
@@ -1674,12 +1675,15 @@ class QualityIntelligence:
 # ════════════════════════════════════════════════════════════════════════
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def analyze_file(file_path: str) -> Dict[str, Any]:
     """Quick-analyse a single file's quality."""
     qi = QualityIntelligence()
     return qi.analyze_code_quality(file_path)
 
 
+# DEAD CODE: consider removal
 def analyze_repository(repository_path: str) -> Dict[str, Any]:
     """Quick-analyse a repository's quality."""
     qi = QualityIntelligence(repository_path=repository_path)

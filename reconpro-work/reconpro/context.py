@@ -10,7 +10,7 @@ import time
 import urllib.parse
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional  # DEAD CODE: consider removal
 
 
 @dataclass
@@ -53,11 +53,13 @@ class ScanContext:
         """
         return (self.target, self.base_url, self.timeout, self.verify_tls)
 
+    # DEAD CODE: consider removal
     def elapsed_ms(self) -> float:
         """Return milliseconds elapsed since scan started."""
         return (time.time() - self.started_at) * 1000
 
 
+# DEAD CODE: consider removal
 def create_context(target: str, **kwargs) -> ScanContext:
     """Factory for creating scan contexts from various input formats.
 

@@ -44,6 +44,8 @@ class IntelligenceResult:
     ai_duration: float = 0.0
     graph_duration: float = 0.0
     intel_duration: float = 0.0
+    regression_duration: float = 0.0
+    recommendations_duration: float = 0.0
 
     # -- Engine metadata -----------------------------------------------------
     enabled_engines: List[str] = field(default_factory=list)
@@ -70,6 +72,12 @@ class IntelligenceResult:
     entity_count: int = 0
     relationship_count: int = 0
 
+    # -- Regression Intelligence outputs ----------------------------------------
+    regression_data: Dict[str, Any] = field(default_factory=dict)
+
+    # -- Engineering Recommendations outputs -----------------------------------
+    recommendations: List[Dict[str, Any]] = field(default_factory=list)
+
     # ------------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------------
@@ -84,6 +92,8 @@ class IntelligenceResult:
             or self.attack_chains
             or self.extended_findings
             or self.classification_summary
+            or self.regression_data
+            or self.recommendations
         )
 
     @property
@@ -133,6 +143,8 @@ class IntelligenceResult:
             "knowledge_graph": self.knowledge_graph,
             "entity_count": self.entity_count,
             "relationship_count": self.relationship_count,
+            "regression_data": self.regression_data,
+            "recommendations": self.recommendations,
         }
 
 
@@ -163,9 +175,10 @@ def _finding_to_dict(f: Any) -> Dict[str, Any]:
 class IntelligencePipeline:
     """Post-scan orchestration layer.
 
-    Composites AIAnalystEngine, AttackGraphEngine, ThreatIntelEngine, and
-    SecurityKnowledgeGraph into a single ``analyze()`` call that returns
-    an ``IntelligenceResult``.
+    Composites AIAnalystEngine, AttackGraphEngine, ThreatIntelEngine,
+    SecurityKnowledgeGraph, RegressionIntelligence, and
+    EngineeringRecommendations into a single ``analyze()`` call that
+    returns an ``IntelligenceResult``.
     """
 
     def __init__(
@@ -175,11 +188,15 @@ class IntelligencePipeline:
         enable_attack_graph: bool = True,
         enable_threat_intel: bool = True,
         enable_knowledge_graph: bool = True,
+        enable_regression: bool = True,
+        enable_recommendations: bool = True,
     ) -> None:
         self.enable_ai_analyst = enable_ai_analyst
         self.enable_attack_graph = enable_attack_graph
         self.enable_threat_intel = enable_threat_intel
         self.enable_knowledge_graph = enable_knowledge_graph
+        self.enable_regression = enable_regression
+        self.enable_recommendations = enable_recommendations
 
     def analyze(
         self,
@@ -224,6 +241,10 @@ class IntelligencePipeline:
             result.enabled_engines.append("threat_intel")
         if self.enable_knowledge_graph:
             result.enabled_engines.append("knowledge_graph")
+        if self.enable_regression:
+            result.enabled_engines.append("regression")
+        if self.enable_recommendations:
+            result.enabled_engines.append("recommendations")
 
         logger.info("Intelligence pipeline starting", extra={"engines": result.enabled_engines, "finding_count": len(findings)})
 
@@ -351,7 +372,76 @@ class IntelligencePipeline:
                 result.errors.append("knowledge_graph: internal error")
 
         # ----------------------------------------------------------------
-        # 5. Composite score computation (only when engines are enabled)
+        # 5. Regression Intelligence
+        # ----------------------------------------------------------------
+        if self.enable_regression:
+            try:
+                from .regression_intelligence import RegressionIntelligence
+
+                ri = RegressionIntelligence()
+                t_reg = time.monotonic()
+                # Pass scan_data as current_results; gracefully handle no baseline
+                try:
+                    regressions = ri.detect_regression(scan_data or {})
+                except Exception:
+                    regressions = []
+                result.regression_duration = time.monotonic() - t_reg
+
+                if regressions:
+                    result.regression_data = {
+                        "regression_count": len(regressions),
+                        "regressions": [
+                            {
+                                "description": getattr(r, "description", str(r)),
+                                "severity": getattr(r, "severity", "unknown"),
+                            }
+                            for r in regressions[:50]
+                        ],
+                    }
+                else:
+                    result.regression_data = {"regression_count": 0, "regressions": []}
+
+                duration_ms = result.regression_duration * 1000
+                logger.info("Engine '%s' completed in %.1fms", "regression", duration_ms)
+
+            except Exception as exc:
+                logger.exception("regression engine failed")
+                result.errors.append("regression: internal error")
+
+        # ----------------------------------------------------------------
+        # 6. Engineering Recommendations
+        # ----------------------------------------------------------------
+        if self.enable_recommendations:
+            try:
+                from .engineering_recommendations import get_recommender
+
+                recommender = get_recommender()
+                t_rec = time.monotonic()
+                recs = recommender.get_all_recommendations()
+                result.recommendations_duration = time.monotonic() - t_rec
+
+                active_recs = [r for r in recs if not getattr(r, "dismissed", False)]
+                result.recommendations = [
+                    {
+                        "id": getattr(r, "id", ""),
+                        "title": getattr(r, "title", ""),
+                        "severity": getattr(r, "severity", "info"),
+                        "category": getattr(r, "category", ""),
+                        "affected_files": getattr(r, "affected_files", []),
+                    }
+                    for r in active_recs[:50]
+                ]
+
+                duration_ms = result.recommendations_duration * 1000
+                logger.info("Engine '%s' completed in %.1fms (%d active)",
+                            "recommendations", duration_ms, len(active_recs))
+
+            except Exception as exc:
+                logger.exception("recommendations engine failed")
+                result.errors.append("recommendations: internal error")
+
+        # ----------------------------------------------------------------
+        # 7. Composite score computation (only when engines are enabled)
         # ----------------------------------------------------------------
         if result.enabled_engines:
             self._compute_composite_scores(result, valid)
@@ -370,6 +460,85 @@ class IntelligencePipeline:
                 },
             },
         )
+        return result
+
+    # ----------------------------------------------------------------
+    # Lightweight mode
+    # ----------------------------------------------------------------
+
+    def run_lightweight(
+        self,
+        findings: List[Any],
+        scan_data: Optional[Dict[str, Any]] = None,
+    ) -> IntelligenceResult:
+        """Run only the AI analyst + threat intel engines (fast scan mode).
+
+        Skips attack graph, knowledge graph, regression, and recommendations
+        for maximum speed.  Useful for CI/CD pipelines and quick scans.
+        """
+        t_start = time.monotonic()
+        result = IntelligenceResult()
+
+        # Input validation (same as analyze)
+        MAX_FINDINGS = 10000
+        if len(findings) > MAX_FINDINGS:
+            findings = findings[:MAX_FINDINGS]
+            result.errors.append(f"input_truncated: {MAX_FINDINGS} finding limit applied")
+
+        result.enabled_engines = ["ai_analyst", "threat_intel"]
+
+        # Normalise findings
+        valid: List[Dict[str, Any]] = []
+        for f in findings:
+            try:
+                d = _finding_to_dict(f)
+                if d and "title" in d:
+                    valid.append(d)
+            except Exception:
+                pass
+
+        if not valid:
+            return result
+
+        # AI Analyst
+        try:
+            from .ai_analyst import AIAnalystEngine
+            engine = AIAnalystEngine()
+            t_ai = time.monotonic()
+            report = engine.analyze_scan(valid)
+            result.ai_duration = time.monotonic() - t_ai
+            classified_categories: Dict[str, int] = {}
+            for item in report.classified:
+                cls = item.get("classification", {})
+                cat = cls.get("attack_category", "unknown")
+                classified_categories[cat] = classified_categories.get(cat, 0) + 1
+            result.classification_summary = classified_categories
+            result.extended_findings = report.extended_findings
+            result.attack_paths = report.attack_paths
+            result.ai_analysis = report.to_dict()
+        except Exception:
+            result.errors.append("ai_analyst: internal error")
+            result.enabled_engines.remove("ai_analyst")
+
+        # Threat Intelligence
+        try:
+            from .threat_intel import ThreatIntelEngine
+            engine = ThreatIntelEngine()
+            t_intel = time.monotonic()
+            intel_report = engine.enrich_scan(valid)
+            result.intel_duration = time.monotonic() - t_intel
+            result.cve_matches = intel_report.unique_cves
+            result.cwe_matches = intel_report.unique_cwes
+            result.mitre_techniques = intel_report.unique_mitre
+        except Exception:
+            result.errors.append("threat_intel: internal error")
+            result.enabled_engines.remove("threat_intel")
+
+        # Composite scores
+        if result.enabled_engines:
+            self._compute_composite_scores(result, valid)
+
+        result.pipeline_duration = time.monotonic() - t_start
         return result
 
     # --------------------------------------------------------------------
@@ -451,6 +620,7 @@ class IntelligencePipeline:
 _global_pipeline: Optional[IntelligencePipeline] = None
 
 
+# DEAD CODE: consider removal
 def run_intelligence_pipeline(
     findings: List[Any],
     *,
@@ -494,6 +664,7 @@ def run_intelligence_pipeline(
     return _global_pipeline.analyze(findings, scan_data=scan_data)
 
 
+# DEAD CODE: consider removal
 def reset_pipeline() -> None:
     """Reset the global pipeline instance so the next call creates a fresh one."""
     global _global_pipeline

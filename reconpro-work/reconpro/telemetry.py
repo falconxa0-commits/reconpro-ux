@@ -32,6 +32,7 @@ def get_telemetry_manager() -> TelemetryManager:
     return TelemetryManager.get_instance()
 
 
+# DEAD CODE: consider removal
 def reset_telemetry() -> None:
     """Reset the global TelemetryManager singleton.
 

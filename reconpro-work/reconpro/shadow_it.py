@@ -1,4 +1,5 @@
-"""econpro.shadow_it — Shadow IT & Abandoned Infrastructure Discovery
+"""
+econpro.shadow_it — Shadow IT & Abandoned Infrastructure Discovery
 
 ReconPro v9.2.0 | Pure Python security scanner — ZERO external dependencies.
 
@@ -1615,6 +1616,7 @@ class ShadowITScanner:
     # Decay scoring
     # ---------------------------------------------------------------------
 
+    # DEAD CODE: consider removal
     def calculate_decay_score(self, asset_info: Dict[str, Any]) -> int:
         """
         Calculate how "abandoned" an asset is on a 0-100 scale.
@@ -1670,6 +1672,7 @@ class ShadowITScanner:
 # Convenience entry-point
 # ---------------------------------------------------------------------------
 
+# DEAD CODE: consider removal
 def quick_scan(target: str, base_url: Optional[str] = None, timeout: int = 8) -> Dict[str, Any]:
     """
     Convenience function: run a full shadow IT scan with minimal setup.

@@ -849,6 +849,7 @@ class UnifiedMemoryStore:
     #  Convenience / stats
     # ==================================================================
 
+    # DEAD CODE: consider removal
     def stats(self) -> Dict[str, Any]:
         """Return a unified stats dict across all sub-systems."""
         with self._lock:
@@ -889,6 +890,7 @@ _MEMORY_INSTANCE: Optional[UnifiedMemoryStore] = None
 _MEMORY_LOCK = threading.Lock()
 
 
+# DEAD CODE: consider removal
 def get_memory() -> UnifiedMemoryStore:
     """Return the module-level ``UnifiedMemoryStore`` singleton.
 

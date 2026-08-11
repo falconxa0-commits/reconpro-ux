@@ -823,6 +823,7 @@ class SecretExtractor:
                     })
 
     @staticmethod
+    # DEAD CODE: consider removal
     def _mask(value: str) -> str:
         """Mask the middle portion of a secret for safe display."""
         if len(value) <= 12:
@@ -834,6 +835,7 @@ class SecretExtractor:
 # Convenience entry-points
 # ────────────────────────────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
 def ai_red_team_scan(target: str, base_url: str) -> Dict[str, Any]:
     """Run all AI red-team modules against a target.
 

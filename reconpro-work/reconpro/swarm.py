@@ -1028,6 +1028,7 @@ class SwarmCoordinator:
 # Public Entry Point
 # ──────────────────────────────────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
 def run_swarm(
     target: str,
     mode: str = "full",
@@ -1071,6 +1072,8 @@ def run_swarm(
     return coordinator.run()
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def list_modes() -> List[Dict[str, Any]]:
     """Return available swarm modes and their agent compositions."""
     return [

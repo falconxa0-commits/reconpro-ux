@@ -671,6 +671,7 @@ class TorProxyManager:
             country="tor",
         )
 
+    # DEAD CODE: consider removal
     def verify_new_ip(self, timeout: int = 15) -> dict:
         """Make a request through Tor and verify the exit IP changed.
 
@@ -692,6 +693,7 @@ class TorProxyManager:
 # ── CLI Integration ──────────────────────────────────────────────────────
 
 
+# DEAD CODE: consider removal
 def load_default_pool() -> ProxyPool:
     """Load the default proxy pool from ``~/.reconpro/proxies.json``.
 

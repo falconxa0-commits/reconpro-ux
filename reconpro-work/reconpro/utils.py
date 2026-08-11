@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional  # DEAD CODE: consider removal
 
 from .constants import (
     SEVERITY_LEVELS,
@@ -118,6 +118,7 @@ def count_severities(findings: List[Any]) -> Dict[str, int]:
     return counts
 
 
+# DEAD CODE: consider removal
 def sort_findings_by_severity(findings: List[Any], reverse: bool = False) -> List[Any]:
     """Sort findings by severity (critical first).
 

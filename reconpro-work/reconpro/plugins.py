@@ -60,7 +60,12 @@ def discover_plugins(use_sandbox: bool = True) -> Dict[str, Dict[str, Any]]:
 def run_plugin(plugin_id: str, target: str, base_url: str = "",
                timeout: int = 8, verify_tls: bool = True,
                use_sandbox: bool = True) -> List[Finding]:
-    """Run a specific plugin."""
+    """Run a specific plugin.
+
+    All plugin executions MUST go through PluginSandbox — there is no
+    unsandboxed path.  If the sandbox cannot be imported, execution is
+    refused entirely.
+    """
     plugins = discover_plugins()
     if plugin_id not in plugins:
         return [Finding(
@@ -73,43 +78,59 @@ def run_plugin(plugin_id: str, target: str, base_url: str = "",
 
     runner = plugins[plugin_id]["runner"]
 
-    if use_sandbox:
-        try:
-            from .security_hardening import PluginSandbox
-            sandbox = PluginSandbox(cpu_time_seconds=float(timeout))
-            sb_result = sandbox.execute(runner, plugin_name=plugin_id,
-                                        target=target, base_url=base_url,
-                                        timeout=timeout, verify_tls=verify_tls)
-            if isinstance(sb_result, dict) and sb_result.get("success"):
-                result = sb_result["findings"]
-            else:
-                error_msg = (sb_result.get("error", "unknown sandbox error")
-                             if isinstance(sb_result, dict) else str(sb_result))
-                return [Finding(
-                    title=f"Plugin '{plugin_id}' sandbox error: {error_msg}",
-                    severity="low", category="plugin",
-                    module="plugin",
-                    description=error_msg,
-                    evidence="", asset=target, points_deducted=0,
-                )]
-        except ImportError:
-            logger.warning(
-                "PluginSandbox not available, falling back to unsandboxed"
-                " execution for '%s'", plugin_id,
-            )
-            result = runner(target=target, base_url=base_url,
-                            timeout=timeout, verify_tls=verify_tls)
-        except Exception as e:
+    # ── Mandatory sandboxed execution (Agent 11) ───────────────
+    # Every plugin execution goes through PluginSandbox.
+    # Resource limits: memory capped at 64 MB, CPU time = timeout.
+    try:
+        from .security_hardening import PluginSandbox
+        sandbox = PluginSandbox(
+            memory_limit_mb=64,
+            cpu_time_seconds=float(timeout),
+        )
+        sb_result = sandbox.execute(
+            runner,
+            plugin_name=plugin_id,
+            target=target,
+            base_url=base_url,
+            timeout=timeout,
+            verify_tls=verify_tls,
+        )
+        if isinstance(sb_result, dict) and sb_result.get("success"):
+            result = sb_result["findings"]
+        else:
+            error_msg = (sb_result.get("error", "unknown sandbox error")
+                         if isinstance(sb_result, dict) else str(sb_result))
+            logger.warning("Plugin '%s' sandbox violation: %s", plugin_id, error_msg)
             return [Finding(
-                title=f"Plugin '{plugin_id}' sandbox error: {e}",
+                title=f"Plugin '{plugin_id}' sandbox error: {error_msg}",
                 severity="low", category="plugin",
                 module="plugin",
-                description=str(e),
+                description=error_msg,
                 evidence="", asset=target, points_deducted=0,
             )]
-    else:
-        result = runner(target=target, base_url=base_url,
-                        timeout=timeout, verify_tls=verify_tls)
+    except ImportError:
+        logger.error(
+            "PluginSandbox not available — refusing to execute plugin '%s' "
+            "without sandbox (security policy)", plugin_id,
+        )
+        return [Finding(
+            title=f"Plugin '{plugin_id}' refused: sandbox unavailable",
+            severity="high", category="plugin",
+            module="plugin",
+            description=(
+                "Plugin execution refused: PluginSandbox is required but "
+                "could not be imported. Ensure reconpro is fully installed."
+            ),
+            evidence="", asset=target, points_deducted=0,
+        )]
+    except Exception as e:
+        return [Finding(
+            title=f"Plugin '{plugin_id}' sandbox error: {e}",
+            severity="low", category="plugin",
+            module="plugin",
+            description=str(e),
+            evidence="", asset=target, points_deducted=0,
+        )]
 
     try:
         if isinstance(result, list):
@@ -262,6 +283,7 @@ class HookManager:
             json.dump(data, f, indent=2)
     
     @classmethod
+    # DEAD CODE: consider removal
     def load_hooks(cls):
         """Load hook metadata from disk.
 
@@ -279,6 +301,7 @@ class HookManager:
         return {}
 
 
+# DEAD CODE: consider removal
 def register_plugin(name: str, version: str = "1.0.0", description: str = "",
                      author: str = "", hooks: Optional[Dict[str, Callable]] = None) -> bool:
     """Register a plugin with metadata and optional hooks.
@@ -286,6 +309,7 @@ def register_plugin(name: str, version: str = "1.0.0", description: str = "",
     Usage in plugin file:
         from reconpro.plugins import register_plugin, HookManager
         
+        # DEAD CODE: consider removal
         def on_scan(target, base_url, modules):
             print(f"Scan starting: {target}")
         
@@ -311,6 +335,7 @@ def register_plugin(name: str, version: str = "1.0.0", description: str = "",
     return True
 
 
+# DEAD CODE: consider removal
 def get_registered_plugins() -> Dict[str, Dict[str, Any]]:
     """Get metadata for all registered plugins."""
     return dict(_PLUGIN_META)

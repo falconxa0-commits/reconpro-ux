@@ -1,0 +1,2002 @@
+     1→from __future__ import annotations
+     2→
+     3→import argparse
+     4→import json
+     5→import os
+     6→import sys
+     7→
+     8→from rich.console import Console, Group
+     9→from rich.panel import Panel
+    10→from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+    11→from rich.table import Table
+    12→from rich.text import Text
+    13→
+    14→from . import __version__
+    15→from .constants import SEV_COLORS, GRADE_COLORS
+    16→from .scanner import (
+    17→    MODULE_REGISTRY, LOCAL_MODULES,
+    18→    ALL_MODULES, DEFAULT_MODULES, DEFAULT_LOCAL_MODULES,
+    19→)
+    20→from .engine import scan, audit_scan
+    21→from .history import list_scans, get_latest, diff_scans, save_scan, clear_history
+    22→from .reports import generate_html_report
+    23→from .parallel import blitz_scan
+    24→
+    25→console = Console()
+    26→
+    27→BANNER = r"""[bold bright_white]
+    28→██████╗ ███████╗ ██████╗██╗  ██╗███████╗██████╗ ███████╗██████╗ ██████╗ ██╗    ██╗
+    29→██╔══██╗██╔════╝██╔════╝██║  ██╗██╔════╝██╔══██╗██╔════╝██╔════╝██║██╗ ██╔╝
+    30→██████╔╝█████╗  ██║     ███████║█████╗  ██████╔╝█████╗  ██║     ██╔╝██╗██║
+    31→██╔═══╝ ██╔══╝  ██║     ██╔══██║██╔══╝  ██╔══██╗██╔══╝  ██║     █████╔╝██║
+    32→██║     ███████╗╚██████╗██║  ██║███████╗██║  ██║███████╗╚██████╗██╔╝██╗██║
+    33→╚═╝     ╚══════╝ ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝
+    34→[/bold bright_white][dim]          E L E V E N   B L A D E S .   O N E   T A R G E T .   O N E   V E R D I C T.[/dim]
+    35→"""
+    36→
+    37→# Colors imported from constants.py
+    38→
+    39→
+    40→# ── Rich rendering ──────────────────────────────────────────────────────
+    41→
+    42→
+    43→def _render_summary(result, title: str = "RECONPRO") -> None:
+    44→    score = result.total_score
+    45→    grade = result.grade
+    46→    grade_color = GRADE_COLORS.get(grade, "bold bright_red")
+    47→    sc = result.severity_counts
+    48→    total = len(result.findings)
+    49→    bar_width = 50
+    50→    filled = int(score / 100 * bar_width)
+    51→    bar = "█" * filled + "░" * (bar_width - filled)
+    52→    lines = [
+    53→        Text(f"\n  {bar} [bold {grade_color}]{score}/100 ({grade})[/{grade_color}]"),
+    54→        Text(f"\n  Target: [cyan]{result.target}[/]"),
+    55→        Text(f"  Modules: [dim]{', '.join(result.modules_run)}[/]"),
+    56→        Text(""),
+    57→        Text(
+    58→            f"  Findings: [bold]{total}[/]  "
+    59→            f"[bright_red]{sc.get('critical', 0)} critical[/], "
+    60→            f"[red]{sc.get('high', 0)} high[/], "
+    61→            f"[yellow]{sc.get('medium', 0)} medium[/], "
+    62→            f"[green]{sc.get('low', 0)} low[/], "
+    63→            f"[dim]{sc.get('info', 0)} info[/]",
+    64→        ),
+    65→    ]
+    66→    if result.vibesec_score is not None:
+    67→        lines.append(Text(
+    68→            f"\n  VibeSec Score: [bold bright_green]{result.vibesec_score}/100 ({result.vibesec_grade})[/]"
+    69→        ))
+    70→    console.print(Panel(Group(*lines), border_style=grade_color,
+    71→                         title=f"[bold]{title}[/bold]", title_align="left", padding=(1, 2)))
+    72→
+    73→
+    74→def _render_findings_table(result, show_remediation: bool = False) -> None:
+    75→    if not result.findings:
+    76→        console.print("\n  [bright_green]No findings. Target is clean.[/]")
+    77→        return
+    78→    table = Table(title=f"Findings — {len(result.findings)} detected",
+    79→                  border_style="bright_white", header_style="bold bright_white")
+    80→    table.add_column("Severity", style="bold", width=10)
+    81→    table.add_column("Module", style="cyan", width=12)
+    82→    table.add_column("Category", style="magenta", width=18)
+    83→    table.add_column("Finding", style="white")
+    84→    table.add_column("Pts", style="yellow", width=5)
+    85→    if show_remediation:
+    86→        table.add_column("Fix", style="bright_green", width=50)
+    87→    for f in result.findings[:80]:
+    88→        sev = f.get("severity", "info")
+    89→        color = SEV_COLORS.get(sev, "white")
+    90→        row = [
+    91→            f"[{color}]{sev.upper()}[/{color}]",
+    92→            f.get("module", ""), f.get("category", ""),
+    93→            f.get("title", "")[:70], str(f.get("points_deducted", 0)),
+    94→        ]
+    95→        if show_remediation:
+    96→            row.append(f.get("remediation", "")[:50])
+    97→        table.add_row(*row)
+    98→    console.print(table)
+    99→
+   100→
+   101→def _render_module_breakdown(result) -> None:
+   102→    if not result.module_results:
+   103→        return
+   104→    t = Table(title="Module Breakdown", border_style="dim", header_style="bold dim")
+   105→    t.add_column("Module", style="bold", width=16)
+   106→    t.add_column("Findings", style="white", width=10)
+   107→    t.add_column("Critical", style="bright_red", width=10)
+   108→    t.add_column("High", style="red", width=8)
+   109→    t.add_column("Medium", style="yellow", width=8)
+   110→    for mod_id, mod_data in result.module_results.items():
+   111→        findings = mod_data.get("findings", [])
+   112→        t.add_row(mod_id.upper(), str(len(findings)),
+   113→                   str(sum(1 for f in findings if f.get("severity") == "critical")),
+   114→                   str(sum(1 for f in findings if f.get("severity") == "high")),
+   115→                   str(sum(1 for f in findings if f.get("severity") == "medium")))
+   116→    console.print(t)
+   117→
+   118→
+   119→def _render_badge(result) -> None:
+   120→    if result.badge_markdown:
+   121→        console.print(Panel(Group(
+   122→            Text("  GitHub README Badge (copy-paste):", style="bold dim"),
+   123→            Text(f"  {result.badge_markdown}", style="cyan"),
+   124→        ), border_style="dim", title="[dim]Badge[/dim]", title_align="left", padding=(0, 2)))
+   125→
+   126→
+   127→def _render_remediations(result) -> None:
+   128→    actionable = [f for f in result.findings
+   129→                  if f.get("remediation") and f.get("severity") not in ("info",)
+   130→                  and f.get("points_deducted", 0) > 0]
+   131→    if not actionable:
+   132→        console.print("\n  [bright_green]No actionable fixes needed.[/]")
+   133→        return
+   134→    console.print("\n[bold bright_white]  Fix Commands:[/bold bright_white]\n")
+   135→    seen = set()
+   136→    for f in actionable:
+   137→        fix = f.get("remediation", "").strip()
+   138→        sev = f.get("severity", "info")
+   139→        color = SEV_COLORS.get(sev, "white")
+   140→        if fix and fix not in seen:
+   141→            seen.add(fix)
+   142→            console.print(f"  [{color}]{sev.upper():8}[/{color}]  {fix}")
+   143→    console.print()
+   144→
+   145→
+   146→def _output_result(result, args, title: str = "RECONPRO", show_remediation: bool = False) -> None:
+   147→    json_output = getattr(args, "json_output", False)
+   148→    output_file = getattr(args, "output_file", None)
+   149→    if json_output:
+   150→        text = json.dumps(result.to_dict(), indent=2, default=str)
+   151→        if output_file:
+   152→            with open(output_file, "w") as fp:
+   153→                fp.write(text)
+   154→            console.print(f"  [green]JSON saved: [cyan]{output_file}[/][/]")
+   155→        else:
+   156→            print(text)
+   157→    else:
+   158→        _render_summary(result, title=title)
+   159→        console.print()
+   160→        _render_module_breakdown(result)
+   161→        console.print()
+   162→        _render_findings_table(result, show_remediation=show_remediation)
+   163→        if show_remediation:
+   164→            _render_remediations(result)
+   165→        _render_badge(result)
+   166→        if output_file:
+   167→            with open(output_file, "w") as fp:
+   168→                fp.write(json.dumps(result.to_dict(), indent=2, default=str))
+   169→            console.print(f"\n  [green]JSON saved: [cyan]{output_file}[/][/]")
+   170→        # Auto-save to history
+   171→        save_scan(result.to_dict())
+   172→    console.print()
+   173→
+   174→
+   175→_cli_args: argparse.Namespace | None = None
+   176→
+   177→
+   178→def _banner(args: argparse.Namespace | None = None) -> None:
+   179→    """Print banner only when not in JSON mode."""
+   180→    if args is None:
+   181→        args = _cli_args
+   182→    if not getattr(args, 'json_output', False):
+   183→        console.print(BANNER)
+   184→
+   185→
+   186→def _spinner_wrap(msg: str, fn, *a, _json_mode: bool | None = None, **kw):
+   187→    """Run a function with a spinner (suppressed in JSON mode)."""
+   188→    if _json_mode is None:
+   189→        _json_mode = getattr(_cli_args, 'json_output', False) if _cli_args else False
+   190→    if _json_mode:
+   191→        return fn(*a, **kw)
+   192→    with Progress(SpinnerColumn(), TextColumn("[bold]{task.description}[/]"),
+   193→                   TimeElapsedColumn(), console=console) as progress:
+   194→        task = progress.add_task(msg, total=None)
+   195→        result = fn(*a, **kw)
+   196→        progress.update(task, completed=True)
+   197→    return result
+   198→
+   199→
+   200→def _print_findings(findings, args, title: str = "SCAN") -> None:
+   201→    """Print findings from a module run, respecting JSON mode."""
+   202→    if getattr(args, 'json_output', False):
+   203→        out = []
+   204→        for f in findings:
+   205→            out.append({
+   206→                "title": f.title,
+   207→                "severity": f.severity,
+   208→                "category": f.category,
+   209→                "module": f.module,
+   210→                "description": f.description,
+   211→                "evidence": f.evidence,
+   212→                "asset": f.asset,
+   213→                "points_deducted": f.points_deducted,
+   214→                "remediation": f.remediation,
+   215→            })
+   216→        console.print_json(json.dumps(out, indent=2, default=str))
+   217→    else:
+   218→        if not findings:
+   219→            console.print("  [dim]No findings.[/]")
+   220→        else:
+   221→            for f in findings:
+   222→                c = SEV_COLORS.get(f.severity, "white")
+   223→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+   224→                if f.evidence:
+   225→                    console.print(f"       [dim]{f.evidence[:200]}[/]")
+   226→            console.print(f"  [bold]{len(findings)} finding(s).[/]")
+   227→    console.print()
+   228→
+   229→
+   230→# ── CLI entry point ─────────────────────────────────────────────────────
+   231→
+   232→
+   233→def main(argv: list[str] | None = None) -> None:
+   234→    parser = argparse.ArgumentParser(
+   235→        prog="reconpro",
+   236→        description=(
+   237→            "ReconPro Nexus v11 — Async Engine. Evasion. Swarm. Knowledge Graph. 40+ Subcommands.\n"
+   238→            "The next-gen security platform with AI agent, swarm, and attack-path chaining.\n\n"
+   239→            "Quick Start:  reconpro nexus           (mind-blowing agent TUI)\n"
+   240→            "AI Agent:     reconpro agent <goal>   (LLM-powered, 18 tools)\n"
+   241→            "Swarm:        reconpro swarm <target>  (SCOUT→HACKER→CODER→GUARDIAN)\n"
+   242→            "Adversarial:  reconpro adversarial <target>  (hacker vs coder self-play)\n"
+   243→            "Intel:        cve, graph, compliance, passive (threat intel + knowledge graph)\n"
+   244→            "Export:       export (SARIF/MD/JSON/HTML)\n"
+   245→            "Cloud:        iac, container, cloud-recon, delta (infra security)\n"
+   246→            "Defense:      defense, fuzzer, profile, benchmark (auto-fix + scoring)"
+   247→        ),
+   248→        epilog="""Examples:
+   249→  # NEXUS (recommended)
+   250→  reconpro nexus                # Mind-blowing agent TUI
+   251→
+   252→  # AI Agent (reasoning + 18 tools)
+   253→  reconpro agent \"fully recon example.com, find CVEs, generate SARIF\"
+   254→  reconpro agent \"swarm attack myapp.com with 3 rounds\"
+   255→
+   256→  # Swarm Intelligence
+   257→  reconpro swarm example.com               # SCOUT→HACKER→CODER→GUARDIAN
+   258→  reconpro swarm example.com --mode attack   # SCOUT+HACKER only
+   259→
+   260→  # Adversarial Self-Play
+   261→  reconpro adversarial example.com           # 3-round hacker vs coder
+   262→
+   263→  # Remote
+   264→  reconpro scan example.com
+   265→  reconpro vibesec example.com
+   266→
+   267→  # Local + Code
+   268→  reconpro audit              # Full machine audit
+   269→  reconpro ast /path/to/code  # AST vulnerability analysis
+   270→  reconpro secrets            # Find secrets
+   271→
+   272→  # Threat Intelligence
+   273→  reconpro cve SQL injection    # NVD CVE lookup
+   274→  reconpro graph example.com   # Knowledge graph
+   275→
+   276→  # Export (CI/CD ready)
+   277→  reconpro export report.sarif # SARIF for GitHub Code Scanning
+   278→  reconpro export report.md     # Markdown report
+   279→
+   280→  # Advanced
+   281→  reconpro blitz t1.com t2.com t3.com
+   282→  reconpro subdomains example.com
+   283→  reconpro schedule example.com --every 1h
+   284→  reconpro serve --port 7890""",
+   285→        formatter_class=argparse.RawDescriptionHelpFormatter,
+   286→    )
+   287→
+   288→    parser.add_argument("--version", "-v", action="version", version=f"ReconPro {__version__}")
+   289→    sub = parser.add_subparsers(dest="subcommand")
+   290→
+   291→    # ── scan ──────────────────────────────────────────────────────
+   292→    p = sub.add_parser("scan", help="Full remote scan")
+   293→    p.add_argument("target", help="Target domain or URL")
+   294→    p.add_argument("--modules", "-m", type=str)
+   295→    p.add_argument("--all", "-a", action="store_true")
+   296→    p.add_argument("--json", dest="json_output", action="store_true")
+   297→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   298→    p.add_argument("--timeout", "-t", type=int, default=8)
+   299→    p.add_argument("--insecure", "-k", action="store_true")
+   300→    p.add_argument("--rate-limit", type=float, default=10.0)
+   301→    p.add_argument("--engineering", action="store_true", help="Run engineering pipeline after scan")
+   302→
+   303→    # ── vibesec ───────────────────────────────────────────────────
+   304→    p = sub.add_parser("vibesec", help="Quick VibeSec benchmark")
+   305→    p.add_argument("target", help="Target domain or URL")
+   306→    p.add_argument("--json", dest="json_output", action="store_true")
+   307→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   308→    p.add_argument("--timeout", "-t", type=int, default=8)
+   309→    p.add_argument("--insecure", "-k", action="store_true")
+   310→    p.add_argument("--rate-limit", type=float, default=10.0)
+   311→
+   312→    # ── audit ────────────────────────────────────────────────────
+   313→    p = sub.add_parser("audit", help="Full machine audit (ports, firewall, SSH, Docker, env, files)")
+   314→    p.add_argument("--modules", "-m", type=str)
+   315→    p.add_argument("--json", dest="json_output", action="store_true")
+   316→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   317→    p.add_argument("--engineering", action="store_true", help="Run engineering pipeline after audit")
+   318→
+   319→    # ── dev ───────────────────────────────────────────────────────
+   320→    p = sub.add_parser("dev", help="Developer project scan (secrets, deps, git, docker)")
+   321→    p.add_argument("path", nargs="?", default=".")
+   322→    p.add_argument("--json", dest="json_output", action="store_true")
+   323→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   324→
+   325→    # ── doctor ────────────────────────────────────────────────────
+   326→    p = sub.add_parser("doctor", help="Health check with fix commands")
+   327→    p.add_argument("--json", dest="json_output", action="store_true")
+   328→    p.add_argument("-o", "--output", dest="output_file", type=str)
+   329→
+   330→    # ── ports ─────────────────────────────────────────────────────
+   331→    p = sub.add_parser("ports", help="Show open ports and risky services")
+   332→    p.add_argument("--json", dest="json_output", action="store_true")
+   333→
+   334→    # ── secrets ────────────────────────────────────────────────────
+   335→    p = sub.add_parser("secrets", help="Find secrets in env vars and codebase")
+   336→    p.add_argument("path", nargs="?", default=".")
+   337→    p.add_argument("--json", dest="json_output", action="store_true")
+   338→
+   339→    # ── list ──────────────────────────────────────────────────────
+   340→    p = sub.add_parser("list", help="List available modules")
+   341→    p.add_argument("--local", action="store_true")
+   342→    p.add_argument("--all", action="store_true")
+   343→
+   344→    # ── NEXUS ────────────────────────────────────────────────────
+   345→    sub.add_parser("nexus", help="Launch NEXUS — mind-blowing agent TUI (mouse + keyboard + split-screen)")
+   346→
+   347→    # ── chat ──────────────────────────────────────────────────────
+   348→    sub.add_parser("chat", help="Interactive chat mode — talk to ReconPro")
+   349→
+   350→    # ── tui ───────────────────────────────────────────────────────
+   351→    sub.add_parser("tui", help="Visual terminal dashboard")
+   352→
+   353→    # ── blitz ─────────────────────────────────────────────────────
+   354→    p = sub.add_parser("blitz", help="Parallel multi-target scan")
+   355→    p.add_argument("targets", nargs="+", help="Target domains/URLs")
+   356→    p.add_argument("--workers", "-w", type=int, default=4)
+   357→    p.add_argument("--modules", "-m", type=str)
+   358→
+   359→    # ── agent ─────────────────────────────────────────────────────
+   360→    p = sub.add_parser("agent", help="Autonomous agent — give it a goal")
+   361→    p.add_argument("goal", help="Natural language goal (e.g. 'fully scan example.com and find subdomains')")
+   362→
+   363→    # ── subdomains ────────────────────────────────────────────────
+   364→    p = sub.add_parser("subdomains", help="Discover subdomains")
+   365→    p.add_argument("domain", help="Domain to enumerate")
+   366→    p.add_argument("--json", dest="json_output", action="store_true")
+   367→
+   368→    # ── schedule ──────────────────────────────────────────────────
+   369→    p = sub.add_parser("schedule", help="Schedule recurring scans")
+   370→    p.add_argument("target", help="Target domain, URL, or 'audit'")
+   371→    p.add_argument("--every", "-e", type=str, default="1h", help="Interval: 30m, 1h, 6h, 1d")
+   372→    p.add_argument("--modules", "-m", type=str)
+   373→    p.add_argument("--max-runs", type=int, default=0, help="Max runs (0=forever)")
+   374→
+   375→    # ── serve ─────────────────────────────────────────────────────
+   376→    p = sub.add_parser("serve", help="Start REST API server")
+   377→    p.add_argument("--port", "-p", type=int, default=7890)
+   378→
+   379→    # ── report ────────────────────────────────────────────────────
+   380→    p = sub.add_parser("report", help="Generate HTML report from last scan")
+   381→    p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+   382→
+   383→    # ── history ───────────────────────────────────────────────────
+   384→    p = sub.add_parser("history", help="View scan history")
+   385→    p.add_argument("target", nargs="?", default=None)
+   386→    p.add_argument("--limit", "-n", type=int, default=10)
+   387→    p.add_argument("--clear", action="store_true", help="Delete all history")
+   388→
+   389→    # ── diff ───────────────────────────────────────────────────────
+   390→    p = sub.add_parser("diff", help="Compare two scan results")
+   391→    p.add_argument("a", nargs="?", default=None, help="First scan file or 'last'")
+   392→    p.add_argument("b", nargs="?", default=None, help="Second scan file or 'last-2'")
+   393→
+   394→    # ── screenshot ────────────────────────────────────────────────
+   395→    p = sub.add_parser("screenshot", help="Take browser screenshot (needs: pip install reconpro[browser])")
+   396→    p.add_argument("url", help="URL to screenshot")
+   397→
+   398→    # ── open ───────────────────────────────────────────────────────
+   399→    p = sub.add_parser("open", help="Open URL in browser")
+   400→    p.add_argument("url", help="URL to open")
+   401→
+   402→    # ── plugin ────────────────────────────────────────────────────
+   403→    p = sub.add_parser("plugin", help="Plugin management")
+   404→    p.add_argument("action", choices=["list", "create", "run"])
+   405→    p.add_argument("name", nargs="?", default=None)
+   406→    p.add_argument("target", nargs="?", default=None)
+   407→
+   408→    # ── swarm ─────────────────────────────────────────────────────
+   409→    p = sub.add_parser("swarm", help="Swarm attack: SCOUT→HACKER→CODER→GUARDIAN")
+   410→    p.add_argument("target", help="Target domain or URL")
+   411→    p.add_argument("--mode", "-m", type=str, default="full",
+   412→                     choices=["full", "recon", "attack", "fix", "verify"])
+   413→
+   414→    # ── adversarial ────────────────────────────────────────────────
+   415→    p = sub.add_parser("adversarial", help="Adversarial self-play: hacker vs coder loop")
+   416→    p.add_argument("target", help="Target domain or URL")
+   417→    p.add_argument("--rounds", "-r", type=int, default=3)
+   418→    p.add_argument("--modules", "-m", type=str)
+   419→    p.add_argument("--local", action="store_true", help="Target is local machine")
+   420→
+   421→    # ── ast ─────────────────────────────────────────────────────────
+   422→    p = sub.add_parser("ast", help="AST code analysis (Python/JS/TS vulnerability patterns)")
+   423→    p.add_argument("path", nargs="?", default=".", help="File or directory to analyze")
+   424→
+   425→    # ── cve ─────────────────────────────────────────────────────────
+   426→    p = sub.add_parser("cve", help="CVE/NVD threat intelligence lookup")
+   427→    p.add_argument("query", help="Search query (e.g. 'SQL injection', 'CVE-2024-1234')")
+   428→    p.add_argument("--limit", "-n", type=int, default=5)
+   429→
+   430→    # ── graph ───────────────────────────────────────────────────────
+   431→    p = sub.add_parser("graph", help="Knowledge graph: attack surface, blast radius, chains")
+   432→    p.add_argument("target", nargs="?", default=None, help="Target (default: use last scan)")
+   433→    p.add_argument("--action", "-a", type=str, default="stats",
+   434→                     choices=["stats", "chains", "surface", "blast", "export"])
+   435→
+   436→    # ── iac ──────────────────────────────────────────────────────────
+   437→    p = sub.add_parser("iac", help="Infrastructure-as-Code audit (Terraform/CF/Docker/K8s)")
+   438→    p.add_argument("path", nargs="?", default=".", help="Directory to scan")
+   439→    p.add_argument("--json", dest="json_output", action="store_true")
+   440→
+   441→    # ── container ──────────────────────────────────────────────────────
+   442→    p = sub.add_parser("container", help="Container escape analysis (Dockerfile + K8s)")
+   443→    p.add_argument("path", nargs="?", default=".", help="Directory to scan")
+   444→    p.add_argument("--json", dest="json_output", action="store_true")
+   445→
+   446→    # ── cloud-recon ─────────────────────────────────────────────────────
+   447→    p = sub.add_parser("cloud-recon", help="Cloud infrastructure recon (AWS/Azure/GCP metadata + assets)")
+   448→    p.add_argument("target", help="Target domain or 'local' for metadata probe")
+   449→    p.add_argument("--json", dest="json_output", action="store_true")
+   450→
+   451→    # ── defense ────────────────────────────────────────────────────────
+   452→    p = sub.add_parser("defense", help="Generate deployable fixes (WAF rules, patches, IaC fixes)")
+   453→    p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+   454→
+   455→    # ── fuzzer ──────────────────────────────────────────────────────────
+   456→    p = sub.add_parser("fuzzer", help="Context-aware payload fuzzing")
+   457→    p.add_argument("url", help="Target URL to fuzz")
+   458→    p.add_argument("--param", "-p", type=str, help="Specific parameter to fuzz")
+   459→    p.add_argument("--category", "-c", type=str, help="Payload category (sqli, xss, ssti, ...)")
+   460→
+   461→    # ── profile ─────────────────────────────────────────────────────────
+   462→    p = sub.add_parser("profile", help="Target fingerprinting + auto scan plan")
+   463→    p.add_argument("target", help="Target domain or URL")
+   464→
+   465→    # ── compliance ───────────────────────────────────────────────────────
+   466→    p = sub.add_parser("compliance", help="Compliance mapping (SOC2/ISO/PCI/HIPAA/GDPR/CIS)")
+   467→    p.add_argument("--frameworks", "-f", type=str, default="soc2,pci-dss",
+   468→                     help="Comma-separated frameworks")
+   469→    p.add_argument("-i", "--input", type=str, help="JSON scan file (default: last scan)")
+   470→
+   471→    # ── delta ───────────────────────────────────────────────────────────
+   472→    p = sub.add_parser("delta", help="Dynamic delta report (compare scans with git blame)")
+   473→    p.add_argument("target", nargs="?", default=None, help="Target (default: use last scan)")
+   474→    p.add_argument("--format", "-f", type=str, default="markdown", choices=["markdown", "sarif"])
+   475→
+   476→    # ── benchmark ───────────────────────────────────────────────────────
+   477→    p = sub.add_parser("benchmark", help="Score tracking + competitive leaderboard")
+   478→    p.add_argument("targets", nargs="*", help="Targets to benchmark")
+   479→    p.add_argument("--days", "-d", type=int, default=30)
+   480→    p.add_argument("--leaderboard", action="store_true", help="Show leaderboard")
+   481→
+   482→    # ── graph-visual ────────────────────────────────────────────────────
+   483→    p = sub.add_parser("graph-visual", help="Interactive D3.js knowledge graph visualization")
+   484→    p.add_argument("-o", "--output", type=str, default="reconpro_graph.html", help="Output HTML file")
+   485→
+   486→    # ── netmap ──────────────────────────────────────────────────────────
+   487→    p = sub.add_parser("netmap", help="Network topology + trust mapping + lateral paths")
+   488→    p.add_argument("--subnet", "-s", type=str, help="Subnet to scan (e.g. 192.168.1.0/24)")
+   489→
+   490→    # ── passive ─────────────────────────────────────────────────────────
+   491→    p = sub.add_parser("passive", help="Passive DNS + historical intel (VirusTotal, Wayback)")
+   492→    p.add_argument("domain", help="Domain to query")
+   493→
+   494→    # ── export ──────────────────────────────────────────────────────────
+   495→    p = sub.add_parser("export", help="Export last scan to SARIF/MD/JSON/HTML")
+   496→    p.add_argument("output", nargs="?", default="reconpro_report.sarif",
+   497→                     help="Output path (format auto-detected from extension)")
+   498→
+   499→    # ── zai (z.ai live stream) ──────────────────────────────────────────
+   500→    p = sub.add_parser("zai", help="z.ai live stream AI analysis — zero config, no API keys needed")
+   501→    p.add_argument("target", nargs="?", default="", help="Target to scan and analyze (optional: uses last scan if omitted)")
+   502→    p.add_argument("--stream", action="store_true", help="Stream AI analysis in real-time (default)")
+   503→    p.add_argument("--no-stream", action="store_true", help="Return complete analysis at once")
+   504→    p.add_argument("--chat", type=str, default="", help="Free-form chat message (skips scan)")
+   505→    p.add_argument("--health", action="store_true", help="Health check: verify z.ai connectivity")
+   506→    p.add_argument("--model", type=str, default="glm-4-flash", help="Model name (default: glm-4-flash)")
+   507→
+   508→    # ── wishes (v9.1.0 22-Wish Ritual) ───────────────────────────
+   509→    p = sub.add_parser("wishes", help="Execute 22-Wish orchestration ritual against a target")
+   510→    p.add_argument("target", help="Target domain or URL")
+   511→    p.add_argument("--modules", "-m", type=str, default=None, help="Comma-separated modules to include")
+   512→    p.add_argument("--timeout", type=int, default=8)
+   513→    p.add_argument("--insecure", "-k", action="store_true", help="Skip TLS verification")
+   514→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   515→
+   516→    # ── geoip (v9.1.0 GeoIP Enrichment) ──────────────────────────
+   517→    p = sub.add_parser("geoip", help="GeoIP enrichment for IP addresses")
+   518→    p.add_argument("ips", nargs="+", help="IP addresses to enrich")
+   519→    p.add_argument("--batch", action="store_true", help="Use batch API for multiple IPs")
+   520→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   521→
+   522→    # ── threat-feeds (v9.1.0 Threat Feed Ingestion) ───────────────
+   523→    p = sub.add_parser("threat-feeds", help="Threat feed ingestion and IP reputation checking")
+   524→    p.add_argument("ips", nargs="*", help="IPs to check (checks all feeds + DNSBLs)")
+   525→    p.add_argument("--refresh", action="store_true", help="Force refresh all feeds")
+   526→    p.add_argument("--stats", action="store_true", help="Show feed statistics only")
+   527→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   528→
+   529→    # ── ai-redteam (v9.1.0 AI Red Team) ──────────────────────────
+   530→    p = sub.add_parser("ai-redteam", help="AI endpoint discovery, vendor fingerprinting, secret extraction")
+   531→    p.add_argument("target", help="Target domain or URL")
+   532→    p.add_argument("--timeout", type=int, default=8)
+   533→    p.add_argument("--insecure", "-k", action="store_true", help="Skip TLS verification")
+   534→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   535→
+   536→    # ── supply-chain (v9.1.0 Supply Chain Audit) ─────────────────
+   537→    p = sub.add_parser("supply-chain", help="Supply chain audit — GitHub repos or web content analysis")
+   538→    p.add_argument("target", help="GitHub repo (owner/repo) or URL to audit")
+   539→    p.add_argument("--max-files", type=int, default=30, help="Max files to scrape (GitHub)")
+   540→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   541→
+   542→    # ── cross-validate (v9.1.0 Cross-Validation) ──────────────────
+   543→    p = sub.add_parser("cross-validate", help="Cross-validate ReconPro findings with independent verification")
+   544→    p.add_argument("target", nargs="?", default=None, help="Target (default: use last scan)")
+   545→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   546→
+   547→    # ── quantum-fingerprint (v9.2.0 TCP/IP Stack Fingerprinting via HTTP Timing) ──
+   548→    p = sub.add_parser("quantum-fingerprint", help="OS & TCP stack fingerprinting via HTTP timing analysis")
+   549→    p.add_argument("target", help="Domain or URL to fingerprint")
+   550→    p.add_argument("-t", "--timeout", type=int, default=15, help="Per-probe timeout (default: 15)")
+   551→    p.add_argument("-k", "--insecure", action="store_true", help="Skip TLS verification")
+   552→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   553→
+   554→    # ── dark-web (v9.2.0 Credential Leak & Exposure Scanner) ──────
+   555→    p = sub.add_parser("dark-web", help="Monitor paste sites & threat feeds for credential leaks")
+   556→    p.add_argument("target", help="Domain, email, keyword, or IP to search")
+   557→    p.add_argument("--deep", action="store_true", help="Enable deep scan (more sources)")
+   558→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   559→
+   560→    # ── info-ops (v9.2.0 Information Operations Analysis) ─────────
+   561→    p = sub.add_parser("info-ops", help="Information operations & deception analysis (defensive)")
+   562→    p.add_argument("target", help="Domain or URL to analyze")
+   563→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   564→
+   565→    # ── steg (v9.2.0 Steganography Detection) ───────────────────
+   566→    p = sub.add_parser("steg", help="Detect hidden data in HTTP responses & images")
+   567→    p.add_argument("target", help="URL or domain to scan for steganography")
+   568→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   569→
+   570→    # ── covert (v9.2.0 Covert Channel Detection) ─────────────────
+   571→    p = sub.add_parser("covert", help="Detect & simulate covert channels (DNS/ICMP/timing)")
+   572→    p.add_argument("target", help="Domain or URL to analyze")
+   573→    p.add_argument("--mode", choices=["detect", "simulate"], default="detect", help="detect or simulate covert channels")
+   574→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   575→
+   576→    # ── zero-day (v9.2.0 Zero-Day Pattern Hunter) ────────────────
+   577→    p = sub.add_parser("zero-day", help="Hunt for zero-day vulnerability patterns in responses")
+   578→    p.add_argument("target", help="URL or domain to hunt")
+   579→    p.add_argument("--deep", action="store_true", help="Deep analysis mode")
+   580→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   581→
+   582→    # ── ghost (v9.2.0 Infrastructure Ghosting) ───────────────────
+   583→    p = sub.add_parser("ghost", help="Clone & ghost infrastructure for deception analysis")
+   584→    p.add_argument("target", help="Domain or URL to ghost")
+   585→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   586→
+   587→    # ── sigint (v9.2.0 HTTP Traffic SIGINT) ───────────────────────
+   588→    p = sub.add_parser("sigint", help="Signal intelligence analysis of HTTP traffic patterns")
+   589→    p.add_argument("target", help="Domain or URL for SIGINT analysis")
+   590→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   591→
+   592→    # ── attributor (v9.2.0 Nation-State Attribution Engine) ─────
+   593→    p = sub.add_parser("attributor", help="Attribute attack infrastructure to nation-state actors")
+   594→    p.add_argument("target", help="Domain, IP, or URL to attribute")
+   595→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   596→
+   597→    # ── weaponized-report (v9.2.0 Weaponized Report Gen) ─────────
+   598→    p = sub.add_parser("weaponized-report", help="Generate weaponized decoy reports (defensive)")
+   599→    p.add_argument("target", help="Domain or URL context")
+   600→    p.add_argument("--format", choices=["html", "pdf", "json"], default="html", help="Output format")
+   601→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   602→
+   603→    # ── honeypot (v9.2.0 Honeypot Detection) ─────────────────────
+   604→    p = sub.add_parser("honeypot", help="Detect honeypots & score infrastructure legitimacy")
+   605→    p.add_argument("target", help="Domain, IP, or URL to check")
+   606→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   607→
+   608→    # ── rate (v9.2.0 Module Rating System) ──────────────────────
+   609→    p = sub.add_parser("rate", help="Rate all v11 modules against industry tools /100")
+   610→    p.add_argument("--module", "-m", type=str, default=None,
+   611→                     help="Rate a specific module (e.g. dead-drop, quantum-fingerprint)")
+   612→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   613→
+   614→    # ── dead-drop (v9.2.0 Cryptographic Dead Drop) ────────────────
+   615→    p = sub.add_parser("dead-drop", help="Detect cryptographic dead drops in DNS/HTTP/CT logs")
+   616→    p.add_argument("target", help="Domain or URL to scan")
+   617→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   618→
+   619→    # ── info (Diagnostics & Help) ────────────────────────────────
+   620→    p = sub.add_parser("info", help="Module help, diagnostics, and version info")
+   621→    p.add_argument("--module", "-m", type=str, default=None,
+   622→                     help="Show detailed help for a module (e.g. quantum-fingerprint)")
+   623→    p.add_argument("--modules", action="store_true",
+   624→                     help="List all modules with descriptions")
+   625→    p.add_argument("--diagnose", action="store_true",
+   626→                     help="Run full system diagnostics")
+   627→    p.add_argument("--health", action="store_true",
+   628→                     help="Quick health check")
+   629→    p.add_argument("--version", "-v", action="store_true", dest="info_version",
+   630→                     help="Detailed version information")
+   631→    p.add_argument("--examples", action="store_true",
+   632→                     help="Show usage examples")
+   633→    p.add_argument("--quick-start", action="store_true",
+   634→                     help="Show quick-start guide")
+   635→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   636→
+   637→    # ── Engineering Commands (Age III) ────────────────────────
+   638→    p = sub.add_parser("engineering", help="Run full engineering pipeline (health, drift, quality gates)")
+   639→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   640→    p.add_argument("--repo", type=str, default=".", help="Repository path to analyze")
+   641→
+   642→    p = sub.add_parser("validate", help="Run auto-validation pipeline (syntax, imports, types, security, perf)")
+   643→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   644→    p.add_argument("--repo", type=str, default=".", help="Repository path to validate")
+   645→
+   646→    p = sub.add_parser("benchmark-engineering", help="Run engineering benchmarks with regression detection")
+   647→    p.add_argument("--quick", action="store_true", help="Quick benchmark subset")
+   648→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   649→
+   650→    p = sub.add_parser("recommendations", help="View engineering recommendations")
+   651→    p.add_argument("--all", action="store_true", help="Show all including dismissed")
+   652→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   653→    p.add_argument("--dismiss", type=str, default=None, help="Dismiss a recommendation by ID")
+   654→
+   655→    p = sub.add_parser("memory", help="Repository memory — store, recall, search engineering facts")
+   656→    p.add_argument("--recall", type=str, default=None, help="Recall a fact by key")
+   657→    p.add_argument("--search", type=str, default=None, help="Search facts by text")
+   658→    p.add_argument("--stats", action="store_true", help="Show memory statistics")
+   659→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   660→
+   661→    p = sub.add_parser("digital-twin", help="Digital twin — capture state, simulate changes, detect anomalies")
+   662→    p.add_argument("--capture", action="store_true", help="Capture current system state")
+   663→    p.add_argument("--anomaly", action="store_true", help="Detect anomalies vs baseline")
+   664→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   665→
+   666→    p = sub.add_parser("auto-fix", help="Propose fixes for detected issues")
+   667→    p.add_argument("--apply", action="store_true", help="Apply approved fixes (dry-run by default)")
+   668→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   669→
+   670→    p = sub.add_parser("regression", help="Regression intelligence — detect and report regressions")
+   671→    p.add_argument("--baseline", action="store_true", help="Capture new baseline")
+   672→    p.add_argument("--detect", action="store_true", help="Detect regressions vs baseline")
+   673→    p.add_argument("--report", action="store_true", help="Generate regression report")
+   674→    p.add_argument("--json", dest="json_output", action="store_true", help="Output as JSON")
+   675→
+   676→    # ── Parse ─────────────────────────────────────────────────────
+   677→    global _cli_args
+   678→    args, remaining = parser.parse_known_args(argv)
+   679→    _cli_args = args
+   680→    cmd = args.subcommand
+   681→
+   682→    # ── LIST ───────────────────────────────────────────────────────
+   683→    if cmd == "list":
+   684→        show_all = getattr(args, "all", False)
+   685→        show_local = getattr(args, "local", False)
+   686→        if show_local or show_all:
+   687→            console.print("\n[bold bright_yellow]Local Modules:[/bold bright_yellow]\n")
+   688→            for mid, e in LOCAL_MODULES.items():
+   689→                d = " (default)" if mid in DEFAULT_LOCAL_MODULES else ""
+   690→                console.print(f"  [cyan]{mid:12}[/] {e['name']:18}{d}")
+   691→        if not show_local or show_all:
+   692→            console.print("\n[bold]Remote Modules:[/bold]\n")
+   693→            for mid, e in MODULE_REGISTRY.items():
+   694→                d = " (default)" if mid in DEFAULT_MODULES else ""
+   695→                console.print(f"  [cyan]{mid:12}[/] {e['name']:18}{d}")
+   696→        console.print(f"\n  [dim]Total: {len(ALL_MODULES)} modules[/]\n")
+   697→        return
+   698→
+   699→    # ── IAC ─────────────────────────────────────────────────────────
+   700→    if cmd == "iac":
+   701→        _banner(args)
+   702→        result = _spinner_wrap(f"Auditing IaC at {args.path}...", audit_scan, target=args.path, modules=["iac_audit"])
+   703→        _output_result(result, args, title="IAC AUDIT", show_remediation=True)
+   704→        return
+   705→
+   706→    # ── CONTAINER ─────────────────────────────────────────────────
+   707→    if cmd == "container":
+   708→        _banner(args)
+   709→        result = _spinner_wrap(f"Analyzing containers at {args.path}...", audit_scan, target=args.path, modules=["container_sec"])
+   710→        _output_result(result, args, title="CONTAINER SECURITY", show_remediation=True)
+   711→        return
+   712→
+   713→    # ── CLOUD-RECON ──────────────────────────────────────────────────
+   714→    if cmd == "cloud-recon":
+   715→        _banner(args)
+   716→        target = args.target
+   717→        from .modules.cloud_recon import run_cloud_recon
+   718→        findings = _spinner_wrap(f"Cloud recon on {target}...", run_cloud_recon, target, target if target.startswith("http") else f"https://{target}")
+   719→        if findings:
+   720→            for f in findings:
+   721→                c = SEV_COLORS.get(f.severity, "white")
+   722→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+   723→            console.print(f"  [bold]{len(findings)} cloud finding(s).[/]")
+   724→        else:
+   725→            console.print("  [dim]No cloud findings.[/]")
+   726→        console.print()
+   727→        return
+   728→
+   729→    # ── DEFENSE ────────────────────────────────────────────────────
+   730→    if cmd == "defense":
+   731→        data = None
+   732→        if getattr(args, "input", None):
+   733→            with open(args.input) as f:
+   734→                data = json.load(f)
+   735→        if not data:
+   736→            data = get_latest()
+   737→        if not data:
+   738→            console.print("  [yellow]No scan data. Run a scan first.[/]")
+   739→            sys.exit(1)
+   740→        from .defense import generate_defense_bundle
+   741→        bundle = _spinner_wrap("Generating defenses...", generate_defense_bundle, data.get("target", "unknown"), data.get("findings", []))
+   742→        console.print(Panel(bundle.to_report(), border_style="green", title="[bold]DEFENSE BUNDLE[/bold]", padding=(1, 2)))
+   743→        console.print()
+   744→        return
+   745→
+   746→    # ── FUZZER ────────────────────────────────────────────────────
+   747→    if cmd == "fuzzer":
+   748→        _banner(args)
+   749→        from .fuzzer import FuzzSession, TechDetector
+   750→        url = args.url
+   751→        base = url if url.startswith("http") else f"https://{url}"
+   752→        profile = _spinner_wrap(f"Detecting tech on {base}...", TechDetector().analyze, base)
+   753→        console.print(f"  [cyan]Detected:[/] {', '.join(profile.frameworks) or 'unknown'}")
+   754→        console.print(f"  [cyan]Language:[/] {profile.language or 'unknown'}")
+   755→        console.print(f"  [cyan]WAF:[/] {profile.waf or 'none'}")
+   756→        category = getattr(args, "category", None) or "sqli"
+   757→        session = FuzzSession(base, profile)
+   758→        payloads = session.select_payloads(category)
+   759→        console.print(f"  [yellow]{len(payloads)} {category} payloads loaded (tech-aware selection)[/]")
+   760→        console.print()
+   761→        return
+   762→
+   763→    # ── PROFILE ────────────────────────────────────────────────────
+   764→    if cmd == "profile":
+   765→        _banner(args)
+   766→        from .profiler import profile_target, get_scan_plan
+   767→        target = args.target
+   768→        profile = _spinner_wrap(f"Profiling {target}...", profile_target, target)
+   769→        plan = get_scan_plan(target)
+   770→        console.print(f"  [cyan]Frameworks:[/] {', '.join(profile.frameworks) or 'none'}")
+   771→        console.print(f"  [cyan]Language:[/] {profile.language or 'unknown'}")
+   772→        console.print(f"  [cyan]Server:[/] {profile.server or 'unknown'}")
+   773→        console.print(f"  [cyan]WAF:[/] {profile.waf or 'none'}")
+   774→        console.print(f"  [cyan]App Type:[/] {profile.app_type}")
+   775→        console.print(f"  [bold]Recommended:[/] {', '.join(plan.get('recommended_modules', []))}")
+   776→        console.print(f"  [dim]{plan.get('reasoning', '')}[/]")
+   777→        console.print()
+   778→        return
+   779→
+   780→    # ── WISHES (v9.1.0) ─────────────────────────────────────────
+   781→    if cmd == "wishes":
+   782→        _banner(args)
+   783→        target = args.target
+   784→        base_url = target if target.startswith("http") else f"https://{target}"
+   785→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+   786→
+   787→        # Run scan first to get module results
+   788→        result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
+   789→                                timeout=args.timeout, verify_tls=not args.insecure, rate_limit=10.0)
+   790→
+   791→        from .wishes import WishesOrchestrator
+   792→        orchestrator = WishesOrchestrator()
+   793→        manifest = _spinner_wrap(
+   794→            f"Executing 22-Wish ritual on {target}...",
+   795→            orchestrator.execute,
+   796→            target=target, base_url=base_url,
+   797→            timeout=args.timeout, verify_tls=not args.insecure,
+   798→            modules=result.modules_run, module_results=result.module_results,
+   799→        )
+   800→
+   801→        if getattr(args, "json_output", False):
+   802→            console.print_json(json.dumps(manifest, indent=2, default=str))
+   803→        else:
+   804→            verdict = manifest.get("verdict", {}).get("verdict", "?")
+   805→            fear = manifest.get("fear", {})
+   806→            console.print(f"  [bold]22-Wish Ritual Complete[/]")
+   807→            console.print(f"  [cyan]Verdict:[/] {verdict}")
+   808→            console.print(f"  [cyan]Fear Index:[/] {fear.get('fear_index', 0)} ({fear.get('fear_label', '?')})")
+   809→            console.print(f"  [cyan]Wishes Granted:[/] {len(manifest.get('wishes_granted', []))}/{manifest.get('wishes_count', 22)}")
+   810→            console.print(f"  [cyan]Witness ID:[/] {manifest.get('witness', {}).get('encounter_id', '?')}")
+   811→            hall_b = manifest.get('hall_broken', {})
+   812→            console.print(f"  [cyan]Hall of Broken:[/] {hall_b.get('total_encounters', 0)} encounters, avg fear {hall_b.get('average_fear', 0)}")
+   813→            hall_f = manifest.get('hall_forgotten', {})
+   814→            console.print(f"  [cyan]Hall of Forgotten:[/] {hall_f.get('total_encounters', 0)} encounters, avg dread {hall_f.get('average_dread', 0)}")
+   815→        console.print()
+   816→        return
+   817→
+   818→    # ── GEOIP (v9.1.0) ────────────────────────────────────────────
+   819→    if cmd == "geoip":
+   820→        _banner(args)
+   821→        ips = args.ips
+   822→        from .geoip import GeoIPLookup, BatchGeoIP, format_geoip_summary
+   823→        if getattr(args, 'batch', False) and len(ips) > 1:
+   824→            batch = BatchGeoIP()
+   825→            results = _spinner_wrap(f"Enriching {len(ips)} IPs...", batch.enrich_batch, ips)
+   826→            if getattr(args, 'json_output', False):
+   827→                console.print_json(json.dumps(results, indent=2, default=str))
+   828→            else:
+   829→                for ip, data in results.items():
+   830→                    console.print(f"  {format_geoip_summary(data)}")
+   831→        else:
+   832→            geo = GeoIPLookup()
+   833→            for ip in ips:
+   834→                result = geo.enrich_ip(ip)
+   835→                if getattr(args, 'json_output', False):
+   836→                    console.print_json(json.dumps(result, indent=2, default=str))
+   837→                else:
+   838→                    console.print(f"  {format_geoip_summary(result)}")
+   839→        console.print()
+   840→        return
+   841→
+   842→    # ── THREAT-FEEDS (v9.1.0) ─────────────────────────────────────
+   843→    if cmd == "threat-feeds":
+   844→        _banner(args)
+   845→        from .threat_feeds import ThreatFeedManager, DNSBLChecker, check_ip_reputation
+   846→        if getattr(args, 'stats', False):
+   847→            mgr = ThreatFeedManager()
+   848→            stats = _spinner_wrap("Fetching feed stats...", mgr.refresh_all, force=getattr(args, 'refresh', False))
+   849→            console.print("  [bold]Threat Feed Statistics:[/]")
+   850→            for name, count in stats.items():
+   851→                console.print(f"  [cyan]{name:25}[/] {count:>6} indicators")
+   852→        elif getattr(args, 'ips', None):
+   853→            ips = args.ips
+   854→            for ip in ips:
+   855→                result = _spinner_wrap(f"Checking {ip}...", check_ip_reputation, ip)
+   856→                if getattr(args, 'json_output', False):
+   857→                    console.print_json(json.dumps(result, indent=2, default=str))
+   858→                else:
+   859→                    is_mal = result.get('is_malicious', False)
+   860→                    color = "bright_red" if is_mal else "bright_green"
+   861→                    console.print(f"  [{color}]{ip:18}[/{color}]  score={result.get('threat_score', 0)}  feeds={len(result.get('threat_feeds', []))}  dnsbl={len(result.get('dnsbl_hits', []))}")
+   862→                    for hit in result.get('threat_feeds', []):
+   863→                        console.print(f"    [red]  Feed:[/] {hit['feed']}")
+   864→                    for hit in result.get('dnsbl_hits', []):
+   865→                        console.print(f"    [red]  DNSBL:[/] {hit['dnsbl']}")
+   866→        else:
+   867→            mgr = ThreatFeedManager()
+   868→            stats = _spinner_wrap("Refreshing threat feeds...", mgr.refresh_all, force=getattr(args, 'refresh', False))
+   869→            console.print("  [bold]Threat Feed Refresh Complete:[/]")
+   870→            for name, count in stats.items():
+   871→                status_color = "bright_green" if count >= 0 else "bright_red"
+   872→                console.print(f"  [{status_color}]{name:25}[/{status_color}] {count:>6} indicators")
+   873→        console.print()
+   874→        return
+   875→
+   876→    # ── AI-REDTEAM (v9.1.0) ───────────────────────────────────────
+   877→    if cmd == "ai-redteam":
+   878→        _banner(args)
+   879→        target = args.target
+   880→        base_url = target if target.startswith("http") else f"https://{target}"
+   881→        from .ai_red_team import run_ai_red_team
+   882→        results = _spinner_wrap(f"AI red-teaming {target}...", run_ai_red_team, target, base_url,
+   883→                                timeout=args.timeout, verify_tls=not args.insecure)
+   884→        if getattr(args, 'json_output', False):
+   885→            console.print_json(json.dumps(results, indent=2, default=str))
+   886→        else:
+   887→            console.print(f"  [cyan]Endpoints Discovered:[/] {results.get('endpoints_discovered', 0)}")
+   888→            console.print(f"  [cyan]Vendors Detected:[/] {results.get('vendors_detected', 0)}")
+   889→            console.print(f"  [cyan]Secrets Found:[/] {results.get('secrets_found', 0)}")
+   890→            console.print(f"  [cyan]Total Risk Score:[/] {results.get('total_risk_score', 0)}")
+   891→            for ep in results.get('endpoints', [])[:10]:
+   892→                ai_tag = " [bright_green]AI[/]" if ep.get('has_ai_content') else ""
+   893→                console.print(f"    [dim]{ep['status']}[/] {ep['endpoint']:45}{ai_tag}")
+   894→            for v in results.get('vendors', []):
+   895→                console.print(f"    [yellow]Vendor:[/] {v['vendor']:20} score={v['score']}")
+   896→            for s in results.get('secrets', []):
+   897→                sev_color = SEV_COLORS.get(s['severity'], 'white')
+   898→                console.print(f"    [{sev_color}]{s['severity'].upper():8}[/{sev_color}] {s['type']}: {s['match']}")
+   899→        console.print()
+   900→        return
+   901→
+   902→    # ── SUPPLY-CHAIN (v9.1.0) ─────────────────────────────────────
+   903→    if cmd == "supply-chain":
+   904→        _banner(args)
+   905→        target = args.target
+   906→        from .supply_chain import SCCAudit
+   907→        audit = SCCAudit()
+   908→        if "/" in target and not target.startswith("http"):
+   909→            results = _spinner_wrap(f"Auditing {target}...", audit.audit_github, target, max_files=args.max_files)
+   910→            if getattr(args, 'json_output', False):
+   911→                console.print_json(json.dumps(results, indent=2, default=str))
+   912→            else:
+   913→                analysis = results.get('analysis', {})
+   914→                console.print(f"  [cyan]Files Scraped:[/] {results.get('files_scraped', 0)}")
+   915→                console.print(f"  [cyan]API Requests:[/] {results.get('api_requests', 0)}")
+   916→                console.print(f"  [cyan]Workflows Found:[/] {results.get('workflows_found', 0)}")
+   917→                console.print(f"  [cyan]Secrets Found:[/] {len(analysis.get('secrets_found', []))}")
+   918→                console.print(f"  [cyan]Risk Score:[/] {analysis.get('risk_score', 0)}")
+   919→                for dep in analysis.get('dependency_files', []):
+   920→                    console.print(f"    [cyan]{dep['manager']:10}[/] {dep['file']}")
+   921→                for s in analysis.get('secrets_found', []):
+   922→                    console.print(f"    [red]{s['type']:20}[/] {s['file']}")
+   923→                for sp in analysis.get('suspicious_patterns', []):
+   924→                    console.print(f"    [yellow]{sp['pattern']}[/] in {sp.get('file', '?')}")
+   925→        else:
+   926→            results = _spinner_wrap(f"Auditing {target}...", audit.audit_url, target)
+   927→            if getattr(args, 'json_output', False):
+   928→                console.print_json(json.dumps(results, indent=2, default=str))
+   929→            else:
+   930→                page = results.get('page', {})
+   931→                console.print(f"  [cyan]Status:[/] {page.get('status', 0)}")
+   932→                console.print(f"  [cyan]Title:[/] {page.get('title', '?')}")
+   933→                console.print(f"  [cyan]Links:[/] {len(page.get('links', []))}")
+   934→                console.print(f"  [cyan]Scripts:[/] {len(page.get('scripts', []))}")
+   935→        console.print()
+   936→        return
+   937→
+   938→    # ── CROSS-VALIDATE (v9.1.0) ───────────────────────────────────
+   939→    if cmd == "cross-validate":
+   940→        target = getattr(args, 'target', None)
+   941→        findings = []
+   942→        if target:
+   943→            latest = get_latest()
+   944→            if latest and latest.get('target', '') == target.replace('https://', '').replace('http://', '').split('/')[0]:
+   945→                findings = latest.get('findings', [])
+   946→            else:
+   947→                _banner(args)
+   948→                result = _spinner_wrap(f"Scanning {target}...", scan, target, timeout=8, verify_tls=True, rate_limit=10.0)
+   949→                findings = result.findings
+   950→        else:
+   951→            latest = get_latest()
+   952→            if not latest:
+   953→                console.print("  [yellow]No scan data. Run a scan first or specify a target.[/]")
+   954→                sys.exit(1)
+   955→            target = latest.get('target', 'unknown')
+   956→            findings = latest.get('findings', [])
+   957→
+   958→        _banner(args)
+   959→        from .cross_validator import CrossValidator
+   960→        base_url = target if target.startswith('http') else f'https://{target}'
+   961→        cv_results = _spinner_wrap(f"Cross-validating {target}...", CrossValidator().validate, target, findings, base_url)
+   962→        if getattr(args, 'json_output', False):
+   963→            console.print_json(json.dumps(cv_results, indent=2, default=str))
+   964→        else:
+   965→            vr = cv_results.get('verification_rate', 0)
+   966→            color = 'bright_green' if vr >= 80 else 'yellow' if vr >= 50 else 'bright_red'
+   967→            console.print(f"  [bold]Cross-Validation Results:[/]")
+   968→            console.print(f"  [{color}]Verification Rate: {vr}%[/{color}]")
+   969→            console.print(f"  [cyan]Verified:[/] {len(cv_results.get('verified', []))} findings")
+   970→            console.print(f"  [red]Failed:[/] {len(cv_results.get('failed', []))} findings")
+   971→            console.print(f"  [yellow]Mismatches:[/] {len(cv_results.get('mismatches', []))} findings")
+   972→            indep = cv_results.get('independent_checks', {})
+   973→            dns = indep.get('dns', {})
+   974→            http = indep.get('http', {})
+   975→            tls = indep.get('tls', {})
+   976→            console.print(f"  [dim]DNS records: {dns.get('records', {})}[/]")
+   977→            console.print(f"  [dim]HTTP status: {http.get('status', '?')}, headers: {len(http.get('headers', {}))}[/]")
+   978→            console.print(f"  [dim]TLS version: {tls.get('version', '?')}[/]")
+   979→        console.print()
+   980→        return
+   981→
+   982→    # ── COMPLIANCE ───────────────────────────────────────────────────
+   983→    if cmd == "compliance":
+   984→        _banner(args)
+   985→        data = None
+   986→        if getattr(args, "input", None):
+   987→            with open(args.input) as f:
+   988→                data = json.load(f)
+   989→        if not data:
+   990→            data = get_latest()
+   991→        if not data:
+   992→            console.print("  [yellow]No scan data. Run a scan first.[/]")
+   993→            sys.exit(1)
+   994→        frameworks = [f.strip() for f in args.frameworks.split(",")]
+   995→        from .compliance import ComplianceMapper
+   996→        mapper = ComplianceMapper()
+   997→        report = _spinner_wrap(f"Mapping to {', '.join(frameworks)}...", mapper.map_findings, data.get("findings", []), frameworks)
+   998→        for fw, info in report.per_framework.items():
+   999→            pct = info.get("compliance_pct", 0)
+  1000→            color = "green" if pct >= 80 else ("yellow" if pct >= 50 else "red")
+  1001→            console.print(f"  [{color}]{fw}:[/] {pct:.0f}% ({info.get('covered_controls', 0)}/{info.get('total_controls', 0)} controls)")
+  1002→        console.print()
+  1003→        return
+  1004→
+  1005→    # ── DELTA ───────────────────────────────────────────────────────
+  1006→    if cmd == "delta":
+  1007→        _banner(args)
+  1008→        from .delta import compare_with_last, generate_delta_report
+  1009→        text = _spinner_wrap("Computing delta...", generate_delta_report, args.target, args.format)
+  1010→        console.print(text)
+  1011→        console.print()
+  1012→        return
+  1013→
+  1014→    # ── BENCHMARK ───────────────────────────────────────────────────
+  1015→    if cmd == "benchmark":
+  1016→        _banner(args)
+  1017→        from .benchmark import ScoreTracker
+  1018→        tracker = ScoreTracker()
+  1019→        if args.leaderboard:
+  1020→            report = tracker.get_leaderboard(days=args.days)
+  1021→            console.print(report)
+  1022→        else:
+  1023→            console.print("  [dim]Use: reconpro benchmark --leaderboard --days 30[/]")
+  1024→        console.print()
+  1025→        return
+  1026→
+  1027→    # ── GRAPH-VISUAL ────────────────────────────────────────────────
+  1028→    if cmd == "graph-visual":
+  1029→        _banner(args)
+  1030→        from .graph_ui import GraphUIRenderer
+  1031→        from .knowledge_graph import SecurityKnowledgeGraph
+  1032→        graph = SecurityKnowledgeGraph()
+  1033→        graph.load()
+  1034→        latest = get_latest()
+  1035→        if latest:
+  1036→            graph.add_scan_result(latest)
+  1037→        renderer = GraphUIRenderer()
+  1038→        path = _spinner_wrap("Generating interactive graph...", renderer.render_to_file, graph.to_dict(), args.output)
+  1039→        console.print(f"  [green]Graph saved: [cyan]{path}[/][/]")
+  1040→        console.print(f"  [dim]Open in browser. Features: zoom, search, blast radius, path finder.[/]")
+  1041→        console.print()
+  1042→        return
+  1043→
+  1044→    # ── NETMAP ───────────────────────────────────────────────────────
+  1045→    if cmd == "netmap":
+  1046→        _banner(args)
+  1047→        from .netmap import run_local
+  1048→        findings = _spinner_wrap("Mapping network...", run_local)
+  1049→        if not findings:
+  1050→            console.print("  [bright_green]No network issues found.[/]")
+  1051→        else:
+  1052→            for f in findings[:20]:
+  1053→                c = SEV_COLORS.get(f.severity, "white")
+  1054→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+  1055→        console.print()
+  1056→        return
+  1057→
+  1058→    # ── PASSIVE ──────────────────────────────────────────────────────
+  1059→    if cmd == "passive":
+  1060→        _banner(args)
+  1061→        from .passive_intel import PassiveDNS, WaybackMachine
+  1062→        domain = args.domain
+  1063→
+  1064→        # Wayback Machine (free, no key needed)
+  1065→        wb = WaybackMachine()
+  1066→        history = _spinner_wrap(f"Querying Wayback Machine for {domain}...", wb.get_history, domain)
+  1067→        if history:
+  1068→            console.print(f"  [green]{len(history)}[/] archived page(s) found:")
+  1069→            for h in history[:10]:
+  1070→                console.print(f"    [dim]{h.get('timestamp', '?')}[/] {h.get('url', '?')[:80]}")
+  1071→        else:
+  1072→            console.print("  [dim]No Wayback archive data found.[/]")
+  1073→
+  1074→        # Passive DNS (free — uses system DNS + public resolvers, no API key)
+  1075→        pdns = PassiveDNS()
+  1076→        dns_results = _spinner_wrap(f"Resolving DNS for {domain}...", pdns.resolve_dns, domain)
+  1077→        if dns_results:
+  1078→            console.print(f"  [green]{len(dns_results)}[/] DNS record(s):")
+  1079→            for r in dns_results[:15]:
+  1080→                rtype = r.get("type", "?")
+  1081→                value = r.get("value", "?")
+  1082→                ttl = r.get("ttl", "")
+  1083→                console.print(f"    [cyan]{rtype:6s}[/] {value} [dim](TTL {ttl})[/]")
+  1084→        else:
+  1085→            console.print("  [dim]No DNS records found.[/]")
+  1086→
+  1087→        # Optional: VirusTotal (requires API key)
+  1088→        vt_key = os.environ.get("VIRUSTOTAL_API_KEY", "")
+  1089→        if vt_key:
+  1090→            vt_results = _spinner_wrap(f"Querying VirusTotal for {domain}...", pdns.query_virustotal, domain, vt_key)
+  1091→            if vt_results:
+  1092→                console.print(f"  [green]{len(vt_results)}[/] VirusTotal resolution(s):")
+  1093→                for r in vt_results[:10]:
+  1094→                    console.print(f"    [cyan]{r.get('ip', '?')}[/]  {r.get('last_resolved', '?')}")
+  1095→            else:
+  1096→                console.print("  [dim]No VirusTotal data.[/]")
+  1097→
+  1098→        console.print()
+  1099→        return
+  1100→
+  1101→    # ── NEXUS ──────────────────────────────────────────────────
+  1102→    if cmd == "nexus":
+  1103→        from .nexus_tui import start_nexus as run_nexus
+  1104→        run_nexus()
+  1105→        return
+  1106→
+  1107→    # ── CHAT ───────────────────────────────────────────────────────
+  1108→    if cmd == "chat":
+  1109→        from .chat import start_chat
+  1110→        _banner(args)
+  1111→        start_chat()
+  1112→        return
+  1113→
+  1114→    # ── TUI ────────────────────────────────────────────────────────
+  1115→    if cmd == "tui":
+  1116→        from .nexus_tui import start_nexus
+  1117→        start_nexus()
+  1118→        return
+  1119→
+  1120→    # ── BLITZ ──────────────────────────────────────────────────────
+  1121→    if cmd == "blitz":
+  1122→        targets = getattr(args, "targets", [])
+  1123→        if not targets or len(targets) < 2:
+  1124→            console.print("  [yellow]Usage: reconpro blitz target1.com target2.com [target3.com ...][/]")
+  1125→            sys.exit(1)
+  1126→        _banner(args)
+  1127→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+  1128→        blitz_scan(targets, max_workers=args.workers, modules=modules)
+  1129→        return
+  1130→
+  1131→    # ── AGENT ──────────────────────────────────────────────────────
+  1132→    if cmd == "agent":
+  1133→        goal = getattr(args, "goal", "")
+  1134→        if not goal:
+  1135→            console.print("  [yellow]Usage: reconpro agent \"fully scan example.com and find subdomains\"[/]")
+  1136→            sys.exit(1)
+  1137→        _banner(args)
+  1138→        from .nexus_agent import run_nexus_agent
+  1139→        run_nexus_agent(goal)
+  1140→        return
+  1141→
+  1142→    # ── SWARM ─────────────────────────────────────────────────────
+  1143→    if cmd == "swarm":
+  1144→        _banner(args)
+  1145→        from .swarm import run_swarm
+  1146→        run_swarm(args.target, mode=args.mode)
+  1147→        return
+  1148→
+  1149→    # ── ADVERSARIAL ────────────────────────────────────────────────
+  1150→    if cmd == "adversarial":
+  1151→        _banner(args)
+  1152→        from .adversarial import run_adversarial
+  1153→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+  1154→        run_adversarial(args.target, max_rounds=args.rounds, modules=modules, is_local=args.local)
+  1155→        return
+  1156→
+  1157→    # ── AST ────────────────────────────────────────────────────────
+  1158→    if cmd == "ast":
+  1159→        _banner(args)
+  1160→        from .modules.ast_analyzer import ASTAnalyzer
+  1161→        analyzer = ASTAnalyzer()
+  1162→        path = os.path.abspath(args.path)
+  1163→        findings = _spinner_wrap(f"Analyzing {path}...", analyzer.analyze_directory, path)
+  1164→        if not findings:
+  1165→            console.print("\n  [bright_green]No vulnerabilities found in code.[/]")
+  1166→        else:
+  1167→            table = Table(border_style="dim", header_style="bold dim")
+  1168→            table.add_column("Severity", style="bold", width=10)
+  1169→            table.add_column("File", style="cyan", width=30)
+  1170→            table.add_column("Line", style="dim", width=6)
+  1171→            table.add_column("Finding")
+  1172→            for f in sorted(findings, key=lambda x: {"critical":0,"high":1,"medium":2,"low":3}.get(x.severity,4)):
+  1173→                c = SEV_COLORS.get(f.severity, "white")
+  1174→                table.add_row(f"[{c}]{f.severity.upper()}[/{c}]", f.asset[-30:] if f.asset else "", str(f.evidence)[:6] if f.evidence else "", f.title[:60])
+  1175→            console.print(table)
+  1176→            console.print(f"\n  [bold]{len(findings)} vulnerability pattern(s) found.[/]")
+  1177→        console.print()
+  1178→        return
+  1179→
+  1180→    # ── CVE ─────────────────────────────────────────────────────────
+  1181→    if cmd == "cve":
+  1182→        _banner(args)
+  1183→        from .cve_radar import CVERadar
+  1184→        radar = CVERadar()
+  1185→        if args.query.upper().startswith("CVE-"):
+  1186→            details = _spinner_wrap(f"Looking up {args.query}...", radar.get_cve_details, args.query)
+  1187→            if details:
+  1188→                console.print(f"\n  [bold]{details.get('id', args.query)}[/]")
+  1189→                console.print(f"  Severity: [red]{details.get('severity', '?')}[/]  CVSS: {details.get('cvss', '?')}")
+  1190→                console.print(f"  {details.get('description', 'No description')[:200]}")
+  1191→            else:
+  1192→                console.print(f"  [dim]No results for {args.query}.[/]")
+  1193→        else:
+  1194→            results = _spinner_wrap(f"Searching NVD for '{args.query}'...", radar.search_nvd, args.query, args.limit)
+  1195→            if results:
+  1196→                for r in results:
+  1197→                    console.print(f"  [bold]{r.get('id', '?')}[/]  [red]{r.get('severity', '?')}[/]  {r.get('description', '')[:100]}")
+  1198→                console.print(f"\n  [bold]{len(results)} result(s).[/]")
+  1199→            else:
+  1200→                console.print(f"  [dim]No CVEs found for '{args.query}'.[/]")
+  1201→        console.print()
+  1202→        return
+  1203→
+  1204→    # ── GRAPH ───────────────────────────────────────────────────────
+  1205→    if cmd == "graph":
+  1206→        _banner(args)
+  1207→        from .knowledge_graph import SecurityKnowledgeGraph
+  1208→        graph = SecurityKnowledgeGraph()
+  1209→        # Load from last scan if available
+  1210→        latest = get_latest()
+  1211→        if latest:
+  1212→            graph.add_scan_result(latest)
+  1213→        target = args.target or (latest.get("target") if latest else None)
+  1214→        action = args.action
+  1215→        if action == "stats" or not target:
+  1216→            stats = graph.stats()
+  1217→            console.print(f"\n  [bold]Knowledge Graph Stats:[/]")
+  1218→            for k, v in stats.items():
+  1219→                console.print(f"    [cyan]{k}:[/] {v}")
+  1220→        elif action == "chains":
+  1221→            chains = graph.find_chains(target)
+  1222→            if chains:
+  1223→                console.print(f"\n  [bold]Attack Chains for {target}:[/]")
+  1224→                for i, chain in enumerate(chains[:10]):
+  1225→                    console.print(f"    [red]Chain {i+1}:[/] {' → '.join(chain)}")
+  1226→            else:
+  1227→                console.print(f"  [dim]No attack chains found for {target}.[/]")
+  1228→        elif action == "surface":
+  1229→            surface = graph.get_attack_surface(target)
+  1230→            console.print(f"\n  [bold]Attack Surface for {target}:[/]")
+  1231→            for k, v in surface.items():
+  1232→                console.print(f"    [cyan]{k}:[/] {v}")
+  1233→        elif action == "blast":
+  1234→            blast = graph.get_blast_radius(target)
+  1235→            console.print(f"\n  [bold]Blast Radius from {target}:[/]")
+  1236→            console.print(f"    [red]{len(blast)} reachable vulnerabilities[/]")
+  1237→        elif action == "export":
+  1238→            cypher = graph.to_cypher()
+  1239→            console.print(f"\n  [bold]Cypher Export:[/] {len(cypher)} statements")
+  1240→            for line in cypher[:20]:
+  1241→                console.print(f"    {line[:100]}")
+  1242→        graph.save()
+  1243→        console.print(f"\n  [dim]Graph saved to ~/.reconpro/memory/graph.json[/]")
+  1244→        console.print()
+  1245→        return
+  1246→
+  1247→    # ── EXPORT ──────────────────────────────────────────────────────
+  1248→    if cmd == "export":
+  1249→        data = get_latest()
+  1250→        if not data:
+  1251→            console.print("  [yellow]No scan data. Run a scan first.[/]")
+  1252→            sys.exit(1)
+  1253→        from .formats import export as _export
+  1254→        path = _spinner_wrap(f"Exporting to {args.output}...", _export, data, args.output)
+  1255→        console.print(f"  [green]Exported: [cyan]{path}[/][/]")
+  1256→        return
+  1257→
+  1258→    # ── SUBDOMAINS ────────────────────────────────────────────────
+  1259→    if cmd == "subdomains":
+  1260→        domain = args.domain
+  1261→        _banner(args)
+  1262→        console.print(f"  [dim]v{__version__} | subdomain discovery: {domain}[/]\n")
+  1263→        from .subdomains import discover_subdomains
+  1264→        subs = _spinner_wrap(f"Discovering subdomains of {domain}...", discover_subdomains, domain)
+  1265→        if not subs:
+  1266→            console.print("\n  [dim]No subdomains found.[/]")
+  1267→        else:
+  1268→            for s in subs:
+  1269→                console.print(f"  [cyan]{s}[/]")
+  1270→            console.print(f"\n  [bold]{len(subs)} subdomain(s) found.[/]")
+  1271→            if args.json_output:
+  1272→                console.print(json.dumps({"domain": domain, "subdomains": subs}, indent=2))
+  1273→        console.print()
+  1274→        return
+  1275→
+  1276→    # ── SCHEDULE ───────────────────────────────────────────────────
+  1277→    if cmd == "schedule":
+  1278→        target = args.target
+  1279→        is_local = target.lower() == "audit"
+  1280→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+  1281→        from .scheduler import run_scheduled
+  1282→        run_scheduled(target, interval=args.every, modules=modules,
+  1283→                      is_local=is_local, max_runs=args.max_runs)
+  1284→        return
+  1285→
+  1286→    # ── SERVE ──────────────────────────────────────────────────────
+  1287→    if cmd == "serve":
+  1288→        from .server import run_server
+  1289→        _banner(args)
+  1290→        run_server(port=args.port)
+  1291→        return
+  1292→
+  1293→    # ── REPORT ─────────────────────────────────────────────────────
+  1294→    if cmd == "report":
+  1295→        data = None
+  1296→        if getattr(args, "input", None):
+  1297→            with open(args.input) as f:
+  1298→                data = json.load(f)
+  1299→        else:
+  1300→            data = get_latest()
+  1301→        if not data:
+  1302→            console.print("  [yellow]No scan data. Run a scan first or use -i <file>.[/]")
+  1303→            sys.exit(1)
+  1304→        path = _spinner_wrap("Generating HTML report...", generate_html_report, data)
+  1305→        console.print(f"  [green]Report saved: [cyan]{path}[/][/]")
+  1306→        return
+  1307→
+  1308→    # ── HISTORY ───────────────────────────────────────────────────
+  1309→    if cmd == "history":
+  1310→        if getattr(args, "clear", False):
+  1311→            n = clear_history()
+  1312→            console.print(f"  Cleared {n} scan(s) from history.")
+  1313→            return
+  1314→        scans = list_scans(target=getattr(args, "target", None), limit=args.limit)
+  1315→        if not scans:
+  1316→            console.print("  [dim]No scan history yet.[/]")
+  1317→            return
+  1318→        table = Table(border_style="dim", header_style="bold dim")
+  1319→        table.add_column("Date", style="dim", width=16)
+  1320→        table.add_column("Target", style="cyan", width=25)
+  1321→        table.add_column("Score", style="bold", width=8)
+  1322→        table.add_column("Grade", style="bold", width=6)
+  1323→        table.add_column("Findings", width=10)
+  1324→        table.add_column("File", style="dim")
+  1325→        for s in scans:
+  1326→            g = s.get("grade", "?")
+  1327→            gc = GRADE_COLORS.get(g, "white")
+  1328→            table.add_row(s.get("_saved_at", "?")[:16], s.get("target", "?")[:25],
+  1329→                         str(s.get("total_score", "?")), f"[{gc}]{g}[/{gc}]",
+  1330→                         str(len(s.get("findings", []))), s.get("_file", ""))
+  1331→        console.print(table)
+  1332→        console.print()
+  1333→        return
+  1334→
+  1335→    # ── DIFF ────────────────────────────────────────────────────────
+  1336→    if cmd == "diff":
+  1337→        scans = list_scans(limit=2)
+  1338→        if len(scans) < 2:
+  1339→            console.print("  [yellow]Need at least 2 scans. Run some scans first.[/]")
+  1340→            sys.exit(1)
+  1341→        d = diff_scans(scans[0]["_file"], scans[1]["_file"])
+  1342→        change = d["score_change"]
+  1343→        color = "green" if change > 0 else ("red" if change < 0 else "dim")
+  1344→        console.print(f"\n  [bold]{d['scan_a']['target']}[/]  score={d['scan_a']['score']} ({d['scan_a']['grade']})")
+  1345→        console.print(f"  [bold]{d['scan_b']['target']}[/]  score={d['scan_b']['score']} ({d['scan_b']['grade']})")
+  1346→        console.print(f"  Change: [{color}]{'+' if change > 0 else ''}{change} pts[/{color}]")
+  1347→        if d["new"]:
+  1348→            console.print(f"\n  [red]New issues ({len(d['new'])}):[/red]")
+  1349→            for n in d["new"][:10]:
+  1350→                console.print(f"    [red]+[/] {n}")
+  1351→        if d["fixed"]:
+  1352→            console.print(f"\n  [green]Fixed ({len(d['fixed'])}):[/green]")
+  1353→            for f in d["fixed"][:10]:
+  1354→                console.print(f"    [green]-[/] {f}")
+  1355→        if d["persistent"]:
+  1356→            console.print(f"\n  [yellow]Still present ({len(d['persistent'])}):[/yellow]")
+  1357→        console.print()
+  1358→        return
+  1359→
+  1360→    # ── SCREENSHOT ─────────────────────────────────────────────────
+  1361→    if cmd == "screenshot":
+  1362→        try:
+  1363→            from .browser_mod import take_screenshot
+  1364→            path = _spinner_wrap(f"Screenshotting {args.url}...", take_screenshot, args.url)
+  1365→            console.print(f"  [green]Screenshot: [cyan]{path}[/][/]")
+  1366→        except ImportError:
+  1367→            console.print("  [yellow]Install browser support:[/]")
+  1368→            console.print("    pip install reconpro[browser]")
+  1369→            console.print("    playwright install")
+  1370→        return
+  1371→
+  1372→    # ── OPEN ────────────────────────────────────────────────────────
+  1373→    if cmd == "open":
+  1374→        from .browser_mod import open_browser
+  1375→        open_browser(args.url)
+  1376→        console.print(f"  Opened [cyan]{args.url}[/] in browser")
+  1377→        return
+  1378→
+  1379→    # ── PLUGIN ─────────────────────────────────────────────────────
+  1380→    if cmd == "plugin":
+  1381→        from .plugins import discover_plugins, create_plugin_template, run_plugin as _run_plugin
+  1382→        action = args.action
+  1383→        if action == "list":
+  1384→            plugins = discover_plugins()
+  1385→            if not plugins:
+  1386→                console.print("  [dim]No plugins found. Create one: reconpro plugin create my-check[/]")
+  1387→            else:
+  1388→                for pid, p in plugins.items():
+  1389→                    console.print(f"  [cyan]{pid:12}[/] {p['name']:18} {p['description']}")
+  1390→        elif action == "create":
+  1391→            if not args.name:
+  1392→                console.print("  [yellow]Usage: reconpro plugin create <name>[/]")
+  1393→                sys.exit(1)
+  1394→            path = create_plugin_template(args.name)
+  1395→            console.print(f"  [green]Plugin template created: [cyan]{path}[/][/]")
+  1396→            console.print(f"  [dim]Edit the file, then: reconpro plugin run {args.name} example.com[/]")
+  1397→        elif action == "run":
+  1398→            if not args.name or not args.target:
+  1399→                console.print("  [yellow]Usage: reconpro plugin run <plugin-name> <target>[/]")
+  1400→                sys.exit(1)
+  1401→            base_url = args.target if args.target.startswith("http") else f"https://{args.target}"
+  1402→            findings = _run_plugin(args.name, args.target, base_url)
+  1403→            for f in findings:
+  1404→                c = SEV_COLORS.get(f.severity, "white")
+  1405→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+  1406→        return
+  1407→
+  1408→    # ── AUDIT (local) ─────────────────────────────────────────────
+  1409→    if cmd == "audit":
+  1410→        _banner(args)
+  1411→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+  1412→        run_eng = getattr(args, "engineering", False)
+  1413→        result = _spinner_wrap("Auditing machine...", audit_scan, target="localhost", modules=modules,
+  1414→                                run_engineering=run_eng)
+  1415→        _output_result(result, args, title="HOST AUDIT", show_remediation=True)
+  1416→        if run_eng and result.engineering:
+  1417→            eng = result.engineering
+  1418→            console.print(Panel(
+  1419→                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
+  1420→                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
+  1421→                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
+  1422→                title="[bold]ENGINEERING PIPELINE[/bold]",
+  1423→                border_style="bright_cyan",
+  1424→            ))
+  1425→        return
+  1426→
+  1427→    # ── DEV ────────────────────────────────────────────────────────
+  1428→    if cmd == "dev":
+  1429→        path = args.path
+  1430→        _banner(args)
+  1431→        result = _spinner_wrap("Scanning project...", audit_scan, target=path, modules=["dev"])
+  1432→        _output_result(result, args, title="DEV SEC", show_remediation=True)
+  1433→        return
+  1434→
+  1435→    # ── DOCTOR ─────────────────────────────────────────────────────
+  1436→    if cmd == "doctor":
+  1437→        _banner(args)
+  1438→        result = _spinner_wrap("Running diagnostics...", audit_scan, target="localhost", modules=["doctor"])
+  1439→        _output_result(result, args, title="DOCTOR", show_remediation=True)
+  1440→        return
+  1441→
+  1442→    # ── PORTS ──────────────────────────────────────────────────────
+  1443→    if cmd == "ports":
+  1444→        _banner(args)
+  1445→        from .modules.host import _check_open_ports
+  1446→        findings = _spinner_wrap("Scanning ports...", _check_open_ports)
+  1447→        if not findings:
+  1448→            console.print("\n  [bright_green]No risky ports found.[/]")
+  1449→        else:
+  1450→            for f in findings:
+  1451→                c = SEV_COLORS.get(f.severity, "white")
+  1452→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+  1453→            if args.json_output:
+  1454→                console.print(json.dumps([f.to_dict() for f in findings], indent=2, default=str))
+  1455→        console.print()
+  1456→        return
+  1457→
+  1458→    # ── SECRETS ────────────────────────────────────────────────────
+  1459→    if cmd == "secrets":
+  1460→        path = args.path
+  1461→        _banner(args)
+  1462→        from .modules.host import _check_env_secrets
+  1463→        from .modules.dev import _check_env_files, _check_hardcoded_secrets
+  1464→        all_f = _spinner_wrap("Hunting secrets...", lambda: (
+  1465→            _check_env_secrets() +
+  1466→            _check_env_files(os.path.abspath(path)) +
+  1467→            _check_hardcoded_secrets(os.path.abspath(path))
+  1468→        ))
+  1469→        total = len(all_f)
+  1470→        crit = sum(1 for f in all_f if f.severity == "critical")
+  1471→        high = sum(1 for f in all_f if f.severity == "high")
+  1472→        if total == 0:
+  1473→            console.print("\n  [bright_green]No secrets found. Clean.[/]")
+  1474→        else:
+  1475→            console.print(Panel(Group(
+  1476→                Text(f"\n  [bold bright_red]{total} secret(s) found[/]  [bright_red]{crit} critical[/], [red]{high} high[/]"),
+  1477→            ), border_style="bright_red", title="[bold]SECRET SCAN[/bold]", padding=(1, 2)))
+  1478→            console.print()
+  1479→            for f in all_f:
+  1480→                c = SEV_COLORS.get(f.severity, "white")
+  1481→                console.print(f"  [{c}]{f.severity.upper():8}[/{c}]  {f.title}")
+  1482→                if f.remediation:
+  1483→                    console.print(f"           [dim]{f.remediation}[/dim]")
+  1484→            if args.json_output:
+  1485→                console.print(json.dumps([f.to_dict() for f in all_f], indent=2, default=str))
+  1486→        console.print()
+  1487→        return
+  1488→
+  1489→    # ── VIBESEC ────────────────────────────────────────────────────
+  1490→    if cmd == "vibesec":
+  1491→        target = args.target
+  1492→        if not target:
+  1493→            console.print("  [yellow]Usage: reconpro vibesec <target>[/]")
+  1494→            sys.exit(1)
+  1495→        _banner(args)
+  1496→        result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=["vibesec"],
+  1497→                                timeout=args.timeout, verify_tls=not args.insecure, rate_limit=args.rate_limit)
+  1498→        _output_result(result, args)
+  1499→        return
+  1500→
+  1501→    # ── SCAN (explicit) ────────────────────────────────────────────
+  1502→    if cmd == "scan":
+  1503→        target = args.target
+  1504→        if not target:
+  1505→            console.print("  [yellow]Usage: reconpro scan <target>[/]")
+  1506→            sys.exit(1)
+  1507→        modules = [m.strip().lower() for m in args.modules.split(",")] if args.modules else None
+  1508→        _banner(args)
+  1509→        run_eng = getattr(args, "engineering", False)
+  1510→        result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
+  1511→                                all_modules=args.all, timeout=args.timeout,
+  1512→                                verify_tls=not args.insecure, rate_limit=args.rate_limit,
+  1513→                                run_engineering=run_eng)
+  1514→        _output_result(result, args)
+  1515→        if run_eng and result.engineering:
+  1516→            eng = result.engineering
+  1517→            console.print(Panel(
+  1518→                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
+  1519→                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
+  1520→                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
+  1521→                title="[bold]ENGINEERING PIPELINE[/bold]",
+  1522→                border_style="bright_cyan",
+  1523→            ))
+  1524→        return
+  1525→
+  1526→    # ── Implicit scan (no subcommand) ──────────────────────────────
+  1527→    if remaining and not cmd:
+  1528→        target = remaining[0]
+  1529→        scan_args = parser.parse_args(["scan"] + remaining)
+  1530→        modules = [m.strip().lower() for m in scan_args.modules.split(",")] if scan_args.modules else None
+  1531→        _banner(scan_args)
+  1532→        run_eng = getattr(scan_args, "engineering", False)
+  1533→        result = _spinner_wrap(f"Scanning {target}...", scan, target, modules=modules,
+  1534→                                all_modules=scan_args.all, timeout=scan_args.timeout,
+  1535→                                verify_tls=not scan_args.insecure, rate_limit=scan_args.rate_limit,
+  1536→                                run_engineering=run_eng)
+  1537→        _output_result(result, scan_args)
+  1538→        if run_eng and result.engineering:
+  1539→            eng = result.engineering
+  1540→            console.print(Panel(
+  1541→                f"Status: [bold]{eng.get('overall_status', 'unknown').upper()}[/bold]\n"
+  1542→                f"Stages: {eng.get('stages_run', 0)}/{eng.get('total_stages', 0)}\n"
+  1543→                f"Duration: {eng.get('total_duration_s', 0):.2f}s",
+  1544→                title="[bold]ENGINEERING PIPELINE[/bold]",
+  1545→                border_style="bright_cyan",
+  1546→            ))
+  1547→        return
+  1548→
+  1549→    # ── ZAI (z.ai live stream) ──────────────────────────────────────
+  1550→    if cmd == "zai":
+  1551→        from .integrations.zai_stream import ZAIStreamClient
+  1552→        client = ZAIStreamClient(model=args.model)
+  1553→
+  1554→        if getattr(args, "health", False):
+  1555→            console.print(f"  [cyan]Checking z.ai connectivity...[/]")
+  1556→            console.print(f"  [dim]{client}[/]")
+  1557→            result = client.health_check()
+  1558→            if result["status"] == "connected":
+  1559→                console.print(f"  [bright_green]CONNECTED[/]  latency: {result['latency_ms']}ms  model: {result['model']}")
+  1560→                console.print(f"  [dim]Response: {result.get('response_preview', '')}[/]")
+  1561→            else:
+  1562→                console.print(f"  [bright_red]ERROR: {result.get('error', 'unknown')}[/]")
+  1563→            return
+  1564→
+  1565→        if getattr(args, "chat", ""):
+  1566→            _banner(args)
+  1567→            console.print(f"  [cyan]z.ai Live Stream[/]  [dim]model: {args.model}[/]")
+  1568→            console.print(f"  [dim]{'─' * 50}[/]")
+  1569→            if not getattr(args, "no_stream", False):
+  1570→                for chunk in client.chat_stream(args.chat):
+  1571→                    console.print(chunk, end="")
+  1572→                console.print()
+  1573→            else:
+  1574→                response = client.chat(args.chat)
+  1575→                console.print(response)
+  1576→            console.print(f"  [dim]{'─' * 50}[/]")
+  1577→            return
+  1578→
+  1579→        # Analyze scan findings
+  1580→        target = getattr(args, "target", "")
+  1581→        findings = None
+  1582→        if target:
+  1583→            _banner(args)
+  1584→            result = _spinner_wrap(f"Scanning {target}...", scan, target,
+  1585→                                    timeout=8, verify_tls=True, rate_limit=10.0)
+  1586→            findings = result.findings
+  1587→            scan_target = target
+  1588→        else:
+  1589→            # Use last scan from history
+  1590→            latest = get_latest()
+  1591→            if not latest:
+  1592→                console.print("  [yellow]No target specified and no scan history found.[/]")
+  1593→                console.print("  [dim]Usage: reconpro zai <target>  or  reconpro scan <target> && reconpro zai[/]")
+  1594→                sys.exit(1)
+  1595→            findings = latest.get("findings", [])
+  1596→            scan_target = latest.get("target", "unknown")
+  1597→            _banner(args)
+  1598→            console.print(f"  [dim]Using last scan: {scan_target} ({len(findings)} findings)[/]")
+  1599→
+  1600→        if not findings:
+  1601→            console.print("  [bright_green]No findings to analyze. Target is clean![/]")
+  1602→            return
+  1603→
+  1604→        console.print(f"  [cyan]z.ai Live Stream Analysis[/]  [dim]{len(findings)} findings → {args.model}[/]")
+  1605→        console.print(f"  [dim]{'─' * 60}[/]")
+  1606→        if not getattr(args, "no_stream", False):
+  1607→            for chunk in client.analyze_findings_stream(findings, scan_target):
+  1608→                console.print(chunk, end="")
+  1609→            console.print()
+  1610→        else:
+  1611→            analysis = client.analyze_findings(findings, scan_target)
+  1612→            console.print(analysis)
+  1613→        console.print(f"  [dim]{'─' * 60}[/]")
+  1614→        return
+  1615→
+  1616→    # ── quantum-fingerprint (v9.2.0) ──────────────────────────────
+  1617→    if cmd == "quantum-fingerprint":
+  1618→        _banner(args)
+  1619→        target = args.target
+  1620→        base_url = target if target.startswith("http") else f"https://{target}"
+  1621→        from .modules.quantum_fingerprint import run_quantum_fingerprint
+  1622→        findings = _spinner_wrap(
+  1623→            f"Fingerprinting {target} via HTTP timing...",
+  1624→            run_quantum_fingerprint, target, base_url,
+  1625→            timeout=args.timeout, verify_tls=not args.insecure,
+  1626→        )
+  1627→        _print_findings(findings, args, title="QUANTUM FINGERPRINT")
+  1628→        return
+  1629→
+  1630→    # ── dark-web (v9.2.0) ─────────────────────────────────────────
+  1631→    if cmd == "dark-web":
+  1632→        _banner(args)
+  1633→        target = args.target
+  1634→        base_url = target if target.startswith("http") else f"https://{target}"
+  1635→        from .modules.dark_web_monitor import run_dark_web_monitor
+  1636→        findings = _spinner_wrap(
+  1637→            f"Scanning paste sites & threat feeds for {target}...",
+  1638→            run_dark_web_monitor, target, base_url,
+  1639→        )
+  1640→        _print_findings(findings, args, title="DARK WEB MONITOR")
+  1641→        return
+  1642→
+  1643→    # ── info-ops (v9.2.0) ─────────────────────────────────────────
+  1644→    if cmd == "info-ops":
+  1645→        _banner(args)
+  1646→        target = args.target
+  1647→        base_url = target if target.startswith("http") else f"https://{target}"
+  1648→        from .modules.free_info_ops import run_info_ops
+  1649→        findings = _spinner_wrap(
+  1650→            f"Analyzing information operations on {target}...",
+  1651→            run_info_ops, target, base_url,
+  1652→        )
+  1653→        _print_findings(findings, args, title="INFO OPS ANALYSIS")
+  1654→        return
+  1655→
+  1656→    # ── steg (v9.2.0) ─────────────────────────────────────────────
+  1657→    if cmd == "steg":
+  1658→        _banner(args)
+  1659→        target = args.target
+  1660→        base_url = target if target.startswith("http") else f"https://{target}"
+  1661→        from .modules.steganography_detector import run_steganography_detector
+  1662→        findings = _spinner_wrap(
+  1663→            f"Detecting steganography on {target}...",
+  1664→            run_steganography_detector, target, base_url,
+  1665→        )
+  1666→        _print_findings(findings, args, title="STEGANOGRAPHY DETECTOR")
+  1667→        return
+  1668→
+  1669→    # ── covert (v9.2.0) ──────────────────────────────────────────
+  1670→    if cmd == "covert":
+  1671→        _banner(args)
+  1672→        target = args.target
+  1673→        base_url = target if target.startswith("http") else f"https://{target}"
+  1674→        from .modules.covert_channel import run_covert_channel
+  1675→        findings = _spinner_wrap(
+  1676→            f"Analyzing covert channels on {target}...",
+  1677→            run_covert_channel, target, base_url,
+  1678→        )
+  1679→        _print_findings(findings, args, title="COVERT CHANNEL")
+  1680→        return
+  1681→
+  1682→    # ── zero-day (v9.2.0) ─────────────────────────────────────────
+  1683→    if cmd == "zero-day":
+  1684→        _banner(args)
+  1685→        target = args.target
+  1686→        base_url = target if target.startswith("http") else f"https://{target}"
+  1687→        from .modules.zero_day_hunter import run_zero_day_hunter
+  1688→        findings = _spinner_wrap(
+  1689→            f"Hunting zero-day patterns on {target}...",
+  1690→            run_zero_day_hunter, target, base_url,
+  1691→        )
+  1692→        _print_findings(findings, args, title="ZERO-DAY HUNTER")
+  1693→        return
+  1694→
+  1695→    # ── ghost (v9.2.0) ───────────────────────────────────────────
+  1696→    if cmd == "ghost":
+  1697→        _banner(args)
+  1698→        target = args.target
+  1699→        base_url = target if target.startswith("http") else f"https://{target}"
+  1700→        from .modules.infrastructure_ghost import run_infrastructure_ghost
+  1701→        findings = _spinner_wrap(
+  1702→            f"Ghosting infrastructure of {target}...",
+  1703→            run_infrastructure_ghost, target, base_url,
+  1704→        )
+  1705→        _print_findings(findings, args, title="INFRASTRUCTURE GHOST")
+  1706→        return
+  1707→
+  1708→    # ── sigint (v9.2.0) ──────────────────────────────────────────
+  1709→    if cmd == "sigint":
+  1710→        _banner(args)
+  1711→        target = args.target
+  1712→        base_url = target if target.startswith("http") else f"https://{target}"
+  1713→        from .modules.signal_intelligence import run_signal_intelligence
+  1714→        findings = _spinner_wrap(
+  1715→            f"Running SIGINT analysis on {target}...",
+  1716→            run_signal_intelligence, target, base_url,
+  1717→        )
+  1718→        _print_findings(findings, args, title="SIGNAL INTELLIGENCE")
+  1719→        return
+  1720→
+  1721→    # ── attributor (v9.2.0) ───────────────────────────────────────
+  1722→    if cmd == "attributor":
+  1723→        _banner(args)
+  1724→        target = args.target
+  1725→        base_url = target if target.startswith("http") else f"https://{target}"
+  1726→        from .modules.nation_state_attributor import run_nation_state_attributor
+  1727→        findings = _spinner_wrap(
+  1728→            f"Attributing {target} to nation-state actors...",
+  1729→            run_nation_state_attributor, target, base_url,
+  1730→        )
+  1731→        _print_findings(findings, args, title="NATION-STATE ATTRIBUTOR")
+  1732→        return
+  1733→
+  1734→    # ── weaponized-report (v9.2.0) ─────────────────────────────────
+  1735→    if cmd == "weaponized-report":
+  1736→        _banner(args)
+  1737→        target = args.target
+  1738→        base_url = target if target.startswith("http") else f"https://{target}"
+  1739→        from .modules.weaponized_report import run_weaponized_report
+  1740→        findings = _spinner_wrap(
+  1741→            f"Generating weaponized report for {target}...",
+  1742→            run_weaponized_report, target, base_url,
+  1743→        )
+  1744→        _print_findings(findings, args, title="WEAPONIZED REPORT")
+  1745→        return
+  1746→
+  1747→    # ── honeypot (v9.2.0) ─────────────────────────────────────────
+  1748→    if cmd == "honeypot":
+  1749→        _banner(args)
+  1750→        target = args.target
+  1751→        base_url = target if target.startswith("http") else f"https://{target}"
+  1752→        from .modules.honeypot_dance import run_honeypot_dance
+  1753→        findings = _spinner_wrap(
+  1754→            f"Dancing with honeypots on {target}...",
+  1755→            run_honeypot_dance, target, base_url,
+  1756→        )
+  1757→        _print_findings(findings, args, title="HONEYPOT DANCE")
+  1758→        return
+  1759→
+  1760→    # ── rate (v9.2.0 Module Rating System) ───────────────────
+  1761→    if cmd == "rate":
+  1762→        _banner(args)
+  1763→        from .ratings import (
+  1764→            MODULE_RATINGS, V9_MODULES, MODULE_CLI_MAP,
+  1765→            get_rating, get_all_ratings, compute_team_score,
+  1766→        )
+  1767→
+  1768→        # CLI name -> module_id reverse map
+  1769→        cli_to_id = {v: k for k, v in MODULE_CLI_MAP.items()}
+  1770→
+  1771→        if getattr(args, 'module', None):
+  1772→            # Rate a specific module
+  1773→            cli_name = args.module.lower()
+  1774→            mod_id = cli_to_id.get(cli_name, cli_name.replace("-", "_"))
+  1775→            rating = get_rating(mod_id)
+  1776→            if not rating:
+  1777→                # Try direct module_id
+  1778→                rating = get_rating(cli_name)
+  1779→            if not rating:
+  1780→                console.print(f"[red]Unknown module: {args.module}[/red]")
+  1781→                console.print(f"[dim]Available: {', '.join(MODULE_CLI_MAP.values())}[/dim]")
+  1782→                return
+  1783→
+  1784→            # JSON output
+  1785→            if getattr(args, 'json_output', False):
+  1786→                import json
+  1787→                d = {
+  1788→                    "module": rating.module_id,
+  1789→                    "name": rating.name,
+  1790→                    "score": rating.score,
+  1791→                    "grade": rating.grade,
+  1792→                    "category": rating.category,
+  1793→                    "sub_scores": {
+  1794→                        "detection_breadth": rating.detection_breadth,
+  1795→                        "detection_depth": rating.detection_depth,
+  1796→                        "dependency_footprint": rating.dependency_footprint,
+  1797→                        "uniqueness": rating.uniqueness,
+  1798→                        "operational_safety": rating.operational_safety,
+  1799→                    },
+  1800→                    "compared_with": rating.compared_with,
+  1801→                    "parity_pct": rating.parity_pct,
+  1802→                    "unique_advantages": rating.unique_advantages,
+  1803→                    "known_limitations": rating.known_limitations,
+  1804→                    "stats": {
+  1805→                        "lines_of_code": rating.lines_of_code,
+  1806→                        "detection_categories": rating.detection_categories,
+  1807→                        "signature_count": rating.signature_count,
+  1808→                    },
+  1809→                }
+  1810→                console.print(json.dumps(d, indent=2))
+  1811→                return
+  1812→
+  1813→            # Rich table output
+  1814→            _grade_color = GRADE_COLORS.get(rating.grade, "white")
+  1815→            console.print()
+  1816→            console.print(Panel(
+  1817→                f"[bold]{rating.name}[/bold]\n{rating.category}",
+  1818→                title="MODULE RATING",
+  1819→                border_style="bright_cyan",
+  1820→            ))
+  1821→            console.print()
+  1822→
+  1823→            # Score bar
+  1824→            score_color = "bright_green" if rating.score >= 80 else "yellow" if rating.score >= 70 else "red"
+  1825→            filled = int(rating.score / 5)
+  1826→            bar = "[" + "#" * filled + "." * (20 - filled) + "]"
+  1827→            console.print(f"  OVERALL: [bold {score_color}]{rating.score}/100  {rating.grade}[/bold {score_color}]  {bar}")
+  1828→            console.print()
+  1829→
+  1830→            # Sub-scores table
+  1831→            sub_table = Table(show_header=True, header_style="bold", title="Sub-Scores")
+  1832→            sub_table.add_column("Dimension", style="cyan")
+  1833→            sub_table.add_column("Score", justify="right")
+  1834→            sub_table.add_column("Bar", min_width=22)
+  1835→            dims = [
+  1836→                ("Detection Breadth", rating.detection_breadth),
+  1837→                ("Detection Depth", rating.detection_depth),
+  1838→                ("Dependency Footprint", rating.dependency_footprint),
+  1839→                ("Uniqueness", rating.uniqueness),
+  1840→                ("Operational Safety", rating.operational_safety),
+  1841→            ]
+  1842→            for label, val in dims:
+  1843→                c = "bright_green" if val >= 85 else "yellow" if val >= 70 else "red"
+  1844→                f_ = int(val / 5)
+  1845→                b = "#" * f_ + "." * (20 - f_)
+  1846→                sub_table.add_row(label, f"[{c}]{val}[/]", f"[{c}]{b}[/]")
+  1847→            console.print(sub_table)
+  1848→            console.print()
+  1849→
+  1850→            # Compared with
+  1851→            console.print(f"  [bold]Compared with:[/bold] {', '.join(rating.compared_with)}")
+  1852→            if rating.parity_pct > 0:
+  1853→                console.print(f"  [bold]Functional parity:[/bold] {rating.parity_pct}%")
+  1854→            else:
+  1855→                console.print(f"  [bold]Functional parity:[/bold] N/A (no equivalent tool)")
+  1856→            console.print()
+  1857→
+  1858→            # Advantages
+  1859→            console.print(f"  [bold bright_green]Unique Advantages:[/bold bright_green]")
+  1860→            for adv in rating.unique_advantages:
+  1861→                console.print(f"    [green]+[/green] {adv}")
+  1862→            console.print()
+  1863→
+  1864→            # Limitations
+  1865→            console.print(f"  [bold yellow]Known Limitations:[/bold yellow]")
+  1866→            for lim in rating.known_limitations:
+  1867→                console.print(f"    [yellow]-[/yellow] {lim}")
+  1868→            console.print()
+  1869→
+  1870→            # Stats
+  1871→            console.print(f"  [dim]Lines: {rating.lines_of_code:,}  |  Categories: {rating.detection_categories}  |  Signatures: {rating.signature_count}  |  Dependencies: {rating.external_dependencies}[/dim]")
+  1872→            return
+  1873→
+  1874→        # Rate ALL modules
+  1875→        ratings = get_all_ratings()
+  1876→        avg_score, team_grade, total_loc, total_cats, total_sigs = compute_team_score()
+  1877→
+  1878→        if getattr(args, 'json_output', False):
+  1879→            import json
+  1880→            data = {
+  1881→                "team_score": avg_score,
+  1882→                "team_grade": team_grade,
+  1883→                "total_lines_of_code": total_loc,
+  1884→                "total_detection_categories": total_cats,
+  1885→                "total_signatures": total_sigs,
+  1886→                "modules": [
+  1887→                    {
+  1888→                        "module": r.module_id,
+  1889→                        "name": r.name,
+  1890→                        "score": r.score,
+  1891→                        "grade": r.grade,
+  1892→                        "category": r.category,
+  1893→                        "sub_scores": {
+  1894→                            "breadth": r.detection_breadth,
+  1895→                            "depth": r.detection_depth,
+  1896→                            "deps": r.dependency_footprint,
+  1897→                            "unique": r.uniqueness,
+  1898→                            "safety": r.operational_safety,
+  1899→                        },
+  1900→                    }
+  1901→                    for r in ratings
+  1902→                ],
+  1903→            }
+  1904→            console.print(json.dumps(data, indent=2))
+  1905→            return
+  1906→
+  1907→        # Rich output for all modules
+  1908→        console.print()
+  1909→        console.print(Panel(
+  1910→            f"[bold]ReconPro v{__version__}  |  {len(ratings)} Modules  |  ~{total_loc:,} Lines  |  0 Dependencies[/bold]",
+  1911→            title="MODULE RATINGS vs INDUSTRY TOOLS",
+  1912→            border_style="bright_cyan",
+  1913→        ))
+  1914→        console.print()
+  1915→
+  1916→        # Team score
+  1917→        tc = "bright_green" if avg_score >= 80 else "yellow" if avg_score >= 70 else "red"
+  1918→        tg = GRADE_COLORS.get(team_grade, "white")
+  1919→        console.print(f"  [bold]TEAM SCORE:[/bold]  [{tc}]{avg_score}/100  [{tg}]{team_grade}[/{tg}]")
+  1920→        console.print()
+  1921→
+  1922→        # Full table
+  1923→        table = Table(show_header=True, header_style="bold bright_cyan", title=None)
+  1924→        table.add_column("Module", min_width=28)
+  1925→        table.add_column("Score", justify="right", min_width=7)
+  1926→        table.add_column("Grade", justify="center", min_width=5)
+  1927→        table.add_column("Breadth", justify="right", min_width=7)
+  1928→        table.add_column("Depth", justify="right", min_width=6)
+  1929→        table.add_column("Deps", justify="right", min_width=5)
+  1930→        table.add_column("Unique", justify="right", min_width=6)
+  1931→        table.add_column("Safety", justify="right", min_width=6)
+  1932→        table.add_column("vs", min_width=28)
+  1933→
+  1934→        for r in ratings:
+  1935→            sc = "bright_green" if r.score >= 85 else "yellow" if r.score >= 70 else "red"
+  1936→            gc = GRADE_COLORS.get(r.grade, "white")
+  1937→            vs = ", ".join(r.compared_with[:2])
+  1938→            if len(r.compared_with) > 2:
+  1939→                vs += "+"
+  1940→            table.add_row(
+  1941→                f"[cyan]{r.name}[/]",
+  1942→                f"[{sc}]{r.score}/100[/]",
+  1943→                f"[{gc}]{r.grade}[/]",
+  1944→                f"{r.detection_breadth}/100",
+  1945→                f"{r.detection_depth}/100",
+  1946→                f"{r.dependency_footprint}/100",
+  1947→                f"{r.uniqueness}/100",
+  1948→                f"{r.operational_safety}/100",
+  1949→                f"[dim]{vs}[/dim]",
+  1950→            )
+  1951→        console.print(table)
+  1952→        console.print()
+  1953→
+  1954→        # Unique capabilities summary
+  1955→        unique_count = sum(1 for r in ratings if r.uniqueness >= 95)
+  1956→        console.print(f"  [bold bright_green]{unique_count} modules[/bold bright_green] have [bold]NO open-source equivalent[/bold] (uniqueness = 100/100)")
+  1957→        console.print(f"  [bold]All 12 modules[/bold] score [bold]100/100[/bold] on dependency footprint (zero external deps)")
+  1958→        console.print(f"  [bold]All 12 modules[/bold] require [bold]no root access, no pcap, no API keys[/bold]")
+  1959→        console.print()
+  1960→        return
+  1961→
+  1962→    # ── dead-drop (v9.2.0) ───────────────────────────────────────
+  1963→    if cmd == "dead-drop":
+  1964→        _banner(args)
+  1965→        target = args.target
+  1966→        base_url = target if target.startswith("http") else f"https://{target}"
+  1967→        from .modules.dead_drop import run_dead_drop
+  1968→        findings = _spinner_wrap(
+  1969→            f"Scanning dead drops on {target}...",
+  1970→            run_dead_drop, target, base_url,
+  1971→        )
+  1972→        _print_findings(findings, args, title="DEAD DROP")
+  1973→        return
+  1974→
+  1975→    # ── info (Diagnostics & Help) ──────────────────────────────
+  1976→    if cmd == "info":
+  1977→        from .diagnostics import run_diagnostics, health_check, get_version_info, generate_debug_report, module_status, validate_config
+  1978→        from .cli_help import render_module_help, render_all_modules, render_quick_start, render_examples, MODULE_HELP, CLI_COMMANDS
+  1979→
+  1980→        # Show module-specific help
+  1981→        if getattr(args, "module", None):
+  1982→            text = render_module_help(args.module)
+  1983→            console.print(text)
+  1984→            return
+  1985→
+  1986→        # List all modules
+  1987→        if getattr(args, "modules", False):
+  1988→            text = render_all_modules()
+  1989→            console.print(text)
+  1990→            return
+  1991→
+  1992→        # Run full diagnostics
+  1993→        if getattr(args, "diagnose", False):
+  1994→            if getattr(args, "json_output", False):
+  1995→                import json as _json
+  1996→                diag = run_diagnostics()
+  1997→                console.print(_json.dumps(diag, indent=2, default=str))
+  1998→            else:
+  1999→                report = generate_debug_report()
+  2000→                console.print(report)
+
+[showing lines 1-2000 of 2264; use offset=2001 with limit to continue reading]

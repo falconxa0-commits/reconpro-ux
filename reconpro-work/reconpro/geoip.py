@@ -640,6 +640,7 @@ def is_proxy_ip(geo_data: Dict[str, Any]) -> bool:
     return any(p in combined for p in PROXY_AS_PATTERNS)
 
 
+# DEAD CODE: consider removal
 def format_geoip_summary(geo_data: Dict[str, Any]) -> str:
     """Format a GeoIP result as a compact single-line summary.
 
@@ -668,6 +669,7 @@ def format_geoip_summary(geo_data: Dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
+# DEAD CODE: consider removal
 def detect_cloud_provider(ip: str) -> Optional[str]:
     """Quickly detect if an IP belongs to a known cloud provider.
 

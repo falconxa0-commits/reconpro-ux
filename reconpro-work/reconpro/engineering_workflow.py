@@ -36,9 +36,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple  # DEAD CODE: consider removal
 
-from .constants import MEMORY_DIR, RECONPRO_HOME
+from .constants import MEMORY_DIR, RECONPRO_HOME  # DEAD CODE: consider removal
 
 logger = logging.getLogger("reconpro.engineering_workflow")
 
@@ -187,6 +187,9 @@ class EngineeringCycleResult:
     fix_proposals_count: int = 0
     anomaly_count: int = 0
     regression_count: int = 0
+    quality_score: float = 0.0
+    quality_grade: str = ""
+    engineering_score: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -203,6 +206,9 @@ class EngineeringCycleResult:
             "fix_proposals_count": self.fix_proposals_count,
             "anomaly_count": self.anomaly_count,
             "regression_count": self.regression_count,
+            "quality_score": self.quality_score,
+            "quality_grade": self.quality_grade,
+            "engineering_score": self.engineering_score,
         }
 
     def save(self, directory: Optional[Path] = None) -> Path:
@@ -670,39 +676,30 @@ class ContinuousEngineeringOrchestrator:
         try:
             from .quality_intelligence import QualityIntelligence
 
-            qi = QualityIntelligence()
+            qi = QualityIntelligence(repository_path=self._repo_path)
             repo_path = self._repo_path or "."
-            # Analyze key package files
-            target_files = []
-            pkg = Path(repo_path)
-            if pkg.is_dir():
-                for py_file in sorted(pkg.glob("*.py"))[:20]:
-                    target_files.append(str(py_file))
-                # Also analyze subdirectories
-                for subdir in ["reconpro", "modules", "integrations"]:
-                    sub_path = pkg / subdir
-                    if sub_path.is_dir():
-                        for py_file in sorted(sub_path.glob("*.py"))[:10]:
-                            target_files.append(str(py_file))
 
-            if not target_files:
-                return {"analyzed": 0, "reason": "no Python files found"}
+            # Run full repository analysis
+            repo_result = qi.analyze_repository_quality(repo_path)
 
-            results = {}
-            for fpath in target_files:
-                try:
-                    snapshot = qi.analyze_file(fpath)
-                    results[fpath] = snapshot.to_dict() if hasattr(snapshot, "to_dict") else str(snapshot)
-                except Exception:
-                    continue
+            # Check for errors
+            if "error" in repo_result and not repo_result.get("dimensions"):
+                return {"analyzed": 0, "error": repo_result["error"]}
 
-            overall = qi.analyze_repository(repo_path) if pkg.is_dir() else None
+            # Extract key data
             data = {
-                "files_analyzed": len(results),
-                "results": results,
+                "files_analyzed": repo_result.get("file_count", 0),
+                "total_loc": repo_result.get("total_loc", 0),
+                "composite_score": repo_result.get("composite_score", 0.0),
+                "grade": repo_result.get("grade", "N/A"),
+                "dimensions": repo_result.get("dimensions", {}),
+                "security_issues_total": repo_result.get("security_issues_total", 0),
+                "gate_result": repo_result.get("gate_result", {}),
+                "trend": repo_result.get("trend"),
+                "trajectory": repo_result.get("trajectory"),
+                "timestamp": repo_result.get("timestamp", ""),
             }
-            if overall and hasattr(overall, "to_dict"):
-                data["overall"] = overall.to_dict()
+
             return data
         except Exception as exc:
             return {"analyzed": 0, "error": str(exc)}
@@ -850,10 +847,17 @@ class ContinuousEngineeringOrchestrator:
                     result.recommendations_count = sr.data.get("recommendations_count", 0)
                 if sr.stage == EngineeringStage.AUTO_FIX:
                     result.fix_proposals_count = sr.data.get("fix_proposals_count", 0)
+                if sr.stage == EngineeringStage.QUALITY_INTELLIGENCE and sr.data:
+                    result.quality_score = sr.data.get("composite_score", 0.0)
+                    result.quality_grade = sr.data.get("grade", "")
 
         result.finished_at = datetime.now(timezone.utc).isoformat()
         result.total_duration_s = time.monotonic() - cycle_start
         result.overall_status = self._compute_overall_status(result)
+
+        # Calculate engineering score for the cycle
+        result.engineering_score = self._compute_engineering_score(result)
+
         result.metrics = {
             "total_stages": len(result.stages),
             "passed": sum(1 for s in result.stages if s.status == "pass"),
@@ -873,6 +877,43 @@ class ContinuousEngineeringOrchestrator:
             result.total_duration_s,
         )
         return result
+
+    def _compute_engineering_score(self, result: EngineeringCycleResult) -> float:
+        """Calculate a composite engineering score (0-100) for the cycle.
+
+        Formula: 40% module_health + 30% quality_history + 30% scan_reliability
+        Falls back to module health if no quality history exists.
+        """
+        total = len(result.stages)
+        if total == 0:
+            return 0.0
+
+        passed = sum(1 for s in result.stages if s.status == "pass")
+        failed = sum(1 for s in result.stages if s.status == "fail")
+        module_health = (passed / total) * 100.0
+
+        # Quality history: use quality intelligence score if available
+        quality_history = 0.0
+        has_quality = result.quality_score > 0
+        if has_quality:
+            quality_history = result.quality_score
+        else:
+            # Try to recall from memory
+            try:
+                mem = self._get_repository_memory()
+                qi_facts = mem.search(query_text="quality_score")
+                if qi_facts:
+                    quality_history = float(qi_facts[0].value) if isinstance(qi_facts[0].value, (int, float)) else 50.0
+                else:
+                    quality_history = module_health  # default to current scan
+            except Exception:
+                quality_history = module_health
+
+        # Scan reliability: inverse of failure rate, weighted by stage count
+        reliability = 100.0 if failed == 0 else max(0.0, (1.0 - failed / total) * 100.0)
+
+        score = 0.40 * module_health + 0.30 * quality_history + 0.30 * reliability
+        return round(max(0.0, min(100.0, score)), 1)
 
     def run_validation_only(
         self,

@@ -1770,6 +1770,7 @@ class ValidationPipeline:
         return self._report
 
     @classmethod
+    # DEAD CODE: consider removal
     def quick_validate(cls, project_root: Optional[str] = None) -> ValidationReport:
         """Convenience method: create a pipeline and run full validation.
 
@@ -1787,6 +1788,8 @@ class ValidationPipeline:
 # Convenience functions
 # ────────────────────────────────────────────────────────────────────────
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def validate_syntax(project_root: Optional[str] = None) -> ValidationStageResult:
     """Quick syntax validation.
 
@@ -1800,6 +1803,7 @@ def validate_syntax(project_root: Optional[str] = None) -> ValidationStageResult
     return pipeline.validate_syntax()
 
 
+# DEAD CODE: consider removal
 def validate_imports(project_root: Optional[str] = None) -> ValidationStageResult:
     """Quick import validation.
 

@@ -930,6 +930,7 @@ def check_ip_reputation(
     return results
 
 
+# DEAD CODE: consider removal
 def quick_threat_check(ip: str) -> Dict[str, Any]:
     """Quick single-call threat check using default configuration.
 

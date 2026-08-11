@@ -2145,6 +2145,7 @@ class AttackSurfaceScorer:
         raw = (total_sev / 10.0) * 60.0 + min(count, 10) * 4.0
         return min(100.0, raw)
 
+    # DEAD CODE: consider removal
     def score(self) -> Dict[str, Any]:
         """Calculate 5-factor score.
 
@@ -2186,6 +2187,8 @@ class AttackSurfaceScorer:
 # ======================================================================
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def analyze_chains(
     target: str,
     findings: List[Dict[str, Any]],

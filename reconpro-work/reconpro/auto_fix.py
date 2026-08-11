@@ -1928,6 +1928,7 @@ class AutoFixEngine:
             parts.append(f"  Proposed:\n{textwrap.indent(proposal.proposed_code, '    ')}")
         return "\n".join(parts)
 
+    # DEAD CODE: consider removal
     def _do_apply(self, proposal: FixProposal) -> bool:
         """Actually apply a fix to a file.
 
@@ -2003,6 +2004,8 @@ class AutoFixEngine:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+# DEAD CODE: consider removal
+# DEAD CODE: consider removal
 def propose_fixes(scan_result: Dict[str, Any]) -> List[FixProposal]:
     """Convenience function: analyse scan results and return fix proposals.
 
