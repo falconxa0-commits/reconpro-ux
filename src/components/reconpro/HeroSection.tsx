@@ -25,7 +25,7 @@ export default function HeroSection() {
     terminalDemo.forEach((line, i) => {
       cumulative += line.delay;
       timers.push(
-        setTimeout(() => setVisibleLines((v) => Math.min(v, i + 1)), cumulative)
+        setTimeout(() => setVisibleLines((v) => Math.max(v, i + 1)), cumulative)
       );
     });
     return () => timers.forEach(clearTimeout);
@@ -48,6 +48,7 @@ export default function HeroSection() {
     <section
       ref={ref}
       id="hero"
+      aria-label="ReconPro hero — Attack Surface Intelligence Platform"
       className="relative min-h-screen flex items-center justify-center bg-black overflow-hidden pt-16"
     >
       {/* Subtle grid overlay */}

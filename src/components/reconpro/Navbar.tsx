@@ -1,10 +1,22 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { navItems } from "@/data/content";
 import { useActiveSection, useSmoothScroll } from "@/hooks/useInView";
 
+// Platform-adaptive keyboard shortcut label
+const useShortcutLabel = () => {
+  const [label, setLabel] = useState("Ctrl+K");
+  useEffect(() => {
+    const isMac = navigator.platform?.toUpperCase().includes("MAC") ?? false;
+    setLabel(isMac ? "\u2318K" : "Ctrl+K");
+  }, []);
+  return label;
+};
+
 export function Navbar() {
+  const shortcutLabel = useShortcutLabel();
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -56,6 +68,7 @@ export function Navbar() {
             {/* Logo */}
             <button
               onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+              aria-label="ReconPro — scroll to top"
               className="flex items-center gap-3 group"
             >
               <div className="w-8 h-8 rounded-lg bg-white/[0.06] border border-white/[0.08] flex items-center justify-center group-hover:bg-white/[0.1] transition-all duration-300">
@@ -105,7 +118,7 @@ export function Navbar() {
                   <path d="m21 21-4.3-4.3" />
                 </svg>
                 <kbd className="hidden sm:inline-flex text-[9px] font-mono text-white/10 bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/[0.04]">
-                  ⌘K
+                  {shortcutLabel}
                 </kbd>
               </button>
 
@@ -158,8 +171,16 @@ export function Navbar() {
         </div>
 
         {/* Search Overlay */}
+        <AnimatePresence>
         {searchOpen && (
-          <div className="absolute top-full left-0 right-0 p-4 bg-black/90 backdrop-blur-xl border-b border-white/[0.04]">
+          <motion.div
+            key="search-overlay"
+            initial={{ opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            className="absolute top-full left-0 right-0 p-4 bg-black/90 backdrop-blur-xl border-b border-white/[0.04]"
+          >
             <div className="max-w-2xl mx-auto">
               <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.06]">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/20">
@@ -177,17 +198,31 @@ export function Navbar() {
                 </kbd>
               </div>
             </div>
-          </div>
+          </motion.div>
         )}
+        </AnimatePresence>
       </nav>
 
       {/* Mobile Menu Overlay */}
+      <AnimatePresence>
       {mobileOpen && (
-        <div
+        <motion.div
+          key="mobile-overlay"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
           className="fixed inset-0 z-40 bg-black/80 backdrop-blur-xl lg:hidden"
           onClick={() => setMobileOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation menu"
         >
-          <div
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1], delay: 0.05 }}
             className="absolute top-16 left-0 right-0 p-6 bg-black/95 border-b border-white/[0.04]"
             onClick={(e) => e.stopPropagation()}
           >
@@ -225,9 +260,10 @@ export function Navbar() {
                 Install
               </a>
             </div>
-          </div>
-        </div>
+          </motion.div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </>
   );
 }
