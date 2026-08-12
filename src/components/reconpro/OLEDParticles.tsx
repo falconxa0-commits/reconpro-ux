@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 
 interface Particle {
   id: number;
@@ -32,7 +32,7 @@ function generateParticles() {
   return particles;
 }
 
-export function OLEDParticles() {
+export const OLEDParticles = memo(function OLEDParticles() {
   const [particles, setParticles] = useState<Particle[] | null>(null);
 
   useEffect(() => {
@@ -65,4 +65,4 @@ export function OLEDParticles() {
       ))}
     </div>
   );
-}
+});

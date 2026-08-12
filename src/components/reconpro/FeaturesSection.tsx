@@ -51,9 +51,8 @@ const cardVariants = {
     y: 0,
     scale: 1,
     transition: {
-      type: "spring",
-      stiffness: 160,
-      damping: 24,
+      duration: 0.5,
+      ease: [0.16, 1, 0.3, 1],
     },
   },
 };
@@ -106,7 +105,7 @@ export function FeaturesSection() {
               <motion.div
                 key={feature.title}
                 variants={cardVariants}
-                className="glass-hover bento-tile group relative flex flex-col rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 backdrop-blur-sm transition-colors duration-300"
+                className="glass-hover bento-tile group relative flex flex-col border border-white/[0.06] bg-white/[0.02] p-6 backdrop-blur-sm transition-colors duration-300"
               >
                 {/* ── Top row: icon + category badge ──── */}
                 <div className="mb-5 flex items-start justify-between">

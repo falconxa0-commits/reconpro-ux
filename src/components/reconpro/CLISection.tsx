@@ -238,18 +238,18 @@ export default function CLISection() {
     <section
       id="cli"
       ref={cliRef}
-      className="relative bg-black py-32"
+      className="relative bg-black px-4 py-32 sm:px-6 lg:px-8"
     >
       {/* Subtle grid background */}
       <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_70%)]" aria-hidden="true" />
 
       <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         {/* Section Header */}
-        <div className="mb-16 text-center">
+        <div className={`mb-16 text-center transition-all duration-700 ${isInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}`}>
           <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
             Command Line Interface
           </h2>
-          <p className="mx-auto mt-5 max-w-xl text-sm text-white/40">
+          <p className={`mx-auto mt-5 max-w-xl text-sm text-white/40 transition-all delay-100 duration-700 ${isInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}`}>
             45 commands. Every operation. One unified interface.
           </p>
         </div>
@@ -399,7 +399,7 @@ export default function CLISection() {
                     className={`group w-full cursor-pointer rounded-lg border px-4 py-3 text-left transition-all duration-200 ${
                       isActive
                         ? "border-white/[0.08] bg-white/[0.08]"
-                        : "border-transparent bg-transparent hover:bg-white/[0.03] hover:border-white/[0.06]"
+                        : "border-white/[0.04] bg-transparent hover:bg-white/[0.03] hover:border-white/[0.06]"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3">

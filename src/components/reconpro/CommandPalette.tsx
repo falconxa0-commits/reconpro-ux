@@ -115,6 +115,7 @@ export function CommandPalette() {
             aria-controls="cmd-results"
             aria-activedescendant={filtered[activeIndex] ? `cmd-option-${activeIndex}` : undefined}
             aria-autocomplete="list"
+            aria-label="Search commands"
           />
           <kbd className="text-[10px] text-white/15 bg-white/[0.03] px-1.5 py-0.5 rounded-md border border-white/[0.05] flex-shrink-0 font-mono" aria-hidden="true">
             ESC

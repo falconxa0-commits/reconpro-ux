@@ -57,7 +57,7 @@ export function Navbar() {
   return (
     <>
       <nav
-        className={`fixed top-0 left-0 right-0 z-50 transition-all duration-700 ${
+        className={`fixed top-0 left-0 right-0 z-50 transition-[background-color,border-color,box-shadow] duration-700 ${
           scrolled
             ? "bg-black/70 backdrop-blur-xl border-b border-white/[0.04]"
             : "bg-transparent"
@@ -195,6 +195,7 @@ export function Navbar() {
                   type="text"
                   placeholder="Search commands, modules, docs..."
                   className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-white/15"
+                  aria-label="Search sections and commands"
                 />
                 <kbd className="text-[10px] text-white/20 bg-white/[0.04] px-1.5 py-0.5 rounded-md border border-white/[0.06]" aria-hidden="true">
                   ESC

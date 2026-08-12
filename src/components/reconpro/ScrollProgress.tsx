@@ -16,5 +16,5 @@ export function ScrollProgress() {
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
-  return <div className="scroll-progress" style={{ width: `${progress}%` }} aria-hidden="true" />;
+  return <div className="scroll-progress" style={{ transform: `scaleX(${progress / 100})` }} aria-hidden="true" />;
 }

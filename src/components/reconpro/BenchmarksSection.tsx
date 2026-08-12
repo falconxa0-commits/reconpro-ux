@@ -11,7 +11,7 @@ export default function BenchmarksSection() {
     <section
       ref={ref}
       id="benchmarks"
-      className="relative bg-black py-32"
+      className="relative bg-black px-4 py-32 sm:px-6 lg:px-8"
     >
       <div className="max-w-6xl mx-auto px-6">
         {/* Header */}
@@ -123,7 +123,7 @@ export default function BenchmarksSection() {
         <motion.p
           initial={{ opacity: 0 }}
           animate={isInView ? { opacity: 1 } : {}}
-          transition={{ duration: 0.7, delay: 0.4 }}
+          transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
           className="text-center text-[11px] text-white/15 mt-6"
         >
           Benchmarked on equivalent hardware. Results may vary. See our methodology for details.

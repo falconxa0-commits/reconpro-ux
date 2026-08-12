@@ -239,7 +239,7 @@ function ModuleCard({
 
   return (
     <div
-      className={`bento-tile glass-hover group relative flex flex-col rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 backdrop-blur-sm transition-all duration-700 ${
+      className={`bento-tile glass-hover group relative flex flex-col border border-white/[0.06] bg-white/[0.02] p-6 backdrop-blur-sm transition-all duration-700 ${
         isInView
           ? "translate-y-0 opacity-100"
           : "translate-y-8 opacity-0"

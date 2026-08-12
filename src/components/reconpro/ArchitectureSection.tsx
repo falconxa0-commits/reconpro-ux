@@ -37,7 +37,7 @@ export default function ArchitectureSection() {
     <section
       id="architecture"
       ref={ref}
-      className="relative w-full bg-black py-32 overflow-hidden"
+      className="relative w-full bg-black px-4 py-32 sm:px-6 lg:px-8 overflow-hidden"
     >
       {/* ── Ambient Background ── */}
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">

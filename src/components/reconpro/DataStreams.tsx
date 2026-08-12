@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, memo } from "react";
 
 interface Stream {
   id: number;
@@ -26,7 +26,7 @@ function generateStreams() {
   return streams;
 }
 
-export function DataStreams() {
+export const DataStreams = memo(function DataStreams() {
   const [streams, setStreams] = useState<Stream[] | null>(null);
 
   useEffect(() => {
@@ -56,4 +56,4 @@ export function DataStreams() {
       ))}
     </div>
   );
-}
+});

@@ -48,7 +48,7 @@ export default function CommunitySection() {
     <section
       id="community"
       ref={sectionRef as React.RefObject<HTMLElement>}
-      className="relative w-full bg-black py-32 px-6"
+      className="relative w-full bg-black px-4 py-32 sm:px-6 lg:px-8"
     >
       {/* Subtle radial glow */}
       <div className="pointer-events-none absolute inset-0 flex items-start justify-center" aria-hidden="true">

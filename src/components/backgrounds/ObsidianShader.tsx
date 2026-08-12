@@ -1,6 +1,6 @@
 "use client";
 
-import {
+import React, {
   useRef,
   useEffect,
   useCallback,
@@ -128,7 +128,7 @@ const FRAG_SRC = `
 `;
 
 // ── Component ──────────────────────────────────────────
-export function ObsidianShader({
+export const ObsidianShader = React.memo(function ObsidianShader({
   active = true,
   speed = 1,
   opacity = 1,
@@ -335,4 +335,4 @@ export function ObsidianShader({
       }}
     />
   );
-}
+});

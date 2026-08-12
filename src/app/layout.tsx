@@ -11,7 +11,7 @@ export const metadata: Metadata = {
     template: "%s | ReconPro",
   },
   applicationName: "ReconPro",
-  description: "Billion-dollar grade attack surface management. Autonomous reconnaissance, real-time threat intelligence, knowledge graph, evidence correlation, and executive reporting. 16 scanner modules. 45 CLI commands. 3 dependencies.",
+  description: "Autonomous attack surface intelligence. 16 scanner modules, 45 CLI commands, 3 dependencies. Real-time threat intel, knowledge graph, and executive reporting.",
   keywords: [
     "reconpro", "attack surface management", "security scanner", "reconnaissance",
     "vulnerability assessment", "pentesting", "cybersecurity", "threat intelligence",
@@ -83,7 +83,7 @@ export default function RootLayout({
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
           rel="stylesheet"
         />
         {/* SEO: JSON-LD Structured Data */}

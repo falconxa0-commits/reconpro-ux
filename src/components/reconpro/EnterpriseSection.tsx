@@ -125,7 +125,7 @@ export function EnterpriseSection() {
       <section
         id="enterprise"
         ref={enterpriseRef}
-        className="relative w-full py-32 overflow-hidden"
+        className="relative w-full px-4 py-32 sm:px-6 lg:px-8 overflow-hidden"
         style={{ background: "#000000" }}
       >
         {/* Subtle top-edge glow */}
@@ -367,7 +367,7 @@ export function EnterpriseSection() {
       <section
         id="pricing"
         ref={pricingRef}
-        className="relative w-full py-32 overflow-hidden"
+        className="relative w-full px-4 py-32 sm:px-6 lg:px-8 overflow-hidden"
         style={{ background: "#000000" }}
         aria-label="Pricing plans"
       >
@@ -596,7 +596,7 @@ export function EnterpriseSection() {
       <section
         id="roadmap"
         ref={roadmapRef}
-        className="relative w-full py-32 overflow-hidden"
+        className="relative w-full px-4 py-32 sm:px-6 lg:px-8 overflow-hidden"
         style={{ background: "#000000" }}
         aria-label="Product roadmap"
       >
