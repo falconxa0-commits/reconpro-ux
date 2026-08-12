@@ -71,7 +71,7 @@ export function FeaturesSection() {
       className="relative min-h-screen bg-black px-4 py-32 sm:px-6 lg:px-8"
     >
       {/* Subtle radial glow behind the grid */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
         <div className="absolute left-1/2 top-1/2 h-[800px] w-[800px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/[0.015] blur-3xl" />
       </div>
 
@@ -80,7 +80,7 @@ export function FeaturesSection() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
           className="mb-20 text-center"
         >
           <h2 className="text-gradient-void text-4xl font-semibold tracking-tight sm:text-5xl">
@@ -106,7 +106,7 @@ export function FeaturesSection() {
               <motion.div
                 key={feature.title}
                 variants={cardVariants}
-                className="glass-hover bento-tile group relative flex flex-col rounded-xl border border-white/[0.04] bg-white/[0.02] p-6 backdrop-blur-sm transition-colors duration-300"
+                className="glass-hover bento-tile group relative flex flex-col rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 backdrop-blur-sm transition-colors duration-300"
               >
                 {/* ── Top row: icon + category badge ──── */}
                 <div className="mb-5 flex items-start justify-between">

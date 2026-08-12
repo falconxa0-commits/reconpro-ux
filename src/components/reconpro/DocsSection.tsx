@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { BookOpen, Layers, Terminal, Network, Code, CheckCircle, Copy } from "lucide-react";
 import { useInView } from "@/hooks/useInView";
 
@@ -96,8 +96,7 @@ function highlightSyntax(code: string) {
 }
 
 export default function DocsSection() {
-  const sectionRef = useRef<HTMLElement>(null);
-  const isInView = useInView(sectionRef, { threshold: 0.1 });
+  const { ref: sectionRef, isInView } = useInView(0.1);
   const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
@@ -113,11 +112,11 @@ export default function DocsSection() {
   return (
     <section
       id="docs"
-      ref={sectionRef}
+      ref={sectionRef as React.RefObject<HTMLElement>}
       className="relative w-full bg-black py-32 px-6"
     >
       {/* Subtle radial glow */}
-      <div className="pointer-events-none absolute inset-0 flex items-start justify-center">
+      <div className="pointer-events-none absolute inset-0 flex items-start justify-center" aria-hidden="true">
         <div className="h-[600px] w-[800px] rounded-full bg-white/[0.02] blur-[120px]" />
       </div>
 
@@ -126,7 +125,7 @@ export default function DocsSection() {
         <div className="mb-16 text-center">
           <h2
             className={`
-              text-4xl font-medium tracking-tight text-white sm:text-5xl
+              text-4xl font-semibold tracking-tight text-white sm:text-5xl
               transition-all duration-700
               ${isInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}
             `}
@@ -135,7 +134,7 @@ export default function DocsSection() {
           </h2>
           <p
             className={`
-              mt-4 max-w-xl mx-auto text-base text-white/40 transition-all delay-100 duration-700
+              mt-5 max-w-xl mx-auto text-sm text-white/40 transition-all delay-100 duration-700
               ${isInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}
             `}
           >
@@ -161,7 +160,7 @@ export default function DocsSection() {
             </div>
             <button
               onClick={handleCopy}
-              className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs text-white/30 transition-colors hover:bg-white/[0.06] hover:text-white/60"
+              className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs text-white/30 transition-colors duration-200 hover:bg-white/[0.06] hover:text-white/60"
               aria-label="Copy code"
             >
               <Copy className="h-3.5 w-3.5" />
@@ -195,16 +194,16 @@ export default function DocsSection() {
                 style={{ transitionDelay: `${250 + i * 80}ms` }}
               >
                 {/* Hover glow */}
-                <div className="pointer-events-none absolute -inset-px rounded-2xl opacity-0 transition-opacity duration-500 group-hover:opacity-100">
+                <div className="pointer-events-none absolute -inset-px rounded-2xl opacity-0 transition-opacity duration-500 group-hover:opacity-100" aria-hidden="true">
                   <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-white/[0.04] to-transparent" />
                 </div>
 
                 <Icon className="mb-4 h-5 w-5 text-white/20" strokeWidth={1.5} />
                 <h3 className="text-sm font-medium text-white">{item.title}</h3>
-                <p className="mt-1.5 text-sm leading-relaxed text-white/30">
+                <p className="mt-1.5 text-sm leading-relaxed text-white/40">
                   {item.description}
                 </p>
-                <span className="mt-4 inline-block text-xs text-white/20 transition-colors group-hover:text-white/50">
+                <span className="mt-4 inline-block text-xs text-white/20 transition-colors duration-200 group-hover:text-white/50">
                   Explore &rarr;
                 </span>
               </div>

@@ -83,7 +83,7 @@ export function ModulesSection() {
   return (
     <section id="modules" className="relative bg-black px-4 py-32 sm:px-6 lg:px-8">
       {/* Subtle radial glow */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden="true">
         <div className="absolute left-1/2 top-1/3 h-[700px] w-[900px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/[0.012] blur-3xl" />
       </div>
 
@@ -137,6 +137,8 @@ export function ModulesSection() {
               ? "translate-y-0 opacity-100"
               : "translate-y-4 opacity-0"
           }`}
+          role="radiogroup"
+          aria-label="Filter scanner modules"
         >
           {filters.map((f) => {
             const isActive = filter === f.value;
@@ -144,6 +146,8 @@ export function ModulesSection() {
               <button
                 key={f.value}
                 onClick={() => setFilter(f.value)}
+                role="radio"
+                aria-checked={isActive}
                 className={`rounded-full border px-4 py-1.5 text-xs font-medium tracking-wide transition-all duration-200 ${
                   isActive
                     ? "border-white/20 bg-white/10 text-white/80"
@@ -235,7 +239,7 @@ function ModuleCard({
 
   return (
     <div
-      className={`bento-tile glass-hover group relative flex flex-col rounded-xl border border-white/[0.04] bg-white/[0.02] p-6 backdrop-blur-sm transition-all duration-700 ${
+      className={`bento-tile glass-hover group relative flex flex-col rounded-xl border border-white/[0.06] bg-white/[0.02] p-6 backdrop-blur-sm transition-all duration-700 ${
         isInView
           ? "translate-y-0 opacity-100"
           : "translate-y-8 opacity-0"

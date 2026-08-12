@@ -26,7 +26,7 @@ const itemVariants = {
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.5, ease: "easeOut" as const },
+    transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as const },
   },
 };
 
@@ -40,7 +40,7 @@ export default function ArchitectureSection() {
       className="relative w-full bg-black py-32 overflow-hidden"
     >
       {/* ── Ambient Background ── */}
-      <div className="pointer-events-none absolute inset-0">
+      <div className="pointer-events-none absolute inset-0" aria-hidden="true">
         <div
           className="absolute top-0 left-1/2 -translate-x-1/2 h-[600px] w-[800px] rounded-full opacity-[0.03]"
           style={{
@@ -62,7 +62,7 @@ export default function ArchitectureSection() {
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.6, ease: "easeOut" }}
+          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
           className="mb-20 text-center"
         >
           <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
@@ -169,13 +169,13 @@ export default function ArchitectureSection() {
           <motion.div
             initial={{ opacity: 0, x: 30 }}
             animate={isInView ? { opacity: 1, x: 0 } : {}}
-            transition={{ duration: 0.7, delay: 0.3, ease: "easeOut" }}
+            transition={{ duration: 0.7, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
             className="hidden lg:col-span-5 lg:block"
           >
             <div className="sticky top-32">
-              <h4 className="mb-6 text-xs font-mono uppercase tracking-[0.2em] text-white/20">
+              <h3 className="mb-6 text-xs font-mono uppercase tracking-[0.2em] text-white/20">
                 Data Flow
-              </h4>
+              </h3>
 
               <div className="relative flex flex-col items-center gap-0">
                 {flowNodes.map((node, i) => (
@@ -214,7 +214,7 @@ export default function ArchitectureSection() {
                     >
                       {/* Glow on hover */}
                       <div
-                        className="pointer-events-none absolute -inset-px rounded-lg opacity-0 transition-opacity duration-400 group-hover/node:opacity-100"
+                        className="pointer-events-none absolute -inset-px rounded-lg opacity-0 transition-opacity duration-500 group-hover/node:opacity-100"
                         style={{
                           boxShadow: `0 0 24px -4px ${node.color}30, 0 0 4px -1px ${node.color}50`,
                         }}
@@ -228,12 +228,12 @@ export default function ArchitectureSection() {
                 ))}
 
                 {/* Decorative side labels */}
-                <div className="pointer-events-none absolute -left-8 top-0 bottom-0 flex flex-col justify-between text-[9px] font-mono uppercase tracking-widest text-white/[0.08]">
+                <div className="pointer-events-none absolute -left-8 top-0 bottom-0 flex flex-col justify-between text-[9px] font-mono uppercase tracking-widest text-white/[0.08]" aria-hidden="true">
                   <span>Input</span>
                   <span>Process</span>
                   <span>Output</span>
                 </div>
-                <div className="pointer-events-none absolute -right-8 top-0 bottom-0 flex flex-col justify-between text-[9px] font-mono uppercase tracking-widest text-white/[0.08]">
+                <div className="pointer-events-none absolute -right-8 top-0 bottom-0 flex flex-col justify-between text-[9px] font-mono uppercase tracking-widest text-white/[0.08]" aria-hidden="true">
                   <span>Ingest</span>
                   <span>Enrich</span>
                   <span>Deliver</span>

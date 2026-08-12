@@ -144,6 +144,7 @@ export function ObsidianShader({
   const programRef = useRef<WebGLProgram | null>(null);
   const startTimeRef = useRef<number>(0);
   const propsRef = useRef({ speed, intensity, glow, opacity, active });
+  const uniformLocsRef = useRef<{ uRes: WebGLUniformLocation | null; uTime: WebGLUniformLocation | null; uInt: WebGLUniformLocation | null; uGlow: WebGLUniformLocation | null } | null>(null);
 
   // Keep props ref current without triggering re-renders
   useEffect(() => {
@@ -218,6 +219,14 @@ export function ObsidianShader({
     glRef.current = gl;
     programRef.current = program;
     startTimeRef.current = performance.now();
+
+    // Cache uniform locations — avoid per-frame lookups
+    uniformLocsRef.current = {
+      uRes: gl.getUniformLocation(program, 'u_resolution'),
+      uTime: gl.getUniformLocation(program, 'u_time'),
+      uInt: gl.getUniformLocation(program, 'u_intensity'),
+      uGlow: gl.getUniformLocation(program, 'u_glow'),
+    };
   }, [compileShader]);
 
   const handleResize = useCallback(() => {
@@ -248,35 +257,30 @@ export function ObsidianShader({
     const { speed, intensity, glow, active: isActive } = propsRef.current;
     if (!isActive || prefersReducedMotion) return;
 
-    handleResize();
-
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.clearColor(0.039, 0.039, 0.059, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
-    gl.useProgram(program);
-
-    const uRes = gl.getUniformLocation(program, "u_resolution");
-    const uTime = gl.getUniformLocation(program, "u_time");
-    const uIntensity = gl.getUniformLocation(program, "u_intensity");
-    const uGlow = gl.getUniformLocation(program, "u_glow");
-
-    gl.uniform2f(uRes, canvas.width, canvas.height);
-    const elapsed = (performance.now() - startTimeRef.current) * 0.001 * speed;
-    gl.uniform1f(uTime, elapsed);
-    gl.uniform1f(uIntensity, intensity);
-    gl.uniform1f(uGlow, glow);
+    const locs = uniformLocsRef.current;
+    if (locs) {
+      gl.uniform2f(locs.uRes, canvas.width, canvas.height);
+      const elapsed = (performance.now() - startTimeRef.current) * 0.001 * speed;
+      gl.uniform1f(locs.uTime, elapsed);
+      gl.uniform1f(locs.uInt, intensity);
+      gl.uniform1f(locs.uGlow, glow);
+    }
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     rafRef.current = requestAnimationFrame(render);
-  }, [handleResize, prefersReducedMotion]);
+  }, [prefersReducedMotion]);
 
   // Initialize
   useEffect(() => {
     if (!active || prefersReducedMotion) return;
 
     initGL();
+    handleResize(); // Ensure correct sizing before first frame
 
     const resizeObs = new ResizeObserver(() => handleResize());
     if (canvasRef.current) resizeObs.observe(canvasRef.current);
@@ -291,6 +295,7 @@ export function ObsidianShader({
         gl.getExtension("WEBGL_lose_context")?.loseContext();
         glRef.current = null;
         programRef.current = null;
+        uniformLocsRef.current = null;
       }
     };
   }, [active, initGL, render, handleResize]);

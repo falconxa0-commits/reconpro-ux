@@ -83,6 +83,9 @@ export function CommandPalette() {
     <div
       className={`command-palette-overlay ${open ? "open" : ""}`}
       onClick={() => handleOpen(false)}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
     >
       <div className="command-palette-box" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-3 px-5 py-3 border-b border-white/[0.04]">
@@ -94,6 +97,7 @@ export function CommandPalette() {
             stroke="currentColor"
             strokeWidth="2"
             className="text-white/20 flex-shrink-0"
+            aria-hidden="true"
           >
             <circle cx="11" cy="11" r="8" />
             <path d="m21 21-4.3-4.3" />
@@ -106,12 +110,22 @@ export function CommandPalette() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleInputKeyDown}
+            role="combobox"
+            aria-expanded={open}
+            aria-controls="cmd-results"
+            aria-activedescendant={filtered[activeIndex] ? `cmd-option-${activeIndex}` : undefined}
+            aria-autocomplete="list"
           />
-          <kbd className="text-[10px] text-white/15 bg-white/[0.03] px-1.5 py-0.5 rounded-md border border-white/[0.05] flex-shrink-0 font-mono">
+          <kbd className="text-[10px] text-white/15 bg-white/[0.03] px-1.5 py-0.5 rounded-md border border-white/[0.05] flex-shrink-0 font-mono" aria-hidden="true">
             ESC
           </kbd>
         </div>
-        <div className="command-palette-results">
+        <div
+          className="command-palette-results"
+          role="listbox"
+          id="cmd-results"
+          aria-label="Command results"
+        >
           {filtered.length === 0 ? (
             <div className="px-4 py-8 text-center text-xs text-white/15">
               No results found
@@ -123,6 +137,10 @@ export function CommandPalette() {
                 className={`command-palette-item ${i === activeIndex ? "active" : ""}`}
                 onClick={() => execute(item)}
                 onMouseEnter={() => setActiveIndex(i)}
+                role="option"
+                id={`cmd-option-${i}`}
+                aria-selected={i === activeIndex}
+                tabIndex={-1}
               >
                 <svg
                   width="14"
@@ -132,6 +150,7 @@ export function CommandPalette() {
                   stroke="currentColor"
                   strokeWidth="2"
                   className="text-white/15 flex-shrink-0"
+                  aria-hidden="true"
                 >
                   {item.type === "navigation" ? (
                     <>
@@ -148,13 +167,13 @@ export function CommandPalette() {
                 </svg>
                 <span>{item.label}</span>
                 {item.section && (
-                  <kbd className="font-mono">↵</kbd>
+                  <kbd className="font-mono" aria-hidden="true">↵</kbd>
                 )}
               </div>
             ))
           )}
         </div>
-        <div className="flex items-center gap-4 px-5 py-3 border-t border-white/[0.03]">
+        <div className="flex items-center gap-4 px-5 py-3 border-t border-white/[0.03]" aria-hidden="true">
           <span className="text-[10px] text-white/10 flex items-center gap-1">
             <kbd className="font-mono bg-white/[0.03] px-1 py-0.5 rounded border border-white/[0.04] text-[9px]">↑↓</kbd>
             navigate

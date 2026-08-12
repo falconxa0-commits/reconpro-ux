@@ -54,6 +54,7 @@ export default function HeroSection() {
       {/* Subtle grid overlay */}
       <div
         className="absolute inset-0 opacity-[0.02]"
+        aria-hidden="true"
         style={{
           backgroundImage: `linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)`,
           backgroundSize: "64px 64px",
@@ -61,7 +62,7 @@ export default function HeroSection() {
       />
 
       {/* Radial ambient glow */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-white/[0.015] rounded-full blur-[120px] pointer-events-none" />
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-white/[0.015] rounded-full blur-[120px] pointer-events-none" aria-hidden="true" />
 
       <div className="relative z-10 max-w-6xl mx-auto px-6 py-20">
         {/* Badge */}

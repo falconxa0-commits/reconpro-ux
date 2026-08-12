@@ -57,10 +57,10 @@ export function Footer() {
       {/* Top CTA Section */}
       <div className="max-w-7xl mx-auto px-6 py-20">
         <div className="text-center">
-          <h2 className="typography-section-heading text-3xl md:text-4xl font-semibold tracking-tight mb-4">
+          <h2 className="typography-section-heading text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4">
             <span className="text-gradient-void">Ready to see your attack surface?</span>
           </h2>
-          <p className="text-white/40 text-base max-w-xl mx-auto mb-8 leading-relaxed">
+          <p className="text-white/40 text-sm max-w-xl mx-auto mb-8 leading-relaxed">
             Install ReconPro in seconds. Three dependencies. Zero bloat.
             Full-spectrum reconnaissance from day one.
           </p>
@@ -73,7 +73,7 @@ export function Footer() {
       </div>
 
       {/* Separator */}
-      <div className="h-px bg-gradient-to-r from-transparent via-white/[0.04] to-transparent" />
+      <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
 
       {/* Footer Grid */}
       <div className="max-w-7xl mx-auto px-6 py-16">
@@ -107,9 +107,9 @@ export function Footer() {
           {/* Link Columns */}
           {columns.map((col) => (
             <div key={col.title}>
-              <h4 className="text-xs font-medium text-white/40 uppercase tracking-wider mb-4">
+              <h3 className="text-xs font-medium text-white/40 uppercase tracking-wider mb-4">
                 {col.title}
-              </h4>
+              </h3>
               <ul className="space-y-2.5">
                 {col.links.map((link) => (
                   <li key={link.label}>
@@ -121,6 +121,7 @@ export function Footer() {
                         }
                       }}
                       className="text-xs text-white/25 hover:text-white/50 transition-colors duration-300"
+                      aria-label={`Navigate to ${link.label}`}
                     >
                       {link.label}
                     </button>
@@ -133,7 +134,7 @@ export function Footer() {
       </div>
 
       {/* Bottom Bar */}
-      <div className="h-px bg-gradient-to-r from-transparent via-white/[0.04] to-transparent" />
+      <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
       <div className="max-w-7xl mx-auto px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-4">
         <p className="text-[11px] text-white/25">
           &copy; {new Date().getFullYear()} ReconPro. Open source under MIT License.

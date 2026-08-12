@@ -230,26 +230,26 @@ function highlightLine(line: string): React.ReactNode[] {
 
 export default function CLISection() {
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const ref = useInView<HTMLDivElement>("cli-section");
+  const { ref: cliRef, isInView } = useInView(0.05);
 
   const selectedCommand = cliCommands[selectedIndex] ?? cliCommands[0];
 
   return (
     <section
       id="cli"
-      ref={ref}
-      className="relative bg-black py-24 md:py-32"
+      ref={cliRef}
+      className="relative bg-black py-32"
     >
       {/* Subtle grid background */}
-      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_70%)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.015)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.015)_1px,transparent_1px)] bg-[size:64px_64px] [mask-image:radial-gradient(ellipse_at_center,black_30%,transparent_70%)]" aria-hidden="true" />
 
       <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         {/* Section Header */}
         <div className="mb-16 text-center">
-          <h2 className="text-3xl font-light tracking-tight text-white sm:text-4xl md:text-5xl">
+          <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
             Command Line Interface
           </h2>
-          <p className="mx-auto mt-4 max-w-xl text-sm text-white/40 sm:text-base">
+          <p className="mx-auto mt-5 max-w-xl text-sm text-white/40">
             45 commands. Every operation. One unified interface.
           </p>
         </div>
@@ -258,9 +258,9 @@ export default function CLISection() {
         <div className="flex flex-col gap-8 lg:flex-row lg:gap-6">
           {/* Left: Interactive Terminal */}
           <div className="flex-shrink-0 lg:w-[55%]">
-            <div className="cli-showcase overflow-hidden rounded-xl border border-white/[0.06] bg-black/80 shadow-2xl shadow-black/50 backdrop-blur-xl">
+            <div className="cli-showcase overflow-hidden rounded-xl border border-white/[0.06] bg-black/80 backdrop-blur-xl">
               {/* Title Bar */}
-              <div className="cli-titlebar flex items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-4 py-3">
+              <div className="cli-titlebar flex items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-4 py-3" aria-hidden="true">
                 <div className="flex gap-1.5">
                   <div className="h-3 w-3 rounded-full bg-white/10" />
                   <div className="h-3 w-3 rounded-full bg-white/10" />
@@ -274,7 +274,7 @@ export default function CLISection() {
               </div>
 
               {/* Terminal Body */}
-              <div className="cli-body min-h-[320px] p-5 font-mono text-sm leading-relaxed md:min-h-[400px]">
+              <div className="cli-body min-h-[320px] p-5 font-mono text-sm leading-relaxed md:min-h-[400px]" role="img" aria-label={`Terminal output for ${selectedCommand.name}`}>
                 <div className="space-y-1">
                   {selectedCommand.example
                     .split("\n")
@@ -381,18 +381,25 @@ export default function CLISection() {
 
           {/* Right: Scrollable Command Cards */}
           <div className="flex-1 lg:max-h-[500px]">
-            <div className="space-y-1.5 overflow-y-auto pr-1 lg:max-h-[500px] lg:[scrollbar-width:thin] lg:[scrollbar-color:rgba(255,255,255,0.08)_transparent]">
+            <div
+              className="space-y-1.5 overflow-y-auto pr-1 lg:max-h-[500px] lg:[scrollbar-width:thin] lg:[scrollbar-color:rgba(255,255,255,0.08)_transparent]"
+              role="listbox"
+              aria-label="CLI commands"
+            >
               {cliCommands.map((cmd, index) => {
                 const isActive = index === selectedIndex;
 
                 return (
                   <button
                     key={cmd.name}
+                    role="option"
+                    aria-selected={isActive}
                     onClick={() => setSelectedIndex(index)}
+                    aria-label={`${cmd.name}: ${cmd.description}`}
                     className={`group w-full cursor-pointer rounded-lg border px-4 py-3 text-left transition-all duration-200 ${
                       isActive
                         ? "border-white/[0.08] bg-white/[0.08]"
-                        : "border-transparent bg-transparent hover:bg-white/[0.03] hover:border-white/[0.04]"
+                        : "border-transparent bg-transparent hover:bg-white/[0.03] hover:border-white/[0.06]"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-3">

@@ -11,7 +11,7 @@ export default function BenchmarksSection() {
     <section
       ref={ref}
       id="benchmarks"
-      className="relative bg-black py-24 md:py-32"
+      className="relative bg-black py-32"
     >
       <div className="max-w-6xl mx-auto px-6">
         {/* Header */}
@@ -21,10 +21,10 @@ export default function BenchmarksSection() {
           transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
           className="text-center mb-16"
         >
-          <h2 className="text-3xl md:text-4xl font-semibold tracking-tight text-white mb-4">
+          <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl mb-4">
             <span className="text-gradient-void">Performance</span>
           </h2>
-          <p className="text-white/40 text-base max-w-lg mx-auto">
+          <p className="text-white/40 text-sm max-w-lg mx-auto">
             Faster. Lighter. More efficient. Measurably superior.
           </p>
         </motion.div>
@@ -44,7 +44,7 @@ export default function BenchmarksSection() {
           ].map((metric) => (
             <div
               key={metric.label}
-              className="text-center p-6 rounded-2xl bg-white/[0.02] border border-white/[0.04]"
+              className="text-center p-6 rounded-2xl bg-white/[0.02] border border-white/[0.06]"
             >
               <div
                 className="text-3xl md:text-4xl font-semibold font-mono tracking-tight mb-2"
@@ -62,7 +62,7 @@ export default function BenchmarksSection() {
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.7, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
-          className="rounded-2xl overflow-hidden border border-white/[0.04] bg-white/[0.01]"
+          className="rounded-2xl overflow-hidden border border-white/[0.06] bg-white/[0.01]"
         >
           <div className="overflow-x-auto">
             <table className="table-void w-full text-sm">

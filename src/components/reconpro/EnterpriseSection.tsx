@@ -35,7 +35,7 @@ const itemVariants = {
     opacity: 1,
     y: 0,
     scale: 1,
-    transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] },
+    transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] },
   },
 };
 
@@ -125,15 +125,16 @@ export function EnterpriseSection() {
       <section
         id="enterprise"
         ref={enterpriseRef}
-        className="relative w-full py-28 sm:py-36 overflow-hidden"
+        className="relative w-full py-32 overflow-hidden"
         style={{ background: "#000000" }}
       >
         {/* Subtle top-edge glow */}
         <div
           className="absolute inset-x-0 top-0 h-px"
+          aria-hidden="true"
           style={{
             background:
-              "linear-gradient(90deg, transparent, rgba(255,255,255,0.12) 30%, rgba(255,255,255,0.12) 70%, transparent)",
+              "linear-gradient(90deg, transparent, rgba(255,255,255,0.03) 30%, rgba(255,255,255,0.03) 70%, transparent)",
           }}
         />
 
@@ -160,25 +161,25 @@ export function EnterpriseSection() {
                 Enterprise
               </span>
               <h2
-                className="text-4xl sm:text-5xl font-bold tracking-tight text-white mb-4"
+                className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4"
               >
                 Enterprise
               </h2>
-              <p className="text-base sm:text-lg max-w-xl mx-auto leading-relaxed text-white/45"
+              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/40"
               >
                 Production-grade security. Enterprise-grade support.
               </p>
             </motion.div>
 
             {/* ── Feature Columns ─────────────────────────────── */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {enterpriseFeatures.map((feat) => {
                 const Icon = feat.icon;
                 return (
                   <motion.div
                     key={feat.title}
                     variants={itemVariants}
-                    className="group relative rounded-2xl p-8 transition-colors duration-300"
+                    className="group relative rounded-xl p-6 transition-colors duration-300"
                     style={{
                       background: "rgba(255,255,255,0.03)",
                       border: "1px solid rgba(255,255,255,0.06)",
@@ -198,7 +199,7 @@ export function EnterpriseSection() {
                     }}
                   >
                     <div
-                      className="inline-flex items-center justify-center w-11 h-11 rounded-xl mb-5"
+                      className="inline-flex items-center justify-center w-10 h-10 rounded-lg mb-4"
                       style={{
                         background: "rgba(255,255,255,0.06)",
                         border: "1px solid rgba(255,255,255,0.08)",
@@ -211,7 +212,7 @@ export function EnterpriseSection() {
                       />
                     </div>
                     <h3
-                      className="text-lg font-semibold text-white mb-2 tracking-tight"
+                      className="text-sm font-medium text-white mb-2 tracking-tight"
                     >
                       {feat.title}
                     </h3>
@@ -265,6 +266,7 @@ export function EnterpriseSection() {
                   size={40}
                   className="absolute top-8 left-8 opacity-[0.06]"
                   style={{ color: "#ffffff" }}
+                  aria-hidden="true"
                 />
 
                 <div className="relative min-h-[160px] flex flex-col justify-center">
@@ -276,7 +278,7 @@ export function EnterpriseSection() {
                       exit={{ opacity: 0, x: -40 }}
                       transition={{
                         duration: 0.4,
-                        ease: [0.22, 1, 0.36, 1],
+                        ease: [0.16, 1, 0.3, 1],
                       }}
                       className="text-center"
                     >
@@ -365,14 +367,16 @@ export function EnterpriseSection() {
       <section
         id="pricing"
         ref={pricingRef}
-        className="relative w-full py-28 sm:py-36 overflow-hidden"
+        className="relative w-full py-32 overflow-hidden"
         style={{ background: "#000000" }}
+        aria-label="Pricing plans"
       >
         <div
           className="absolute inset-x-0 top-0 h-px"
+          aria-hidden="true"
           style={{
             background:
-              "linear-gradient(90deg, transparent, rgba(255,255,255,0.12) 30%, rgba(255,255,255,0.12) 70%, transparent)",
+              "linear-gradient(90deg, transparent, rgba(255,255,255,0.03) 30%, rgba(255,255,255,0.03) 70%, transparent)",
           }}
         />
 
@@ -397,10 +401,10 @@ export function EnterpriseSection() {
               >
                 Pricing
               </span>
-              <h2 className="text-4xl sm:text-5xl font-bold tracking-tight text-white mb-4">
+              <h2 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4">
                 Simple Pricing
               </h2>
-              <p className="text-base sm:text-lg max-w-xl mx-auto leading-relaxed text-white/45">
+              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/40">
                 Free for everyone. Enterprise when you need it.
               </p>
             </motion.div>
@@ -465,6 +469,7 @@ export function EnterpriseSection() {
 
                 <button
                   className="w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide transition-all duration-300"
+                  aria-label={`${community.cta} — ${community.name} plan`}
                   style={{
                     background: "transparent",
                     border: "1px solid rgba(255,255,255,0.15)",
@@ -560,6 +565,7 @@ export function EnterpriseSection() {
 
                 <button
                   className="w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide transition-all duration-300"
+                  aria-label={`${enterprise.cta} — ${enterprise.name} plan`}
                   style={{
                     background: "#ffffff",
                     border: "1px solid #ffffff",
@@ -590,14 +596,16 @@ export function EnterpriseSection() {
       <section
         id="roadmap"
         ref={roadmapRef}
-        className="relative w-full py-28 sm:py-36 overflow-hidden"
+        className="relative w-full py-32 overflow-hidden"
         style={{ background: "#000000" }}
+        aria-label="Product roadmap"
       >
         <div
           className="absolute inset-x-0 top-0 h-px"
+          aria-hidden="true"
           style={{
             background:
-              "linear-gradient(90deg, transparent, rgba(255,255,255,0.12) 30%, rgba(255,255,255,0.12) 70%, transparent)",
+              "linear-gradient(90deg, transparent, rgba(255,255,255,0.03) 30%, rgba(255,255,255,0.03) 70%, transparent)",
           }}
         />
 
@@ -622,10 +630,10 @@ export function EnterpriseSection() {
               >
                 Roadmap
               </span>
-              <h2 className="text-4xl sm:text-5xl font-bold tracking-tight text-white mb-4">
+              <h2 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4">
                 Roadmap
               </h2>
-              <p className="text-base sm:text-lg max-w-xl mx-auto leading-relaxed text-white/45">
+              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/40">
                 What's coming next.
               </p>
             </motion.div>
@@ -665,7 +673,7 @@ export function EnterpriseSection() {
 
                     {/* Quarter label */}
                     <h3
-                      className="text-lg font-semibold text-white mb-5 tracking-tight"
+                      className="text-sm font-medium text-white mb-4 tracking-tight"
                     >
                       {quarter.quarter}
                     </h3>
