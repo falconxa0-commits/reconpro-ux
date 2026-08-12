@@ -24,7 +24,7 @@ export default function BenchmarksSection() {
           <h2 className="text-3xl md:text-4xl font-semibold tracking-tight text-white mb-4">
             <span className="text-gradient-void">Performance</span>
           </h2>
-          <p className="text-white/30 text-base max-w-lg mx-auto">
+          <p className="text-white/40 text-base max-w-lg mx-auto">
             Faster. Lighter. More efficient. Measurably superior.
           </p>
         </motion.div>
@@ -52,7 +52,7 @@ export default function BenchmarksSection() {
               >
                 {metric.value}
               </div>
-              <div className="text-xs text-white/20">{metric.label}</div>
+              <div className="text-xs text-white/30">{metric.label}</div>
             </div>
           ))}
         </motion.div>

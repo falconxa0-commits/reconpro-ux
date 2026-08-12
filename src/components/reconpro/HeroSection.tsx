@@ -98,7 +98,7 @@ export default function HeroSection() {
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.8, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
-          className="text-center text-base md:text-lg text-white/30 max-w-2xl mx-auto mb-10"
+          className="text-center text-base md:text-lg text-white/50 max-w-2xl mx-auto mb-10 leading-relaxed"
         >
           Billion-dollar grade reconnaissance. Autonomous. Intelligent. Minimal.
           <br className="hidden md:block" />
@@ -161,7 +161,7 @@ export default function HeroSection() {
                 suffix={stat.value.replace(/[0-9]/g, "")}
                 active={statsVisible}
               />
-              <div className="text-[11px] text-white/20 mt-1">{stat.sub}</div>
+              <div className="text-[11px] text-white/30 mt-1 tracking-wide">{stat.sub}</div>
             </div>
           ))}
         </div>

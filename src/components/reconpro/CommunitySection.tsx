@@ -119,7 +119,7 @@ export default function CommunitySection() {
 
                 <Icon className="mb-4 h-5 w-5 text-white/20" strokeWidth={1.5} />
                 <h3 className="text-sm font-medium text-white">{card.title}</h3>
-                <p className="mt-1.5 text-sm leading-relaxed text-white/30">
+                <p className="mt-1.5 text-sm leading-relaxed text-white/40">
                   {card.description}
                 </p>
                 <span className="mt-4 inline-block text-xs text-white/20 transition-colors group-hover:text-white/50">

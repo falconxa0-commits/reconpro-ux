@@ -60,7 +60,7 @@ export function Footer() {
           <h2 className="text-3xl md:text-4xl font-semibold tracking-tight text-white mb-4">
             Ready to see your attack surface?
           </h2>
-          <p className="text-white/30 text-base max-w-xl mx-auto mb-8">
+          <p className="text-white/40 text-base max-w-xl mx-auto mb-8">
             Install ReconPro in seconds. Three dependencies. Zero bloat.
             Full-spectrum reconnaissance from day one.
           </p>

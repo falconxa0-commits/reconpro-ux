@@ -86,7 +86,7 @@ export function FeaturesSection() {
           <h2 className="text-gradient-void text-4xl font-semibold tracking-tight sm:text-5xl">
             Intelligence Architecture
           </h2>
-          <p className="mx-auto mt-5 max-w-xl text-sm text-white/30">
+          <p className="mx-auto mt-5 max-w-xl text-sm text-white/40">
             Every component designed for precision. Every interaction
             intentional.
           </p>
@@ -124,7 +124,7 @@ export function FeaturesSection() {
                 </h3>
 
                 {/* ── Description ───────────────────────── */}
-                <p className="mt-2 text-sm leading-relaxed text-white/30">
+                <p className="mt-2 text-sm leading-relaxed text-white/40">
                   {feature.description}
                 </p>
 

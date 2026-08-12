@@ -249,7 +249,7 @@ export default function CLISection() {
           <h2 className="text-3xl font-light tracking-tight text-white sm:text-4xl md:text-5xl">
             Command Line Interface
           </h2>
-          <p className="mx-auto mt-4 max-w-xl text-sm text-white/30 sm:text-base">
+          <p className="mx-auto mt-4 max-w-xl text-sm text-white/40 sm:text-base">
             45 commands. Every operation. One unified interface.
           </p>
         </div>

@@ -68,7 +68,7 @@ export default function ArchitectureSection() {
           <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
             System Architecture
           </h2>
-          <p className="mt-4 text-lg text-white/30">
+          <p className="mt-4 text-lg text-white/40">
             Eight precision-engineered layers. Zero compromises.
           </p>
         </motion.div>
@@ -141,7 +141,7 @@ export default function ArchitectureSection() {
                             L{i + 1}
                           </span>
                         </div>
-                        <p className="mt-1.5 text-sm leading-relaxed text-white/30">
+                        <p className="mt-1.5 text-sm leading-relaxed text-white/40">
                           {layer.description}
                         </p>
                         <div className="mt-3 flex flex-wrap gap-1.5">
