@@ -9,6 +9,7 @@ import { DataStreams } from "@/components/reconpro/DataStreams";
 import { ScrollProgress } from "@/components/reconpro/ScrollProgress";
 import { BackToTop } from "@/components/reconpro/BackToTop";
 import { CommandPalette } from "@/components/reconpro/CommandPalette";
+import { ObsidianShader } from "@/components/backgrounds/ObsidianShader";
 import HeroSection from "@/components/reconpro/HeroSection";
 import { FeaturesSection } from "@/components/reconpro/FeaturesSection";
 import ArchitectureSection from "@/components/reconpro/ArchitectureSection";
@@ -22,6 +23,21 @@ import CommunitySection from "@/components/reconpro/CommunitySection";
 export function HomeSection() {
   return (
     <div className="min-h-screen bg-black">
+      {/* WebGL Obsidian Shader — premium cinematic background */}
+      <ObsidianShader
+        active={true}
+        speed={1}
+        opacity={1}
+        intensity={0.9}
+        glow={1.0}
+        zIndex={-1}
+      />
+
+      {/* Premium ambient overlays */}
+      <div className="bloom-overlay" aria-hidden="true" />
+      <div className="scroll-light" aria-hidden="true" />
+      <div className="ambient-aurora" aria-hidden="true" />
+
       {/* Global ambient overlays */}
       <AuroraBackground />
       <NeuralNetwork />
