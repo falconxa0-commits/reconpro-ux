@@ -5,21 +5,24 @@ Each plugin is a .py file with a `run(target, base_url, **kwargs)` function
 that returns a list of Finding objects.
 
 Security measures:
-- Restricted builtins (no eval, exec, open, __import__, compile)
+- Restricted builtins (explicit allowlist — no eval, exec, open, getattr, type, etc.)
+- Source-level regex scan for dangerous patterns
 - Timeout enforcement (plugins cannot run forever)
 - Resource limits (max output size)
 - Import restrictions (plugins cannot import arbitrary modules)
 - Isolated namespace
+- Plugin discovery without code execution
+- Plugin name sanitization (path traversal prevention)
 """
 from __future__ import annotations
 
-import importlib.util
 import logging
 import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from .http import Finding
 
@@ -43,6 +46,8 @@ _MAX_FINDINGS = 200
 _BLOCKED_BUILTINS: Set[str] = {
     "eval", "exec", "open", "__import__", "compile",
     "breakpoint", "exit", "quit", "globals", "locals",
+    "getattr", "setattr", "delattr", "vars", "type",
+    "dir", "input", "memoryview", "bytearray",
 }
 
 
@@ -58,19 +63,27 @@ def _create_sandbox_globals() -> Dict[str, Any]:
     """
     import builtins as _builtins
 
+    # Explicit allowlist of safe builtins (whitelist approach)
+    _SAFE_BUILTINS = {
+        "abs", "all", "any", "bin", "bool", "chr", "dict", "divmod",
+        "enumerate", "filter", "float", "frozenset", "hash", "hex",
+        "int", "isinstance", "issubclass", "iter", "len", "list",
+        "map", "max", "min", "next", "oct", "ord", "pow", "print",
+        "range", "repr", "reversed", "round", "set", "slice",
+        "sorted", "str", "sum", "super", "tuple", "zip",
+        "True", "False", "None",
+        "AttributeError", "ValueError", "TypeError", "KeyError",
+        "IndexError", "RuntimeError", "StopIteration", "Exception",
+        "NotImplementedError", "ZeroDivisionError", "OSError",
+    }
+
     safe_builtins: Dict[str, Any] = {}
     for name, obj in vars(_builtins).items():
-        if name.startswith("_") and name not in ("__name__", "__doc__", "__package__"):
+        if name not in _SAFE_BUILTINS:
             continue
         if name in _BLOCKED_BUILTINS:
             continue
-        # Allow safe builtins like print, len, range, str, int, etc.
-        if callable(obj) and not isinstance(obj, type):
-            safe_builtins[name] = obj
-        elif isinstance(obj, type):
-            safe_builtins[name] = obj
-        elif isinstance(obj, (int, float, str, bool, tuple, type(None))):
-            safe_builtins[name] = obj
+        safe_builtins[name] = obj
 
     # Override __import__ with a restricted version
     def _restricted_import(name: str, *args: Any, **kwargs: Any) -> Any:
@@ -126,9 +139,31 @@ def _run_sandboxed(
                 source = f.read()
 
             # Check for obviously dangerous patterns in source
-            dangerous = ["os.system", "subprocess", "ctypes", "multiprocessing"]
-            for pattern in dangerous:
-                if pattern in source and f"import {pattern}" in source:
+            dangerous_patterns = [
+                r"\bos\.(system|popen|exec|spawn|kill|fork)\b",
+                r"\bsubprocess\b",
+                r"\bctypes\b",
+                r"\bmultiprocessing\b",
+                r"\b__class__\b",
+                r"\b__bases__\b",
+                r"\b__subclasses__\b",
+                r"\b__builtins__\b",
+                r"\b__import__\b",
+                r"\bgetattr\s*\(",
+                r"\bsetattr\s*\(",
+                r"\bopen\s*\(",
+                r"\bexec\s*\(",
+                r"\beval\s*\(",
+                r"\bcompile\s*\(",
+                r"\bshutil\b",
+                r"\bimportlib\b",
+                r"\bpathlib\b.*\.resolve\(",
+                r"from\s+os\s+import",
+                r"from\s+subprocess\s+import",
+                r"from\s+ctypes\s+import",
+            ]
+            for pattern in dangerous_patterns:
+                if re.search(pattern, source):
                     raise PluginSecurityError(
                         f"Plugin source contains forbidden pattern: {pattern}"
                     )
@@ -173,8 +208,8 @@ def _run_sandboxed(
 
             result.extend(findings)
 
-        except PluginSecurityError:
-            raise
+        except PluginSecurityError as exc:
+            error_holder.append(exc)
         except Exception as exc:
             # Wrap non-security errors for clean reporting
             error_holder.append(exc)
@@ -205,8 +240,9 @@ def discover_plugins() -> Dict[str, Dict[str, Any]]:
     """Discover all plugins in the plugin directory.
 
     Returns:
-        Dict mapping plugin_id to {name, runner, path, description}.
-        Only plugins with a callable ``run`` function are included.
+        Dict mapping plugin_id to {name, path, description}.
+        Note: Plugins are discovered by reading source files only.
+        Execution happens in _run_sandboxed() with a proper sandbox.
     """
     _ensure_plugin_dir()
     plugins: Dict[str, Dict[str, Any]] = {}
@@ -217,22 +253,31 @@ def discover_plugins() -> Dict[str, Dict[str, Any]]:
 
         plugin_id = py_file.stem
         try:
-            spec = importlib.util.spec_from_file_location(
-                f"reconpro_plugin_{plugin_id}", py_file
-            )
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                runner = getattr(mod, "run", None)
-                name = getattr(mod, "NAME", plugin_id.upper())
-                desc = getattr(mod, "DESCRIPTION", "Custom plugin")
-                if callable(runner):
+            with open(py_file, "r", encoding="utf-8") as f:
+                source = f.read()
+
+            # Extract NAME and DESCRIPTION from source without executing
+            name = plugin_id.upper()
+            desc = "Custom plugin"
+            for line in source.splitlines():
+                line_stripped = line.strip()
+                if line_stripped.startswith("NAME"):
+                    # Parse NAME = "..." or NAME = '...'
+                    match = re.match(r'NAME\s*=\s*["\']([^"\']*)["\']', line_stripped)
+                    if match:
+                        name = match.group(1)
+                elif line_stripped.startswith("DESCRIPTION"):
+                    match = re.match(r'DESCRIPTION\s*=\s*["\']([^"\']*)["\']', line_stripped)
+                    if match:
+                        desc = match.group(1)
+                # Verify a run function exists (textual check)
+                if line_stripped.startswith("def run("):
                     plugins[plugin_id] = {
                         "name": name,
-                        "runner": runner,
                         "path": str(py_file),
                         "description": desc,
                     }
+                    break
         except Exception as exc:
             logger.error(
                 "Failed to load plugin '%s': %s", py_file.name, exc
@@ -312,9 +357,21 @@ def run_plugin(
         )]
 
 
+def _sanitize_plugin_name(name: str) -> str:
+    """Sanitize plugin name to prevent path traversal.
+
+    Only allows alphanumeric characters, underscores, and hyphens.
+    """
+    sanitized = re.sub(r"[^a-zA-Z0-9_-]", "", name)
+    if not sanitized or sanitized.startswith("_"):
+        raise ValueError(f"Invalid plugin name: {name!r}")
+    return sanitized
+
+
 def create_plugin_template(name: str) -> str:
     """Create a template plugin file. Returns the path."""
     _ensure_plugin_dir()
+    name = _sanitize_plugin_name(name)
     path = PLUGIN_DIR / f"{name}.py"
     template = f'''"""Custom ReconPro plugin: {name}"""
 

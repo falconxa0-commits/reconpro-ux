@@ -1,0 +1,871 @@
+     1→"""ReconPro Agent Runtime — Multi-Agent Orchestration System.
+     2→
+     3→Lightweight in-process multi-agent system where specialized agents collaborate
+     4→on security tasks via message passing. Each agent has a role, maintains its own
+     5→context, and produces structured results.
+     6→
+     7→Pipeline order: Planner → Recon → Intelligence → Correlation → Reporting
+     8→
+     9→Usage::
+    10→
+    11→    from reconpro.agent_runtime import AgentOrchestrator
+    12→
+    13→    orch = AgentOrchestrator()
+    14→    report = orch.run_goal("Full security scan", "example.com")
+    15→"""
+    16→
+    17→from __future__ import annotations
+    18→
+    19→import logging
+    20→import threading
+    21→import time
+    22→import uuid
+    23→from abc import ABC, abstractmethod
+    24→from collections import Counter, defaultdict
+    25→from dataclasses import dataclass, field
+    26→from datetime import datetime, timezone
+    27→from enum import Enum
+    28→from typing import Any, Callable, Dict, List, Optional, Tuple
+    29→
+    30→from rich.console import Console
+    31→from rich.panel import Panel
+    32→from rich.table import Table
+    33→
+    34→logger = logging.getLogger(__name__)
+    35→console = Console()
+    36→
+    37→# ──────────────────────────────────────────────────────────────────────────────
+    38→# Data Classes
+    39→# ──────────────────────────────────────────────────────────────────────────────
+    40→
+    41→
+    42→class AgentRole(str, Enum):
+    43→    """Roles available to agents in the runtime."""
+    44→
+    45→    PLANNER = "planner"
+    46→    RECON = "recon"
+    47→    INTELLIGENCE = "intelligence"
+    48→    CORRELATION = "correlation"
+    49→    VERIFICATION = "verification"
+    50→    REPORTING = "reporting"
+    51→    LEARNING = "learning"
+    52→    DEFENSE = "defense"
+    53→
+    54→
+    55→@dataclass
+    56→class AgentMessage:
+    57→    """Inter-agent communication message."""
+    58→
+    59→    sender: str
+    60→    recipient: str  # agent_id or "broadcast"
+    61→    msg_type: str  # task_request, result, status_update, error, coordination
+    62→    payload: Dict[str, Any]
+    63→    timestamp: float = field(default_factory=time.time)
+    64→    correlation_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    65→    in_reply_to: Optional[str] = None
+    66→
+    67→    def __post_init__(self) -> None:
+    68→        if not self.correlation_id:
+    69→            self.correlation_id = uuid.uuid4().hex[:12]
+    70→        if not self.timestamp:
+    71→            self.timestamp = time.time()
+    72→
+    73→
+    74→@dataclass
+    75→class AgentContext:
+    76→    """Per-agent execution context, injected at initialize time."""
+    77→
+    78→    agent_id: str
+    79→    role: str
+    80→    target: str
+    81→    findings: List[Dict[str, Any]] = field(default_factory=list)
+    82→    memory_ref: Optional[Any] = None
+    83→    status: str = "idle"  # idle, running, waiting, done, error
+    84→
+    85→
+    86→@dataclass
+    87→class AgentResult:
+    88→    """Structured result produced by each agent."""
+    89→
+    90→    agent_id: str
+    91→    role: str
+    92→    findings: List[Dict[str, Any]] = field(default_factory=list)
+    93→    confidence: float = 0.0
+    94→    processing_time_ms: float = 0.0
+    95→    metadata: Dict[str, Any] = field(default_factory=dict)
+    96→
+    97→    def to_dict(self) -> Dict[str, Any]:
+    98→        return {
+    99→            "agent_id": self.agent_id,
+   100→            "role": self.role,
+   101→            "findings": self.findings,
+   102→            "confidence": self.confidence,
+   103→            "processing_time_ms": round(self.processing_time_ms, 2),
+   104→            "metadata": self.metadata,
+   105→        }
+   106→
+   107→
+   108→@dataclass
+   109→class AutonomousScanReport:
+   110→    """Aggregated final report from all agents."""
+   111→
+   112→    goal: str
+   113→    target: str
+   114→    agent_results: List[Dict[str, Any]] = field(default_factory=list)
+   115→    all_findings: List[Dict[str, Any]] = field(default_factory=list)
+   116→    execution_plan: Optional[Dict[str, Any]] = None
+   117→    correlated_findings: List[Dict[str, Any]] = field(default_factory=list)
+   118→    confidence_profile: Dict[str, Any] = field(default_factory=dict)
+   119→    total_processing_time_ms: float = 0.0
+   120→    timestamp: str = field(
+   121→        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+   122→    )
+   123→    metadata: Dict[str, Any] = field(default_factory=dict)
+   124→
+   125→    def to_dict(self) -> Dict[str, Any]:
+   126→        return {
+   127→            "goal": self.goal,
+   128→            "target": self.target,
+   129→            "agent_results": self.agent_results,
+   130→            "all_findings_count": len(self.all_findings),
+   131→            "all_findings": self.all_findings,
+   132→            "correlated_findings": self.correlated_findings,
+   133→            "confidence_profile": self.confidence_profile,
+   134→            "execution_plan": self.execution_plan,
+   135→            "total_processing_time_ms": round(self.total_processing_time_ms, 2),
+   136→            "timestamp": self.timestamp,
+   137→            "metadata": self.metadata,
+   138→        }
+   139→
+   140→
+   141→# ──────────────────────────────────────────────────────────────────────────────
+   142→# Abstract Base Agent
+   143→# ──────────────────────────────────────────────────────────────────────────────
+   144→
+   145→
+   146→class AgentBase(ABC):
+   147→    """Abstract base class for all agents.
+   148→
+   149→    Subclasses must implement :meth:`execute`.  The base class provides
+   150→    messaging infrastructure, context management, and error-safe execution.
+   151→    """
+   152→
+   153→    _id_counter: Dict[str, int] = defaultdict(int)
+   154→
+   155→    def __init__(self, role: str, agent_id: Optional[str] = None) -> None:
+   156→        AgentBase._id_counter[role] += 1
+   157→        self.agent_id: str = agent_id or f"{role}-{AgentBase._id_counter[role]}"
+   158→        self.role: str = role
+   159→        self._context: Optional[AgentContext] = None
+   160→        self._inbox: List[AgentMessage] = []
+   161→        self._outbox: List[AgentMessage] = []
+   162→        self._send_fn: Optional[Callable] = None
+   163→        self._status: str = "idle"
+   164→
+   165→    # ── Properties ────────────────────────────────────────────────────────
+   166→
+   167→    @property
+   168→    def context(self) -> Optional[AgentContext]:
+   169→        return self._context
+   170→
+   171→    @property
+   172→    def role_name(self) -> str:
+   173→        return self.role
+   174→
+   175→    # ── Lifecycle ─────────────────────────────────────────────────────────
+   176→
+   177→    def initialize(self, context: AgentContext) -> None:
+   178→        """Set up the agent with execution context and wiring."""
+   179→        self._context = context
+   180→        self._status = "idle"
+   181→
+   182→    def set_send_fn(self, fn: Callable) -> None:
+   183→        """Wire the send function for inter-agent messaging."""
+   184→        self._send_fn = fn
+   185→
+   186→    @abstractmethod
+   187→    def execute(self, task: Dict[str, Any]) -> AgentResult:
+   188→        """Execute the agent's primary task.
+   189→
+   190→        Must return an AgentResult.  Implementations should handle import
+   191→        errors gracefully — an agent degrades but never crashes the runtime.
+   192→        """
+   193→
+   194→    def receive(self, message: AgentMessage) -> None:
+   195→        """Accept an incoming message into the agent's inbox."""
+   196→        self._inbox.append(message)
+   197→        if message.msg_type == "task_request":
+   198→            self._status = "waiting"
+   199→
+   200→    def send(
+   201→        self,
+   202→        recipient: str,
+   203→        msg_type: str,
+   204→        payload: Dict[str, Any],
+   205→        correlation_id: Optional[str] = None,
+   206→        in_reply_to: Optional[str] = None,
+   207→    ) -> None:
+   208→        """Queue a message for delivery.
+   209→
+   210→        If a send function was wired via :meth:`set_send_fn`, the message is
+   211→        delivered immediately.  Otherwise it accumulates in the outbox.
+   212→        """
+   213→        msg = AgentMessage(
+   214→            sender=self.agent_id,
+   215→            recipient=recipient,
+   216→            msg_type=msg_type,
+   217→            payload=payload,
+   218→            correlation_id=correlation_id or uuid.uuid4().hex[:12],
+   219→            in_reply_to=in_reply_to,
+   220→        )
+   221→        if self._send_fn is not None:
+   222→            self._send_fn(msg)
+   223→        else:
+   224→            self._outbox.append(msg)
+   225→
+   226→    def get_status(self) -> str:
+   227→        """Return current agent status string."""
+   228→        return self._status
+   229→
+   230→    def _set_status(self, status: str) -> None:
+   231→        self._status = status
+   232→
+   233→
+   234→# ──────────────────────────────────────────────────────────────────────────────
+   235→# Concrete Agent Classes
+   236→# ──────────────────────────────────────────────────────────────────────────────
+   237→
+   238→
+   239→class PlannerAgent(AgentBase):
+   240→    """Analyzes the goal, selects modules, and creates an execution plan.
+   241→
+   242→    Delegates to DecisionEngine when available; falls back to built-in
+   243→    heuristic planning.
+   244→    """
+   245→
+   246→    def __init__(self) -> None:
+   247→        super().__init__(role=AgentRole.PLANNER)
+   248→        self._plan: Dict[str, Any] = {}
+   249→
+   250→    def execute(self, task: Dict[str, Any]) -> AgentResult:
+   251→        t0 = time.monotonic()
+   252→        goal = task.get("goal", "")
+   253→        target = task.get("target", "")
+   254→
+   255→        self._set_status("running")
+   256→        findings: List[Dict[str, Any]] = []
+   257→
+   258→        try:
+   259→            # Try importing DecisionEngine for smart planning
+   260→            from .decision_engine import DecisionEngine
+   261→            from .scanner import MODULE_REGISTRY, LOCAL_MODULES
+   262→
+   263→            engine = DecisionEngine()
+   264→            available = list(MODULE_REGISTRY.keys()) + list(LOCAL_MODULES.keys())
+   265→
+   266→            is_local = any(
+   267→                w in goal.lower()
+   268→                for w in ["local", "machine", "laptop", "localhost", "audit"]
+   269→            )
+   270→            candidates = (
+   271→                list(LOCAL_MODULES.keys()) if is_local
+   272→                else list(MODULE_REGISTRY.keys())
+   273→            )
+   274→            scan_plan = engine.plan_scan(target, candidates)
+   275→            self._plan = {
+   276→                "target": scan_plan.target,
+   277→                "target_type": scan_plan.target_type,
+   278→                "modules": scan_plan.modules_to_run,
+   279→                "order": scan_plan.order,
+   280→                "skip_reasons": scan_plan.skip_reasons,
+   281→                "estimated_time": scan_plan.estimated_time,
+   282→                "throttle_flags": scan_plan.throttle_flags,
+   283→            }
+   284→            findings.append(
+   285→                {
+   286→                    "title": "Execution Plan Generated",
+   287→                    "category": "planning",
+   288→                    "severity": "info",
+   289→                    "details": self._plan,
+   290→                }
+   291→            )
+   292→        except Exception as exc:
+   293→            logger.debug("PlannerAgent DecisionEngine fallback: %s", exc)
+   294→            # Fallback: simple heuristic plan
+   295→            self._plan = self._heuristic_plan(goal, target)
+   296→            findings.append(
+   297→                {
+   298→                    "title": "Execution Plan (Heuristic)",
+   299→                    "category": "planning",
+   300→                    "severity": "info",
+   301→                    "details": self._plan,
+   302→                }
+   303→            )
+   304→
+   305→        elapsed = (time.monotonic() - t0) * 1000
+   306→        self._set_status("done")
+   307→        return AgentResult(
+   308→            agent_id=self.agent_id,
+   309→            role=self.role,
+   310→            findings=findings,
+   311→            confidence=0.9,
+   312→            processing_time_ms=elapsed,
+   313→            metadata={"plan": self._plan},
+   314→        )
+   315→
+   316→    def _heuristic_plan(
+   317→        self, goal: str, target: str
+   318→    ) -> Dict[str, Any]:
+   319→        """Built-in fallback planner when DecisionEngine is unavailable."""
+   320→        is_local = any(
+   321→            w in goal.lower()
+   322→            for w in ["local", "machine", "laptop", "localhost", "audit"]
+   323→        )
+   324→        is_full = any(
+   325→            w in goal.lower()
+   326→            for w in ["full", "everything", "all", "deep", "complete"]
+   327→        )
+   328→        if is_local:
+   329→            modules = (
+   330→                ["host", "dev", "doctor", "iac_audit", "container_sec"]
+   331→                if is_full
+   332→                else ["host", "dev", "doctor"]
+   333→            )
+   334→        else:
+   335→            modules = (
+   336→                ["recon", "auth", "chain", "oblivion", "gorgon", "bot", "pegasus", "nhi", "cloud_recon"]
+   337→                if is_full
+   338→                else ["recon", "auth", "chain", "oblivion", "gorgon"]
+   339→            )
+   340→        return {
+   341→            "target": target,
+   342→            "target_type": "local" if is_local else "remote",
+   343→            "modules": modules,
+   344→            "order": modules,
+   345→            "skip_reasons": {},
+   346→            "estimated_time": sum(15 if not is_local else 10 for _ in modules),
+   347→            "throttle_flags": ["fast_mode"] if is_local else [],
+   348→        }
+   349→
+   350→    @property
+   351→    def plan(self) -> Dict[str, Any]:
+   352→        return self._plan
+   353→
+   354→
+   355→class ReconAgent(AgentBase):
+   356→    """Runs scan modules against the target and collects findings.
+   357→
+   358→    Dispatches to ``scanner.scan()`` for remote targets or
+   359→    ``scanner.audit_scan()`` for local targets.
+   360→    """
+   361→
+   362→    def __init__(self) -> None:
+   363→        super().__init__(role=AgentRole.RECON)
+   364→
+   365→    def execute(self, task: Dict[str, Any]) -> AgentResult:
+   366→        t0 = time.monotonic()
+   367→        self._set_status("running")
+   368→        findings: List[Dict[str, Any]] = []
+   369→        modules = task.get("modules", [])
+   370→        target = task.get("target", "")
+   371→        metadata: Dict[str, Any] = {"modules_run": []}
+   372→
+   373→        try:
+   374→            from .scanner import scan, audit_scan
+   375→
+   376→            is_local = task.get("target_type") == "local" or target in (
+   377→                "localhost", ".", "local-audit"
+   378→            )
+   379→
+   380→            if is_local:
+   381→                result = audit_scan(target=target if target != "localhost" else ".")
+   382→                findings = list(result.findings)
+   383→                metadata["modules_run"] = result.modules_run
+   384→                metadata["total_score"] = result.total_score
+   385→                metadata["grade"] = result.grade
+   386→            elif target:
+   387→                result = scan(target, modules=modules if modules else None)
+   388→                findings = list(result.findings)
+   389→                metadata["modules_run"] = result.modules_run
+   390→                metadata["total_score"] = result.total_score
+   391→                metadata["grade"] = result.grade
+   392→            else:
+   393→                findings.append(
+   394→                    {"title": "No target specified", "severity": "low", "category": "recon"}
+   395→                )
+   396→        except Exception as exc:
+   397→            logger.warning("ReconAgent scan error: %s", exc)
+   398→            findings.append(
+   399→                {
+   400→                    "title": "Recon scan error",
+   401→                    "severity": "medium",
+   402→                    "category": "recon",
+   403→                    "evidence": str(exc),
+   404→                }
+   405→            )
+   406→
+   407→        elapsed = (time.monotonic() - t0) * 1000
+   408→        self._set_status("done")
+   409→        return AgentResult(
+   410→            agent_id=self.agent_id,
+   411→            role=self.role,
+   412→            findings=findings,
+   413→            confidence=0.85,
+   414→            processing_time_ms=elapsed,
+   415→            metadata=metadata,
+   416→        )
+   417→
+   418→
+   419→class IntelligenceAgent(AgentBase):
+   420→    """Scores finding confidence and generates target intelligence profiles.
+   421→
+   422→    Uses ConfidenceEngine for scoring and TargetIntelligence for profiling.
+   423→    """
+   424→
+   425→    def __init__(self) -> None:
+   426→        super().__init__(role=AgentRole.INTELLIGENCE)
+   427→
+   428→    def execute(self, task: Dict[str, Any]) -> AgentResult:
+   429→        t0 = time.monotonic()
+   430→        self._set_status("running")
+   431→        findings = list(task.get("findings", []))
+   432→        target = task.get("target", "")
+   433→        confidence_profile: Dict[str, Any] = {"scores": [], "average": 0.0}
+   434→        metadata: Dict[str, Any] = {}
+   435→
+   436→        # Score findings via ConfidenceEngine
+   437→        try:
+   438→            from .confidence_engine import ConfidenceEngine
+   439→
+   440→            engine = ConfidenceEngine()
+   441→            scored = engine.score_findings(findings)
+   442→            findings = scored  # enriched with "confidence" key
+   443→            scores = [f.get("confidence", 0.0) for f in findings]
+   444→            confidence_profile["scores"] = scores
+   445→            confidence_profile["average"] = (
+   446→                round(sum(scores) / len(scores), 4) if scores else 0.0
+   447→            )
+   448→            confidence_profile["high_confidence"] = sum(
+   449→                1 for s in scores if s >= 0.7
+   450→            )
+   451→        except Exception as exc:
+   452→            logger.debug("IntelligenceAgent confidence scoring skipped: %s", exc)
+   453→
+   454→        # Generate target profile
+   455→        try:
+   456→            from .target_intelligence import TargetIntelligence
+   457→
+   458→            ti = TargetIntelligence()
+   459→            profile = ti.analyze(findings, target=target)
+   460→            metadata["target_profile"] = profile.to_dict() if hasattr(profile, "to_dict") else profile
+   461→        except Exception as exc:
+   462→            logger.debug("IntelligenceAgent target profiling skipped: %s", exc)
+   463→
+   464→        elapsed = (time.monotonic() - t0) * 1000
+   465→        self._set_status("done")
+   466→        return AgentResult(
+   467→            agent_id=self.agent_id,
+   468→            role=self.role,
+   469→            findings=findings,
+   470→            confidence=confidence_profile.get("average", 0.0),
+   471→            processing_time_ms=elapsed,
+   472→            metadata={"confidence_profile": confidence_profile, **metadata},
+   473→        )
+   474→
+   475→
+   476→class CorrelationAgent(AgentBase):
+   477→    """Cross-references findings from multiple agents to identify patterns.
+   478→
+   479→    Detects corroborated findings (same issue from multiple sources),
+   480→    severity escalation chains, and related attack surfaces.
+   481→    """
+   482→
+   483→    def __init__(self) -> None:
+   484→        super().__init__(role=AgentRole.CORRELATION)
+   485→
+   486→    def execute(self, task: Dict[str, Any]) -> AgentResult:
+   487→        t0 = time.monotonic()
+   488→        self._set_status("running")
+   489→        all_findings = list(task.get("findings", []))
+   490→        agent_results = task.get("agent_results", [])
+   491→
+   492→        # Build a title+category fingerprint map
+   493→        fingerprint_map: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+   494→        for f in all_findings:
+   495→            key = (
+   496→                str(f.get("title", ""))
+   497→                + "|"
+   498→                + str(f.get("category", ""))
+   499→            )
+   500→            fingerprint_map[key].append(f)
+   501→
+   502→        correlated: List[Dict[str, Any]] = []
+   503→        severity_counts: Dict[str, int] = Counter()
+   504→
+   505→        # Identify corroborated findings (same issue from different modules)
+   506→        for key, group in fingerprint_map.items():
+   507→            if len(group) > 1:
+   508→                sources = list({f.get("source", f.get("module", "unknown")) for f in group})
+   509→                max_sev = self._max_severity(group)
+   510→                correlated.append(
+   511→                    {
+   512→                        "title": group[0].get("title", "Correlated Finding"),
+   513→                        "category": group[0].get("category", "unknown"),
+   514→                        "severity": max_sev,
+   515→                        "corroboration_count": len(group),
+   516→                        "sources": sources,
+   517→                        "type": "corroborated",
+   518→                    }
+   519→                )
+   520→            severity_counts[group[0].get("severity", "info")] += len(group)
+   521→
+   522→        # Build severity escalation chain
+   523→        escalation_chain = []
+   524→        for sev in ("critical", "high", "medium", "low", "info"):
+   525→            if severity_counts.get(sev, 0) > 0:
+   526→                escalation_chain.append(
+   527→                    {"severity": sev, "count": severity_counts[sev]}
+   528→                )
+   529→
+   530→        elapsed = (time.monotonic() - t0) * 1000
+   531→        self._set_status("done")
+   532→        return AgentResult(
+   533→            agent_id=self.agent_id,
+   534→            role=self.role,
+   535→            findings=correlated,
+   536→            confidence=0.8 if correlated else 0.5,
+   537→            processing_time_ms=elapsed,
+   538→            metadata={
+   539→                "total_unique": len(fingerprint_map),
+   540→                "total_correlated": len(correlated),
+   541→                "severity_breakdown": dict(severity_counts),
+   542→                "escalation_chain": escalation_chain,
+   543→            },
+   544→        )
+   545→
+   546→    @staticmethod
+   547→    def _max_severity(group: List[Dict[str, Any]]) -> str:
+   548→        """Return the highest severity from a group of findings."""
+   549→        _SEV_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+   550→        best = "info"
+   551→        for f in group:
+   552→            s = str(f.get("severity", "info")).lower()
+   553→            if _SEV_RANK.get(s, 0) > _SEV_RANK.get(best, 0):
+   554→                best = s
+   555→        return best
+   556→
+   557→
+   558→class ReportingAgent(AgentBase):
+   559→    """Formats aggregated results into a structured AutonomousScanReport."""
+   560→
+   561→    def __init__(self) -> None:
+   562→        super().__init__(role=AgentRole.REPORTING)
+   563→
+   564→    def execute(self, task: Dict[str, Any]) -> AgentResult:
+   565→        t0 = time.monotonic()
+   566→        self._set_status("running")
+   567→
+   568→        all_findings = list(task.get("findings", []))
+   569→        correlated = task.get("correlated_findings", [])
+   570→        execution_plan = task.get("execution_plan")
+   571→        goal = task.get("goal", "")
+   572→        target = task.get("target", "")
+   573→        confidence_profile = task.get("confidence_profile", {})
+   574→        total_time = task.get("total_time_ms", 0.0)
+   575→
+   576→        # Severity summary
+   577→        sev_counts: Dict[str, int] = Counter()
+   578→        for f in all_findings:
+   579→            sev_counts[f.get("severity", "info")] += 1
+   580→
+   581→        # Top critical/high findings
+   582→        top_findings = sorted(
+   583→            [f for f in all_findings if f.get("severity") in ("critical", "high")],
+   584→            key=lambda x: x.get("points_deducted", 0),
+   585→            reverse=True,
+   586→        )[:10]
+   587→
+   588→        report_data = {
+   589→            "goal": goal,
+   590→            "target": target,
+   591→            "total_findings": len(all_findings),
+   592→            "severity_summary": dict(sev_counts),
+   593→            "correlated_count": len(correlated),
+   594→            "top_critical_findings": top_findings,
+   595→            "confidence_profile": confidence_profile,
+   596→            "execution_plan": execution_plan,
+   597→        }
+   598→
+   599→        elapsed = (time.monotonic() - t0) * 1000
+   600→        self._set_status("done")
+   601→        return AgentResult(
+   602→            agent_id=self.agent_id,
+   603→            role=self.role,
+   604→            findings=[report_data],
+   605→            confidence=1.0,
+   606→            processing_time_ms=elapsed,
+   607→            metadata={"report_type": "autonomous_summary"},
+   608→        )
+   609→
+   610→
+   611→# ──────────────────────────────────────────────────────────────────────────────
+   612→# Agent Orchestrator — The Runtime
+   613→# ──────────────────────────────────────────────────────────────────────────────
+   614→
+   615→# Default pipeline: Planner → Recon → Intelligence → Correlation → Reporting
+   616→_DEFAULT_PIPELINE: List[Tuple[str, type]] = [
+   617→    (AgentRole.PLANNER, PlannerAgent),
+   618→    (AgentRole.RECON, ReconAgent),
+   619→    (AgentRole.INTELLIGENCE, IntelligenceAgent),
+   620→    (AgentRole.CORRELATION, CorrelationAgent),
+   621→    (AgentRole.REPORTING, ReportingAgent),
+   622→]
+   623→
+   624→
+   625→class AgentOrchestrator:
+   626→    """In-process multi-agent orchestrator.
+   627→
+   628→    Registers agents, routes messages, and coordinates the execution
+   629→    pipeline: Planner → Recon → Intelligence → Correlation → Reporting.
+   630→
+   631→    Usage::
+   632→
+   633→        orch = AgentOrchestrator()
+   634→        report = orch.run_goal("Full security scan", "example.com")
+   635→        print(report.to_dict())
+   636→    """
+   637→
+   638→    def __init__(
+   639→        self,
+   640→        pipeline: Optional[List[Tuple[str, type]]] = None,
+   641→        memory_ref: Optional[Any] = None,
+   642→    ) -> None:
+   643→        self._agents: Dict[str, AgentBase] = {}
+   644→        self._message_log: List[AgentMessage] = []
+   645→        self._lock = threading.RLock()
+   646→        self._pipeline = pipeline or _DEFAULT_PIPELINE
+   647→        self._memory_ref = memory_ref
+   648→
+   649→    # ── Registration ─────────────────────────────────────────────────────
+   650→
+   651→    def register(self, agent: AgentBase) -> None:
+   652→        """Register an agent with the orchestrator.
+   653→
+   654→        The agent is wired with the orchestrator's message routing function
+   655→        so it can send/receive messages.
+   656→        """
+   657→        with self._lock:
+   658→            self._agents[agent.agent_id] = agent
+   659→            agent.set_send_fn(self._route_message)
+   660→
+   661→    # ── Messaging ─────────────────────────────────────────────────────────
+   662→
+   663→    def broadcast(self, message_type: str, payload: Dict[str, Any]) -> None:
+   664→        """Send a message to all registered agents."""
+   665→        with self._lock:
+   666→            for agent_id in list(self._agents.keys()):
+   667→                msg = AgentMessage(
+   668→                    sender="orchestrator",
+   669→                    recipient=agent_id,
+   670→                    msg_type=message_type,
+   671→                    payload=payload,
+   672→                )
+   673→                self._route_message(msg)
+   674→
+   675→    def _route_message(self, msg: AgentMessage) -> None:
+   676→        """Route an AgentMessage to its recipient(s)."""
+   677→        with self._lock:
+   678→            self._message_log.append(msg)
+   679→
+   680→        if msg.recipient == "broadcast":
+   681→            for agent in self._agents.values():
+   682→                agent.receive(msg)
+   683→        elif msg.recipient in self._agents:
+   684→            self._agents[msg.recipient].receive(msg)
+   685→        else:
+   686→            logger.debug("No agent with id '%s' — message dropped.", msg.recipient)
+   687→
+   688→    # ── Status ────────────────────────────────────────────────────────────
+   689→
+   690→    def get_agent_status(self) -> Dict[str, str]:
+   691→        """Return a mapping of agent_id → status for all registered agents."""
+   692→        with self._lock:
+   693→            return {
+   694→                aid: a.get_status() for aid, a in self._agents.items()
+   695→            }
+   696→
+   697→    # ── Goal Execution ────────────────────────────────────────────────────
+   698→
+   699→    def run_goal(self, goal: str, target: str) -> Dict[str, Any]:
+   700→        """Orchestrate all agents to accomplish a goal against a target.
+   701→
+   702→        Executes the pipeline in order, passing accumulated results between
+   703→        stages.  Returns the final AutonomousScanReport as a dict.
+   704→        """
+   705→        wall_start = time.monotonic()
+   706→        console.print(
+   707→            Panel(
+   708→                f"Goal: [bold cyan]{goal}[/]\nTarget: [bold]{target}[/]",
+   709→                title="[bold bright_magenta]Agent Runtime[/]",
+   710→                border_style="bright_magenta",
+   711→            )
+   712→        )
+   713→
+   714→        # 1. Instantiate and register agents from the pipeline
+   715→        agents: List[AgentBase] = []
+   716→        for role_name, agent_cls in self._pipeline:
+   717→            agent = agent_cls()
+   718→            ctx = AgentContext(
+   719→                agent_id=agent.agent_id,
+   720→                role=role_name,
+   721→                target=target,
+   722→                memory_ref=self._memory_ref,
+   723→            )
+   724→            agent.initialize(ctx)
+   725→            self.register(agent)
+   726→            agents.append(agent)
+   727→
+   728→        # 2. Shared state that flows through the pipeline
+   729→        shared: Dict[str, Any] = {
+   730→            "goal": goal,
+   731→            "target": target,
+   732→            "findings": [],
+   733→            "agent_results": [],
+   734→            "execution_plan": None,
+   735→            "correlated_findings": [],
+   736→            "confidence_profile": {},
+   737→        }
+   738→
+   739→        # 3. Execute pipeline stages sequentially
+   740→        for agent in agents:
+   741→            stage_name = agent.role_name.upper()
+   742→            console.print(
+   743→                f"\n  [bold bright_yellow]▶ {stage_name}[/] "
+   744→                f"[dim]({agent.agent_id})[/]"
+   745→            )
+   746→
+   747→            try:
+   748→                result = agent.execute(shared)
+   749→            except Exception as exc:
+   750→                logger.error(
+   751→                    "Agent %s crashed: %s", agent.agent_id, exc, exc_info=True
+   752→                )
+   753→                result = AgentResult(
+   754→                    agent_id=agent.agent_id,
+   755→                    role=agent.role,
+   756→                    findings=[
+   757→                        {
+   758→                            "title": f"Agent {agent.agent_id} error",
+   759→                            "severity": "low",
+   760→                            "category": "runtime",
+   761→                            "evidence": str(exc),
+   762→                        }
+   763→                    ],
+   764→                    confidence=0.0,
+   765→                    processing_time_ms=0.0,
+   766→                    metadata={"error": str(exc)},
+   767→                )
+   768→
+   769→            shared["agent_results"].append(result.to_dict())
+   770→
+   771→            # Planner: extract execution plan
+   772→            if isinstance(agent, PlannerAgent):
+   773→                shared["execution_plan"] = result.metadata.get("plan", {})
+   774→
+   775→            # Recon: accumulate raw findings
+   776→            if isinstance(agent, ReconAgent):
+   777→                shared["findings"].extend(result.findings)
+   778→
+   779→            # Intelligence: keep confidence profile, keep enriched findings
+   780→            if isinstance(agent, IntelligenceAgent):
+   781→                shared["confidence_profile"] = result.metadata.get(
+   782→                    "confidence_profile", {}
+   783→                )
+   784→                # Replace findings with enriched (confidence-scored) versions
+   785→                if result.findings and any(
+   786→                    "confidence" in f for f in result.findings
+   787→                ):
+   788→                    shared["findings"] = result.findings
+   789→
+   790→            # Correlation: extract correlated findings
+   791→            if isinstance(agent, CorrelationAgent):
+   792→                shared["correlated_findings"] = result.findings
+   793→
+   794→            # Print stage summary
+   795→            n_findings = len(result.findings)
+   796→            ms = result.processing_time_ms
+   797→            conf = result.confidence
+   798→            console.print(
+   799→                f"    [dim]{n_findings} findings | "
+   800→                f"{ms:.0f}ms | "
+   801→                f"confidence={conf:.2f}[/]"
+   802→            )
+   803→
+   804→        # 4. Assemble final report
+   805→        total_ms = (time.monotonic() - wall_start) * 1000
+   806→        shared["total_time_ms"] = total_ms
+   807→
+   808→        report = AutonomousScanReport(
+   809→            goal=goal,
+   810→            target=target,
+   811→            agent_results=shared["agent_results"],
+   812→            all_findings=shared["findings"],
+   813→            execution_plan=shared["execution_plan"],
+   814→            correlated_findings=shared["correlated_findings"],
+   815→            confidence_profile=shared["confidence_profile"],
+   816→            total_processing_time_ms=total_ms,
+   817→            metadata={
+   818→                "agents_used": len(agents),
+   819→                "pipeline": [a.role_name for a in agents],
+   820→            },
+   821→        )
+   822→
+   823→        self._print_summary(report)
+   824→
+   825→        # 5. Clean up registered agents
+   826→        with self._lock:
+   827→            for agent in agents:
+   828→                self._agents.pop(agent.agent_id, None)
+   829→
+   830→        return report.to_dict()
+   831→
+   832→    # ── Summary Display ────────────────────────────────────────────────────
+   833→
+   834→    def _print_summary(self, report: AutonomousScanReport) -> None:
+   835→        """Print a summary table of the completed run."""
+   836→        table = Table(
+   837→            title="Agent Runtime Summary",
+   838→            show_header=True,
+   839→            header_style="bold bright_cyan",
+   840→            border_style="dim",
+   841→        )
+   842→        table.add_column("Agent", style="bright_white")
+   843→        table.add_column("Findings", justify="right", style="bright_yellow")
+   844→        table.add_column("Confidence", justify="right", style="green")
+   845→        table.add_column("Time (ms)", justify="right", style="bright_blue")
+   846→
+   847→        for ar in report.agent_results:
+   848→            table.add_row(
+   849→                ar["role"],
+   850→                str(len(ar["findings"])),
+   851→                f"{ar['confidence']:.2f}",
+   852→                f"{ar['processing_time_ms']:.0f}",
+   853→            )
+   854→
+   855→        table.add_section()
+   856→        table.add_row(
+   857→            "[bold]TOTAL[/]",
+   858→            str(len(report.all_findings)),
+   859→            f"{report.confidence_profile.get('average', 0):.2f}",
+   860→            f"{report.total_processing_time_ms:.0f}",
+   861→        )
+   862→
+   863→        console.print()
+   864→        console.print(table)
+   865→        console.print(
+   866→            f"\n  [bold bright_green]Runtime complete.[/] "
+   867→            f"{len(report.all_findings)} findings across "
+   868→            f"{len(report.agent_results)} agents "
+   869→            f"in {report.total_processing_time_ms:.0f}ms.\n"
+   870→        )
+   871→

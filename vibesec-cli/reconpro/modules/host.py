@@ -1198,6 +1198,9 @@ def _check_world_writable_dirs() -> List[Finding]:
         for d in tmp_dirs:
             if not d or not os.path.isdir(d):
                 continue
+            # Sanitize path to prevent shell injection via env vars
+            if re.search(r'["&|<>^]', d):
+                continue
             try:
                 # Check if Everyone has write access
                 code, out = _run(f'icacls "{d}" 2>NUL | findstr "Everyone"')

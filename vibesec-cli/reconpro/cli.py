@@ -101,7 +101,8 @@ def _render_findings_table(result, show_remediation: bool = False) -> None:
     table.add_column("Pts", style="yellow", width=5)
     if show_remediation:
         table.add_column("Fix", style="bright_green", width=50)
-    for f in result.findings[:80]:
+    displayed = result.findings[:80]
+    for f in displayed:
         sev = f.get("severity", "info")
         color = SEV_COLORS.get(sev, "white")
         row = [
@@ -113,6 +114,8 @@ def _render_findings_table(result, show_remediation: bool = False) -> None:
             row.append(f.get("remediation", "")[:50])
         table.add_row(*row)
     console.print(table)
+    if len(result.findings) > 80:
+        console.print(f"  [dim]Showing 80 of {len(result.findings)} findings. Use --json -o report.json for the full list.[/]")
 
 
 def _render_module_breakdown(result) -> None:
@@ -276,55 +279,55 @@ def main(argv: list[str] | None = None) -> None:
     sub = parser.add_subparsers(dest="subcommand")
 
     # ── scan ──────────────────────────────────────────────────────
-    p = sub.add_parser("scan", help="Full remote scan")
+    p = sub.add_parser("scan", help="Full remote scan of a target")
     p.add_argument("target", help="Target domain or URL")
-    p.add_argument("--modules", "-m", type=str)
-    p.add_argument("--all", "-a", action="store_true")
-    p.add_argument("--json", dest="json_output", action="store_true")
-    p.add_argument("-o", "--output", dest="output_file", type=str)
-    p.add_argument("--timeout", "-t", type=int, default=8)
-    p.add_argument("--insecure", "-k", action="store_true")
-    p.add_argument("--rate-limit", type=float, default=10.0)
+    p.add_argument("--modules", "-m", type=str, help="Comma-separated module list (e.g. tls,dns,headers)")
+    p.add_argument("--all", "-a", action="store_true", help="Run all available modules")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
+    p.add_argument("-o", "--output", dest="output_file", type=str, help="Save JSON to file")
+    p.add_argument("--timeout", "-t", type=int, default=8, help="Per-module timeout in seconds (default: 8)")
+    p.add_argument("--insecure", "-k", action="store_true", help="Skip TLS certificate verification")
+    p.add_argument("--rate-limit", type=float, default=10.0, help="Max requests per second (default: 10)")
 
     # ── vibesec ───────────────────────────────────────────────────
-    p = sub.add_parser("vibesec", help="Quick VibeSec benchmark")
+    p = sub.add_parser("vibesec", help="Quick VibeSec benchmark (fast scoring scan)")
     p.add_argument("target", help="Target domain or URL")
-    p.add_argument("--json", dest="json_output", action="store_true")
-    p.add_argument("-o", "--output", dest="output_file", type=str)
-    p.add_argument("--timeout", "-t", type=int, default=8)
-    p.add_argument("--insecure", "-k", action="store_true")
-    p.add_argument("--rate-limit", type=float, default=10.0)
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
+    p.add_argument("-o", "--output", dest="output_file", type=str, help="Save JSON to file")
+    p.add_argument("--timeout", "-t", type=int, default=8, help="Per-module timeout in seconds (default: 8)")
+    p.add_argument("--insecure", "-k", action="store_true", help="Skip TLS certificate verification")
+    p.add_argument("--rate-limit", type=float, default=10.0, help="Max requests per second (default: 10)")
 
     # ── audit ────────────────────────────────────────────────────
     p = sub.add_parser("audit", help="Full machine audit (ports, firewall, SSH, Docker, env, files)")
-    p.add_argument("--modules", "-m", type=str)
-    p.add_argument("--json", dest="json_output", action="store_true")
-    p.add_argument("-o", "--output", dest="output_file", type=str)
+    p.add_argument("--modules", "-m", type=str, help="Comma-separated module list")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
+    p.add_argument("-o", "--output", dest="output_file", type=str, help="Save JSON to file")
 
     # ── dev ───────────────────────────────────────────────────────
     p = sub.add_parser("dev", help="Developer project scan (secrets, deps, git, docker)")
-    p.add_argument("path", nargs="?", default=".")
-    p.add_argument("--json", dest="json_output", action="store_true")
-    p.add_argument("-o", "--output", dest="output_file", type=str)
+    p.add_argument("path", nargs="?", default=".", help="Project directory (default: current dir)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
+    p.add_argument("-o", "--output", dest="output_file", type=str, help="Save JSON to file")
 
     # ── doctor ────────────────────────────────────────────────────
     p = sub.add_parser("doctor", help="Health check with fix commands")
-    p.add_argument("--json", dest="json_output", action="store_true")
-    p.add_argument("-o", "--output", dest="output_file", type=str)
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
+    p.add_argument("-o", "--output", dest="output_file", type=str, help="Save JSON to file")
 
     # ── ports ─────────────────────────────────────────────────────
     p = sub.add_parser("ports", help="Show open ports and risky services")
-    p.add_argument("--json", dest="json_output", action="store_true")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
 
     # ── secrets ────────────────────────────────────────────────────
     p = sub.add_parser("secrets", help="Find secrets in env vars and codebase")
-    p.add_argument("path", nargs="?", default=".")
-    p.add_argument("--json", dest="json_output", action="store_true")
+    p.add_argument("path", nargs="?", default=".", help="Directory to scan (default: current dir)")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
 
     # ── list ──────────────────────────────────────────────────────
-    p = sub.add_parser("list", help="List available modules")
-    p.add_argument("--local", action="store_true")
-    p.add_argument("--all", action="store_true")
+    p = sub.add_parser("list", help="List available scan modules")
+    p.add_argument("--local", action="store_true", help="Show local/audit modules only")
+    p.add_argument("--all", action="store_true", help="Show both local and remote modules")
 
     # ── NEXUS ────────────────────────────────────────────────────
     sub.add_parser("nexus", help="Launch NEXUS — mind-blowing agent TUI (mouse + keyboard + split-screen)")
@@ -336,10 +339,10 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("tui", help="Visual terminal dashboard")
 
     # ── blitz ─────────────────────────────────────────────────────
-    p = sub.add_parser("blitz", help="Parallel multi-target scan")
+    p = sub.add_parser("blitz", help="Parallel multi-target scan (requires 2+ targets)")
     p.add_argument("targets", nargs="+", help="Target domains/URLs")
-    p.add_argument("--workers", "-w", type=int, default=4)
-    p.add_argument("--modules", "-m", type=str)
+    p.add_argument("--workers", "-w", type=int, default=4, help="Number of parallel workers (default: 4)")
+    p.add_argument("--modules", "-m", type=str, help="Comma-separated module list")
 
     # ── agent ─────────────────────────────────────────────────────
     p = sub.add_parser("agent", help="Autonomous agent — give it a goal")
@@ -348,7 +351,7 @@ def main(argv: list[str] | None = None) -> None:
     # ── subdomains ────────────────────────────────────────────────
     p = sub.add_parser("subdomains", help="Discover subdomains")
     p.add_argument("domain", help="Domain to enumerate")
-    p.add_argument("--json", dest="json_output", action="store_true")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
 
     # ── schedule ──────────────────────────────────────────────────
     p = sub.add_parser("schedule", help="Schedule recurring scans")
@@ -421,17 +424,17 @@ def main(argv: list[str] | None = None) -> None:
     # ── iac ──────────────────────────────────────────────────────────
     p = sub.add_parser("iac", help="Infrastructure-as-Code audit (Terraform/CF/Docker/K8s)")
     p.add_argument("path", nargs="?", default=".", help="Directory to scan")
-    p.add_argument("--json", dest="json_output", action="store_true")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
 
     # ── container ──────────────────────────────────────────────────────
     p = sub.add_parser("container", help="Container escape analysis (Dockerfile + K8s)")
     p.add_argument("path", nargs="?", default=".", help="Directory to scan")
-    p.add_argument("--json", dest="json_output", action="store_true")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
 
     # ── cloud-recon ─────────────────────────────────────────────────────
     p = sub.add_parser("cloud-recon", help="Cloud infrastructure recon (AWS/Azure/GCP metadata + assets)")
     p.add_argument("target", help="Target domain or 'local' for metadata probe")
-    p.add_argument("--json", dest="json_output", action="store_true")
+    p.add_argument("--json", dest="json_output", action="store_true", help="Output raw JSON")
 
     # ── defense ────────────────────────────────────────────────────────
     p = sub.add_parser("defense", help="Generate deployable fixes (WAF rules, patches, IaC fixes)")
@@ -611,8 +614,15 @@ def main(argv: list[str] | None = None) -> None:
     if cmd == "defense":
         data = None
         if getattr(args, "input", None):
-            with open(args.input) as f:
-                data = json.load(f)
+            try:
+                with open(args.input) as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                console.print(f"  [red]File not found: [cyan]{args.input}[/][/]")
+                sys.exit(1)
+            except json.JSONDecodeError:
+                console.print(f"  [red]Invalid JSON in: [cyan]{args.input}[/][/]")
+                sys.exit(1)
         if not data:
             data = get_latest()
         if not data:
@@ -663,8 +673,15 @@ def main(argv: list[str] | None = None) -> None:
         _banner(args)
         data = None
         if getattr(args, "input", None):
-            with open(args.input) as f:
-                data = json.load(f)
+            try:
+                with open(args.input) as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                console.print(f"  [red]File not found: [cyan]{args.input}[/][/]")
+                sys.exit(1)
+            except json.JSONDecodeError:
+                console.print(f"  [red]Invalid JSON in: [cyan]{args.input}[/][/]")
+                sys.exit(1)
         if not data:
             data = get_latest()
         if not data:
@@ -974,8 +991,15 @@ def main(argv: list[str] | None = None) -> None:
     if cmd == "report":
         data = None
         if getattr(args, "input", None):
-            with open(args.input) as f:
-                data = json.load(f)
+            try:
+                with open(args.input) as f:
+                    data = json.load(f)
+            except FileNotFoundError:
+                console.print(f"  [red]File not found: [cyan]{args.input}[/][/]")
+                sys.exit(1)
+            except json.JSONDecodeError:
+                console.print(f"  [red]Invalid JSON in: [cyan]{args.input}[/][/]")
+                sys.exit(1)
         else:
             data = get_latest()
         if not data:
@@ -1051,9 +1075,14 @@ def main(argv: list[str] | None = None) -> None:
 
     # ── OPEN ────────────────────────────────────────────────────────
     if cmd == "open":
-        from .browser_mod import open_browser
-        open_browser(args.url)
-        console.print(f"  Opened [cyan]{args.url}[/] in browser")
+        try:
+            from .browser_mod import open_browser
+            open_browser(args.url)
+            console.print(f"  Opened [cyan]{args.url}[/] in browser")
+        except ImportError:
+            console.print("  [yellow]Install browser support:[/]")
+            console.print("    pip install reconpro[browser]")
+            console.print("    playwright install")
         return
 
     # ── PLUGIN ─────────────────────────────────────────────────────
@@ -1428,6 +1457,7 @@ def main(argv: list[str] | None = None) -> None:
             plan = _spinner_wrap(f"Planning scan for {target}...", engine.plan_scan, target, available, learning)
         except Exception:
             plan = _spinner_wrap(f"Planning scan for {target}...", engine.plan_scan, target, available)
+            console.print("  [dim]Note: learning data unavailable — using default module order.[/]")
         pd = plan.to_dict()
         console.print(f"\n  [bold]Scan Plan: [cyan]{pd['target']}[/]  [dim]({pd['target_type']})[/][/]")
         console.print(f"  Estimated Time: [bold]{pd['estimated_time']}s[/]")
@@ -1484,7 +1514,7 @@ def main(argv: list[str] | None = None) -> None:
                 status = "[bright_green]PASS[/]" if r.passed else "[bright_red]FAIL[/]"
                 console.print(f"  {status}  Security [dim]({r.duration_ms:.0f}ms)[/]")
                 for d in r.details[:10]:
-                    console.print(f"         {d[:120]}")
+                    console.print(f"         [dim]{d[:120]}[/]")
             if do_tests:
                 r = _spinner_wrap("Running tests...", validator.validate_tests)
                 status = "[bright_green]PASS[/]" if r.passed else "[bright_red]FAIL[/]"

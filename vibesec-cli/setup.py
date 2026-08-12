@@ -2,14 +2,13 @@ from setuptools import setup, find_packages
 
 setup(
     name="reconpro",
-    version="9.0.0",
+    version="10.0.0",
     author="ReconPro Security",
     author_email="security@reconpro.io",
     description=(
-        "ReconPro Enterprise — The Security Reconnaissance Platform. "
-        "Eleven Blades. One Target. One Verdict. "
-        "8 modules: RECON, AUTH BYPASS, CHAIN HUNTER, BOT HUNTER, "
-        "GORGON ULTRA, OBLIVION, VIBESEC, NHI GRAPH."
+        "ReconPro Nexus v10 — Autonomous Security Operating System. "
+        "16 Scanning Modules. 11 Intelligence Subsystems. 4 Autonomous Systems. "
+        "Multi-Agent Runtime. Evidence Correlation. Executive Intelligence."
     ),
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
@@ -19,6 +18,8 @@ setup(
     python_requires=">=3.8",
     install_requires=[
         "rich>=13.0.0",
+        "textual>=0.40.0",
+        "requests>=2.28.0",
     ],
     entry_points={
         "console_scripts": [
