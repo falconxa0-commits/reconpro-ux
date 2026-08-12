@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
 import { heroStats, terminalDemo } from "@/data/content";
 import { useInView, useCountUp } from "@/hooks/useInView";
@@ -9,7 +9,14 @@ export default function HeroSection() {
   const { ref, isInView } = useInView(0.05);
   const [visibleLines, setVisibleLines] = useState(0);
   const [statsVisible, setStatsVisible] = useState(false);
+  const [copied, setCopied] = useState(false);
   const statsRef = useRef<HTMLDivElement>(null);
+
+  const copyInstall = useCallback(() => {
+    navigator.clipboard.writeText("pip install reconpro");
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, []);
 
   useEffect(() => {
     if (!isInView) return;
@@ -105,11 +112,27 @@ export default function HeroSection() {
           transition={{ duration: 0.8, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
           className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-16"
         >
-          <div className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/[0.9] text-black font-medium text-sm hover:bg-white transition-all duration-300 hover:shadow-[0_0_30px_rgba(255,255,255,0.08)]">
+          <div className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/[0.9] text-black font-medium text-sm hover:bg-white transition-all duration-300 hover:shadow-[0_0_30px_rgba(255,255,255,0.08)] metallic-sheen">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" className="text-black/60">
               <path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.13.35.2.36.27.36.35.35.45.32.56.28.69.21.82.14.97.05 1.11-.06 1.1-.16.97-.24.8-.32.65-.36.51-.4.39-.42.29-.42.21-.4.14-.36.09-.32.04-.24.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/>
             </svg>
             <code className="font-mono text-sm">pip install reconpro</code>
+            <button
+              onClick={copyInstall}
+              className={`ml-1 p-1 rounded-md transition-all duration-300 hover:bg-black/10 ${copied ? "text-green-500" : "text-black/30"}`}
+              aria-label="Copy install command"
+            >
+              {copied ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                  <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                </svg>
+              )}
+            </button>
           </div>
           <a
             href="https://github.com/reconpro/reconpro"
@@ -130,7 +153,8 @@ export default function HeroSection() {
           {heroStats.map((stat, i) => (
             <div
               key={stat.label}
-              className="text-center p-4 rounded-2xl bg-white/[0.02] border border-white/[0.04] hover:border-white/[0.08] transition-all duration-500"
+              className="text-center p-4 rounded-2xl bg-white/[0.02] border border-white/[0.04] hover:border-white/[0.08] transition-all duration-500 metallic-sheen hover-glow"
+              style={{ animationDelay: `${i * 50}ms` }}
             >
               <StatCounter
                 value={parseInt(stat.value.replace(/[^0-9]/g, ""))}
@@ -149,7 +173,7 @@ export default function HeroSection() {
           transition={{ duration: 1, delay: 0.6, ease: [0.16, 1, 0.3, 1] }}
           className="max-w-3xl mx-auto"
         >
-          <div className="cli-showcase">
+          <div className="cli-showcase glass-premium">
             <div className="cli-titlebar">
               <div className="cli-dot cli-dot-red" />
               <div className="cli-dot cli-dot-yellow" />
@@ -157,6 +181,24 @@ export default function HeroSection() {
               <span className="ml-3 text-[11px] text-white/20 font-mono">
                 reconpro — bash
               </span>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  onClick={copyInstall}
+                  className={`copy-btn ${copied ? "copied" : ""}`}
+                  aria-label="Copy command"
+                >
+                  {copied ? (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                    </svg>
+                  )}
+                </button>
+              </div>
             </div>
             <div className="cli-body max-h-[320px] overflow-hidden">
               {terminalDemo.slice(0, visibleLines).map((line, i) => (

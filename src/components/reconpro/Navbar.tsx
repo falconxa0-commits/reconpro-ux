@@ -97,13 +97,16 @@ export function Navbar() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setSearchOpen(!searchOpen)}
-                className="w-9 h-9 rounded-lg flex items-center justify-center text-white/30 hover:text-white/60 hover:bg-white/[0.04] transition-all duration-300"
-                aria-label="Search"
+                className="flex items-center gap-2 h-9 pl-3 pr-2 rounded-lg text-white/30 hover:text-white/60 hover:bg-white/[0.04] transition-all duration-300"
+                aria-label="Search (Ctrl+K)"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="11" cy="11" r="8" />
                   <path d="m21 21-4.3-4.3" />
                 </svg>
+                <kbd className="hidden sm:inline-flex text-[9px] font-mono text-white/10 bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/[0.04]">
+                  ⌘K
+                </kbd>
               </button>
 
               <a

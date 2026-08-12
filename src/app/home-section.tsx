@@ -2,6 +2,13 @@
 
 import { Navbar } from "@/components/reconpro/Navbar";
 import { Footer } from "@/components/reconpro/Footer";
+import { OLEDParticles } from "@/components/reconpro/OLEDParticles";
+import { AuroraBackground } from "@/components/reconpro/AuroraBackground";
+import { NeuralNetwork } from "@/components/reconpro/NeuralNetwork";
+import { DataStreams } from "@/components/reconpro/DataStreams";
+import { ScrollProgress } from "@/components/reconpro/ScrollProgress";
+import { BackToTop } from "@/components/reconpro/BackToTop";
+import { CommandPalette } from "@/components/reconpro/CommandPalette";
 import HeroSection from "@/components/reconpro/HeroSection";
 import { FeaturesSection } from "@/components/reconpro/FeaturesSection";
 import ArchitectureSection from "@/components/reconpro/ArchitectureSection";
@@ -15,6 +22,14 @@ import CommunitySection from "@/components/reconpro/CommunitySection";
 export function HomeSection() {
   return (
     <div className="min-h-screen bg-black">
+      {/* Global ambient overlays */}
+      <AuroraBackground />
+      <NeuralNetwork />
+      <OLEDParticles />
+      <DataStreams />
+      <ScrollProgress />
+      <BackToTop />
+      <CommandPalette />
       <Navbar />
       <main>
         <HeroSection />
