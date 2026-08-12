@@ -305,7 +305,7 @@ export function NHIKillSwitch() {
                     ? ['0 0 15px rgba(250,204,21,0.2)', '0 0 30px rgba(250,204,21,0.4)', '0 0 15px rgba(250,204,21,0.2)']
                     : ['0 0 12px rgba(52,211,153,0.2)', '0 0 24px rgba(52,211,153,0.3)', '0 0 12px rgba(52,211,153,0.2)'],
               }}
-              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' as const }}
               className="flex h-10 w-10 items-center justify-center rounded-xl bg-[rgba(0,0,0,0.4)] border border-[rgba(255,255,255,0.06)]"
             >
               <ShieldAlert className="h-5 w-5" style={{ color: statusColor[systemStatus] }} />
@@ -566,7 +566,7 @@ export function NHIKillSwitch() {
                   '0 0 20px rgba(239,68,68,0.3)',
                 ],
               } : {}}
-              transition={isKillReady ? { duration: 1.5, repeat: Infinity, ease: 'easeInOut' } : {}}
+              transition={isKillReady ? { duration: 1.5, repeat: Infinity, ease: 'easeInOut' as const } : {}}
               className={`w-full py-4 rounded-xl font-bold text-sm tracking-wider transition-all ${
                 isKillReady
                   ? 'bg-[#ff3355] text-white hover:bg-[#dc2626] cursor-pointer'
@@ -681,7 +681,7 @@ export function NHIKillSwitch() {
             ) : (
               <div className="space-y-2 max-h-[200px] overflow-y-auto">
                 {recentRevocations.map((log) => {
-                  let detail = '';
+                  let detail: Record<string, string> = {};
                   try { detail = JSON.parse(log.details || '{}'); } catch { /* */ }
                   return (
                     <motion.div
@@ -733,7 +733,7 @@ export function NHIKillSwitch() {
               {auditLogs.map((log, i) => {
                 const actionColor = ACTION_COLORS[log.action] || 'text-muted-foreground';
                 const actionLabel = log.action.replace(/_/g, ' ').toUpperCase();
-                let detail = '';
+                let detail: Record<string, string> = {};
                 try { detail = JSON.parse(log.details || '{}'); } catch { /* */ }
 
                 return (

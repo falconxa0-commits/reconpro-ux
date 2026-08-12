@@ -16,7 +16,7 @@ const SECURITY_TXT_PATTERNS = [
   /domain-verification/i,
   /verify-domain/i,
   /ownership-verification/i,
-  /ms=ms/ies/i,
+  /ms=ms\/ies/i,
   /include:_spf/i,
   /redirect=_dmarc/i,
 ];

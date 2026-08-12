@@ -60,6 +60,7 @@ interface ApiScan {
   startedAt: string;
   completedAt: string | null;
   duration: number | null;
+  status: string;
   scanType: string;
   findings: ApiFinding[];
 }
@@ -431,7 +432,7 @@ export function LiveProofPanel({ onNavigate }: { onNavigate: (view: string) => v
                     key={`${data.domain}-${sev.label}`}
                     initial={{ width: 0 }}
                     animate={{ width: `${Math.max((sev.count / sev.max) * 100, sev.count > 0 ? 8 : 0)}%` }}
-                    transition={{ duration: 0.8, ease: 'easeOut' }}
+                    transition={{ duration: 0.8, ease: 'easeOut' as const }}
                     className="h-full rounded-full flex items-center justify-end pr-2"
                     style={{ background: sev.color }}
                   >

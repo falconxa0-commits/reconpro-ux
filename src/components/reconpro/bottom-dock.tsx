@@ -77,7 +77,7 @@ function ExpandedMenu({
       initial={{ opacity: 0, y: 12, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.96 }}
-      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] as const }}
       className="absolute bottom-full left-1/2 -translate-x-1/2 mb-3 glass p-2 min-w-[200px]"
     >
       <div className="grid grid-cols-2 gap-0.5">
@@ -157,7 +157,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
               onMouseLeave={() => setHoveredItem(null)}
               whileHover={{ y: -6, scale: 1.18 }}
               whileTap={{ scale: 0.92 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 22 }}
+              transition={{ type: 'spring' as const, stiffness: 400, damping: 22 }}
               className={`dock-item ${isActive ? 'active' : ''}`}
               style={isActive ? { background: `${color}14`, color } : undefined}
             >
@@ -176,7 +176,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
           onMouseLeave={() => setHoveredItem(null)}
           whileHover={{ y: -6, scale: 1.18 }}
           whileTap={{ scale: 0.92 }}
-          transition={{ type: 'spring', stiffness: 400, damping: 22 }}
+          transition={{ type: 'spring' as const, stiffness: 400, damping: 22 }}
           className={`dock-item ${menuOpen || (!isPrimaryView && !SECONDARY_DOCK.some(d => d.id === activeView)) ? 'active' : ''}`}
         >
           <div className="flex flex-col gap-[3px]">
@@ -192,7 +192,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
             onClick={() => onViewChange('scan')}
             whileHover={{ y: -6, scale: 1.12 }}
             whileTap={{ scale: 0.92 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 22 }}
+            transition={{ type: 'spring' as const, stiffness: 400, damping: 22 }}
             className="w-[48px] h-[48px] rounded-[16px] flex items-center justify-center transition-all duration-400"
             style={{
               background: 'rgba(255,255,255,0.9)',

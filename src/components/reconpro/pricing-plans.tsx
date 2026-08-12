@@ -233,7 +233,7 @@ const itemVariants = {
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] },
+    transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as const },
   },
 };
 
@@ -391,7 +391,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
               <motion.div
                 className="absolute top-1 w-5 h-5 rounded-full bg-white shadow-lg"
                 animate={{ left: isAnnual ? '30px' : '4px' }}
-                transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                transition={{ type: 'spring' as const, stiffness: 500, damping: 30 }}
               />
             </button>
             <span className={`text-sm font-medium transition-colors duration-300 ${isAnnual ? 'text-[#f0f0f0]' : 'text-white/40'}`}>
@@ -727,7 +727,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
               <motion.div
                 className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#00ff88]/20 to-[#06b6d4]/20 border border-[#00ff88]/20 mb-6"
                 whileHover={{ scale: 1.05, rotate: 3 }}
-                transition={{ type: 'spring', stiffness: 300 }}
+                transition={{ type: 'spring' as const, stiffness: 300 }}
               >
                 <Building2 className="w-7 h-7 text-[#00ff88]" />
               </motion.div>

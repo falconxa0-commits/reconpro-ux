@@ -540,7 +540,7 @@ export function ImplosionPanel() {
             <motion.div
               initial={{ opacity: 0, scale: 0.8 }}
               animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.8, type: 'spring' }}
+              transition={{ duration: 0.8, type: 'spring' as const }}
               className="relative text-center py-10 rounded-xl bg-gradient-to-b from-red-950/30 via-gray-950 to-gray-950 border border-red-900/40 overflow-hidden"
             >
               {/* Scanline background effect */}
@@ -561,7 +561,7 @@ export function ImplosionPanel() {
                       '0 0 20px rgba(239,68,68,0.4)',
                     ],
                   } : {}}
-                  transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                  transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' as const }}
                 >
                   ${animatedTotal.toFixed(2)}M
                 </motion.span>
@@ -1072,7 +1072,7 @@ function PhaseCard({ phaseNum, title, icon, color, delay, metrics, showFines, fi
                     <motion.div
                       initial={{ width: 0 }}
                       animate={{ width: `${pct}%` }}
-                      transition={{ delay: delay + 0.4 + i * 0.15, duration: 0.8, ease: 'easeOut' }}
+                      transition={{ delay: delay + 0.4 + i * 0.15, duration: 0.8, ease: 'easeOut' as const }}
                       className="h-full rounded flex items-center justify-end pr-2"
                       style={{ background: `linear-gradient(90deg, ${color}80, ${color})` }}
                     >
@@ -1100,7 +1100,7 @@ function StackedBar({ segments }: { segments: { label: string; value: number; co
             key={seg.label}
             initial={{ width: 0 }}
             animate={{ width: `${(seg.value / total) * 100}%` }}
-            transition={{ delay: 0.3 + i * 0.2, duration: 0.8, ease: 'easeOut' }}
+            transition={{ delay: 0.3 + i * 0.2, duration: 0.8, ease: 'easeOut' as const }}
             className="relative h-full flex items-center justify-center group cursor-default"
             style={{ background: seg.color }}
             title={`${seg.label}: $${seg.value.toFixed(2)}M`}
@@ -1144,7 +1144,7 @@ function ComparisonBar({ label, company, industry }: { label: string; company: n
             <motion.div
               initial={{ width: 0 }}
               animate={{ width: `${companyPct}%` }}
-              transition={{ duration: 1, ease: 'easeOut' }}
+              transition={{ duration: 1, ease: 'easeOut' as const }}
               className="h-full rounded-full"
               style={{ background: 'linear-gradient(90deg, #ff3355, #ff8844)' }}
             />
@@ -1156,7 +1156,7 @@ function ComparisonBar({ label, company, industry }: { label: string; company: n
             <motion.div
               initial={{ width: 0 }}
               animate={{ width: `${industryPct}%` }}
-              transition={{ duration: 1, ease: 'easeOut' }}
+              transition={{ duration: 1, ease: 'easeOut' as const }}
               className="h-full rounded-full"
               style={{ background: '#3b82f6' }}
             />
@@ -1177,7 +1177,7 @@ function PercentileCard({ label, value }: { label: string; value: number }) {
         <motion.div
           initial={{ width: 0 }}
           animate={{ width: `${value}%` }}
-          transition={{ duration: 1.2, ease: 'easeOut' }}
+          transition={{ duration: 1.2, ease: 'easeOut' as const }}
           className="h-full rounded-full"
           style={{ background: isHigh ? '#ff3355' : '#00ff88' }}
         />
@@ -1226,7 +1226,7 @@ function ToggleCard({ label, description, checked, onChange, reduction, icon }:
       )}>
         <motion.div
           animate={{ x: checked ? 16 : 0 }}
-          transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+          transition={{ type: 'spring' as const, stiffness: 500, damping: 30 }}
           className="w-5 h-5 rounded-full"
           style={{ background: checked ? '#00ff88' : '#4b5563' }}
         />

@@ -69,7 +69,7 @@ export default function HeroSection() {
         <motion.div
           initial={{ opacity: 0, y: 16 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] as const }}
           className="flex justify-center mb-8"
         >
           <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.06]">
@@ -87,7 +87,7 @@ export default function HeroSection() {
         <motion.h1
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.8, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.8, delay: 0.1, ease: [0.16, 1, 0.3, 1] as const }}
           className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-center leading-[1.1] mb-6"
         >
           <span className="text-gradient-void">Attack Surface</span>
@@ -99,7 +99,7 @@ export default function HeroSection() {
         <motion.p
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.8, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.8, delay: 0.2, ease: [0.16, 1, 0.3, 1] as const }}
           className="text-center text-base md:text-lg text-white/50 max-w-2xl mx-auto mb-10 leading-relaxed"
         >
           Billion-dollar grade reconnaissance. Autonomous. Intelligent. Minimal.
@@ -111,7 +111,7 @@ export default function HeroSection() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.8, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.8, delay: 0.3, ease: [0.16, 1, 0.3, 1] as const }}
           className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-16"
         >
           <div className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/[0.9] text-black font-medium text-sm hover:bg-white transition-all duration-300 hover:shadow-[0_0_30px_rgba(255,255,255,0.08)] metallic-sheen">
@@ -172,7 +172,7 @@ export default function HeroSection() {
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 1, delay: 0.6, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 1, delay: 0.6, ease: [0.16, 1, 0.3, 1] as const }}
           className="max-w-3xl mx-auto"
         >
           <div className="cli-showcase glass-premium">

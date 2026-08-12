@@ -271,7 +271,7 @@ export function BroadcastCenterPanel() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
-        <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}>
+        <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: 'linear' as const }}>
           <Radio className="w-8 h-8 text-amber-400" />
         </motion.div>
         <span className="ml-3 text-zinc-400 text-sm">Initializing Echo-Sign Protocol...</span>
@@ -529,7 +529,7 @@ export function BroadcastCenterPanel() {
                     )}
                   >
                     {issuing ? (
-                      <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
+                      <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' as const }}>
                         <Send className="w-4 h-4" />
                       </motion.div>
                     ) : confirmIssue ? (
@@ -728,7 +728,7 @@ export function BroadcastCenterPanel() {
                     className="flex items-center gap-2 px-5 py-2.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold disabled:opacity-40 transition-all"
                   >
                     {verifying ? (
-                      <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}><Eye className="w-4 h-4" /></motion.div>
+                      <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' as const }}><Eye className="w-4 h-4" /></motion.div>
                     ) : <Eye className="w-4 h-4" />}
                     VERIFY
                   </button>

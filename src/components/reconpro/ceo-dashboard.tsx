@@ -95,13 +95,13 @@ const itemVariants = {
     opacity: 1,
     y: 0,
     scale: 1,
-    transition: { type: 'spring', stiffness: 200, damping: 24 },
+    transition: { type: 'spring' as const, stiffness: 200, damping: 24 },
   },
 };
 
 const cardHover = {
   scale: 1.015,
-  transition: { type: 'spring', stiffness: 400, damping: 25 },
+  transition: { type: 'spring' as const, stiffness: 400, damping: 25 },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,7 +218,7 @@ function CircularProgressRing({ score, size = 140, strokeWidth = 8 }: { score: n
           strokeDasharray={circumference}
           initial={{ strokeDashoffset: circumference }}
           animate={{ strokeDashoffset: offset }}
-          transition={{ duration: 2, ease: 'easeOut', delay: 0.3 }}
+          transition={{ duration: 2, ease: 'easeOut' as const, delay: 0.3 }}
           style={{ filter: `drop-shadow(0 0 12px ${glowColor})` }}
         />
       </svg>
@@ -228,7 +228,7 @@ function CircularProgressRing({ score, size = 140, strokeWidth = 8 }: { score: n
           style={{ color }}
           initial={{ opacity: 0, scale: 0.5 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.8, type: 'spring', stiffness: 200 }}
+          transition={{ delay: 0.8, type: 'spring' as const, stiffness: 200 }}
         >
           {score}
         </motion.span>
@@ -284,7 +284,7 @@ function ComplianceBar({ score, status }: { score: number; status: 'PASS' | 'WAR
         style={{ backgroundColor: color }}
         initial={{ width: 0 }}
         animate={{ width: `${score}%` }}
-        transition={{ duration: 1.5, ease: 'easeOut', delay: 0.5 }}
+        transition={{ duration: 1.5, ease: 'easeOut' as const, delay: 0.5 }}
       />
     </div>
   );
@@ -658,7 +658,7 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
             filter="url(#glow)"
             initial={{ pathLength: 0 }}
             animate={{ pathLength: 1 }}
-            transition={{ duration: 2.5, ease: 'easeInOut', delay: 0.3 }}
+            transition={{ duration: 2.5, ease: 'easeInOut' as const, delay: 0.3 }}
           />
 
           {/* End dot */}
@@ -669,7 +669,7 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
             fill="#00ff88"
             initial={{ opacity: 0, scale: 0 }}
             animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 2.5, type: 'spring' }}
+            transition={{ delay: 2.5, type: 'spring' as const }}
           />
           <motion.circle
             cx={points[points.length - 1].x}
@@ -681,7 +681,7 @@ function RiskTrendChart({ riskTrend }: { riskTrend: { date: string; score: numbe
             opacity="0.4"
             initial={{ opacity: 0, scale: 0 }}
             animate={{ opacity: 0.4, scale: 1 }}
-            transition={{ delay: 2.5, type: 'spring' }}
+            transition={{ delay: 2.5, type: 'spring' as const }}
           />
         </svg>
       </div>
@@ -1057,7 +1057,7 @@ function GlobalThreatMapMini() {
               strokeWidth="0.4"
               initial={{ pathLength: 0, opacity: 0 }}
               animate={{ pathLength: 1, opacity: 1 }}
-              transition={{ duration: 2, ease: 'easeOut' }}
+              transition={{ duration: 2, ease: 'easeOut' as const }}
             />
 
             {/* Connection lines between some threat points */}
@@ -1147,7 +1147,7 @@ function GlobalThreatMapMini() {
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{
                       delay: 0.5 + idx * 0.1,
-                      type: 'spring',
+                      type: 'spring' as const,
                       stiffness: 300,
                     }}
                   />

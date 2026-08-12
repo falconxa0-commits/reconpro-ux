@@ -226,7 +226,7 @@ function FloatingXPCanvas({ popups }: { popups: FloatingXP[] }) {
             initial={{ opacity: 0, y: 0, scale: 0.5 }}
             animate={{ opacity: 1, y: -80, scale: [0.5, 1.3, 1] }}
             exit={{ opacity: 0, y: -120 }}
-            transition={{ duration: 1.8, ease: 'easeOut' }}
+            transition={{ duration: 1.8, ease: 'easeOut' as const }}
             className="absolute font-bold font-mono"
             style={{ left: `${p.x}%`, top: `${p.y}%` }}
           >
@@ -293,7 +293,7 @@ function ScreenEffects({ shaking, flash }: { shaking: boolean; flash: 'none' | '
               x: [0, -4, 4, -3, 3, -2, 2, -1, 1, 0],
               y: [0, 2, -2, 3, -3, 1, -1, 2, 0, 0],
             }}
-            transition={{ duration: 0.4, ease: 'easeOut' }}
+            transition={{ duration: 0.4, ease: 'easeOut' as const }}
             className="fixed inset-0 pointer-events-none z-[79]"
           />
         )}
@@ -373,7 +373,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
               initial={{ scale: 0, rotate: -180 }}
               animate={{ scale: 1, rotate: 0 }}
               exit={{ scale: 1.2, opacity: 0, y: -40 }}
-              transition={{ type: 'spring', damping: 12, stiffness: 200 }}
+              transition={{ type: 'spring' as const, damping: 12, stiffness: 200 }}
               className="flex flex-col items-center"
             >
               <motion.div
@@ -430,7 +430,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
                     key={stat.label}
                     initial={{ opacity: 0, y: 30, scale: 0.8 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ delay: i * 0.15, type: 'spring', damping: 15 }}
+                    transition={{ delay: i * 0.15, type: 'spring' as const, damping: 15 }}
                     className="p-4 rounded-xl border"
                     style={{
                       backgroundColor: `${stat.color}08`,
@@ -446,7 +446,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
                       style={{ color: stat.color }}
                       initial={{ opacity: 0, scale: 0 }}
                       animate={{ opacity: 1, scale: 1 }}
-                      transition={{ delay: i * 0.15 + 0.3, type: 'spring', damping: 10 }}
+                      transition={{ delay: i * 0.15 + 0.3, type: 'spring' as const, damping: 10 }}
                     >
                       {stat.value}
                     </motion.span>
@@ -469,7 +469,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
               <motion.div
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
-                transition={{ type: 'spring', damping: 12 }}
+                transition={{ type: 'spring' as const, damping: 12 }}
                 className="inline-flex items-center gap-3 px-6 py-3 rounded-xl bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]"
               >
                 <Zap className="w-6 h-6 text-[#00ff88]" />
@@ -497,7 +497,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
                 <motion.div
                   initial={{ opacity: 0, scale: 0.5 }}
                   animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: 0.5, type: 'spring', damping: 10 }}
+                  transition={{ delay: 0.5, type: 'spring' as const, damping: 10 }}
                   className="flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-[rgba(255,107,107,0.1)] border border-[rgba(255,107,107,0.2)]"
                 >
                   <Crown className="w-4 h-4 text-[#ff6b6b]" />
@@ -575,7 +575,7 @@ function AchievementToasts({ achievements }: { achievements: Achievement[] }) {
               initial={{ opacity: 0, x: 100, scale: 0.8 }}
               animate={{ opacity: 1, x: 0, scale: 1 }}
               exit={{ opacity: 0, x: 100, scale: 0.8 }}
-              transition={{ type: 'spring', damping: 20, stiffness: 300, delay: i * 0.05 }}
+              transition={{ type: 'spring' as const, damping: 20, stiffness: 300, delay: i * 0.05 }}
               className="pointer-events-auto rounded-xl p-3 border"
               style={{
                 backgroundColor: config.bg,
@@ -619,7 +619,7 @@ function AchievementToasts({ achievements }: { achievements: Achievement[] }) {
 function useCombo() {
   const [combo, setCombo] = useState(0);
   const [maxCombo, setMaxCombo] = useState(0);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const increment = useCallback(() => {
     setCombo(prev => {
@@ -757,7 +757,7 @@ function MilestoneCelebration({ data, onClose }: { data: MilestoneData; onClose:
         initial={{ scale: 0, rotate: -90 }}
         animate={{ scale: 1, rotate: 0 }}
         exit={{ scale: 1.5, opacity: 0 }}
-        transition={{ type: 'spring', damping: 10, stiffness: 150 }}
+        transition={{ type: 'spring' as const, damping: 10, stiffness: 150 }}
         className="relative z-10 text-center"
       >
         {data.type === 'levelup' && (
@@ -807,7 +807,7 @@ function MilestoneCelebration({ data, onClose }: { data: MilestoneData; onClose:
           <>
             <motion.div
               animate={{ rotate: [0, 360] }}
-              transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
+              transition={{ duration: 3, repeat: Infinity, ease: 'linear' as const }}
             >
               <Award className="w-16 h-16 text-[#ffd93d] mx-auto mb-4" style={{
                 filter: 'drop-shadow(0 0 25px rgba(255,217,61,0.6))',
@@ -889,7 +889,7 @@ function AnticipationProgressBar({ progress }: { progress: number }) {
           background: 'linear-gradient(90deg, #00ff88, #06b6d4, #a78bfa)',
         }}
         animate={{ width: `${visualProgress}%` }}
-        transition={{ duration: 0.5, ease: 'easeOut' }}
+        transition={{ duration: 0.5, ease: 'easeOut' as const }}
       >
         {/* Glow at leading edge */}
         <div className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white/30 blur-sm" />
@@ -902,7 +902,7 @@ function AnticipationProgressBar({ progress }: { progress: number }) {
           background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.15) 50%, transparent 100%)',
         }}
         animate={{ x: ['-100%', '200%'] }}
-        transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
+        transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' as const }}
       />
 
       {/* Pulsing glow near finish */}

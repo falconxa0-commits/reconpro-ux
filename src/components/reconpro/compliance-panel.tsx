@@ -191,7 +191,7 @@ function ComplianceGauge({ score }: { score: number }) {
           strokeDasharray={circumference}
           initial={{ strokeDashoffset: circumference }}
           animate={{ strokeDashoffset: offset }}
-          transition={{ duration: 1.5, ease: 'easeOut', delay: 0.3 }}
+          transition={{ duration: 1.5, ease: 'easeOut' as const, delay: 0.3 }}
           style={{
             filter: `drop-shadow(0 0 8px ${color}50)`,
           }}
@@ -250,7 +250,7 @@ function TrendSparkline() {
         strokeLinejoin="round"
         initial={{ pathLength: 0 }}
         animate={{ pathLength: 1 }}
-        transition={{ delay: 0.5, duration: 1.2, ease: 'easeOut' }}
+        transition={{ delay: 0.5, duration: 1.2, ease: 'easeOut' as const }}
       />
       <motion.circle
         cx={(points.length - 1) * step}
@@ -360,12 +360,12 @@ const containerVariants = {
 
 const itemVariants = {
   hidden: { opacity: 0, y: 12 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' } },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' as const } },
 };
 
 const cardHover = {
   scale: 1.02,
-  transition: { type: 'spring', stiffness: 400, damping: 25 },
+  transition: { type: 'spring' as const, stiffness: 400, damping: 25 },
 };
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -589,7 +589,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                         style={{ backgroundColor: getScoreColor(fw.score) }}
                         initial={{ width: 0 }}
                         animate={{ width: `${fw.score}%` }}
-                        transition={{ delay: idx * 0.1 + 0.3, duration: 0.8, ease: 'easeOut' }}
+                        transition={{ delay: idx * 0.1 + 0.3, duration: 0.8, ease: 'easeOut' as const }}
                       />
                     </div>
                   </div>

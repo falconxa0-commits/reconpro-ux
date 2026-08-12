@@ -108,7 +108,7 @@ function generateThreatsFromFindings(findings: Array<{ severity: string; categor
         title: 'Expired Certificate — Active MITM Attack Window',
         severity: 'critical', source: 'Scan Analysis',
         description: `The SSL certificate for ${f.asset} has expired. This creates an immediate window for man-in-the-middle attacks where attackers on the network path can intercept all traffic, steal credentials, session cookies, and inject malicious content. All automated integrations (APIs, webhooks) will also fail with TLS errors.`,
-        ioc: f.evidence,
+        ioc: f.evidence ?? null,
       });
     }
   }
@@ -121,7 +121,7 @@ function generateThreatsFromFindings(findings: Array<{ severity: string; categor
         title: `Email Spoofing Enabled: No SPF for ${f.asset}`,
         severity: 'high', source: 'Scan Analysis',
         description: `Domain ${f.asset} has no SPF record, enabling attackers to send emails spoofed to appear from this domain. This is actively exploited for business email compromise (BEC), phishing campaigns, and brand impersonation. DMARC reporting will also be ineffective without SPF.`,
-        ioc: f.evidence,
+        ioc: f.evidence ?? null,
       });
     }
     if (f.title.includes('DMARC') && f.title.includes('Not Found')) {
@@ -129,7 +129,7 @@ function generateThreatsFromFindings(findings: Array<{ severity: string; categor
         title: `Domain Impersonation Risk: No DMARC for ${f.asset}`,
         severity: 'high', source: 'Scan Analysis',
         description: `Without DMARC, ${f.asset} cannot enforce email authentication policies. Attackers can impersonate this domain with near impunity. This is a top finding in phishing-related breaches and is required by many regulatory frameworks.`,
-        ioc: f.evidence,
+        ioc: f.evidence ?? null,
       });
     }
   }
@@ -141,7 +141,7 @@ function generateThreatsFromFindings(findings: Array<{ severity: string; categor
       title: `Exposed High-Risk Service: ${p.asset}`,
       severity: 'critical', source: 'Scan Analysis',
       description: `A high-risk service is directly accessible from the internet at ${p.asset}. Database and administrative services should NEVER be exposed publicly. This was likely detected during live port probing. Implement firewall rules, VPN access, or network segmentation immediately.`,
-      ioc: p.evidence,
+      ioc: p.evidence ?? null,
     });
   }
 

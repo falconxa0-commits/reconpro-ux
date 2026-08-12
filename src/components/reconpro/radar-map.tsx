@@ -193,6 +193,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
       sweepRef.current = (sweepRef.current + dt * 72) % 360;
       const sweepRad = sweepRef.current * DEG;
 
+      if (!ctx) return;
       ctx.clearRect(0, 0, W, H);
 
       // ──────────────────────────────────

@@ -222,7 +222,7 @@ export function HallOfFame() {
             animate={{
               boxShadow: ['0 0 20px rgba(255,215,0,0.15)', '0 0 40px rgba(255,215,0,0.25)', '0 0 20px rgba(255,215,0,0.15)'],
             }}
-            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' as const }}
           >
             <Trophy className="h-8 w-8 text-[#FFD700]" />
           </motion.div>
@@ -541,7 +541,7 @@ export function HallOfFame() {
                       <motion.div
                         initial={{ width: 0 }}
                         animate={{ width: `${entry.score}%` }}
-                        transition={{ delay: idx * 0.04 + 0.2, duration: 0.6, ease: 'easeOut' }}
+                        transition={{ delay: idx * 0.04 + 0.2, duration: 0.6, ease: 'easeOut' as const }}
                         className="h-full rounded-full"
                         style={{ backgroundColor: scoreColor(entry.score) }}
                       />

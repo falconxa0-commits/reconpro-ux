@@ -57,9 +57,9 @@ export function CommandPalette() {
     (item: (typeof paletteItems)[0]) => {
       if (item.type === "navigation" && item.section) {
         scrollTo(item.section);
-      } else if (item.action === "github") {
+      } else if (item.type === "action" && item.action === "github") {
         window.open("https://github.com/reconpro/reconpro", "_blank");
-      } else if (item.action === "copy") {
+      } else if (item.type === "action" && item.action === "copy") {
         navigator.clipboard.writeText("pip install reconpro");
       }
       handleOpen(false);

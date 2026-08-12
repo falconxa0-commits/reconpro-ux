@@ -142,7 +142,7 @@ function FearGauge({ score, level }: { score: number; level: FearLevel }) {
           strokeLinecap="round"
           initial={{ pathLength: 0 }}
           animate={{ pathLength: 1 }}
-          transition={{ duration: 1.5, ease: 'easeOut' }}
+          transition={{ duration: 1.5, ease: 'easeOut' as const }}
           style={{ filter: `drop-shadow(0 0 8px ${color}88)` }}
         />
         {/* Tick marks */}
@@ -176,7 +176,7 @@ function FearGauge({ score, level }: { score: number; level: FearLevel }) {
           style={{ color, fontSize: 72, lineHeight: 1, textShadow: `0 0 40px ${color}44` }}
           initial={{ opacity: 0, scale: 0.5 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.3, duration: 0.8, ease: 'easeOut' }}
+          transition={{ delay: 0.3, duration: 0.8, ease: 'easeOut' as const }}
         >
           {score.toFixed(1)}
         </motion.span>
@@ -294,12 +294,12 @@ function TrendChart({ data }: { data: HistoricalDataPoint[] }) {
         {/* Score line */}
         <motion.polyline
           points={linePoints} fill="none" stroke="#60a5fa" strokeWidth={2} strokeLinejoin="round"
-          initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 2, ease: 'easeOut' }}
+          initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 2, ease: 'easeOut' as const }}
         />
         {/* Moving average */}
         <motion.polyline
           points={maPoints} fill="none" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="6 3" strokeLinejoin="round" opacity={0.7}
-          initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 2, delay: 0.5, ease: 'easeOut' }}
+          initial={{ pathLength: 0 }} animate={{ pathLength: 1 }} transition={{ duration: 2, delay: 0.5, ease: 'easeOut' as const }}
         />
         {/* Spike markers */}
         {spikes.map(i => (

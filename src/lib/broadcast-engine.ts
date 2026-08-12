@@ -73,9 +73,10 @@ function fromHex(hex: string): Uint8Array {
 // ── Broadcast ID Generator ─────────────────────────────────────────────
 
 export function generateBroadcastId(): string {
-  const block1 = Math.random().toString(36).substring(2, 6).toUpperCase();
-  const block2 = Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `BC-${block1}-${block2}`;
+  const bytes = new Uint8Array(4);
+  crypto.getRandomValues(bytes);
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+  return `BC-${hex.slice(0, 4)}-${hex.slice(4)}`;
 }
 
 // ── Key Management ─────────────────────────────────────────────────────

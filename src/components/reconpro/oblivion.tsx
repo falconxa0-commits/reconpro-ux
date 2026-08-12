@@ -242,7 +242,7 @@ function OblivionHeader() {
         <div className="flex items-center gap-3 mb-2">
           <motion.div
             animate={{ scale: [1, 1.08, 1], opacity: [0.7, 1, 0.7] }}
-            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' as const }}
           >
             <Eye className="h-7 w-7 text-violet-400" style={{ filter: 'drop-shadow(0 0 8px rgba(168, 85, 247, 0.6))' }} />
           </motion.div>
@@ -296,7 +296,7 @@ function DualGauge({ threatScore, dreadScore }: { threatScore: number; dreadScor
             strokeLinecap="round" strokeDasharray={circ}
             initial={{ strokeDashoffset: circ }}
             animate={{ strokeDashoffset: circ * (1 - threatScore / 100) }}
-            transition={{ duration: 1.5, ease: 'easeOut' }}
+            transition={{ duration: 1.5, ease: 'easeOut' as const }}
             style={{ filter: `drop-shadow(0 0 8px ${threatColor}80)` }}
           />
         </svg>
@@ -320,7 +320,7 @@ function DualGauge({ threatScore, dreadScore }: { threatScore: number; dreadScor
             strokeLinecap="round" strokeDasharray={circ}
             initial={{ strokeDashoffset: circ }}
             animate={{ strokeDashoffset: circ * (1 - dreadScore / 100) }}
-            transition={{ duration: 1.8, ease: 'easeOut', delay: 0.3 }}
+            transition={{ duration: 1.8, ease: 'easeOut' as const, delay: 0.3 }}
             style={{ filter: `drop-shadow(0 0 14px ${dreadColor}cc)` }}
           />
         </svg>
@@ -421,7 +421,7 @@ function EmptyState({ tools, wisdomQuotes }: { tools: any[]; wisdomQuotes: strin
       <div className="rounded-xl border border-violet-900/30 bg-black/60 p-6 text-center">
         <motion.div
           animate={{ opacity: [0.4, 1, 0.4] }}
-          transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+          transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' as const }}
           className="mx-auto mb-3 w-fit"
         >
           <Eye className="h-10 w-10 text-violet-400" style={{ filter: 'drop-shadow(0 0 12px rgba(168, 85, 247, 0.7))' }} />
@@ -496,7 +496,7 @@ function ScanForm({ onScan, loading }: { onScan: (target: string) => void; loadi
           <>
             <motion.div
               animate={{ rotate: 360 }}
-              transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'linear' as const }}
             >
               <Eye className="h-4 w-4" />
             </motion.div>
@@ -838,7 +838,7 @@ export function Oblivion() {
         >
           <motion.div
             animate={{ scale: [1, 1.1, 1], opacity: [0.6, 1, 0.6] }}
-            transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+            transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' as const }}
             className="mx-auto mb-4 w-fit"
           >
             <Eye className="h-12 w-12 text-violet-400" style={{ filter: 'drop-shadow(0 0 16px rgba(168, 85, 247, 0.8))' }} />

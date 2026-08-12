@@ -532,7 +532,7 @@ ${results.verdict === 'LIKELY INFECTED' ? [
                 <>
                   <motion.div
                     animate={{ rotate: 360 }}
-                    transition={{ repeat: Infinity, duration: 1, ease: 'linear' }}
+                    transition={{ repeat: Infinity, duration: 1, ease: 'linear' as const }}
                   >
                     <Radio className="w-4 h-4" />
                   </motion.div>
@@ -660,7 +660,7 @@ ${results.verdict === 'LIKELY INFECTED' ? [
               <div className="text-center py-12">
                 <motion.div
                   animate={{ rotate: 360 }}
-                  transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
+                  transition={{ repeat: Infinity, duration: 2, ease: 'linear' as const }}
                 >
                   <Radio className="w-10 h-10 text-red-400 mx-auto" />
                 </motion.div>

@@ -131,7 +131,7 @@ function GaugeRing({ value, max, color, size = 100, strokeWidth = 6, label, unit
         <motion.circle
           cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={strokeWidth}
           strokeLinecap="round" strokeDasharray={circ} initial={{ strokeDashoffset: circ }}
-          animate={{ strokeDashoffset: offset }} transition={{ duration: 1.2, ease: 'easeOut' }}
+          animate={{ strokeDashoffset: offset }} transition={{ duration: 1.2, ease: 'easeOut' as const }}
         />
       </svg>
       <div className="absolute flex flex-col items-center justify-center" style={{ width: size, height: size }}>

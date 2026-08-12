@@ -93,7 +93,7 @@ function deriveModuleScores(scan: ApiScan): Record<string, number> {
   const oblivionScore = Math.min(100, Math.round(scan.riskScore * 0.8));
 
   return {
-    recon,
+    recon: reconScore,
     auth: authScore,
     chain: chainScore,
     bot: botScore,

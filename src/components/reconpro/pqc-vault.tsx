@@ -182,7 +182,7 @@ export function PQCVaultPanel() {
               strokeDasharray={gaugeCircumference}
               initial={{ strokeDashoffset: gaugeCircumference }}
               animate={{ strokeDashoffset: gaugeOffset }}
-              transition={{ duration: 1.5, ease: 'easeOut' }}
+              transition={{ duration: 1.5, ease: 'easeOut' as const }}
             />
           </svg>
           {/* Center text */}

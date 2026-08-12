@@ -254,6 +254,7 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
       const es = edgesRef.current;
       const nodeMap = new Map(ns.map(n => [n.id, n]));
 
+      if (!ctx) return;
       ctx.clearRect(0, 0, dimensions.width, dimensions.height);
 
       // Draw grid

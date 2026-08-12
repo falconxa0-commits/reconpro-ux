@@ -22,8 +22,6 @@ export const metadata: Metadata = {
   authors: [{ name: "ReconPro", url: "https://github.com/reconpro" }],
   creator: "ReconPro",
   publisher: "ReconPro",
-  category: "security",
-  version: "10.0.0",
   alternates: {
     canonical: "https://reconpro.dev",
   },

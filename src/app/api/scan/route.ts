@@ -332,7 +332,7 @@ async function analyzeHTTPHeaders(domain: string): Promise<{ findings: Finding[]
       severity: 'high', category: 'header',
       description: `No HSTS header on ${domain}. Browsers may attempt HTTP before HTTPS, enabling SSL stripping MITM attacks. Set HSTS with max-age >= 31536000 and includeSubDomains.`,
       evidence: 'strict-transport-security header not found',
-      asset: domain, technologies,
+      asset: domain,
     });
   } else {
     const hsts = hmap['strict-transport-security'];
@@ -340,60 +340,60 @@ async function analyzeHTTPHeaders(domain: string): Promise<{ findings: Finding[]
     const age = ma ? parseInt(ma[1]) : 0;
     if (age < 31536000) {
       findings.push({ title: `HSTS max-age Too Short (${Math.round(age/86400)} days)`, severity: 'medium', category: 'header',
-        description: `HSTS max-age is ${age}s (${Math.round(age/86400)}d). Best practice: >= 1 year (31536000s).`, evidence: `HSTS: ${hsts}`, asset: domain, technologies });
+        description: `HSTS max-age is ${age}s (${Math.round(age/86400)}d). Best practice: >= 1 year (31536000s).`, evidence: `HSTS: ${hsts}`, asset: domain });
     } else if (!hsts.includes('includeSubDomains')) {
       findings.push({ title: 'HSTS Missing includeSubDomains', severity: 'medium', category: 'header',
-        description: `HSTS active but without includeSubDomains — subdomains remain vulnerable.`, evidence: `HSTS: ${hsts}`, asset: domain, technologies });
+        description: `HSTS active but without includeSubDomains — subdomains remain vulnerable.`, evidence: `HSTS: ${hsts}`, asset: domain });
     } else {
       findings.push({ title: 'HSTS Properly Configured', severity: 'info', category: 'header',
-        description: `HSTS active with proper configuration.`, evidence: `HSTS: ${hsts}`, asset: domain, technologies });
+        description: `HSTS active with proper configuration.`, evidence: `HSTS: ${hsts}`, asset: domain });
     }
   }
 
   // CSP
   if (!hmap['content-security-policy'] && !hmap['content-security-policy-report-only']) {
     findings.push({ title: 'Missing Content-Security-Policy (CSP)', severity: 'high', category: 'header',
-      description: `No CSP header. CSP is the primary defense against XSS and data injection. Without it, browsers will execute any inline scripts and load resources from any origin.`, evidence: 'content-security-policy header not found', asset: domain, technologies });
+      description: `No CSP header. CSP is the primary defense against XSS and data injection. Without it, browsers will execute any inline scripts and load resources from any origin.`, evidence: 'content-security-policy header not found', asset: domain });
   } else {
     const csp = hmap['content-security-policy'] || hmap['content-security-policy-report-only'];
     if (csp.includes("'unsafe-inline'") && csp.includes("'unsafe-eval'")) {
       findings.push({ title: 'CSP Uses unsafe-inline and unsafe-eval', severity: 'medium', category: 'header',
-        description: `CSP present but weakened by 'unsafe-inline' and 'unsafe-eval', significantly reducing XSS protection.`, evidence: `CSP: ${csp.substring(0,200)}`, asset: domain, technologies });
+        description: `CSP present but weakened by 'unsafe-inline' and 'unsafe-eval', significantly reducing XSS protection.`, evidence: `CSP: ${csp.substring(0,200)}`, asset: domain });
     } else {
       findings.push({ title: 'Content-Security-Policy Configured', severity: 'info', category: 'header',
-        description: `CSP header present, providing XSS protection.`, evidence: `CSP: ${csp.substring(0,150)}`, asset: domain, technologies });
+        description: `CSP header present, providing XSS protection.`, evidence: `CSP: ${csp.substring(0,150)}`, asset: domain });
     }
   }
 
   // X-Frame-Options
   if (!hmap['x-frame-options']) {
     findings.push({ title: 'Missing X-Frame-Options Header', severity: 'medium', category: 'header',
-      description: `No X-Frame-Options — site is vulnerable to clickjacking. Set to "DENY" or "SAMEORIGIN".`, evidence: 'x-frame-options not found', asset: domain, technologies });
+      description: `No X-Frame-Options — site is vulnerable to clickjacking. Set to "DENY" or "SAMEORIGIN".`, evidence: 'x-frame-options not found', asset: domain });
   }
 
   // X-Content-Type-Options
   if (hmap['x-content-type-options'] !== 'nosniff') {
     findings.push({ title: 'Missing X-Content-Type-Options: nosniff', severity: 'low', category: 'header',
-      description: `Without nosniff, browsers may MIME-sniff content types.`, evidence: `x-content-type-options: ${hmap['x-content-type-options'] || 'not set'}`, asset: domain, technologies });
+      description: `Without nosniff, browsers may MIME-sniff content types.`, evidence: `x-content-type-options: ${hmap['x-content-type-options'] || 'not set'}`, asset: domain });
   }
 
   // Referrer-Policy
   if (!hmap['referrer-policy']) {
     findings.push({ title: 'Missing Referrer-Policy Header', severity: 'low', category: 'header',
-      description: `No Referrer-Policy — full URLs may leak to third parties via Referer header.`, evidence: 'referrer-policy not found', asset: domain, technologies });
+      description: `No Referrer-Policy — full URLs may leak to third parties via Referer header.`, evidence: 'referrer-policy not found', asset: domain });
   }
 
   // Permissions-Policy
   if (!hmap['permissions-policy'] && !hmap['feature-policy']) {
     findings.push({ title: 'Missing Permissions-Policy Header', severity: 'low', category: 'header',
-      description: `No Permissions-Policy — browser features (camera, mic, etc.) not restricted.`, evidence: 'permissions-policy not found', asset: domain, technologies });
+      description: `No Permissions-Policy — browser features (camera, mic, etc.) not restricted.`, evidence: 'permissions-policy not found', asset: domain });
   }
 
   // CORS
   if (hmap['access-control-allow-origin']) {
     if (hmap['access-control-allow-origin'] === '*') {
       findings.push({ title: 'CORS Allows Any Origin (*)', severity: 'high', category: 'header',
-        description: `Access-Control-Allow-Origin: * means any website can read responses. If sensitive data is served, it can be exfiltrated by any malicious site.`, evidence: 'access-control-allow-origin: *', asset: domain, technologies });
+        description: `Access-Control-Allow-Origin: * means any website can read responses. If sensitive data is served, it can be exfiltrated by any malicious site.`, evidence: 'access-control-allow-origin: *', asset: domain });
     }
   }
 
@@ -402,7 +402,7 @@ async function analyzeHTTPHeaders(domain: string): Promise<{ findings: Finding[]
     technologies.push(hmap['server']);
     if (/\d+\.\d+/.test(hmap['server'])) {
       findings.push({ title: 'Server Version Disclosure', severity: 'medium', category: 'header',
-        description: `Server header reveals version: "${hmap['server']}". Remove version numbers to reduce info leakage.`, evidence: `server: ${hmap['server']}`, asset: domain, technologies });
+        description: `Server header reveals version: "${hmap['server']}". Remove version numbers to reduce info leakage.`, evidence: `server: ${hmap['server']}`, asset: domain });
     }
   }
 
@@ -410,7 +410,7 @@ async function analyzeHTTPHeaders(domain: string): Promise<{ findings: Finding[]
   if (hmap['x-powered-by']) {
     technologies.push(hmap['x-powered-by']);
     findings.push({ title: `Technology Disclosure: X-Powered-By: ${hmap['x-powered-by']}`, severity: 'low', category: 'header',
-      description: `X-Powered-By reveals backend: "${hmap['x-powered-by']}". Remove in production.`, evidence: `x-powered-by: ${hmap['x-powered-by']}`, asset: domain, technologies });
+      description: `X-Powered-By reveals backend: "${hmap['x-powered-by']}". Remove in production.`, evidence: `x-powered-by: ${hmap['x-powered-by']}`, asset: domain });
   }
 
   // Detect tech from headers
@@ -439,7 +439,7 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
 
   if (!certInfo && !sslConnect.includes('SSL handshake')) {
     findings.push({ title: 'SSL/TLS Connection Failed', severity: 'high', category: 'ssl',
-      description: `Could not establish SSL/TLS to ${domain}:443. Server may not support HTTPS.`, evidence: 'openssl s_client failed', asset: `${domain}:443`, technologies });
+      description: `Could not establish SSL/TLS to ${domain}:443. Server may not support HTTPS.`, evidence: 'openssl s_client failed', asset: `${domain}:443` });
     return { findings, technologies };
   }
 
@@ -448,7 +448,7 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
   // Subject
   const subjM = full.match(/subject=([^\n]+)/);
   if (subjM) findings.push({ title: `SSL Certificate Subject: ${subjM[1].trim()}`, severity: 'info', category: 'ssl',
-    description: `Certificate issued to: ${subjM[1].trim()}.`, evidence: `subject: ${subjM[1].trim()}`, asset: domain, technologies });
+    description: `Certificate issued to: ${subjM[1].trim()}.`, evidence: `subject: ${subjM[1].trim()}`, asset: domain });
 
   // Issuer + tech detection
   const issM = full.match(/issuer=([^\n]+)/);
@@ -461,7 +461,7 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
   else if (issuer.includes('Google')) technologies.push('Google Trust Services');
 
   findings.push({ title: `SSL Certificate Issuer: ${issuer}`, severity: 'info', category: 'ssl',
-    description: `Issued by: ${issuer}.`, evidence: `issuer: ${issuer}`, asset: domain, technologies });
+    description: `Issued by: ${issuer}.`, evidence: `issuer: ${issuer}`, asset: domain });
 
   // Dates + expiry
   const nbM = full.match(/notBefore=(.+)/);
@@ -473,25 +473,25 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
     const lifespan = Math.ceil((na.getTime() - nb.getTime()) / 86400000);
 
     findings.push({ title: `SSL Certificate Validity: ${nb.toISOString().split('T')[0]} — ${na.toISOString().split('T')[0]}`, severity: 'info', category: 'ssl',
-      description: `Certificate lifespan: ${lifespan} days. Valid from ${nb.toISOString().split('T')[0]} to ${na.toISOString().split('T')[0]}.`, evidence: `notBefore: ${nbM[1].trim()}, notAfter: ${naM[1].trim()}`, asset: domain, technologies });
+      description: `Certificate lifespan: ${lifespan} days. Valid from ${nb.toISOString().split('T')[0]} to ${na.toISOString().split('T')[0]}.`, evidence: `notBefore: ${nbM[1].trim()}, notAfter: ${naM[1].trim()}`, asset: domain });
 
     if (days < 0) {
       findings.push({ title: `SSL Certificate EXPIRED ${Math.abs(days)} days ago`, severity: 'critical', category: 'ssl',
-        description: `Certificate for ${domain} expired ${Math.abs(days)} days ago. Browsers show security warnings, automated integrations fail with TLS errors. Immediate renewal required.`, evidence: `Expired: ${na.toISOString()}`, asset: domain, technologies });
+        description: `Certificate for ${domain} expired ${Math.abs(days)} days ago. Browsers show security warnings, automated integrations fail with TLS errors. Immediate renewal required.`, evidence: `Expired: ${na.toISOString()}`, asset: domain });
     } else if (days <= 7) {
       findings.push({ title: `SSL Certificate Expiring in ${days} Days — CRITICAL`, severity: 'critical', category: 'ssl',
-        description: `Certificate expires in ${days} days. Emergency renewal required.`, evidence: `Expires: ${na.toISOString()} (${days}d)`, asset: domain, technologies });
+        description: `Certificate expires in ${days} days. Emergency renewal required.`, evidence: `Expires: ${na.toISOString()} (${days}d)`, asset: domain });
     } else if (days <= 30) {
       findings.push({ title: `SSL Certificate Expiring in ${days} Days`, severity: 'high', category: 'ssl',
-        description: `Certificate expires in ${days} days. Prompt renewal needed.`, evidence: `Expires: ${na.toISOString()} (${days}d)`, asset: domain, technologies });
+        description: `Certificate expires in ${days} days. Prompt renewal needed.`, evidence: `Expires: ${na.toISOString()} (${days}d)`, asset: domain });
     } else if (days <= 90) {
       findings.push({ title: `SSL Certificate Expiring in ${days} Days`, severity: 'medium', category: 'ssl',
-        description: `Certificate expires in ${days} days. Plan renewal.`, evidence: `Expires: ${na.toISOString()} (${days}d)`, asset: domain, technologies });
+        description: `Certificate expires in ${days} days. Plan renewal.`, evidence: `Expires: ${na.toISOString()} (${days}d)`, asset: domain });
     }
 
     if (lifespan > 398) {
       findings.push({ title: `Certificate Lifespan Exceeds 398 Days (${lifespan}d)`, severity: 'medium', category: 'ssl',
-        description: `Lifespan exceeds Apple/Google 398-day max. New certs must be shorter.`, evidence: `Lifespan: ${lifespan}d (max: 398)`, asset: domain, technologies });
+        description: `Lifespan exceeds Apple/Google 398-day max. New certs must be shorter.`, evidence: `Lifespan: ${lifespan}d (max: 398)`, asset: domain });
     }
   }
 
@@ -500,7 +500,7 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
   if (sanM) {
     const sans = sanM[1].match(/DNS:[^\s,]+/g);
     if (sans) findings.push({ title: `Certificate Covers ${sans.length} Domain(s) (SAN)`, severity: 'info', category: 'ssl',
-      description: `SANs: ${sans.map(s=>s.replace('DNS:','')).join(', ')}.`, evidence: `SAN: ${sans.join(', ')}`, asset: domain, technologies });
+      description: `SANs: ${sans.map(s=>s.replace('DNS:','')).join(', ')}.`, evidence: `SAN: ${sans.join(', ')}`, asset: domain });
   }
 
   // TLS version
@@ -508,18 +508,18 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
   const proto = protoM ? protoM[1].trim() : '';
   if (proto.includes('TLSv1 ') || proto.includes('TLSv1.0')) {
     findings.push({ title: 'Weak TLS Version: TLS 1.0 Detected', severity: 'high', category: 'ssl',
-      description: `TLS 1.0 deprecated (RFC 8996, 2020). Vulnerable to BEAST, POODLE, RC4. PCI-DSS prohibits. Disable immediately.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443`, technologies });
+      description: `TLS 1.0 deprecated (RFC 8996, 2020). Vulnerable to BEAST, POODLE, RC4. PCI-DSS prohibits. Disable immediately.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443` });
   } else if (proto.includes('TLSv1.1')) {
     findings.push({ title: 'Deprecated TLS 1.1 Detected', severity: 'high', category: 'ssl',
-      description: `TLS 1.1 deprecated in 2020. Known weaknesses. PCI-DSS requires disabling. Support TLS 1.2+ only.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443`, technologies });
+      description: `TLS 1.1 deprecated in 2020. Known weaknesses. PCI-DSS requires disabling. Support TLS 1.2+ only.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443` });
   } else if (proto.includes('TLSv1.3')) {
     technologies.push('TLS 1.3');
     findings.push({ title: 'Modern TLS 1.3 Negotiated', severity: 'info', category: 'ssl',
-      description: `TLS 1.3 — latest version with 0-RTT, mandatory forward secrecy, no weak ciphers.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443`, technologies });
+      description: `TLS 1.3 — latest version with 0-RTT, mandatory forward secrecy, no weak ciphers.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443` });
   } else if (proto.includes('TLSv1.2')) {
     technologies.push('TLS 1.2');
     findings.push({ title: 'TLS 1.2 Negotiated', severity: 'info', category: 'ssl',
-      description: `TLS 1.2 — secure when configured with strong cipher suites. Consider enabling TLS 1.3.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443`, technologies });
+      description: `TLS 1.2 — secure when configured with strong cipher suites. Consider enabling TLS 1.3.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443` });
   }
 
   // Cipher
@@ -528,10 +528,10 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
   const weakC = ['RC4','DES','MD5','NULL','EXPORT','3DES'];
   if (weakC.some(w => cipher.toUpperCase().includes(w))) {
     findings.push({ title: `Weak Cipher Suite: ${cipher}`, severity: 'high', category: 'ssl',
-      description: `Weak cipher (${cipher}) — vulnerable to known attacks. Use AEAD ciphers (AES-GCM, ChaCha20-Poly1305) with ECDHE.`, evidence: `Cipher: ${cipher}`, asset: `${domain}:443`, technologies });
+      description: `Weak cipher (${cipher}) — vulnerable to known attacks. Use AEAD ciphers (AES-GCM, ChaCha20-Poly1305) with ECDHE.`, evidence: `Cipher: ${cipher}`, asset: `${domain}:443` });
   } else if (cipher) {
     findings.push({ title: `Cipher Suite: ${cipher}`, severity: 'info', category: 'ssl',
-      description: `Negotiated: ${cipher}.`, evidence: `Cipher: ${cipher}`, asset: `${domain}:443`, technologies });
+      description: `Negotiated: ${cipher}.`, evidence: `Cipher: ${cipher}`, asset: `${domain}:443` });
   }
 
   return { findings, technologies };
@@ -569,7 +569,7 @@ async function probePorts(domain: string): Promise<Finding[]> {
     })
   );
 
-  return results.filter(Boolean).map(({ port, service, risk, desc, status }) => ({
+  return results.filter((r): r is NonNullable<typeof r> => Boolean(r)).map(({ port, service, risk, desc, status }) => ({
     title: `Port ${port}/tcp OPEN — ${service}`,
     severity: risk === 'info' ? 'info' : risk, category: 'port',
     description: `${service} accessible on port ${port}. ${desc}.${risk === 'critical' || risk === 'high' ? ' This should not be publicly accessible.' : ''}`,
@@ -1136,6 +1136,18 @@ export async function POST(request: NextRequest) {
 
     const cleanDomain = domain.replace(/^(https?:\/\/)?(www\.)?/, '').replace(/\/.*$/, '').replace(/:\d+$/, '').toLowerCase();
 
+    // CRITICAL: Validate domain format — block shell metacharacters, IPs, and internal hosts
+    const DOMAIN_REGEX = /^[a-zA-Z0-9]([a-zA-Z0-9-]*\.)+[a-zA-Z]{2,}$/;
+    if (!DOMAIN_REGEX.test(cleanDomain)) {
+      return NextResponse.json({ error: 'Invalid domain format. Must be a public FQDN (e.g. example.com).' }, { status: 400 });
+    }
+
+    // Block known internal/sensitive domains
+    const BLOCKED_DOMAINS = ['localhost', 'localhost.localdomain', 'internal', 'metadata.google.internal', 'metadata'];
+    if (BLOCKED_DOMAINS.includes(cleanDomain) || cleanDomain.endsWith('.local') || cleanDomain.endsWith('.internal')) {
+      return NextResponse.json({ error: 'Scanning internal domains is not permitted.' }, { status: 403 });
+    }
+
     // Pre-check: domain must resolve
     const preCheckIp = await resolveIP(cleanDomain);
     if (!preCheckIp) {
@@ -1195,7 +1207,7 @@ export async function POST(request: NextRequest) {
         reconReverseDNS([...dnsResult.mainIp ? [dnsResult.mainIp] : [], ...subFindings.map(f => {
           const m = f.evidence.match(/\d+\.\d+\.\d+\.\d+/);
           return m ? m[0] : null;
-        }).filter(Boolean)]),
+        }).filter((v): v is string => Boolean(v))]),
         attemptZoneTransfer(cleanDomain),
         analyzeRobotsAndSitemap(cleanDomain),
         analyzeJSFiles(cleanDomain),

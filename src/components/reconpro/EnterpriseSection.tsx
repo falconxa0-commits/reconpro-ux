@@ -35,7 +35,7 @@ const itemVariants = {
     opacity: 1,
     y: 0,
     scale: 1,
-    transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] },
+    transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as const },
   },
 };
 
@@ -278,7 +278,7 @@ export function EnterpriseSection() {
                       exit={{ opacity: 0, x: -40 }}
                       transition={{
                         duration: 0.4,
-                        ease: [0.16, 1, 0.3, 1],
+                        ease: [0.16, 1, 0.3, 1] as const,
                       }}
                       className="text-center"
                     >

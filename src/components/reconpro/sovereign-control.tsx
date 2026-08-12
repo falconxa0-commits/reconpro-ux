@@ -345,7 +345,7 @@ export function SovereignControlPanel() {
             {/* Shield Icon */}
             <motion.div
               animate={{ scale: [1, 1.05, 1] }}
-              transition={{ repeat: Infinity, duration: 3, ease: 'easeInOut' }}
+              transition={{ repeat: Infinity, duration: 3, ease: 'easeInOut' as const }}
               className="relative"
             >
               <Shield className="h-16 w-16" style={{ color: '#FFD700', filter: 'drop-shadow(0 0 20px rgba(255,215,0,0.5))' }} />

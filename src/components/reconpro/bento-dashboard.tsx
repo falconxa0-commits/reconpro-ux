@@ -52,7 +52,7 @@ const stagger = {
 };
 const fadeUp = {
   hidden: { opacity: 0, y: 20, scale: 0.98 },
-  show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring', stiffness: 180, damping: 22 } },
+  show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring' as const, stiffness: 180, damping: 22 } },
 };
 
 // ─── Severity Donut (SVG) ────────────────────────────────────────────
@@ -159,7 +159,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
                 style={{ background: `linear-gradient(90deg, ${scoreColor}90, ${scoreColor})` }}
                 initial={{ width: 0 }}
                 animate={{ width: `${score}%` }}
-                transition={{ duration: 1.8, ease: [0.16, 1, 0.3, 1], delay: 0.3 }}
+                transition={{ duration: 1.8, ease: [0.16, 1, 0.3, 1] as const, delay: 0.3 }}
               />
             </div>
             <span className="text-[10px] font-mono" style={{ color: scoreColor }}>{score >= 70 ? 'HIGH RISK' : score >= 40 ? 'MODERATE' : 'LOW'}</span>

@@ -27,7 +27,7 @@ export function useInView(threshold = 0.1) {
 
 export function useCountUp(end: number, duration = 2000, startWhen = true) {
   const [count, setCount] = useState(0);
-  const frameRef = useRef<number>();
+  const frameRef = useRef<number>(undefined);
 
   useEffect(() => {
     if (!startWhen) return;

@@ -32,7 +32,7 @@ export function PremiumCard({
       className={`stat-card ${padClass} ${className}`}
       style={{ '--accent-line': `${accentColor}30` } as React.CSSProperties}
       whileHover={hover ? { y: -2 } : undefined}
-      transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] as const }}
     >
       {children}
     </motion.div>

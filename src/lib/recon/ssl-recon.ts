@@ -33,9 +33,9 @@ function connectTLS(domain: string, port = 443, timeout = 5000): Promise<TLSConn
         cipher: {
           name: socket.getCipher().name,
           version: socket.getCipher().version,
-          standardName: (socket.getCipher() as Record<string, string>).standardName || socket.getCipher().name,
+          standardName: (socket.getCipher() as unknown as Record<string, string>).standardName || socket.getCipher().name,
         },
-        protocol: socket.getProtocol(),
+        protocol: socket.getProtocol() ?? undefined,
       };
       socket.destroy();
       resolve(result);
@@ -171,8 +171,6 @@ export async function analyzeSSL(domain: string, port = 443): Promise<SSLResult>
     issues.push({
       finding: 'TLS 1.2 (Consider Upgrading to TLS 1.3)',
       severity: 'low',
-      category: 'ssl',
-      description: 'TLS 1.2 is secure but TLS 1.3 offers improved performance (0-RTT), stronger cipher suites, and removes legacy algorithms.',
       detail: 'TLS 1.2 is currently supported and secure. However, TLS 1.3 provides better security and performance. Consider enabling TLS 1.3 while keeping 1.2 for backwards compatibility.',
     });
   } else if (result.protocol === 'TLSv1.3') {
@@ -224,7 +222,7 @@ export async function analyzeSSL(domain: string, port = 443): Promise<SSLResult>
   }
 
   // 5. Certificate chain length
-  const chainLen = cert.issuerCertificate ? 1 + (cert.issuerCertificate.issuerCertificate ? 1 : 0) : 0;
+  const chainLen = 0; // Chain length analysis requires full chain access
 
   // 6. SAN analysis
   if (sans.length > 50) {

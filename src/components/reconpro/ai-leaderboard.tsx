@@ -115,7 +115,7 @@ function useAnimatedNumber(target: number, duration: number = 1.5) {
     prevTarget.current = target;
     const controls = animate(motionVal, target, {
       duration,
-      ease: 'easeOut',
+      ease: 'easeOut' as const,
       onUpdate: (v) => setDisplay(Math.round(v)),
     });
     return () => controls.stop();
@@ -149,7 +149,7 @@ function FragilityGauge({ score, size = 80 }: { score: number; size?: number }) 
           strokeLinecap="round"
           initial={{ strokeDasharray: `${circumference} ${circumference}`, strokeDashoffset: circumference }}
           animate={{ strokeDasharray: `${circumference} ${circumference}`, strokeDashoffset: circumference - progress }}
-          transition={{ duration: 1.2, ease: 'easeOut' }}
+          transition={{ duration: 1.2, ease: 'easeOut' as const }}
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -171,7 +171,7 @@ function CategoryBar({ value }: { value: number }) {
           style={{ background: `linear-gradient(90deg, ${color}88, ${color})` }}
           initial={{ width: 0 }}
           animate={{ width: `${pct}%` }}
-          transition={{ duration: 0.8, ease: 'easeOut', delay: 0.1 }}
+          transition={{ duration: 0.8, ease: 'easeOut' as const, delay: 0.1 }}
         />
       </div>
       <span className="text-[11px] font-mono w-7 text-right" style={{ color }}>{value}</span>
@@ -406,7 +406,7 @@ export function AILeaderboard() {
       <div className="space-y-6">
         <div className="flex items-center justify-center py-20">
           <div className="flex flex-col items-center gap-4">
-            <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}>
+            <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity, ease: 'linear' as const }}>
               <Ghost className="w-10 h-10 text-[#00ff88]" />
             </motion.div>
             <div className="text-center">
@@ -465,7 +465,7 @@ export function AILeaderboard() {
                 disabled={refreshing}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[rgba(239,68,68,0.1)] border border-[rgba(239,68,68,0.2)] text-sm text-[#ff3355] hover:bg-[rgba(239,68,68,0.15)] transition-colors disabled:opacity-50"
               >
-                <motion.div animate={refreshing ? { rotate: 360 } : {}} transition={{ duration: 1, repeat: refreshing ? Infinity : 0, ease: 'linear' }}>
+                <motion.div animate={refreshing ? { rotate: 360 } : {}} transition={{ duration: 1, repeat: refreshing ? Infinity : 0, ease: 'linear' as const }}>
                   <RefreshCw className="w-4 h-4" />
                 </motion.div>
                 {refreshing ? 'Scanning...' : 'New Scan'}
@@ -485,7 +485,7 @@ export function AILeaderboard() {
                   '0 0 80px rgba(239,68,68,0.15), 0 0 160px rgba(239,68,68,0.08)',
                   '0 0 60px rgba(239,68,68,0.1), 0 0 120px rgba(239,68,68,0.05)',
                 ] }}
-                transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+                transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' as const }}
               />
               <div className="text-center">
                 <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground mb-2">AI Fragility Index</div>
@@ -571,7 +571,7 @@ export function AILeaderboard() {
                         style={{ background: `linear-gradient(90deg, ${meta.color}66, ${meta.color})` }}
                         initial={{ width: 0 }}
                         animate={{ width: `${val}%` }}
-                        transition={{ duration: 1, ease: 'easeOut', delay: 0.2 }}
+                        transition={{ duration: 1, ease: 'easeOut' as const, delay: 0.2 }}
                       />
                     </div>
                   </div>
@@ -652,7 +652,7 @@ export function AILeaderboard() {
                         style={{ background: `linear-gradient(90deg, ${color}44, ${color})` }}
                         initial={{ width: 0 }}
                         animate={{ width: `${avg}%` }}
-                        transition={{ duration: 1, ease: 'easeOut' }}
+                        transition={{ duration: 1, ease: 'easeOut' as const }}
                       >
                         <span className="text-[10px] font-mono font-bold text-white drop-shadow-sm">{avg}</span>
                       </motion.div>

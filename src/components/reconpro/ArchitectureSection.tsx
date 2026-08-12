@@ -62,7 +62,7 @@ export default function ArchitectureSection() {
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] as const }}
           className="mb-20 text-center"
         >
           <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
@@ -169,7 +169,7 @@ export default function ArchitectureSection() {
           <motion.div
             initial={{ opacity: 0, x: 30 }}
             animate={isInView ? { opacity: 1, x: 0 } : {}}
-            transition={{ duration: 0.7, delay: 0.3, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.7, delay: 0.3, ease: [0.16, 1, 0.3, 1] as const }}
             className="hidden lg:col-span-5 lg:block"
           >
             <div className="sticky top-32">

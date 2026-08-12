@@ -290,7 +290,7 @@ export function BadgePopup({ badge, onClose }: { badge: Badge | null; onClose: (
           initial={{ opacity: 0, y: 60, scale: 0.8 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -30, scale: 0.9 }}
-          transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+          transition={{ type: 'spring' as const, damping: 20, stiffness: 300 }}
           className="fixed bottom-8 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-xl bg-[#0f1422] border border-[#ffd93d]/30 shadow-2xl"
         >
           <div className="p-2 rounded-lg bg-[#ffd93d]/10 text-[#ffd93d]">

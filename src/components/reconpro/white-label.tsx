@@ -152,7 +152,7 @@ const DNS_RECORDS: DnsRecord[] = [
 const fadeInUp = {
   initial: { opacity: 0, y: 12 },
   animate: { opacity: 1, y: 0 },
-  transition: { duration: 0.35, ease: 'easeOut' },
+  transition: { duration: 0.35, ease: 'easeOut' as const },
 };
 
 const staggerContainer = {
@@ -174,7 +174,7 @@ function GlassCard({
     <motion.div
       initial={{ opacity: 0, y: 16 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay, ease: 'easeOut' }}
+      transition={{ duration: 0.4, delay, ease: 'easeOut' as const }}
       className={`rounded-2xl border border-white/[0.06] bg-[#080b14]/80 backdrop-blur-xl ${className}`}
     >
       {children}

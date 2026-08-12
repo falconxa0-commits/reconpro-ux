@@ -206,7 +206,7 @@ function DoomCountdown({ doomDate, doomScore, urgencyLevel }: { doomDate: string
                   colors.glow,
                 ],
               } : {}}
-              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' as const }}
             >
               <span className={`text-5xl font-black tabular-nums ${colors.text} font-mono`}>
                 {String(value).padStart(2, '0')}
@@ -216,7 +216,7 @@ function DoomCountdown({ doomDate, doomScore, urgencyLevel }: { doomDate: string
                 <motion.div
                   className="absolute inset-x-0 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent"
                   animate={{ y: [0, 112] }}
-                  transition={{ duration: 3, repeat: Infinity, ease: 'linear' }}
+                  transition={{ duration: 3, repeat: Infinity, ease: 'linear' as const }}
                 />
               </div>
             </motion.div>
@@ -253,7 +253,7 @@ function DoomCountdown({ doomDate, doomScore, urgencyLevel }: { doomDate: string
             strokeDasharray={314}
             initial={{ strokeDashoffset: 314 }}
             animate={{ strokeDashoffset: 314 - (314 * doomScore / 100) }}
-            transition={{ duration: 2, ease: 'easeOut' }}
+            transition={{ duration: 2, ease: 'easeOut' as const }}
           />
           <defs>
             <linearGradient id="doomGradient" x1="0%" y1="0%" x2="100%" y2="0%">
@@ -276,7 +276,7 @@ function DoomCountdown({ doomDate, doomScore, urgencyLevel }: { doomDate: string
         animate={isCritical ? {
           scale: [1, 1.05, 1],
         } : {}}
-        transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+        transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' as const }}
       >
         <span className={`text-sm font-black tracking-[0.15em] ${colors.text}`}>
           ⚠ {urgencyLevel}
@@ -612,7 +612,7 @@ function IndustryComparison({ yourScore, industry }: {
               }`}
               initial={{ width: 0 }}
               animate={{ width: `${yourScore}%` }}
-              transition={{ duration: 1.5, ease: 'easeOut' }}
+              transition={{ duration: 1.5, ease: 'easeOut' as const }}
             />
           </div>
         </div>
@@ -627,7 +627,7 @@ function IndustryComparison({ yourScore, industry }: {
               className="h-full rounded-full bg-gradient-to-r from-blue-600 to-blue-400"
               initial={{ width: 0 }}
               animate={{ width: `${industry.doomScore}%` }}
-              transition={{ duration: 1.5, ease: 'easeOut', delay: 0.2 }}
+              transition={{ duration: 1.5, ease: 'easeOut' as const, delay: 0.2 }}
             />
           </div>
         </div>
@@ -829,7 +829,7 @@ export function DoomClockPanel() {
               <motion.div
                 className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
                 animate={{ rotate: 360 }}
-                transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+                transition={{ duration: 1, repeat: Infinity, ease: 'linear' as const }}
               />
               CALCULATING QUANTUM THREAT TIMELINE...
             </>

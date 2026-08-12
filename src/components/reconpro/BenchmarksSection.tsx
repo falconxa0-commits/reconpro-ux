@@ -18,7 +18,7 @@ export default function BenchmarksSection() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] as const }}
           className="text-center mb-16"
         >
           <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl mb-4">
@@ -33,7 +33,7 @@ export default function BenchmarksSection() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.7, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.7, delay: 0.1, ease: [0.16, 1, 0.3, 1] as const }}
           className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-16"
         >
           {[
@@ -61,26 +61,26 @@ export default function BenchmarksSection() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
-          transition={{ duration: 0.7, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.7, delay: 0.2, ease: [0.16, 1, 0.3, 1] as const }}
           className="rounded-2xl overflow-hidden border border-white/[0.06] bg-white/[0.01]"
         >
           <div className="overflow-x-auto">
             <table className="table-void w-full text-sm">
               <thead>
                 <tr className="border-b border-white/[0.04]">
-                  <th className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
                     Benchmark
                   </th>
-                  <th className="text-left px-6 py-4 text-xs font-medium text-white uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white uppercase tracking-wider">
                     ReconPro
                   </th>
-                  <th className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
                     Nmap
                   </th>
-                  <th className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
                     Nessus
                   </th>
-                  <th className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
                     Edge
                   </th>
                 </tr>
@@ -123,7 +123,7 @@ export default function BenchmarksSection() {
         <motion.p
           initial={{ opacity: 0 }}
           animate={isInView ? { opacity: 1 } : {}}
-          transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] as const }}
           className="text-center text-[11px] text-white/15 mt-6"
         >
           Benchmarked on equivalent hardware. Results may vary. See our methodology for details.

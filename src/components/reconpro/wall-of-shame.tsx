@@ -285,7 +285,7 @@ function IncCard({ inc, isNew }: { inc: Incident; isNew: boolean }) {
   const crit = inc.severity === 'critical';
   const indL = INDUSTRIES.find(i => i.key === inc.industry)?.label ?? inc.industry;
   return (
-    <motion.div layout initial={isNew ? { opacity: 0, y: -20, scale: 0.98 } : false} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.4, ease: 'easeOut' }}
+    <motion.div layout initial={isNew ? { opacity: 0, y: -20, scale: 0.98 } : false} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.4, ease: 'easeOut' as const }}
       className={`relative group bg-neutral-900/70 border rounded-lg p-4 transition-all hover:bg-neutral-900 border-l-2 ${c.border} ${crit ? c.glow : ''}`}>
       {isNew && (<div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 bg-red-500/20 rounded-full"><span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" /><span className="text-[10px] text-red-400 font-medium">NEW</span></div>)}
       <div className="flex items-start gap-3">

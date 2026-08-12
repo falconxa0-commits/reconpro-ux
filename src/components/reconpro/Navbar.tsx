@@ -181,7 +181,7 @@ export function Navbar() {
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] as const }}
             className="absolute top-full left-0 right-0 p-4 bg-black/90 backdrop-blur-xl border-b border-white/[0.04]"
           >
             <div className="max-w-2xl mx-auto">
@@ -215,7 +215,7 @@ export function Navbar() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+          transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] as const }}
           className="fixed inset-0 z-40 bg-black/80 backdrop-blur-xl lg:hidden"
           onClick={() => setMobileOpen(false)}
           role="dialog"
@@ -226,7 +226,7 @@ export function Navbar() {
             initial={{ opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -12 }}
-            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1], delay: 0.05 }}
+            transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] as const, delay: 0.05 }}
             className="absolute top-16 left-0 right-0 p-6 bg-black/95 border-b border-white/[0.04]"
             onClick={(e) => e.stopPropagation()}
           >

@@ -264,7 +264,7 @@ export function DemoModeToggle({ position = 'floating' }: DemoModeToggleProps) {
         className="fixed bottom-6 right-6 z-[100] flex flex-col items-end gap-2"
         initial={{ opacity: 0, scale: 0.8, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+        transition={{ type: 'spring' as const, stiffness: 260, damping: 20 }}
       >
         {/* Walkthrough CTA — only when demo is active */}
         <AnimatePresence>
@@ -301,7 +301,7 @@ export function DemoModeToggle({ position = 'floating' }: DemoModeToggleProps) {
             <motion.span
               className="pointer-events-none absolute inset-0 rounded-full border border-[#00ff88]/40"
               animate={{ scale: [1, 1.15], opacity: [0.6, 0] }}
-              transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' }}
+              transition={{ duration: 1.8, repeat: Infinity, ease: 'easeOut' as const }}
             />
           )}
           <Sparkles className={isDemo ? 'h-4 w-4 text-[#00ff88]' : 'h-4 w-4'} />
@@ -330,7 +330,7 @@ export function DemoModeToggle({ position = 'floating' }: DemoModeToggleProps) {
         <motion.span
           className="pointer-events-none absolute inset-0 rounded-lg border border-[#00ff88]/30"
           animate={{ scale: [1, 1.2], opacity: [0.5, 0] }}
-          transition={{ duration: 2, repeat: Infinity, ease: 'easeOut' }}
+          transition={{ duration: 2, repeat: Infinity, ease: 'easeOut' as const }}
         />
       )}
       <Sparkles className={isDemo ? 'h-3.5 w-3.5 text-[#00ff88]' : 'h-3.5 w-3.5'} />
@@ -451,7 +451,7 @@ export function InvestorWalkthrough() {
           scale: [1, 1.1, 1],
           opacity: [0.8, 1, 0.8],
         }}
-        transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+        transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' as const }}
       />
 
       {/* ── Close button ──────────────────────────────────────────────── */}
@@ -475,7 +475,7 @@ export function InvestorWalkthrough() {
             initial="enter"
             animate="center"
             exit="exit"
-            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+            transition={{ type: 'spring' as const, stiffness: 300, damping: 30 }}
             className={
               'rounded-2xl border p-8 md:p-10 ' +
               'bg-gradient-to-br from-[#0d1117] via-[#0f1419] to-[#0d1117] ' +
@@ -497,7 +497,7 @@ export function InvestorWalkthrough() {
                   className="h-full rounded-full bg-[#00ff88]/40"
                   initial={{ width: '0%' }}
                   animate={{ width: `${progressPercent}%` }}
-                  transition={{ duration: 0.1, ease: 'linear' }}
+                  transition={{ duration: 0.1, ease: 'linear' as const }}
                 />
               </div>
             </div>
@@ -507,7 +507,7 @@ export function InvestorWalkthrough() {
               className="mb-5 text-4xl"
               initial={{ scale: 0.5, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              transition={{ delay: 0.15, type: 'spring', stiffness: 200 }}
+              transition={{ delay: 0.15, type: 'spring' as const, stiffness: 200 }}
             >
               {step.icon}
             </motion.div>
@@ -548,7 +548,7 @@ export function InvestorWalkthrough() {
                 className="mb-8 rounded-xl border border-white/[0.06] bg-white/[0.02] p-6"
                 initial={{ scale: 0.95, opacity: 0 }}
                 animate={{ scale: 1, opacity: 1 }}
-                transition={{ delay: 0.25, type: 'spring', stiffness: 200 }}
+                transition={{ delay: 0.25, type: 'spring' as const, stiffness: 200 }}
               >
                 <div className="text-3xl font-extrabold tracking-tight text-[#f0f0f0] md:text-4xl">
                   {step.stat.value}

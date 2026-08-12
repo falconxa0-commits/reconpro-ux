@@ -202,7 +202,7 @@ function DualGauge({ threatScore, fearIndex }: { threatScore: number; fearIndex:
             strokeLinecap="round" strokeDasharray={circ}
             initial={{ strokeDashoffset: circ }}
             animate={{ strokeDashoffset: circ * (1 - threatScore / 100) }}
-            transition={{ duration: 1.2, ease: 'easeOut' }}
+            transition={{ duration: 1.2, ease: 'easeOut' as const }}
             style={{ filter: `drop-shadow(0 0 8px ${threatColor}80)` }}
           />
         </svg>
@@ -227,7 +227,7 @@ function DualGauge({ threatScore, fearIndex }: { threatScore: number; fearIndex:
             strokeLinecap="round" strokeDasharray={circ}
             initial={{ strokeDashoffset: circ }}
             animate={{ strokeDashoffset: circ * (1 - fearIndex / 100) }}
-            transition={{ duration: 1.4, ease: 'easeOut', delay: 0.2 }}
+            transition={{ duration: 1.4, ease: 'easeOut' as const, delay: 0.2 }}
             style={{ filter: `drop-shadow(0 0 12px ${fearColor}cc)` }}
           />
         </svg>
@@ -497,7 +497,7 @@ export function ModelBreaker() {
           >
             {scanning ? (
               <>
-                <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
+                <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' as const }}>
                   <Zap className="h-4 w-4" />
                 </motion.div>
                 GAZING

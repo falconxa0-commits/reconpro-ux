@@ -212,7 +212,7 @@ function NavItemButton({
         style={{ background: badgeColor }}
         initial={false}
         animate={{ scaleY: active ? 1 : 0, opacity: active ? 1 : 0 }}
-        transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+        transition={{ type: 'spring' as const, stiffness: 500, damping: 30 }}
       />
 
       {/* Icon */}
@@ -235,7 +235,7 @@ function NavItemButton({
             initial={{ opacity: 0, x: -8 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
+            transition={{ duration: 0.2, ease: 'easeOut' as const }}
             className="truncate flex-1"
           >
             {item.label}
@@ -294,7 +294,7 @@ function SectionHeader({ title, collapsed }: { title: string; collapsed: boolean
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={{ opacity: 0, height: 0 }}
-          transition={{ duration: 0.2, ease: 'easeOut' }}
+          transition={{ duration: 0.2, ease: 'easeOut' as const }}
           className="overflow-hidden"
         >
           <h3 className="px-3 pb-1 pt-2.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-[#333333]">
@@ -319,7 +319,7 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
             background: 'conic-gradient(from 0deg, transparent 0%, rgba(52,211,153,0.15) 25%, transparent 50%, rgba(34,211,238,0.1) 75%, transparent 100%)',
           }}
           animate={{ rotate: 360 }}
-          transition={{ duration: 12, repeat: Infinity, ease: 'linear' }}
+          transition={{ duration: 12, repeat: Infinity, ease: 'linear' as const }}
         />
         <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#000000] to-[#080b14] ring-1 ring-[rgba(52,211,153,0.2)]">
           <Shield className="h-[18px] w-[18px] text-[#00ff88]" strokeWidth={1.8} />
@@ -333,7 +333,7 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
             initial={{ opacity: 0, x: -10 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -10 }}
-            transition={{ duration: 0.2, ease: 'easeOut' }}
+            transition={{ duration: 0.2, ease: 'easeOut' as const }}
             className="flex flex-col gap-0.5 overflow-hidden"
           >
             <div className="flex items-center gap-1">
@@ -380,7 +380,7 @@ function UserSection({ collapsed }: { collapsed: boolean }) {
             initial={{ opacity: 0, x: -8 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
+            transition={{ duration: 0.15, ease: 'easeOut' as const }}
             className="flex flex-col overflow-hidden"
           >
             <span className="truncate text-[12.5px] font-semibold text-[#bbbbbb]">
@@ -409,7 +409,7 @@ function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle:
     >
       <motion.div
         animate={{ rotate: collapsed ? 0 : 180 }}
-        transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+        transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] as const }}
       >
         {collapsed ? (
           <ChevronRight className="h-3.5 w-3.5" />
@@ -434,7 +434,7 @@ export function EnterpriseSidebar({
       initial={false}
       animate={collapsed ? 'collapsed' : 'expanded'}
       variants={sidebarVariants}
-      transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
+      transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] as const }}
       className="relative flex h-screen flex-col bg-[#050710] overflow-hidden"
       style={{
         boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.03)',

@@ -7,7 +7,7 @@ interface AnimatedCounterProps {
   target: number;
   duration?: number;
   color?: string;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl';
   suffix?: string;
   label?: string;
   glow?: boolean;
@@ -38,7 +38,7 @@ export function AnimatedCounter({ target, duration = 2000, color = '#00ff88', si
     requestAnimationFrame(animate);
   }, [target, duration]);
 
-  const fontSizes = { sm: 'text-xl', md: 'text-3xl', lg: 'text-5xl' };
+  const fontSizes = { sm: 'text-xl', md: 'text-3xl', lg: 'text-5xl', xl: 'text-7xl' };
 
   return (
     <div className="flex flex-col items-center">
@@ -102,7 +102,7 @@ export function RiskScoreGauge({ score, size = 120 }: { score: number; size?: nu
           strokeDasharray={circumference}
           initial={{ strokeDashoffset: circumference }}
           animate={{ strokeDashoffset: offset }}
-          transition={{ duration: 2, ease: 'easeOut' }}
+          transition={{ duration: 2, ease: 'easeOut' as const }}
           style={{ filter: `drop-shadow(0 0 8px ${color}60)` }}
         />
       </svg>

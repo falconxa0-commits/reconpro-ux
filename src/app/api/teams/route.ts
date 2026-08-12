@@ -80,7 +80,7 @@ export async function POST(request: NextRequest) {
         action: 'team_created',
         resource: 'team',
         resourceId: team.id,
-        details: JSON.stringify({ name, description: description || '', color: color || '#00ff88', description: `Created team ${name}` }),
+        details: JSON.stringify({ name, description: description || '', color: color || '#00ff88', action: `Created team ${name}` }),
       },
     });
 

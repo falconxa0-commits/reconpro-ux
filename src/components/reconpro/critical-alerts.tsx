@@ -45,7 +45,7 @@ function AlertFeedUI({ alerts, onDismiss }: { alerts: CriticalAlert[]; onDismiss
             initial={{ opacity: 0, x: 100, scale: 0.9 }}
             animate={{ opacity: 1, x: 0, scale: 1 }}
             exit={{ opacity: 0, x: 100, scale: 0.9 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+            transition={{ type: 'spring' as const, damping: 25, stiffness: 300 }}
             className={`pointer-events-auto rounded-xl border p-3 shadow-2xl backdrop-blur-sm ${
               alert.severity === 'critical'
                 ? 'bg-[rgba(244,63,94,0.15)] border-[rgba(244,63,94,0.4)]'

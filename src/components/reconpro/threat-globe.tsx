@@ -313,7 +313,7 @@ function LandDots() {
     <group ref={ref}>
       <points>
         <bufferGeometry>
-          <bufferAttribute attach="attributes-position" count={positions.length / 3} array={positions} itemSize={3} />
+          <bufferAttribute attach="attributes-position" args={[positions, 3]} />
         </bufferGeometry>
         <pointsMaterial color="#00ff88" size={0.025} transparent opacity={0.5} sizeAttenuation depthWrite={false} />
       </points>
@@ -449,7 +449,7 @@ function AttackArcs({ cities, connections }: { cities: ThreatCity[]; connections
       {arcData.map((arc, i) => (
         <line key={i}>
           <bufferGeometry>
-            <bufferAttribute attach="attributes-position" count={51} array={arc.positions} itemSize={3} />
+            <bufferAttribute attach="attributes-position" args={[arc.positions, 3]} />
           </bufferGeometry>
           <lineBasicMaterial color={arc.color} transparent opacity={0.3} />
         </line>

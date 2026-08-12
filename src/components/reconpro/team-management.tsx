@@ -140,12 +140,12 @@ const containerVariants = {
 
 const itemVariants = {
   hidden: { opacity: 0, y: 12 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' } },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: 'easeOut' as const } },
 };
 
 const cardHover = {
   scale: 1.02,
-  transition: { type: 'spring', stiffness: 400, damping: 25 },
+  transition: { type: 'spring' as const, stiffness: 400, damping: 25 },
 };
 
 // ── Component ───────────────────────────────────────────────────────────────

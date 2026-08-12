@@ -104,7 +104,7 @@ export function ScanOverlay({ isScanning, domain, findingCount, onNewFinding }: 
           <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-[#000000] border border-[rgba(52,211,153,0.15)]">
             <motion.div
               animate={{ rotate: 360 }}
-              transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'linear' as const }}
               className="text-[#00ff88]"
             >
               <Crosshair className="w-5 h-5" />
@@ -146,7 +146,7 @@ export function ScanOverlay({ isScanning, domain, findingCount, onNewFinding }: 
                 background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)',
               }}
               animate={{ x: ['-100%', '100%'] }}
-              transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+              transition={{ duration: 1, repeat: Infinity, ease: 'linear' as const }}
             />
           </div>
 
