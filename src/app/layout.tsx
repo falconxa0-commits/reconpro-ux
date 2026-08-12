@@ -1,31 +1,47 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Metadata } from "next";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
+import { Navbar } from "@/components/reconpro/Navbar";
+import { Footer } from "@/components/reconpro/Footer";
+import { HomeSection } from "./home-section";
 
 export const metadata: Metadata = {
-  title: "ReconPro — Void Command Center",
-  description: "Billion-dollar grade attack surface management. Spatial command center with real-time threat intelligence, compliance mapping, and continuous monitoring.",
-  icons: { icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg" },
+  title: "ReconPro — Attack Surface Intelligence Platform",
+  description:
+    "Billion-dollar grade attack surface management. Autonomous reconnaissance, real-time threat intelligence, knowledge graph, evidence correlation, and executive reporting. 16 scanner modules. 45 CLI commands. 3 dependencies.",
+  keywords: [
+    "reconpro",
+    "attack surface",
+    "security scanner",
+    "reconnaissance",
+    "vulnerability assessment",
+    "pentesting",
+    "security tool",
+    "open source",
+    "python",
+    "cybersecurity",
+  ],
+  openGraph: {
+    title: "ReconPro — Attack Surface Intelligence Platform",
+    description:
+      "Autonomous reconnaissance. 16 modules. 45 commands. 3 dependencies. Zero compromises.",
+    type: "website",
+    siteName: "ReconPro",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "ReconPro — Attack Surface Intelligence Platform",
+    description:
+      "Autonomous reconnaissance. 16 modules. 45 commands. 3 dependencies.",
+  },
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default function RootLayout({
+  children,
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-        style={{ backgroundColor: '#000000', color: '#f0f0f0' }}
-      >
+      <body className="antialiased bg-black text-white font-[family-name:var(--font-geist-sans)]">
         {children}
         <Toaster />
       </body>
