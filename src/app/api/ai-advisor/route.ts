@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit } from '@/lib/api-security';
 
@@ -661,7 +662,7 @@ function answerQuestion(question: string, findings: Finding[], domain: string): 
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(req: NextRequest) {
-  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {

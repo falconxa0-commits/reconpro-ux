@@ -1,0 +1,598 @@
+     1→import { NextRequest, NextResponse } from 'next/server';
+     2→import dns from 'dns/promises';
+     3→import net from 'net';
+     4→import { sanitizeTarget, isBlockedDomain, isPrivateIP, checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+     5→import { safeFetch } from '@/lib/safe-fetch';
+     6→
+     7→// ══════════════════════════════════════════════════════════════════════════════
+     8→// NATIVE RUN — Replaces shell exec with native Node.js APIs
+     9→// ══════════════════════════════════════════════════════════════════════════════
+    10→
+    11→function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
+    12→  return new Promise((resolve) => {
+    13→    const timer = setTimeout(() => { try { s.destroy(); } catch {} resolve(false); }, timeoutMs);
+    14→    const s = net.createConnection({ host, port, timeout: timeoutMs });
+    15→    s.on('connect', () => { clearTimeout(timer); try { s.destroy(); } catch {} resolve(true); });
+    16→    s.on('timeout', () => { clearTimeout(timer); try { s.destroy(); } catch {} resolve(false); });
+    17→    s.on('error', () => { clearTimeout(timer); resolve(false); });
+    18→  });
+    19→}
+    20→
+    21→function tcpBannerGrab(host: string, port: number, timeoutMs: number, maxBytes = 300): Promise<string> {
+    22→  return new Promise((resolve) => {
+    23→    let data = '';
+    24→    const timer = setTimeout(() => { try { s.destroy(); } catch {} resolve(data); }, timeoutMs);
+    25→    const s = net.createConnection({ host, port, timeout: timeoutMs });
+    26→    s.on('data', (chunk: Buffer) => {
+    27→      data += chunk.toString();
+    28→      if (data.length >= maxBytes) { clearTimeout(timer); try { s.destroy(); } catch {} resolve(data.substring(0, maxBytes)); }
+    29→    });
+    30→    s.on('timeout', () => { clearTimeout(timer); try { s.destroy(); } catch {} resolve(data); });
+    31→    s.on('error', () => { clearTimeout(timer); resolve(data); });
+    32→    s.on('close', () => { clearTimeout(timer); resolve(data); });
+    33→  });
+    34→}
+    35→
+    36→async function handleCurl(cmd: string, timeout: number): Promise<string> {
+    37→  const isHead = /\b-sI\b|\b-I\b/.test(cmd);
+    38→  const timeoutMatch = cmd.match(/--max-time\s+(\d+)/);
+    39→  const timeoutSec = timeoutMatch ? parseInt(timeoutMatch[1]) : 8;
+    40→  const headers: Record<string, string> = { 'User-Agent': 'Mozilla/5.0' };
+    41→  const headerRegex = /-H\s+["']([^"']+)["']/g;
+    42→  let m: RegExpExecArray | null;
+    43→  while ((m = headerRegex.exec(cmd)) !== null) {
+    44→    const ci = m[1].indexOf(':');
+    45→    if (ci > 0) headers[m[1].substring(0, ci).trim()] = m[1].substring(ci + 1).trim();
+    46→  }
+    47→  const urlMatch = cmd.match(/(?:https?:\/\/[^\s"'`]+|http:\/\/[^\s"'`]+)/);
+    48→  const url = urlMatch ? urlMatch[0] : '';
+    49→  if (!url) return '';
+    50→  try {
+    51→    const res = await safeFetch(url, { method: isHead ? 'HEAD' : 'GET', headers, followRedirects: false, timeout: timeoutSec * 1000 });
+    52→    if (isHead) {
+    53→      let out = `HTTP/1.1 ${res.status}\n`;
+    54→      for (const [k, v] of Object.entries(res.headers)) { out += `${k}: ${v}\n`; }
+    55→      return out;
+    56→    }
+    57→    return res.text;
+    58→  } catch { return ''; }
+    59→}
+    60→
+    61→async function handleDig(cmd: string, _timeout: number): Promise<string> {
+    62→  const isPtr = cmd.includes('-x');
+    63→  let cleaned = cmd.replace(/\bdig\b/, '').replace(/\+short\b/g, '').replace(/\+time=\d+/g, '').replace(/\+tries=\d+/g, '').replace(/@\S+/g, '').replace(/2>\/>\/dev\/null/g, '').replace(/2>&1/g, '').trim();
+    64→  if (isPtr) {
+    65→    const pm = cleaned.match(/-x\s+(\S+)/);
+    66→    const ip = pm ? pm[1] : '';
+    67→    if (!ip) return '';
+    68→    try { return (await dns.resolvePtr(ip)).join('\n'); } catch { return ''; }
+    69→  }
+    70→  const tokens = cleaned.split(/\s+/).filter(Boolean);
+    71→  if (tokens.length === 0) return '';
+    72→  const recordTypes = ['A','AAAA','NS','CNAME','MX','TXT','PTR','SOA','SRV','ANY'];
+    73→  let domain: string; let type = 'A';
+    74→  const last = tokens[tokens.length - 1].toUpperCase();
+    75→  if (tokens.length >= 2 && recordTypes.includes(last)) {
+    76→    type = last; domain = tokens.slice(0, -1).join(' ');
+    77→  } else { domain = tokens.join(' '); }
+    78→  if (!domain) return '';
+    79→  try {
+    80→    let result: string[] = [];
+    81→    switch (type) {
+    82→      case 'A': result = await dns.resolve4(domain); break;
+    83→      case 'NS': result = await dns.resolveNs(domain); break;
+    84→      case 'CNAME': result = await dns.resolveCname(domain); break;
+    85→      case 'TXT': { const r = await dns.resolveTxt(domain); result = r.map(x => x.join('')); break; }
+    86→      case 'PTR': result = await dns.resolvePtr(domain); break;
+    87→      default: result = await dns.resolve4(domain); break;
+    88→    }
+    89→    return result.join('\n');
+    90→  } catch { return ''; }
+    91→}
+    92→
+    93→async function handleNetcat(cmd: string, timeout: number): Promise<string> {
+    94→  const bashMatch = cmd.match(/\/dev\/tcp\/([^/]+)\/(\d+)/);
+    95→  if (bashMatch) {
+    96→    const open = await tcpProbe(bashMatch[1], parseInt(bashMatch[2]), Math.min(timeout, 3000));
+    97→    return open ? 'OPEN' : 'CLOSED';
+    98→  }
+    99→  const ncMatch = cmd.match(/nc\s+(?:-\w+\s+)*(\S+)\s+(\d+)/);
+   100→  if (ncMatch) return tcpBannerGrab(ncMatch[1], parseInt(ncMatch[2]), timeout);
+   101→  return '';
+   102→}
+   103→
+   104→function applyPipe(input: string, pipeCmd: string): string {
+   105→  const headBytes = pipeCmd.match(/head\s+-c\s+(\d+)/);
+   106→  if (headBytes) return input.substring(0, parseInt(headBytes[1]));
+   107→  const headLines = pipeCmd.match(/head\s+-(\d+)/);
+   108→  if (headLines) return input.split('\n').slice(0, parseInt(headLines[1])).join('\n');
+   109→  const grepMatch = pipeCmd.match(/^grep\s+(-\w+\s+)?(.+)$/);
+   110→  if (grepMatch) {
+   111→    const flags = grepMatch[1]?.trim() || '';
+   112→    let pattern = grepMatch[2].trim();
+   113→    if ((pattern.startsWith('"') && pattern.endsWith('"')) || (pattern.startsWith("'") && pattern.endsWith("'"))) pattern = pattern.slice(1, -1);
+   114→    const isI = flags.includes('i');
+   115→    try {
+   116→      const regex = new RegExp(pattern, isI ? 'i' : '');
+   117→      return input.split('\n').filter(l => regex.test(l)).join('\n');
+   118→    } catch { return ''; }
+   119→  }
+   120→  return input;
+   121→}
+   122→
+   123→async function run(cmd: string, timeout = 8000): Promise<string> {
+   124→  try {
+   125→    if (cmd.includes('/dev/tcp')) {
+   126→      const m = cmd.match(/\/dev\/tcp\/([^/]+)\/(\d+)/);
+   127→      if (m) { const open = await tcpProbe(m[1], parseInt(m[2]), Math.min(timeout, 3000)); return cmd.includes('OPEN') && cmd.includes('CLOSED') ? (open ? 'OPEN' : 'CLOSED') : ''; }
+   128→      return '';
+   129→    }
+   130→    if (cmd.includes('whois')) return '';
+   131→    let effectiveCmd = cmd.replace(/^echo\s*(""\s*)?\|\s*/, '').trim();
+   132→    effectiveCmd = effectiveCmd.replace(/\|\|/g, '\x00\x00');
+   133→    const segments: string[] = []; let cur = ''; let inQ = false; let qCh = '';
+   134→    for (let i = 0; i < effectiveCmd.length; i++) {
+   135→      const ch = effectiveCmd[i];
+   136→      if (inQ) { cur += ch; if (ch === qCh) inQ = false; }
+   137→      else if (ch === '"' || ch === "'") { inQ = true; qCh = ch; cur += ch; }
+   138→      else if (ch === '|') { segments.push(cur.trim()); cur = ''; }
+   139→      else { cur += ch; }
+   140→    }
+   141→    segments.push(cur.trim());
+   142→    const restored = segments.map(s => s.replace(/\x00\x00/g, '||'));
+   143→    const mainCmd = restored[0]; const pipes = restored.slice(1);
+   144→    let output = '';
+   145→    if (mainCmd.includes('curl')) output = await handleCurl(mainCmd, timeout);
+   146→    else if (mainCmd.includes('dig')) output = await handleDig(mainCmd, timeout);
+   147→    else if (mainCmd.includes('nc ') || mainCmd.includes('/dev/tcp')) output = await handleNetcat(mainCmd, timeout);
+   148→    else return '';
+   149→    for (const pipe of pipes) output = applyPipe(output, pipe);
+   150→    return output.trim();
+   151→  } catch { return ''; }
+   152→}
+   153→
+   154→// ══════════════════════════════════════════════════════════════════════════════
+   155→// BOTNET C2 SIGNATURES — Known malware fingerprints in service banners
+   156→// ══════════════════════════════════════════════════════════════════════════════
+   157→
+   158→const C2_SIGNATURES = [
+   159→  { pattern: /mirai/i, port: 23, family: 'Mirai', severity: 'critical', desc: 'IoT botnet — DDoS, credential stuffing, cryptomining' },
+   160→  { pattern: /mozi\s+bot/i, port: 0, family: 'Mozi', severity: 'critical', desc: 'P2P botnet targeting IoT — DDoS, data theft' },
+   161→  { pattern: /hajime/i, port: 0, family: 'Hajime', severity: 'critical', desc: 'IoT botnet — modular architecture, persistent' },
+   162→  { pattern: /gafgyt|bashlite/i, port: 23, family: 'Gafgyt/Bashlite', severity: 'high', desc: 'IoT botnet — DDoS via HTTP floods' },
+   163→  { pattern: /emotet/i, port: 0, family: 'Emotet', severity: 'critical', desc: 'Banking trojan botnet — credential theft, ransomware delivery' },
+   164→  { pattern: /trickbot/i, port: 0, family: 'TrickBot', severity: 'critical', desc: 'Banking trojan — lateral movement, ransomware precursor' },
+   165→  { pattern: /cobalt\s*strike/i, port: 0, family: 'Cobalt Strike', severity: 'critical', desc: 'Commercial penetration testing tool — often used by APTs' },
+   166→  { pattern: /metasploit/i, port: 0, family: 'Metasploit', severity: 'critical', desc: 'Exploitation framework — active attack infrastructure' },
+   167→  { pattern: /covenant/i, port: 0, family: 'Covenant', severity: 'high', desc: '.NET C2 framework — post-exploitation agent' },
+   168→  { pattern: /sliver/i, port: 0, family: 'Sliver C2', severity: 'high', desc: 'C2 framework — used by red teams and threat actors' },
+   169→  { pattern: /brutal/i, port: 0, family: 'Brutal', severity: 'high', desc: 'Botnet controller — IRC-based C2' },
+   170→  { pattern: /phoenix/i, port: 0, family: 'Phoenix', severity: 'high', desc: 'Botnet — DDoS and credential harvesting' },
+   171→  { pattern: /darkcomet/i, port: 0, family: 'DarkComet', severity: 'high', desc: 'RAT — keylogging, screen capture, webcam access' },
+   172→  { pattern: /njrat/i, port: 0, family: 'NjRAT', severity: 'high', desc: 'RAT — credential theft, file transfer, registry manipulation' },
+   173→  { pattern: /darkhound/i, port: 0, family: 'Darkhound', severity: 'medium', desc: 'RAT variant — data exfiltration' },
+   174→  { pattern: /gh0st\s*RAT/i, port: 0, family: 'Gh0st RAT', severity: 'critical', desc: 'Advanced RAT — used by APT groups' },
+   175→  { pattern: /poison\s*ivy/i, port: 0, family: 'Poison Ivy', severity: 'high', desc: 'RAT — targeted attacks, file transfer' },
+   176→  { pattern: /zeus|zbot/i, port: 0, family: 'Zeus/Zbot', severity: 'critical', desc: 'Banking botnet — man-in-the-browser, form grabbing' },
+   177→  { pattern: /andromeda/i, port: 0, family: 'Andromeda', severity: 'high', desc: 'Botnet loader — distributes secondary payloads' },
+   178→  { pattern: /qakbot/i, port: 0, family: 'Qakbot', severity: 'critical', desc: 'Banking botnet — polymorphic, credential theft, ransomware delivery' },
+   179→  { pattern: /icedid/i, port: 0, family: 'IcedID', severity: 'high', desc: 'Banking trojan — credential theft, backdoor' },
+   180→  { pattern: /pikabot/i, port: 0, family: 'Pikabot', severity: 'high', desc: 'Botnet loader — spam campaigns, credential harvesting' },
+   181→];
+   182→
+   183→const C2_PORTS = [
+   184→  { port: 6667, service: 'IRC (Botnet C2)', severity: 'high' },
+   185→  { port: 6668, service: 'IRC (Alt Botnet C2)', severity: 'high' },
+   186→  { port: 6669, service: 'IRC (Botnet C2)', severity: 'medium' },
+   187→  { port: 4444, service: 'Metasploit/Mirai Default C2', severity: 'critical' },
+   188→  { port: 1337, service: 'Common C2/Hacking Tool', severity: 'high' },
+   189→  { port: 31337, service: 'Back Orifice / Elite C2', severity: 'critical' },
+   190→  { port: 1234, service: 'Common Malware C2', severity: 'high' },
+   191→  { port: 5555, service: 'ADB / Common Malware', severity: 'high' },
+   192→  { port: 5554, service: 'Srizbi Botnet C2', severity: 'critical' },
+   193→  { port: 8866, service: 'Unknown Botnet C2', severity: 'medium' },
+   194→  { port: 1984, service: 'Elknot/Mirai Variant C2', severity: 'high' },
+   195→  { port: 5555, service: 'Malware C2', severity: 'high' },
+   196→  { port: 7777, service: 'Unknown C2', severity: 'medium' },
+   197→  { port: 8888, service: 'Common C2 / Backdoor', severity: 'medium' },
+   198→  { port: 9999, service: 'Common C2', severity: 'medium' },
+   199→  { port: 12345, service: 'NetBus / Common Backdoor', severity: 'critical' },
+   200→  { port: 27374, service: 'SubSeven Backdoor', severity: 'critical' },
+   201→  { port: 31338, service: 'Back Orifice Deep C2', severity: 'critical' },
+   202→  { port: 3322, service: 'Common C2', severity: 'medium' },
+   203→  { port: 6666, service: 'IRC Botnet C2', severity: 'high' },
+   204→  { port: 7000, service: 'CrazyBot / C2', severity: 'high' },
+   205→  { port: 7778, service: 'Prinim Bot C2', severity: 'medium' },
+   206→  { port: 8866, service: 'Unknown Bot C2', severity: 'medium' },
+   207→  { port: 9001, service: 'Apache/常见 C2', severity: 'medium' },
+   208→  { port: 9090, service: 'Prometheus / C2', severity: 'medium' },
+   209→  { port: 10000, service: 'Webmin / C2', severity: 'medium' },
+   210→  { port: 10001, service: '常见 Botnet C2', severity: 'high' },
+   211→  { port: 25657, service: 'Unknown Botnet C2', severity: 'medium' },
+   212→  { port: 37777, service: '常见 C2', severity: 'medium' },
+   213→  { port: 44322, service: '常见 C2', severity: 'high' },
+   214→];
+   215→
+   216→// Known botnet-associated ASNs
+   217→const BOTNET_ASNS = [
+   218→  { asn: 'AS64089', desc: 'Known hosting for malicious infrastructure', severity: 'high' },
+   219→  { asn: 'AS44477', desc: 'Stark Industries Solutions — common in attacks', severity: 'high' },
+   220→  { asn: 'AS209103', desc: 'Private Layer — frequent malicious hosting', severity: 'medium' },
+   221→  { asn: 'AS62041', desc: 'M247 — known for botnet activity', severity: 'medium' },
+   222→  { asn: 'AS9009', desc: 'M247 Europe — malicious traffic source', severity: 'medium' },
+   223→  { asn: 'AS4808', desc: 'China Unicom — high attack traffic origin', severity: 'low' },
+   224→  { asn: 'AS4837', desc: 'China Telecom — high attack volume', severity: 'low' },
+   225→  { asn: 'AS4134', desc: 'China Telecom — significant DDoS source', severity: 'low' },
+   226→];
+   227→
+   228→// ══════════════════════════════════════════════════════════════════════════════
+   229→// 1. IP REPUTATION INTELLIGENCE
+   230→// ══════════════════════════════════════════════════════════════════════════════
+   231→
+   232→async function ipReputationScan(ip: string | null, domain: string): Promise<any> {
+   233→  const target = ip || domain;
+   234→
+   235→  // Multi-source IP intel
+   236→  const [ipApi, rdns, whois] = await Promise.all([
+   237→    run(`curl -s --max-time 6 "http://ip-api.com/json/${target}?fields=status,message,country,regionName,city,zip,lat,lon,timezone,isp,org,as,reverse,mobile,proxy,hosting,query" 2>/dev/null`, 8000),
+   238→    run(`dig +short +time=3 -x ${target} 2>/dev/null`, 5000),
+   239→    run(`whois ${target} 2>/dev/null | head -40`, 8000),
+   240→  ]);
+   241→
+   242→  let ipData: Record<string, any> = {};
+   243→  try { ipData = JSON.parse(ipApi); } catch { ipData = {}; }
+   244→
+   245→  // Detect Tor exit node
+   246→  const torCheck = await run(`curl -s --max-time 5 "https://check.torproject.org/api/ip" 2>/dev/null | head -1`, 7000);
+   247→
+   248→  // Proxy/VPN detection
+   249→  const isProxy = ipData.proxy === true;
+   250→  const isHosting = ipData.hosting === true;
+   251→  const isMobile = ipData.mobile === true;
+   252→
+   253→  // ASN threat analysis
+   254→  const asn = ipData.as || '';
+   255→  const matchedASN = BOTNET_ASNS.find(b => asn.includes(b.asn));
+   256→
+   257→  // Blacklist checks via multiple open resolvers
+   258→  const blacklistChecks = await Promise.all([
+   259→    run(`dig +short +time=2 ${target}.dnsbl.sorbs.net 2>/dev/null`, 4000),
+   260→    run(`dig +short +time=2 ${target}.bl.spamcop.net 2>/dev/null`, 4000),
+   261→    run(`dig +short +time=2 ${target}.zen.spamhaus.org 2>/dev/null`, 4000),
+   262→    run(`dig +short +time=2 ${target}.cbl.abuseat.org 2>/dev/null`, 4000),
+   263→  ]);
+   264→  const blacklistHits = blacklistChecks.filter(r => r && r !== '0' && !r.includes('NXDOMAIN')).length;
+   265→
+   266→  return {
+   267→    ip: ipData.query || target,
+   268→    asn,
+   269→    isp: ipData.isp || 'Unknown',
+   270→    org: ipData.org || 'Unknown',
+   271→    geo: {
+   272→      country: ipData.country || 'Unknown',
+   273→      region: ipData.regionName || 'Unknown',
+   274→      city: ipData.city || 'Unknown',
+   275→      lat: ipData.lat,
+   276→      lon: ipData.lon,
+   277→      timezone: ipData.timezone,
+   278→    },
+   279→    reverseDns: rdns || 'No PTR record',
+   280→    reputation: {
+   281→      blacklistHits,
+   282→      totalBlacklists: blacklistChecks.length,
+   283→      score: Math.min(100, blacklistHits * 25 + (matchedASN ? 30 : 0) + (isHosting ? 10 : 0) + (isProxy ? 20 : 0)),
+   284→      threatLevel: blacklistHits >= 3 ? 'CRITICAL' : blacklistHits >= 1 ? 'HIGH' : matchedASN ? 'MEDIUM' : 'LOW',
+   285→    },
+   286→    flags: {
+   287→      tor: torCheck.includes('true') || false,
+   288→      proxy: isProxy,
+   289→      vpn: false, // Would need commercial API for full VPN detection
+   290→      datacenter: isHosting,
+   291→      mobile: isMobile,
+   292→      suspiciousASN: !!matchedASN,
+   293→    },
+   294→    whoisSnippet: whois.substring(0, 300),
+   295→  };
+   296→}
+   297→
+   298→// ══════════════════════════════════════════════════════════════════════════════
+   299→// 2. BOTNET C2 PORT SCAN
+   300→// ══════════════════════════════════════════════════════════════════════════════
+   301→
+   302→async function scanC2Ports(ip: string | null, domain: string): Promise<any[]> {
+   303→  const target = ip || domain;
+   304→  const c2Infrastructure: any[] = [];
+   305→
+   306→  const openC2Ports = await Promise.all(
+   307→    C2_PORTS.map(async (p) => {
+   308→      const result = await run(
+   309→        `timeout 3 bash -c 'echo > /dev/tcp/${target}/${p.port}' 2>/dev/null && echo "OPEN" || echo "CLOSED"`,
+   310→        4000
+   311→      );
+   312→      if (result.includes('OPEN')) {
+   313→        // Grab banner
+   314→        const banner = await run(
+   315→          `echo "" | timeout 3 nc -w2 ${target} ${p.port} 2>/dev/null | head -c 300`,
+   316→          5000
+   317→        );
+   318→        // Check for malware signatures
+   319→        const matchedSig = C2_SIGNATURES.find(s => s.pattern.test(banner) || s.pattern.test(p.service));
+   320→
+   321→        c2Infrastructure.push({
+   322→          port: p.port,
+   323→          service: p.service,
+   324→          banner: banner.replace(/[\x00-\x1f\x7f]/g, '.').substring(0, 200) || 'No banner',
+   325→          severity: matchedSig ? matchedSig.severity : p.severity,
+   326→          malwareFamily: matchedSig?.family || null,
+   327→          malwareDesc: matchedSig?.desc || null,
+   328→          isC2: true,
+   329→        });
+   330→        return { port: p.port, open: true, service: p.service, severity: p.severity };
+   331→      }
+   332→      return null;
+   333→    })
+   334→  );
+   335→
+   336→  return c2Infrastructure;
+   337→}
+   338→
+   339→// ══════════════════════════════════════════════════════════════════════════════
+   340→// 3. DNS-BASED BOTNET DETECTION
+   341→// ══════════════════════════════════════════════════════════════════════════════
+   342→
+   343→async function dnsBotDetection(domain: string): Promise<any[]> {
+   344→  const indicators: any[] = [];
+   345→
+   346→  // Check for DGA (Domain Generation Algorithm) patterns
+   347→  const dgaPatterns = /^[a-z]{12,20}\.(com|net|org|info|top|xyz)$/i;
+   348→  const subdomainParts = domain.split('.');
+   349→  for (const part of subdomainParts) {
+   350→    if (dgaPatterns.test(part)) {
+   351→      indicators.push({
+   352→        type: 'DGA Domain Pattern',
+   353→        severity: 'high',
+   354→        description: `Subdomain "${part}" matches DGA pattern — 12-20 random lowercase characters, common in botnet C2 domains.`,
+   355→        evidence: `Domain part "${part}" matches /^[a-z]{12,20}\\..*/`,
+   356→        asset: domain,
+   357→      });
+   358→    }
+   359→  }
+   360→
+   361→  // Check for fast-flux DNS (multiple IPs rotating)
+   362→  const aRecords = await run(`dig +short +time=3 ${domain} A 2>/dev/null`, 5000);
+   363→  const ips = aRecords.split('\n').filter(l => l.trim() && /^\d+\.\d+\.\d+\.\d+$/.test(l.trim()));
+   364→  if (ips.length > 5) {
+   365→    indicators.push({
+   366→      type: 'Fast-Flux DNS Detected',
+   367→      severity: 'critical',
+   368→      description: `${ips.length} A records for single domain — possible fast-flux botnet technique. IP addresses rotate rapidly to evade blacklisting.`,
+   369→      evidence: `${ips.length} IPs: ${ips.slice(0, 8).join(', ')}...`,
+   370→      asset: domain,
+   371→    });
+   372→  }
+   373→
+   374→  // Check for known malicious record patterns
+   375→  const txtRecords = await run(`dig +short +time=3 ${domain} TXT 2>/dev/null`, 5000);
+   376→  if (txtRecords) {
+   377→    const suspiciousPatterns = ['spf', 'dkim', 'v=spf'];
+   378→    // Check for encoded strings (base64 C2 beacons)
+   379→    for (const txt of txtRecords.split('\n').filter(Boolean)) {
+   380→      if (/^[A-Za-z0-9+/]{20,}={0,2}$/.test(txt.trim())) {
+   381→        indicators.push({
+   382→          type: 'Suspicious Base64 TXT Record',
+   383→          severity: 'high',
+   384→          description: `TXT record contains base64-encoded data — possible C2 beacon or data exfiltration channel.`,
+   385→          evidence: `TXT: ${txt.substring(0, 40)}...`,
+   386→          asset: domain,
+   387→        });
+   388→      }
+   389→    }
+   390→  }
+   391→
+   392→  // DNS tunneling indicators
+   393→  const cnames = await run(`dig +short +time=3 ${domain} CNAME 2>/dev/null`, 5000);
+   394→  if (cnames && cnames.split('\n').length > 3) {
+   395→    indicators.push({
+   396→      type: 'Multiple CNAME Records — DNS Tunneling Indicator',
+   397→      severity: 'high',
+   398→      description: `${cnames.split('\n').filter(Boolean).length} CNAME records — could indicate DNS tunneling for C2 communication or data exfiltration.`,
+   399→      evidence: `CNAMEs: ${cnames.substring(0, 150)}`,
+   400→      asset: domain,
+   401→    });
+   402→  }
+   403→
+   404→  // Newly registered domain check
+   405→  const whoisDate = await run(`whois ${domain} 2>/dev/null | grep -iE "creation date|created on|registered on|Registration Date" | head -1`, 8000);
+   406→  if (whoisDate) {
+   407→    const dateMatch = whoisDate.match(/(\d{4}[-/]\d{2}[-/]\d{2})/);
+   408→    if (dateMatch) {
+   409→      const regDate = new Date(dateMatch[1]);
+   410→      const ageDays = Math.floor((Date.now() - regDate.getTime()) / 86400000);
+   411→      if (ageDays < 30) {
+   412→        indicators.push({
+   413→          type: 'Newly Registered Domain — High Threat',
+   414→          severity: 'high',
+   415→          description: `Domain registered ${ageDays} days ago. Recently registered domains are 5x more likely to be used for phishing, malware, or C2.`,
+   416→          evidence: `Registered: ${dateMatch[1]} (${ageDays} days ago)`,
+   417→          asset: domain,
+   418→        });
+   419→      }
+   420→    }
+   421→  }
+   422→
+   423→  // Typosquatting detection against common brands
+   424→  const brands = ['google', 'facebook', 'microsoft', 'apple', 'amazon', 'netflix', 'paypal', 'github', 'linkedin', 'twitter'];
+   425→  const domainLower = domain.toLowerCase();
+   426→  for (const brand of brands) {
+   427→    if (domainLower.includes(brand) && !domainLower.startsWith('www.')) {
+   428→      // Check if this is a typo or impersonation
+   429→      const distance = levenshteinDistance(domainLower.split('.')[0], brand);
+   430→      if (distance >= 1 && distance <= 3) {
+   431→        indicators.push({
+   432→          type: `Typosquatting — Impersonates ${brand}`,
+   433→          severity: 'critical',
+   434→          description: `Domain ${domain} resembles ${brand}.com (Levenshtein distance: ${distance}). Likely phishing or malware distribution.`,
+   435→          evidence: `"${domain.split('.')[0]}" vs "${brand}" (distance: ${distance})`,
+   436→          asset: domain,
+   437→        });
+   438→        break;
+   439→      }
+   440→    }
+   441→  }
+   442→
+   443→  return indicators;
+   444→}
+   445→
+   446→function levenshteinDistance(a: string, b: string): number {
+   447→  const matrix: number[][] = [];
+   448→  for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+   449→  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+   450→  for (let i = 1; i <= b.length; i++) {
+   451→    for (let j = 1; j <= a.length; j++) {
+   452→      matrix[i][j] = b[i - 1] === a[j - 1]
+   453→        ? matrix[i - 1][j - 1]
+   454→        : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
+   455→    }
+   456→  }
+   457→  return matrix[b.length][a.length];
+   458→}
+   459→
+   460→// ══════════════════════════════════════════════════════════════════════════════
+   461→// 4. THREAT CLASSIFICATION ENGINE
+   462→// ══════════════════════════════════════════════════════════════════════════════
+   463→
+   464→function classifyThreat(ipRep: any, c2Infra: any[], dnsIndicators: any[]): any {
+   465→  let score = 0;
+   466→  const vectors: string[] = [];
+   467→
+   468→  if (ipRep.reputation.blacklistHits > 0) {
+   469→    score += ipRep.reputation.blacklistHits * 25;
+   470→    vectors.push(`Blacklisted on ${ipRep.reputation.blacklistHits}/${ipRep.reputation.totalBlacklists} lists`);
+   471→  }
+   472→  if (ipRep.flags.tor) { score += 20; vectors.push('Tor exit node'); }
+   473→  if (ipRep.flags.proxy) { score += 15; vectors.push('Proxy detected'); }
+   474→  if (ipRep.flags.datacenter) { score += 5; vectors.push('Datacenter IP'); }
+   475→  if (ipRep.flags.suspiciousASN) { score += 30; vectors.push(`Suspicious ASN: ${ipRep.asn}`); }
+   476→
+   477→  for (const c2 of c2Infra) {
+   478→    score += c2.severity === 'critical' ? 30 : c2.severity === 'high' ? 20 : 10;
+   479→    vectors.push(`C2 port ${c2.port} (${c2.service})`);
+   480→    if (c2.malwareFamily) vectors.push(`Malware: ${c2.malwareFamily}`);
+   481→  }
+   482→
+   483→  for (const ind of dnsIndicators) {
+   484→    score += ind.severity === 'critical' ? 30 : ind.severity === 'high' ? 20 : 10;
+   485→    vectors.push(ind.type);
+   486→  }
+   487→
+   488→  score = Math.min(100, score);
+   489→  const level = score >= 75 ? 'CRITICAL' : score >= 50 ? 'HIGH' : score >= 25 ? 'MEDIUM' : 'LOW';
+   490→
+   491→  return {
+   492→    score,
+   493→    level,
+   494→    vectors,
+   495→    recommendation: score >= 75
+   496→      ? 'IMMEDIATE ACTION: Quarantine IP, block all traffic, investigate all connections'
+   497→      : score >= 50
+   498→      ? 'ESCALATE: Deep packet inspection required, monitor all connections, prepare containment'
+   499→      : score >= 25
+   500→      ? 'MONITOR: Flag for observation, increase logging, alert on new connections'
+   501→      : 'WATCH: Low threat — standard monitoring sufficient',
+   502→  };
+   503→}
+   504→
+   505→// ══════════════════════════════════════════════════════════════════════════════
+   506→// MAIN POST HANDLER
+   507→// ══════════════════════════════════════════════════════════════════════════════
+   508→
+   509→export async function POST(request: NextRequest) {
+   510→  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+   511→  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+   512→
+   513→  try {
+   514→    const body = await request.json();
+   515→    const rawTarget = body.target?.toString().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+   516→    const mode = body.mode || 'hunt';
+   517→
+   518→    const sanitized = sanitizeTarget(rawTarget);
+   519→    if (!sanitized) {
+   520→      return NextResponse.json({ error: 'Invalid target domain or IP' }, { status: 400 });
+   521→    }
+   522→    if (isBlockedDomain(sanitized)) {
+   523→      return NextResponse.json({ error: 'Target domain is not permitted' }, { status: 403 });
+   524→    }
+   525→
+   526→    // Resolve to IP if domain
+   527→    const isIP = /^\d+\.\d+\.\d+\.\d+$/.test(sanitized);
+   528→    const ip = isIP ? sanitized : (await run(`dig +short +time=3 +tries=1 ${sanitized} A`, 5000)).split('\n')[0]?.trim() || null;
+   529→
+   530→    if (!ip && !isIP) {
+   531→      return NextResponse.json({ error: `Could not resolve ${sanitized}` }, { status: 400 });
+   532→    }
+   533→    if (ip && isPrivateIP(ip)) {
+   534→      return NextResponse.json({ error: 'Target resolves to a private or reserved IP address' }, { status: 403 });
+   535→    }
+   536→
+   537→    const resolvedIP = ip || sanitized;
+   538→    const target = sanitized;
+   539→
+   540→    // Run all intelligence modules in parallel
+   541→    const [
+   542→      ipRep,
+   543→      c2Infra,
+   544→      dnsIndicators,
+   545→    ] = await Promise.all([
+   546→      ipReputationScan(resolvedIP, target),
+   547→      scanC2Ports(resolvedIP, target),
+   548→      dnsBotDetection(target),
+   549→    ]);
+   550→
+   551→    // Classify threat
+   552→    const threatClassification = classifyThreat(ipRep, c2Infra, dnsIndicators);
+   553→
+   554→    // Bot Cage data
+   555→    const cageStatus = {
+   556→      quarantined: threatClassification.score >= 75,
+   557→      monitored: threatClassification.score >= 25,
+   558→      threats: threatClassification.vectors,
+   559→      quarantineReason: threatClassification.score >= 75
+   560→        ? `${c2Infra.length} C2 ports + ${dnsIndicators.length} threat indicators + ${ipRep.reputation.blacklistHits} blacklist hits`
+   561→        : null,
+   562→      responsePlaybook: threatClassification.score >= 75
+   563→        ? ['BLOCK: Add to firewall deny list', 'MONITOR: Enable full packet capture', 'INVESTIGATE: Trace all outbound connections', 'CONTAIN: Isolate from network', 'REPORT: Submit to threat intel sharing']
+   564→        : threatClassification.score >= 50
+   565→        ? ['MONITOR: Enable enhanced logging', 'ALERT: Set tripwires on new connections', 'INVESTIGATE: Analyze traffic patterns', 'PREPARE: Draft containment plan']
+   566→        : ['LOG: Standard monitoring', 'WATCH: Alert on unusual patterns'],
+   567→    };
+   568→
+   569→    return applySecurityHeaders(NextResponse.json({
+   570→      success: true,
+   571→      target,
+   572→      resolvedIP,
+   573→      mode,
+   574→      botIntel: {
+   575→        ipReputation: ipRep,
+   576→        botnetIndicators: {
+   577→          c2Ports: C2_PORTS.map(p => ({ port: p.port, service: p.service, severity: p.severity })),
+   578→          malwareSignatures: C2_SIGNATURES.map(s => ({ family: s.family, severity: s.severity, desc: s.desc })),
+   579→          detectedC2: c2Infra,
+   580→        },
+   581→        threatClassification,
+   582→        dnsIntelligence: dnsIndicators,
+   583→        c2Infrastructure: c2Infra,
+   584→        attackVectors: threatClassification.vectors.map((v: string, i: number) => ({
+   585→          id: `AV-${String(i + 1).padStart(3, '0')}`,
+   586→          type: v,
+   587→          severity: i < 2 ? 'critical' : i < 5 ? 'high' : 'medium',
+   588→          description: v,
+   589→          proof: i < c2Infra.length ? c2Infra[i]?.banner : 'DNS/Reputation analysis',
+   590→        })),
+   591→        cageStatus,
+   592→      },
+   593→    }));
+   594→  } catch (error) {
+   595→    return safeErrorResponse(error, 500, 'bot-hunter');
+   596→  }
+   597→}
+   598→

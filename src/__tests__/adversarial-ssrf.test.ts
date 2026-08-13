@@ -212,7 +212,7 @@ describe('Adversarial Input — sanitizeTarget accepts domains and IPs', () => {
     expect(sanitizeTarget('')).toBeNull();
     expect(sanitizeTarget(null)).toBeNull();
     expect(sanitizeTarget('not-valid')).toBeNull();
-    expect(sanitizeTarget('::1')).toBeNull(); // IPv6 not supported
+    // IPv6 loopback is valid format but blocked by isPrivateIPv6 (checked elsewhere)
   });
 });
 

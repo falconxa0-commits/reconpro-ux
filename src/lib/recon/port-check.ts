@@ -8,6 +8,7 @@
 
 import net from 'net';
 import dns from 'dns/promises';
+import { isPrivateIP, isPrivateIPv6, isBlockedDomain, looksLikeIP } from '@/lib/api-security';
 import type { PortResult, PortScanResult, ReconFinding } from './types';
 
 // Top ports to scan (the ones that matter for security assessments)
@@ -82,13 +83,73 @@ export async function scanPorts(domain: string, timeoutPerPort = 2000): Promise<
   const start = Date.now();
   const ports: PortScanResult[] = [];
 
+  // SSRF protection: reject private IPs, blocked domains, and IP-looking inputs
+  if (looksLikeIP(domain)) {
+    if (isPrivateIP(domain) || isPrivateIPv6(domain)) {
+      return {
+        type: 'port',
+        success: false,
+        domain,
+        ports: [],
+        duration: Date.now() - start,
+      };
+    }
+    // Allow scanning of public IPs (already validated above)
+    // But block if it's an IP that was passed as a domain disguise
+  }
+  if (isBlockedDomain(domain)) {
+    return {
+      type: 'port',
+      success: false,
+      domain,
+      ports: [],
+      duration: Date.now() - start,
+    };
+  }
+
   // Resolve domain to IP first
   let host = domain;
   try {
-    const addresses = await dns.resolve4(domain);
-    if (addresses.length > 0) host = addresses[0];
+    const [v4Addresses, v6Addresses] = await Promise.all([
+      dns.resolve4(domain).catch(() => [] as string[]),
+      dns.resolve6(domain).catch(() => [] as string[]),
+    ]);
+
+    const allIPs = [...v4Addresses, ...v6Addresses];
+    if (allIPs.length === 0) {
+      // DNS failure — do not fall back to raw domain (SSRF prevention)
+      return {
+        type: 'port',
+        success: false,
+        domain,
+        ports: [],
+        duration: Date.now() - start,
+      };
+    }
+
+    // Check ALL resolved IPs — if ANY is private, reject the scan
+    if (v4Addresses.some(ip => isPrivateIP(ip)) || v6Addresses.some(ip => isPrivateIPv6(ip))) {
+      return {
+        type: 'port',
+        success: false,
+        domain,
+        ports: [],
+        duration: Date.now() - start,
+      };
+    }
+
+    // Use first IPv4 address for scanning
+    if (v4Addresses.length > 0) host = v4Addresses[0];
+    else host = v6Addresses[0];
   } catch {
-    // Use domain as-is
+    // DNS resolution threw — do not allow fallback
+    return {
+      type: 'port',
+      success: false,
+      domain,
+      ports: [],
+      duration: Date.now() - start,
+    };
   }
 
   // Scan all ports concurrently (with per-port timeout)

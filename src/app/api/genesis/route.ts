@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
@@ -50,7 +51,7 @@ function gradeColor(grade: string): string {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {
@@ -248,7 +249,7 @@ export async function POST(request: NextRequest) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {

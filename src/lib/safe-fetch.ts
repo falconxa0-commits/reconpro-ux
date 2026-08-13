@@ -12,7 +12,8 @@
  */
 
 import dns from 'dns/promises';
-import { isPrivateIP, DOMAIN_REGEX } from './api-security';
+import { isPrivateIP, isPrivateIPv6, DOMAIN_REGEX, IPV4_REGEX } from './api-security';
+import net from 'net';
 
 const MAX_RESPONSE_SIZE = 2 * 1024 * 1024; // 2MB
 const SAFE_USER_AGENT = 'ReconPro-Scanner/10.0 (Security Audit; +https://reconpro.security)';
@@ -28,7 +29,7 @@ interface SafeFetchOptions {
   skipSSRFCheck?: boolean;
 }
 
-interface SafeFetchResult {
+export interface SafeFetchResult {
   ok: boolean;
   status: number;
   headers: Record<string, string>;
@@ -39,41 +40,63 @@ interface SafeFetchResult {
 /**
  * Validate that a URL's host is safe (not internal/private).
  * Checks both the domain name and resolves to check the IP.
+ * v2: IPv6 support, DNS failure = unsafe, consistent blocklist.
  */
 async function isSafeHost(host: string, skipSSRFCheck = false): Promise<boolean> {
-  // Skip check for trusted external APIs
   if (skipSSRFCheck) return true;
 
   const lower = host.toLowerCase();
 
-  // Block obvious internal hosts
-  if (['localhost', 'localhost.localdomain', 'internal', 'metadata.google.internal', 'metadata'].includes(lower)) {
+  // Block obvious internal hosts — comprehensive list
+  const BLOCKED = [
+    'localhost', 'localhost.localdomain', 'internal', 'metadata',
+    'metadata.google.internal', 'kube-system', 'consul', 'vault', 'etcd',
+    'kubernetes', 'kubernetes.default', 'kubernetes.default.svc',
+    'grafana', 'prometheus', 'jaeger', 'elastic', 'kibana',
+    'zookeeper', 'redis', 'rabbitmq', 'memcached',
+    'container.googleapis.com',
+  ];
+  if (BLOCKED.includes(lower) || BLOCKED.some(d => lower.endsWith('.' + d))) {
     return false;
   }
   if (lower.endsWith('.local') || lower.endsWith('.internal') || lower.endsWith('.localhost') || lower.endsWith('.onion')) {
     return false;
   }
 
-  // If it looks like an IP, check it directly
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+  // If it looks like an IPv4, check directly
+  if (IPV4_REGEX.test(host)) {
     return !isPrivateIP(host);
   }
 
-  // If it's a valid domain, resolve and check IP
+  // If it looks like an IPv6, check directly
+  if (net.isIPv6(host)) {
+    return !isPrivateIPv6(host);
+  }
+
+  // If it's a valid domain, resolve and check BOTH A and AAAA
   if (DOMAIN_REGEX.test(host)) {
     try {
-      const addresses = await dns.resolve4(host);
-      if (addresses.length > 0) {
-        // If ANY resolved IP is private, block
-        return !addresses.some(ip => isPrivateIP(ip));
+      const [v4Addresses, v6Addresses] = await Promise.all([
+        dns.resolve4(host).catch(() => [] as string[]),
+        dns.resolve6(host).catch(() => [] as string[]),
+      ]);
+
+      // DNS failure — treat as unsafe
+      if (v4Addresses.length === 0 && v6Addresses.length === 0) {
+        return false;
       }
-    } catch {
-      // Resolution failed — allow (will fail at connection time)
+
+      // If ANY resolved IP is private, block
+      if (v4Addresses.some(ip => isPrivateIP(ip))) return false;
+      if (v6Addresses.some(ip => isPrivateIPv6(ip))) return false;
+
       return true;
+    } catch {
+      return false;
     }
   }
 
-  return true;
+  return false;
 }
 
 /**

@@ -3,9 +3,13 @@
  *
  * Centralized input validation, rate limiting, and abuse protection
  * for all API routes.
+ *
+ * v2 — Hardened: IPv6 support, bounded rate-limit store, atomic increments,
+ * DNS-failure-safe SSRF checks, consistent blocked-domain list.
  */
 
 import { NextResponse } from 'next/server';
+import net from 'net';
 
 // ── Domain Validation ──────────────────────────────────────────────
 
@@ -15,33 +19,44 @@ export const DOMAIN_REGEX = /^[a-zA-Z0-9]([a-zA-Z0-9-]*\.)+[a-zA-Z]{2,}$/;
 /** IPv4 regex */
 export const IPV4_REGEX = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
-/** Combined target validation (domain or IP) */
+/** IPv6 regex — covers common forms; complements net.isIPv6() for pattern tests */
+export const IPV6_REGEX = /^(?:[0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{0,4}$/;
+
+/** Check if a string is a valid IPv6 address (delegates to Node.js) */
+export function isIPv6(target: string): boolean {
+  return net.isIPv6(target);
+}
+
+/** Combined target validation (domain, IPv4, or IPv6) */
 export function isValidTarget(target: string): boolean {
   if (!target || typeof target !== 'string') return false;
   const trimmed = target.trim();
-  return DOMAIN_REGEX.test(trimmed) || IPV4_REGEX.test(trimmed);
+  return DOMAIN_REGEX.test(trimmed) || IPV4_REGEX.test(trimmed) || net.isIPv6(trimmed);
 }
 
 /** Validate and sanitize a domain string */
 export function sanitizeDomain(input: unknown): string | null {
   if (typeof input !== 'string') return null;
-  const trimmed = input.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  let trimmed = input.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  // Strip trailing dots (DNS FQDN marker that causes resolver inconsistency)
+  trimmed = trimmed.replace(/\.$/, '');
   if (!DOMAIN_REGEX.test(trimmed)) return null;
   return trimmed.toLowerCase();
 }
 
-/** Validate and sanitize a target (domain or IP) */
+/** Validate and sanitize a target (domain, IPv4, or IPv6) */
 export function sanitizeTarget(input: unknown): string | null {
   if (typeof input !== 'string') return null;
-  const trimmed = input.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  const trimmed = input.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\.$/, '');
   if (DOMAIN_REGEX.test(trimmed)) return trimmed.toLowerCase();
   if (IPV4_REGEX.test(trimmed)) return trimmed;
+  if (net.isIPv6(trimmed)) return trimmed;
   return null;
 }
 
 // ── SSRF Protection ────────────────────────────────────────────────
 
-/** Block private/reserved/link-local/multicast IP ranges */
+/** Block private/reserved/link-local/multicast IPv4 ranges */
 export function isPrivateIP(ip: string): boolean {
   const parts = ip.split('.').map(Number);
   if (parts.length !== 4 || parts.some(p => isNaN(p) || p < 0 || p > 255)) return true;
@@ -78,10 +93,66 @@ export function isPrivateIP(ip: string): boolean {
   return false;
 }
 
+/**
+ * Check if an IPv6 address is private, loopback, link-local, or reserved.
+ * Covers: ::1/loopback, fc00::/7 ULA, fe80::/10 link-local, ::ffff:IPv4-mapped,
+ * multicast (ff00::/8), documentation ranges.
+ */
+export function isPrivateIPv6(ip: string): boolean {
+  const lower = ip.toLowerCase();
+
+  // Loopback
+  if (lower === '::1' || lower === '0000:0000:0000:0000:0000:0000:0000:0001') return true;
+
+  // IPv4-mapped IPv6 (e.g., ::ffff:127.0.0.1, ::ffff:10.0.0.1)
+  const v4Match = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4Match) return isPrivateIP(v4Match[1]);
+
+  // Link-local: fe80::/10
+  if (lower.startsWith('fe80:') || lower.startsWith('fe80')) return true;
+
+  // Unique Local Addresses (ULA): fc00::/7 (fc and fd)
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+
+  // Multicast: ff00::/8
+  if (lower.startsWith('ff')) return true;
+
+  // Documentation: 2001:db8::/32
+  if (lower.startsWith('2001:db8:')) return true;
+
+  // Teredo: 2001::/32 (could expose internal NAT)
+  if (lower.startsWith('2001:0:')) return true;
+
+  // Unspecified / all-zeros
+  if (lower === '::' || lower === '0000:0000:0000:0000:0000:0000:0000:0000') return true;
+
+  return false;
+}
+
+/** Check if an IP (v4 or v6) is private/reserved */
+export function isPrivateIPAny(ip: string): boolean {
+  if (IPV4_REGEX.test(ip)) return isPrivateIP(ip);
+  if (net.isIPv6(ip)) return isPrivateIPv6(ip);
+  // Unknown format — treat as unsafe
+  return true;
+}
+
+/**
+ * Check if a string looks like an IP address (v4 or v6).
+ * Used to decide whether to do DNS resolution or direct IP check.
+ */
+export function looksLikeIP(target: string): boolean {
+  return IPV4_REGEX.test(target) || net.isIPv6(target);
+}
+
 /** Domains that must never be scanned (internal infrastructure) */
 const BLOCKED_DOMAINS = [
-  'localhost', 'internal', 'metadata', 'kube-system',
-  'consul', 'vault', 'etcd', 'kubernetes', 'kubernetes.default',
+  'localhost', 'localhost.localdomain', 'internal', 'metadata',
+  'metadata.google.internal', 'kube-system', 'consul', 'vault', 'etcd',
+  'kubernetes', 'kubernetes.default', 'kubernetes.default.svc',
+  'grafana', 'prometheus', 'jaeger', 'elastic', 'kibana',
+  'zookeeper', 'redis', 'rabbitmq', 'memcached',
+  'container.googleapis.com',
 ];
 
 /** Check if a domain is blocked */
@@ -90,31 +161,35 @@ export function isBlockedDomain(domain: string): boolean {
   // Exact match for single-label blocked names
   if (BLOCKED_DOMAINS.includes(lower)) return true;
   // Block subdomains of blocked names (e.g., metadata.google.internal)
-  if (BLOCKED_DOMAINS.some(d => lower.endsWith('.' + d))) return true;
+  if (BLOCKED_DOMAINS.some(d => lower === d || lower.endsWith('.' + d))) return true;
   // Block special-use TLDs
   if (lower.endsWith('.local')) return true;
   if (lower.endsWith('.internal')) return true;
   if (lower.endsWith('.localhost')) return true;
   if (lower.endsWith('.onion')) return true;
+  // Block numeric-only domains (could be IP obfuscation)
+  if (/^\d+$/.test(lower)) return true;
   return false;
 }
 
-// ── Rate Limiting ──────────────────────────────────────────────────
+// ── Rate Limiting (Bounded) ──────────────────────────────────────────
 
 interface RateLimitEntry {
   count: number;
   resetAt: number;
 }
 
+const MAX_RATE_LIMIT_ENTRIES = 50_000;
 const rateLimitStore = new Map<string, RateLimitEntry>();
 
 /**
  * Check and increment rate limit for a given key.
  * Returns true if the request should be allowed, false if rate limited.
  *
- * @param key - Unique identifier (e.g., IP address, API key)
- * @param maxRequests - Maximum requests in the window
- * @param windowMs - Time window in milliseconds
+ * v2 hardening:
+ * - Hard cap on store size to prevent memory exhaustion
+ * - Atomic-style check-and-set to reduce race windows
+ * - Cleanup of expired entries on every call (amortized)
  */
 export function checkRateLimit(
   key: string,
@@ -122,6 +197,19 @@ export function checkRateLimit(
   windowMs: number = 60_000
 ): { allowed: boolean; remaining: number; resetAt: number } {
   const now = Date.now();
+
+  // Amortized cleanup: if store is too large, prune expired entries
+  if (rateLimitStore.size > MAX_RATE_LIMIT_ENTRIES / 2) {
+    for (const [k, entry] of rateLimitStore) {
+      if (entry.resetAt <= now) rateLimitStore.delete(k);
+    }
+  }
+
+  // Hard cap: if still over limit after cleanup, reject new keys
+  if (rateLimitStore.size >= MAX_RATE_LIMIT_ENTRIES && !rateLimitStore.has(key)) {
+    return { allowed: false, remaining: 0, resetAt: now + windowMs };
+  }
+
   const entry = rateLimitStore.get(key);
 
   // Clean up expired entry
@@ -172,14 +260,17 @@ export async function parseValidatedBody<T = Record<string, unknown>>(
 ): Promise<{ body: T; error: Response | null }> {
   // Check Content-Length header if available
   const contentLength = request.headers.get('content-length');
-  if (contentLength && parseInt(contentLength, 10) > maxBytes) {
-    return {
-      body: {} as T,
-      error: new Response(JSON.stringify({ error: 'Request body too large' }), {
-        status: 413,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    };
+  if (contentLength) {
+    const size = parseInt(contentLength, 10);
+    if (!isNaN(size) && size > maxBytes) {
+      return {
+        body: {} as T,
+        error: new Response(JSON.stringify({ error: 'Request body too large' }), {
+          status: 413,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      };
+    }
   }
 
   try {

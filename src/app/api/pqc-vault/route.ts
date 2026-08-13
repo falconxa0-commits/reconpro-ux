@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 // ═══════════════════════════════════════════════════════════════════════
 // PQC Sovereign Vault API
 // POST /api/pqc-vault       — Run full PQC analysis
@@ -25,7 +26,7 @@ const VALID_PROTOCOLS = Object.keys(PROTOCOL_ANALYSIS);
 // ── POST /api/pqc-vault ────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {
@@ -88,7 +89,7 @@ export async function POST(request: NextRequest) {
 // ── GET /api/pqc-vault/algorithms ─────────────────────────────────────
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   const { searchParams } = new URL(request.url);

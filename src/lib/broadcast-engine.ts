@@ -285,9 +285,15 @@ Review your exposure dashboard immediately and ensure all high-finding assets ar
 // ── In-Memory Broadcast Store ──────────────────────────────────────────
 
 const broadcastStore: Map<string, BroadcastMessage> = new Map();
+const MAX_BROADCASTS = 1000;
 let seeded = false;
 
 function addBroadcast(msg: BroadcastMessage): void {
+  // Evict oldest entries if store exceeds cap
+  if (broadcastStore.size >= MAX_BROADCASTS) {
+    const oldest = Array.from(broadcastStore.keys())[0];
+    if (oldest) broadcastStore.delete(oldest);
+  }
   broadcastStore.set(msg.id, msg);
 }
 

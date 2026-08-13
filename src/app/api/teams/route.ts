@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
 import { checkRateLimit } from '@/lib/api-security';
@@ -6,7 +7,7 @@ import { checkRateLimit } from '@/lib/api-security';
 // ── GET ──────────────────────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {
@@ -45,7 +46,7 @@ export async function GET(request: NextRequest) {
 // ── POST ─────────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 5, 60_000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {
@@ -111,7 +112,7 @@ export async function POST(request: NextRequest) {
 // ── PATCH ────────────────────────────────────────────────────────────────────
 
 export async function PATCH(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 5, 60_000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {
@@ -161,7 +162,7 @@ export async function PATCH(request: NextRequest) {
 // ── DELETE ───────────────────────────────────────────────────────────────────
 
 export async function DELETE(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 5, 60_000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {

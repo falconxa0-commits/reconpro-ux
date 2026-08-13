@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 // ═══════════════════════════════════════════════════════════════════════
 // Echo-Sign Verify API — /api/broadcast/verify/[id]
 // GET → verify a specific broadcast's Ed25519 signature
@@ -13,7 +14,7 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { allowed } = checkRateLimit(_req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(_req), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   const { id } = await params;

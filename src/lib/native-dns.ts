@@ -160,6 +160,7 @@ export async function analyzeSSLNative(domain: string, port = 443): Promise<{
 
     socket.on('error', (err) => {
       clearTimeout(timeout);
+      socket.destroy();
       resolve({ certInfo: '', sslConnect: '', protocol: '', cipher: '', authorized: false, error: err.message });
     });
   });

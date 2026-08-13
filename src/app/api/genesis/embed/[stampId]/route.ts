@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { checkRateLimit } from '@/lib/api-security';
@@ -27,7 +28,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ stampId: string }> }
 ) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {
@@ -93,7 +94,7 @@ export async function GET(
       <span style="font-weight:700;font-size:13px;color:#94a3b8;">Genesis Stamp</span>
       <span style="font-weight:800;font-size:13px;color:${
         isInvalid ? '#666' : color
-      };">${isInvalid ? (isRevoked ? 'REVOKED' : 'EXPIRED') : stamp.grade}</span>
+      };">${isInvalid ? (isRevoked ? 'REVOKED' : 'EXPIRED') : escapeHtml(stamp.grade)}</span>
     </div>
     <div style="font-size:13px;color:#cbd5e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${
       escapeHtml(stamp.domain)

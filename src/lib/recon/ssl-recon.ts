@@ -4,6 +4,8 @@
 // SSL misconfigurations account for 30%+ of data breaches.
 
 import tls from 'tls';
+import dns from 'dns/promises';
+import { isPrivateIP, isPrivateIPv6, isBlockedDomain, looksLikeIP } from '@/lib/api-security';
 import type { SSLResult, SSLIssue, ReconFinding } from './types';
 
 interface TLSConnectResult {
@@ -43,6 +45,7 @@ function connectTLS(domain: string, port = 443, timeout = 5000): Promise<TLSConn
 
     socket.on('error', (err) => {
       clearTimeout(timer);
+      socket.destroy();
       resolve({ authorized: false, authorizationError: err });
     });
   });
@@ -91,6 +94,78 @@ const OUTDATED_PROTOCOLS = ['TLSv1', 'TLSv1.1'];
 export async function analyzeSSL(domain: string, port = 443): Promise<SSLResult> {
   const start = Date.now();
   const issues: SSLIssue[] = [];
+
+  // SSRF protection: validate target before connecting
+  if (isBlockedDomain(domain)) {
+    return {
+      type: 'ssl',
+      success: false,
+      domain,
+      subject: 'N/A',
+      issuer: 'N/A',
+      validFrom: 'N/A',
+      validTo: 'N/A',
+      daysUntilExpiry: 0,
+      protocol: 'unknown',
+      cipher: 'unknown',
+      serialNumber: 'N/A',
+      sans: [],
+      chainLength: 0,
+      issues: [{ finding: 'Target domain blocked by security policy', severity: 'high', detail: `The domain "${domain}" is on the blocked domain list and cannot be scanned.` }],
+      duration: Date.now() - start,
+    };
+  }
+
+  // If target is an IP, check it directly
+  if (looksLikeIP(domain)) {
+    if (isPrivateIP(domain) || isPrivateIPv6(domain)) {
+      return {
+        type: 'ssl', success: false, domain,
+        subject: 'N/A', issuer: 'N/A', validFrom: 'N/A', validTo: 'N/A',
+        daysUntilExpiry: 0, protocol: 'unknown', cipher: 'unknown',
+        serialNumber: 'N/A', sans: [], chainLength: 0,
+        issues: [{ finding: 'Private/reserved IP addresses cannot be scanned', severity: 'high', detail: `The IP address "${domain}" is private or reserved.` }],
+        duration: Date.now() - start,
+      };
+    }
+  } else {
+    // Resolve and check DNS for domain targets
+    try {
+      const [v4, v6] = await Promise.all([
+        dns.resolve4(domain).catch(() => [] as string[]),
+        dns.resolve6(domain).catch(() => [] as string[]),
+      ]);
+      if (v4.some(ip => isPrivateIP(ip)) || v6.some(ip => isPrivateIPv6(ip))) {
+        return {
+          type: 'ssl', success: false, domain,
+          subject: 'N/A', issuer: 'N/A', validFrom: 'N/A', validTo: 'N/A',
+          daysUntilExpiry: 0, protocol: 'unknown', cipher: 'unknown',
+          serialNumber: 'N/A', sans: [], chainLength: 0,
+          issues: [{ finding: 'Domain resolves to private IP', severity: 'high', detail: `The domain "${domain}" resolves to a private or reserved IP address and cannot be scanned.` }],
+          duration: Date.now() - start,
+        };
+      }
+      if (v4.length === 0 && v6.length === 0) {
+        return {
+          type: 'ssl', success: false, domain,
+          subject: 'N/A', issuer: 'N/A', validFrom: 'N/A', validTo: 'N/A',
+          daysUntilExpiry: 0, protocol: 'unknown', cipher: 'unknown',
+          serialNumber: 'N/A', sans: [], chainLength: 0,
+          issues: [{ finding: 'Domain does not resolve', severity: 'high', detail: `The domain "${domain}" does not resolve to any IP address.` }],
+          duration: Date.now() - start,
+        };
+      }
+    } catch {
+      return {
+        type: 'ssl', success: false, domain,
+        subject: 'N/A', issuer: 'N/A', validFrom: 'N/A', validTo: 'N/A',
+        daysUntilExpiry: 0, protocol: 'unknown', cipher: 'unknown',
+        serialNumber: 'N/A', sans: [], chainLength: 0,
+        issues: [{ finding: 'DNS resolution failed', severity: 'high', detail: `Could not resolve "${domain}" for security validation.` }],
+        duration: Date.now() - start,
+      };
+    }
+  }
 
   const result = await connectTLS(domain, port);
 

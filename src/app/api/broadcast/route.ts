@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 // ═══════════════════════════════════════════════════════════════════════
 // Echo-Sign Broadcast API — /api/broadcast
 // GET  ?priority= &channel= &active=true  → list broadcasts
@@ -29,7 +30,7 @@ const VALID_SCOPES: TargetScope[] = ['all', 'enterprise', 'government'];
 // ── GET /api/broadcast ─────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
-  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   const { searchParams } = new URL(req.url);
@@ -56,7 +57,7 @@ export async function GET(req: NextRequest) {
 // ── POST /api/broadcast ────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {

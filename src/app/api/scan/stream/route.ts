@@ -1,9 +1,10 @@
+import { extractClientIP } from '@/lib/api-protection';
 import { NextRequest } from 'next/server';
-import { checkRateLimit } from '@/lib/api-security';
+import { checkRateLimit, isBlockedDomain } from '@/lib/api-security';
 
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return new Response(JSON.stringify({ error: 'Rate limit exceeded' }), { status: 429, headers: { 'Content-Type': 'application/json' } });
 
   const domain = request.nextUrl.searchParams.get('domain');
@@ -15,9 +16,8 @@ export async function GET(request: NextRequest) {
     return new Response('Invalid domain format', { status: 400 });
   }
 
-  // Block internal/sensitive domains
-  const BLOCKED = ['localhost', 'internal', 'metadata'];
-  if (BLOCKED.some(d => domain.includes(d)) || domain.endsWith('.local') || domain.endsWith('.internal')) {
+  // Block internal/sensitive domains using centralized list
+  if (isBlockedDomain(domain)) {
     return new Response('Internal domains not permitted', { status: 403 });
   }
 

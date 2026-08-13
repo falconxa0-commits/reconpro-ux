@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
 import { safeFetch } from '@/lib/safe-fetch';
@@ -12,7 +13,6 @@ const GORGON_FULL_NAME = 'GORGON ULTRA';
 const GORGON_TAGLINE = 'The Gaze That Breaks Models';
 const GORGON_VERSION = 'GORGON-v3.0';
 const GORGON_SIGNATURE = 'XG0RG0N-M0D3L-Br34k3r-w4s-H3r3-2026-ULTRA';
-const HALL_OF_BROKEN_PATH = '/home/z/my-project/download/gorgon_hall_of_broken.json';
 
 const GORGON_HEADERS: Record<string, string> = {
   'User-Agent': 'GORGON-ULTRA/3.0 (The-Gaze-That-Breaks-Models; +https://reconpro.security/gorgon)',
@@ -798,7 +798,7 @@ function computeThreatScore(findings: any[], injection: any[], multiTurn: any[],
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {

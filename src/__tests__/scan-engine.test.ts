@@ -7,9 +7,10 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// ── Mock safeFetch's dns.resolve4 dependency ─────────────────────
-const { _mockDnsResolve4 } = vi.hoisted(() => ({
+// ── Mock safeFetch's dns/promises dependency ─────────────────────
+const { _mockDnsResolve4, _mockDnsResolve6 } = vi.hoisted(() => ({
   _mockDnsResolve4: vi.fn(),
+  _mockDnsResolve6: vi.fn(),
 }));
 
 vi.mock('dns/promises', () => ({
@@ -17,6 +18,7 @@ vi.mock('dns/promises', () => ({
   default: {
     Resolver: vi.fn(),
     resolve4: (host: string) => _mockDnsResolve4(host),
+    resolve6: (host: string) => _mockDnsResolve6(host),
   },
 }));
 
@@ -25,12 +27,18 @@ vi.mock('tls', () => ({
   default: { connect: vi.fn() },
 }));
 
+// Mock net module for safe-fetch IPv6 detection
+vi.mock('net', () => ({
+  __esModule: true,
+  default: {
+    isIPv6: (s: string) => /^[\da-fA-F:]+$/.test(s) && s.includes(':'),
+  },
+}));
+
 import { safeFetch, safeFetchHeaders, safeFetchWithRedirects } from '@/lib/safe-fetch';
 import { isPrivateIP } from '@/lib/api-security';
 
 // ── Import native-dns functions and mock them at module level ────
-// Since dns/promises mocking doesn't work well with Resolver constructors,
-// we mock the exported functions directly
 vi.mock('@/lib/native-dns', () => ({
   digShort: vi.fn(),
   digAnswer: vi.fn(),
@@ -46,6 +54,12 @@ const mockedDigShort = vi.mocked(digShort);
 const mockedDigAnswer = vi.mocked(digAnswer);
 const mockedResolveIP = vi.mocked(resolveIP);
 const mockedReverseDNS = vi.mocked(reverseDNS);
+
+// Helper: mock DNS resolving to a public IP (both v4 and v6)
+function mockPublicDNS(v4 = '93.184.216.34', v6?: string) {
+  _mockDnsResolve4.mockResolvedValue([v4]);
+  _mockDnsResolve6.mockResolvedValue(v6 ? [v6] : []);
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -67,29 +81,9 @@ describe('Native DNS — digShort', () => {
     expect(await digShort('example.com', 'AAAA')).toEqual(['2606:2800:220:1:248:1893:25c8:1946']);
   });
 
-  it('should return MX records formatted', async () => {
-    mockedDigShort.mockResolvedValue(['mail.example.com (priority: 10)']);
-    expect(await digShort('example.com', 'MX')).toEqual(['mail.example.com (priority: 10)']);
-  });
-
-  it('should return NS records', async () => {
-    mockedDigShort.mockResolvedValue(['ns1.example.com', 'ns2.example.com']);
-    expect(await digShort('example.com', 'NS')).toEqual(['ns1.example.com', 'ns2.example.com']);
-  });
-
   it('should return empty array on failure', async () => {
     mockedDigShort.mockResolvedValue([]);
     expect(await digShort('nonexistent.invalid', 'A')).toEqual([]);
-  });
-
-  it('should handle unknown record types', async () => {
-    mockedDigShort.mockResolvedValue([]);
-    expect(await digShort('example.com', 'UNKNOWN')).toEqual([]);
-  });
-
-  it('should return CNAME records', async () => {
-    mockedDigShort.mockResolvedValue(['cdn.example.com']);
-    expect(await digShort('www.example.com', 'CNAME')).toEqual(['cdn.example.com']);
   });
 });
 
@@ -99,18 +93,6 @@ describe('Native DNS — digAnswer', () => {
   it('should return formatted answer', async () => {
     mockedDigAnswer.mockResolvedValue('example.com\tA\t93.184.216.34');
     expect(await digAnswer('example.com', 'A')).toBe('example.com\tA\t93.184.216.34');
-  });
-
-  it('should return multiple lines', async () => {
-    mockedDigAnswer.mockResolvedValue('example.com\tA\t1.1.1.1\nexample.com\tA\t2.2.2.2');
-    const result = await digAnswer('example.com', 'A');
-    expect(result).toContain('1.1.1.1');
-    expect(result).toContain('2.2.2.2');
-  });
-
-  it('should return empty string on error', async () => {
-    mockedDigAnswer.mockResolvedValue('');
-    expect(await digAnswer('bad.example.com', 'A')).toBe('');
   });
 });
 
@@ -126,11 +108,6 @@ describe('Native DNS — resolveIP', () => {
     mockedResolveIP.mockResolvedValue(null);
     expect(await resolveIP('empty.example.com')).toBeNull();
   });
-
-  it('should return null on error', async () => {
-    mockedResolveIP.mockResolvedValue(null);
-    expect(await resolveIP('broken.example.com')).toBeNull();
-  });
 });
 
 // ── Native DNS: reverseDNS ────────────────────────────────────────
@@ -139,11 +116,6 @@ describe('Native DNS — reverseDNS', () => {
   it('should return PTR record', async () => {
     mockedReverseDNS.mockResolvedValue('example.com');
     expect(await reverseDNS('93.184.216.34')).toBe('example.com');
-  });
-
-  it('should return empty string on error', async () => {
-    mockedReverseDNS.mockResolvedValue('');
-    expect(await reverseDNS('1.2.3.4')).toBe('');
   });
 });
 
@@ -177,9 +149,10 @@ describe('safeFetch — SSRF Protection', () => {
     expect((await safeFetch('http://169.254.169.254/')).status).toBe(403);
   });
 
-  it('should block non-HTTP protocols', async () => {
-    expect((await safeFetch('file:///etc/passwd')).status).toBe(0);
-    expect((await safeFetch('ftp://evil.com/')).status).toBe(0);
+  it('should block non-HTTP protocols (fail-closed)', async () => {
+    // Non-HTTP hosts don't match domain/IP patterns → fail-closed (403)
+    expect((await safeFetch('file:///etc/passwd')).status).toBe(403);
+    expect((await safeFetch('ftp://evil.com/')).status).toBe(403);
   });
 
   it('should reject invalid URLs', async () => {
@@ -194,25 +167,36 @@ describe('safeFetch — SSRF Protection', () => {
 describe('safeFetch — SSRF via DNS Resolution', () => {
   it('should block DNS rebinding to 127.0.0.1', async () => {
     _mockDnsResolve4.mockResolvedValue(['127.0.0.1']);
+    _mockDnsResolve6.mockResolvedValue([]);
     const r = await safeFetch('http://evil.com/');
     expect(r.status).toBe(403);
   });
 
   it('should block if ANY resolved IP is private', async () => {
     _mockDnsResolve4.mockResolvedValue(['8.8.8.8', '192.168.1.1']);
+    _mockDnsResolve6.mockResolvedValue([]);
     const r = await safeFetch('http://dual-homed.com/');
     expect(r.status).toBe(403);
   });
 
   it('should block DNS resolution to cloud metadata', async () => {
     _mockDnsResolve4.mockResolvedValue(['169.254.169.254']);
+    _mockDnsResolve6.mockResolvedValue([]);
     const r = await safeFetch('http://metadata-spoof.com/');
     expect(r.status).toBe(403);
   });
 
   it('should block DNS resolution to link-local', async () => {
     _mockDnsResolve4.mockResolvedValue(['169.254.1.1']);
+    _mockDnsResolve6.mockResolvedValue([]);
     const r = await safeFetch('http://linklocal-spoof.com/');
+    expect(r.status).toBe(403);
+  });
+
+  it('should block DNS failure (fail-closed — no TOCTOU bypass)', async () => {
+    _mockDnsResolve4.mockResolvedValue([]);
+    _mockDnsResolve6.mockResolvedValue([]);
+    const r = await safeFetch('http://nonexistent.example.com/');
     expect(r.status).toBe(403);
   });
 });
@@ -221,7 +205,7 @@ describe('safeFetch — SSRF via DNS Resolution', () => {
 
 describe('safeFetch — Happy Path', () => {
   it('should fetch a valid URL', async () => {
-    _mockDnsResolve4.mockResolvedValue(['93.184.216.34']);
+    mockPublicDNS();
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true, status: 200,
       headers: new Headers({ 'Content-Type': 'text/html' }),
@@ -236,7 +220,7 @@ describe('safeFetch — Happy Path', () => {
   });
 
   it('should set safe User-Agent', async () => {
-    _mockDnsResolve4.mockResolvedValue(['93.184.216.34']);
+    mockPublicDNS();
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: new Headers(), body: null, text: async () => '',
     });
@@ -254,7 +238,7 @@ describe('safeFetch — Happy Path', () => {
   });
 
   it('should not follow redirects by default', async () => {
-    _mockDnsResolve4.mockResolvedValue(['93.184.216.34']);
+    mockPublicDNS();
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: new Headers(), body: null, text: async () => '',
     });
@@ -267,7 +251,7 @@ describe('safeFetch — Happy Path', () => {
   });
 
   it('should handle fetch errors gracefully', async () => {
-    _mockDnsResolve4.mockResolvedValue(['93.184.216.34']);
+    mockPublicDNS();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')));
     const r = await safeFetch('http://example.com/');
     expect(r.ok).toBe(false);
@@ -276,7 +260,7 @@ describe('safeFetch — Happy Path', () => {
   });
 
   it('should handle timeout abort', async () => {
-    _mockDnsResolve4.mockResolvedValue(['93.184.216.34']);
+    mockPublicDNS();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(
       new DOMException('Aborted', 'AbortError')
     ));
@@ -287,7 +271,7 @@ describe('safeFetch — Happy Path', () => {
   });
 
   it('should skip SSRF when skipSSRFCheck=true', async () => {
-    _mockDnsResolve4.mockResolvedValue(['127.0.0.1']);
+    // When skipSSRFCheck is true, DNS resolution is skipped entirely
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: new Headers(), body: null, text: async () => '',
     });
@@ -302,7 +286,7 @@ describe('safeFetch — Happy Path', () => {
 
 describe('safeFetchHeaders', () => {
   it('should return headers from HEAD request', async () => {
-    _mockDnsResolve4.mockResolvedValue(['93.184.216.34']);
+    mockPublicDNS();
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true, status: 200,
       headers: new Headers({ 'Server': 'nginx/1.24' }),
@@ -320,7 +304,7 @@ describe('safeFetchHeaders', () => {
 
 describe('safeFetchWithRedirects', () => {
   it('should pass redirect: follow to fetch', async () => {
-    _mockDnsResolve4.mockResolvedValue(['93.184.216.34']);
+    mockPublicDNS();
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: new Headers(), body: null, text: async () => '',
     });
@@ -363,23 +347,12 @@ describe('SSRF Protection — Bypass Attempts', () => {
   });
 
   it('should allow domains resolving to public IPs only', async () => {
-    _mockDnsResolve4.mockResolvedValue(['8.8.8.8']);
+    mockPublicDNS('8.8.8.8');
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true, status: 200, headers: new Headers(), body: null, text: async () => '',
     });
     vi.stubGlobal('fetch', mockFetch);
     expect((await safeFetch('http://safe.example.com/')).ok).toBe(true);
-    vi.unstubAllGlobals();
-  });
-
-  it('should fail open when DNS errors (fetch will fail)', async () => {
-    _mockDnsResolve4.mockRejectedValue(new Error('ENOTFOUND'));
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: false, status: 0, headers: new Headers(), body: null, text: async () => '',
-    });
-    vi.stubGlobal('fetch', mockFetch);
-    const r = await safeFetch('http://nonexistent.example.com/');
-    expect(r.ok).toBe(false);
     vi.unstubAllGlobals();
   });
 });

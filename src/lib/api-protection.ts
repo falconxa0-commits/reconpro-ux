@@ -50,24 +50,41 @@ interface ProtectionResult {
 
 /**
  * Extract client IP from request headers.
- * Handles standard proxy headers.
+ * Handles standard proxy headers with spoofing resistance.
+ *
+ * v2: Trusts only the last non-private IP in x-forwarded-for chain
+ * (closest to the app) to prevent IP spoofing bypass.
  */
-function extractClientIP(request: NextRequest): string {
-  const headers = [
-    'x-forwarded-for',
-    'x-real-ip',
-    'cf-connecting-ip', // Cloudflare
-    'true-client-ip',    // Akamai
-  ];
-  
-  for (const header of headers) {
-    const value = request.headers.get(header);
-    if (value) {
-      // x-forwarded-for can contain multiple IPs; take the first one
-      return value.split(',')[0].trim();
+export function extractClientIP(request: NextRequest): string {
+  // Priority: CF-Connecting-IP > True-Client-IP > X-Real-IP > X-Forwarded-For (last non-private)
+  const cfIP = request.headers.get('cf-connecting-ip');
+  if (cfIP) return cfIP.trim();
+
+  const trueClientIP = request.headers.get('true-client-ip');
+  if (trueClientIP) return trueClientIP.trim();
+
+  const realIP = request.headers.get('x-real-ip');
+  if (realIP) return realIP.trim();
+
+  // X-Forwarded-For: client, proxy1, proxy2
+  // The rightmost non-private IP is closest to our infrastructure
+  const xff = request.headers.get('x-forwarded-for');
+  if (xff) {
+    const ips = xff.split(',').map(s => s.trim()).filter(Boolean);
+    // Walk from right to left, find first non-private IP
+    for (let i = ips.length - 1; i >= 0; i--) {
+      const ip = ips[i];
+      // Basic IP format check
+      if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip) || /^[0-9a-fA-F:]+$/.test(ip)) {
+        // If it's a known private range, skip (likely a proxy)
+        if (isPrivateIP(ip)) continue;
+        return ip;
+      }
     }
+    // If all are private, return the last one (closest proxy)
+    return ips[ips.length - 1] || 'unknown';
   }
-  
+
   // Fallback to connection remote address (may not be available in Next.js)
   return 'unknown';
 }

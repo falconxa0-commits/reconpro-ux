@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 // ══════════════════════════════════════════════════════════════════
 // Confused Deputy Sandbox API — Simulated AI Agent
 // Pattern-matched responses, in-memory session store, no real LLM
@@ -597,7 +598,7 @@ function isBlockedByDefense(rule: PatternRule, session: SandboxSession): boolean
 // ── Request Router ─────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   try {
@@ -614,7 +615,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   const url = new URL(req.url);

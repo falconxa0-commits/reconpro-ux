@@ -1,3 +1,4 @@
+import { extractClientIP } from '@/lib/api-protection';
 // ═══════════════════════════════════════════════════════════════════════
 // Echo-Sign Active API — /api/broadcast/active
 // GET → currently active (non-expired) broadcasts
@@ -11,7 +12,7 @@ import { checkRateLimit } from '@/lib/api-security';
 seedDemoBroadcasts();
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
   if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
 
   const active = getActiveBroadcasts();

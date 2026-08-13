@@ -22,7 +22,10 @@ export async function queryCTLogs(domain: string, timeout = 10000): Promise<CTLo
   try {
     // Query crt.sh API for all certificates matching this domain
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
+    const timer = setTimeout(() => {
+      controller.abort();
+      // Timer cleared below — but if JSON parse fails, this runs anyway
+    }, timeout);
 
     const url = `https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json&exclude=expired`;
     const response = await fetch(url, {
@@ -46,16 +49,52 @@ export async function queryCTLogs(domain: string, timeout = 10000): Promise<CTLo
       };
     }
 
-    const data: CRTshEntry[] = await response.json();
+    // Stream and limit response size (prevent OOM from huge CT responses)
+    const MAX_CT_RESPONSE_SIZE = 5 * 1024 * 1024; // 5MB
+    let text = '';
+    try {
+      const reader = response.body?.getReader();
+      if (reader) {
+        const decoder = new TextDecoder();
+        let totalSize = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          totalSize += value.length;
+          if (totalSize > MAX_CT_RESPONSE_SIZE) {
+            reader.cancel();
+            break;
+          }
+          text += decoder.decode(value, { stream: true });
+        }
+      } else {
+        text = await response.text();
+        if (text.length > MAX_CT_RESPONSE_SIZE) {
+          text = text.slice(0, MAX_CT_RESPONSE_SIZE);
+        }
+      }
+    } catch {
+      text = '';
+    }
 
-    // Parse and deduplicate subdomains
+    let data: CRTshEntry[];
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = [];
+    }
+
+    // Cap subdomain discovery to prevent unbounded memory
+    const MAX_SUBDOMAINS = 5000;
     const subdomainSet = new Set<string>();
 
     for (const entry of data) {
+      if (subdomainSet.size >= MAX_SUBDOMAINS) break;
       // name_value can contain multiple names separated by newlines
       const names = entry.name_value.split('\n').map(n => n.trim().toLowerCase()).filter(Boolean);
 
       for (const name of names) {
+        if (subdomainSet.size >= MAX_SUBDOMAINS) break;
         // Skip the root domain itself and wildcards
         if (name === domain || name === `*.${domain}` || name === '*.' + domain) continue;
         if (name.endsWith(`.${domain}`) || name === domain) {

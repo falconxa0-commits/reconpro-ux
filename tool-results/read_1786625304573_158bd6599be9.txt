@@ -1,0 +1,599 @@
+     1→// ═══════════════════════════════════════════════════════════════════════
+     2→// Wall of Shame API — Anonymized Live Incident Ticker
+     3→// GET /api/wall-of-shame?limit=50&severity=critical&industry=finance
+     4→// ═══════════════════════════════════════════════════════════════════════
+     5→
+     6→import { NextRequest, NextResponse } from 'next/server';
+     7→import { checkRateLimit } from '@/lib/api-security';
+     8→
+     9→
+    10→// ── Seeded PRNG (Mulberry32) ──────────────────────────────────────────
+    11→
+    12→function mulberry32(seed: number) {
+    13→  return function () {
+    14→    let t = (seed += 0x6d2b79f5);
+    15→    t = Math.imul(t ^ (t >>> 15), t | 1);
+    16→    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    17→    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    18→  };
+    19→}
+    20→
+    21→function hashCode(s: string): number {
+    22→  let h = 0;
+    23→  for (let i = 0; i < s.length; i++) {
+    24→    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+    25→  }
+    26→  return Math.abs(h);
+    27→}
+    28→
+    29→// ── Types ──────────────────────────────────────────────────────────────
+    30→
+    31→type Severity = 'critical' | 'high' | 'medium' | 'low';
+    32→type Industry = 'fintech' | 'healthcare' | 'saas' | 'government' | 'ecommerce' | 'education' | 'energy' | 'defense';
+    33→type FindingType =
+    34→  | 'exposed_database'
+    35→  | 'env_file_leak'
+    36→  | 'api_key_exposure'
+    37→  | 'open_s3_bucket'
+    38→  | 'unauthenticated_admin'
+    39→  | 'exposed_llm_endpoint'
+    40→  | 'cloud_misconfiguration'
+    41→  | 'credential_dump'
+    42→  | 'vulnerable_dependency'
+    43→  | 'ssl_misconfiguration';
+    44→
+    45→type Region = 'US-East' | 'US-West' | 'EU-West' | 'EU-Central' | 'APAC' | 'LATAM' | 'MEA';
+    46→
+    47→interface Incident {
+    48→  id: string;
+    49→  timestamp: string;
+    50→  severity: Severity;
+    51→  industry: Industry;
+    52→  findingType: FindingType;
+    53→  anonymizedDescription: string;
+    54→  assetType: string;
+    55→  region: Region;
+    56→  verifiable: boolean;
+    57→}
+    58→
+    59→interface Stats {
+    60→  totalToday: number;
+    61→  totalWeek: number;
+    62→  criticalThisWeek: number;
+    63→  byIndustry: Record<Industry, number>;
+    64→  byType: Record<FindingType, number>;
+    65→}
+    66→
+    67→// ── Constants ──────────────────────────────────────────────────────────
+    68→
+    69→const INDUSTRIES: Industry[] = ['fintech', 'healthcare', 'saas', 'government', 'ecommerce', 'education', 'energy', 'defense'];
+    70→const FINDING_TYPES: FindingType[] = [
+    71→  'exposed_database', 'env_file_leak', 'api_key_exposure', 'open_s3_bucket',
+    72→  'unauthenticated_admin', 'exposed_llm_endpoint', 'cloud_misconfiguration',
+    73→  'credential_dump', 'vulnerable_dependency', 'ssl_misconfiguration',
+    74→];
+    75→const REGIONS: Region[] = ['US-East', 'US-West', 'EU-West', 'EU-Central', 'APAC', 'LATAM', 'MEA'];
+    76→
+    77→const SEVERITY_WEIGHTS: [Severity, number][] = [
+    78→  ['critical', 8], ['high', 22], ['medium', 40], ['low', 30],
+    79→];
+    80→
+    81→const HOUR_WEIGHTS = [
+    82→  0.15, 0.10, 0.08, 0.06, 0.05, 0.08, 0.20, 0.60, 1.0, 1.0, 1.0, 1.0,
+    83→  1.0, 1.0, 1.0, 0.95, 0.90, 0.70, 0.50, 0.35, 0.25, 0.20, 0.18, 0.15,
+    84→];
+    85→
+    86→
+    87→// ── Entity Templates ───────────────────────────────────────────────────
+    88→
+    89→const ENTITY_TEMPLATES: Record<Industry, string[]> = {
+    90→  fintech: [
+    91→    'Fortune 500 financial institution', 'Major US retail bank', 'European investment bank',
+    92→    'Crypto exchange (top 20 by volume)', 'Southeast Asian digital payments provider',
+    93→    'US neobank (Series D)', 'Latin American remittance platform',
+    94→    'Global payment processor', 'UK challenger bank', 'Nordic buy-now-pay-later firm',
+    95→    'African mobile money provider', 'Japanese securities firm',
+    96→    'Middle East Islamic banking group', 'Indian peer-to-peer lending platform',
+    97→    'Canadian wealth management firm', 'Australian neobank',
+    98→    'Brazilian digital wallet provider', 'Singapore-based insurtech startup',
+    99→    'German digital bank', 'South Korean mobile payment app',
+   100→    'US-based mortgage origination platform', 'Pan-European card issuer',
+   101→    'Hong Kong virtual bank', 'Israeli fintech unicorn (Series E)',
+   102→  ],
+   103→  healthcare: [
+   104→    'European healthcare provider', 'US hospital network (200+ facilities)',
+   105→    'Major health insurance company', 'Telehealth platform (10M+ users)',
+   106→    'Electronic health records vendor', 'Pharmaceutical company (top 10 global)',
+   107→    'Medical device manufacturer', 'Dental insurance provider',
+   108→    'Mental health startup (Series C)', 'US Medicare claims processor',
+   109→    'UK NHS trust', 'Japanese pharmaceutical firm',
+   110→    'Australian pathology lab network', 'Brazilian public health system contractor',
+   111→    'Canadian provincial health authority', 'Indian hospital chain (500+ beds)',
+   112→    'Swiss biotech research firm', 'US FDA-regulated medical device startup',
+   113→    'German healthtech company', 'South Korean telemedicine platform',
+   114→    'Middle East healthcare conglomerate', 'African medical supply chain platform',
+   115→    'Nordic telehealth provider', 'US long-term care facility operator',
+   116→  ],
+   117→  saas: [
+   118→    'US SaaS company (Series C)', 'Enterprise HR platform (Fortune 500 clients)',
+   119→    'Project management tool (50M+ users)', 'Customer support SaaS (top 5 global)',
+   120→    'Marketing automation platform', 'Developer tools startup (Series B)',
+   121→    'US-based CRM provider', 'European cloud collaboration suite',
+   122→    'APAC workforce management platform', 'Identity-as-a-service provider',
+   123→    'US data analytics SaaS (Series D)', 'Japanese ERP cloud vendor',
+   124→    'Brazilian business management platform', 'UK-based legal tech SaaS',
+   125→    'Israeli cybersecurity SaaS (unicorn)', 'Indian HR tech platform',
+   126→    'Canadian accounting SaaS', 'Australian compliance platform',
+   127→    'US email marketing provider (500K+ customers)', 'German cloud hosting provider',
+   128→    'Middle East government SaaS contractor', 'Singapore-based fintech SaaS',
+   129→    'US recruitment platform (Series E)', 'French collaborative software company',
+   130→  ],
+   131→  government: [
+   132→    'US federal agency', 'European Union institution',
+   133→    'UK government department', 'Australian federal government portal',
+   134→    'Canadian provincial government', 'Japanese municipal government',
+   135→    'Brazilian federal court system', 'Indian state government',
+   136→    'South Korean public service platform', 'Nordic tax authority',
+   137→    'Middle East defense ministry', 'African Union commission',
+   138→    'US state election board', 'European border agency',
+   139→    'Singapore government digital services', 'German federal ministry',
+   140→    'US Department of Defense contractor', 'UK National Health Service digital',
+   141→    'Latin American customs authority', 'APAC regional trade body',
+   142→    'US intelligence community contractor', 'Canadian border services agency',
+   143→    'Israeli government tech unit', 'Australian cyber security agency',
+   144→  ],
+   145→  ecommerce: [
+   146→    'Major online marketplace (top 10 global)', 'US-based direct-to-consumer brand',
+   147→    'European fashion e-commerce platform', 'APAC food delivery platform (unicorn)',
+   148→    'US subscription box company', 'Latin American marketplace (Series F)',
+   149→    'UK grocery delivery platform', 'Indian e-commerce giant subsidiary',
+   150→    'Japanese online retailer', 'Australian marketplace',
+   151→    'Middle East classifieds platform', 'African e-commerce startup (Series C)',
+   152→    'US-based luxury goods retailer', 'German automotive parts marketplace',
+   153→    'Canadian home goods e-commerce', 'Brazilian fashion marketplace',
+   154→    'South Korean social commerce app', 'Singapore-based marketplace',
+   155→    'US dropshipping platform (1M+ sellers)', 'Nordic furniture e-commerce',
+   156→    'Global ticketing platform', 'US-based pet supplies retailer',
+   157→    'European electronics marketplace', 'Indian social commerce startup',
+   158→  ],
+   159→  education: [
+   160→    'US university system (R1 research)', 'UK Russell Group university',
+   161→    'European online learning platform (5M+ students)', 'US K-12 school district (100K+ students)',
+   162→    'Australian university consortium', 'Japanese edtech startup (Series B)',
+   163→    'Indian edtech unicorn', 'Canadian university',
+   164→    'Latin American online education platform', 'Middle East university network',
+   165→    'US standardized testing provider', 'UK edtech company (Series C)',
+   166→    'German vocational training platform', 'African MOOC platform',
+   167→    'South Korean test prep company', 'Singapore education ministry',
+   168→    'US student loan servicer', 'Brazilian distance learning university',
+   169→    'Nordic education technology provider', 'US learning management system vendor',
+   170→    'European language learning app (50M+ users)', 'Indian online tutoring platform',
+   171→    'US college admissions platform', 'Australian TAFE network provider',
+   172→  ],
+   173→  energy: [
+   174→    'US energy utility (multi-state)', 'European oil & gas major',
+   175→    'US renewable energy operator', 'Middle East national oil company',
+   176→    'Australian mining conglomerate', 'Nordic wind energy provider',
+   177→    'Latin American state petroleum company', 'Canadian pipeline operator',
+   178→    'Japanese nuclear facility operator', 'Indian power grid operator',
+   179→    'German energy trading platform', 'UK offshore wind farm operator',
+   180→    'US smart grid technology provider', 'Brazilian hydroelectric operator',
+   181→    'APAC liquefied natural gas exporter', 'South Korean utility company',
+   182→    'US solar panel manufacturer', 'European energy trading exchange',
+   183→    'Middle East desalination plant operator', 'African energy infrastructure developer',
+   184→    'US oilfield services company', 'Canadian oil sands operator',
+   185→    'Singapore energy trading firm', 'US battery storage provider',
+   186→  ],
+   187→  defense: [
+   188→    'US defense contractor (top 10)', 'European defense ministry',
+   189→    'NATO communications system', 'Israeli defense technology firm',
+   190→    'UK defence procurement agency', 'Australian defence force contractor',
+   191→    'Japanese defense electronics manufacturer', 'US aerospace & defense company',
+   192→    'Middle East defense contractor', 'Indian defense research organization',
+   193→    'Canadian naval systems provider', 'South Korean defense conglomerate',
+   194→    'European satellite communications provider', 'US cyber warfare contractor',
+   195→    'Nordic submarine systems manufacturer', 'Brazilian aerospace company',
+   196→    'German naval systems integrator', 'Singapore defense technology firm',
+   197→    'US intelligence surveillance platform vendor', 'UK cybersecurity defense contractor',
+   198→    'Japanese missile defense contractor', 'Australian signals intelligence unit',
+   199→    'US drone manufacturer', 'European aerospace consortium',
+   200→  ],
+   201→};
+   202→
+   203→// ── Finding Description Templates ──────────────────────────────────────
+   204→
+   205→const FINDING_TEMPLATES: Record<FindingType, ((entity: string) => string)[]> = {
+   206→  exposed_database: [
+   207→    (e) => `Unprotected MongoDB instance belonging to ${e} exposed 2.4M customer records`,
+   208→    (e) => `Publicly accessible PostgreSQL database at ${e} contained PII of 890K patients`,
+   209→    (e) => `${e} left Elasticsearch cluster open — 15M log entries with session tokens`,
+   210→    (e) => `Unauthenticated MySQL database at ${e} leaked 4.2M financial transaction records`,
+   211→    (e) => `Redis instance at ${e} exposed without auth, containing live session data`,
+   212→    (e) => `${e} had a publicly readable CouchDB with 1.1M internal documents`,
+   213→    (e) => `Exposed Microsoft SQL Server at ${e} contained employee salary data`,
+   214→    (e) => `${e} leaked customer database through misconfigured GraphQL introspection`,
+   215→    (e) => `Unprotected Cassandra cluster at ${e} exposed 3.8M payment records`,
+   216→    (e) => `${e} database backup publicly downloadable — 7.1M rows of structured PII`,
+   217→    (e) => `Open Firebase Realtime DB at ${e} leaked real-time location data of 500K users`,
+   218→    (e) => `${e} exposed DynamoDB table containing API audit logs with tokens`,
+   219→    (e) => `Unprotected MariaDB instance at ${e} contained 2.9M insurance claims`,
+   220→    (e) => `${e} SQLite database with credentials found in public GitHub repository`,
+   221→    (e) => `Exposed InfluxDB at ${e} leaked infrastructure monitoring data with internal IPs`,
+   222→    (e) => `${e} ClickHouse instance accessible without auth — 6.3M event records`,
+   223→    (e) => `Publicly accessible Oracle DB at ${e} contained HR records of 45K employees`,
+   224→    (e) => `${e} exposed Neo4j graph database with organizational structure and access policies`,
+   225→    (e) => `Unauthenticated TimescaleDB at ${e} leaked 18 months of sensor telemetry`,
+   226→    (e) => `${e} CockroachDB cluster open to internet — contained billing records`,
+   227→  ],
+   228→  env_file_leak: [
+   229→    (e) => `.env file committed to public repo at ${e} contained production database credentials`,
+   230→    (e) => `${e} leaked AWS_ACCESS_KEY_ID and SECRET_KEY in .env on public GitHub`,
+   231→    (e) => `Environment file at ${e} exposed Stripe secret key and webhook endpoint`,
+   232→    (e) => `${e} .env.local pushed to npm package — contained MongoDB URI and JWT secret`,
+   233→    (e) => `Public GitLab repo at ${e} had .env with SendGrid API key and admin password`,
+   234→    (e) => `${e} Docker Compose file with hardcoded env vars leaked to Docker Hub`,
+   235→    (e) => `.env.production at ${e} found in public S3 bucket — contained DB and Redis passwords`,
+   236→    (e) => `${e} leaked Twilio auth token in .env file on public Bitbucket repository`,
+   237→    (e) => `CI/CD pipeline config at ${e} had embedded production env vars in public repo`,
+   238→    (e) => `${e} Kubernetes deployment YAML with env secrets committed to public GitHub`,
+   239→    (e) => `.env.backup file at ${e} on public web server contained 12 API keys`,
+   240→    (e) => `${e} leaked Salesforce credentials in .env file on developer's public portfolio site`,
+   241→    (e) => `Terraform state file at ${e} in public repo contained environment secrets`,
+   242→    (e) => `${e} .env file on publicly indexed FTP server contained JWT signing key`,
+   243→    (e) => `Public documentation repo at ${e} included .env.example with real values`,
+   244→    (e) => `${e} leaked Datadog API key in .env file of public Helm chart`,
+   245→    (e) => `Env file at ${e} found in archived public repository — contained SMTP credentials`,
+   246→    (e) => `${e} publicly exposed .env with OAuth client secret and refresh token`,
+   247→    (e) => `GitHub Actions workflow at ${e} leaked environment variables in build logs`,
+   248→    (e) => `${e} .env.staging committed to public repo — contained same credentials as production`,
+   249→  ],
+   250→  api_key_exposure: [
+   251→    (e) => `GitHub personal access token with repo:scope found at ${e} — still active`,
+   252→    (e) => `${e} exposed AWS IAM access key in client-side JavaScript bundle`,
+   253→    (e) => `Slack bot token leaked in ${e} public code snippet — full workspace access`,
+   254→    (e) => `${e} hardcoded Stripe API key in mobile application binary`,
+   255→    (e) => `OpenAI API key found in ${e} public Jupyter notebook — $2,400 in unauthorized usage`,
+   256→    (e) => `${e} exposed Google Cloud service account key in public storage bucket`,
+   257→    (e) => `SendGrid API key at ${e} found in public Postman collection`,
+   258→    (e) => `${e} leaked GitHub OAuth app client_secret in client-side code`,
+   259→    (e) => `Twilio API key at ${e} exposed in public Swagger documentation`,
+   260→    (e) => `${e} hardcoded Algolia admin API key in publicly accessible config file`,
+   261→    (e) => `Firebase project config with API key at ${e} found in decompiled Android APK`,
+   262→    (e) => `${e} exposed Mapbox secret token in public GitHub gist`,
+   263→    (e) => `Shopify API credentials at ${e} leaked in public Stack Overflow answer`,
+   264→    (e) => `${e} exposed DigitalOcean personal access token in public Docker image`,
+   265→    (e) => `Cloudflare API token at ${e} found in public nginx configuration`,
+   266→    (e) => `${e} leaked PagerDuty service key in public incident response playbook`,
+   267→    (e) => `GitHub Actions PAT at ${e} with write:packages scope found in forked repo`,
+   268→    (e) => `${e} exposed Mailgun API key in public email template repository`,
+   269→    (e) => `Zoom API secret at ${e} found in publicly accessible meeting bot code`,
+   270→    (e) => `${e} leaked Azure AD application secret in public ARM template`,
+   271→    (e) => `Anthropic API key at ${e} found in public LangChain configuration file`,
+   272→  ],
+   273→  open_s3_bucket: [
+   274→    (e) => `Publicly readable S3 bucket at ${e} contained 3.2M customer documents`,
+   275→    (e) => `${e} S3 bucket with "public-read" ACL exposed 890GB of backup data`,
+   276→    (e) => `S3 bucket at ${e} contained database dumps with plaintext passwords`,
+   277→    (e) => `${e} exposed S3 bucket with employee W-2 tax forms (47K files)`,
+   278→    (e) => `Publicly writable S3 bucket at ${e} accepted uploads for 3 days before detection`,
+   279→    (e) => `${e} S3 bucket with sensitive medical imaging files had public access`,
+   280→    (e) => `Archived S3 bucket at ${e} still accessible — contained 5 years of financial reports`,
+   281→    (e) => `${e} S3 static hosting bucket exposed internal API documentation and architecture diagrams`,
+   282→    (e) => `S3 bucket at ${e} with "authenticated-read" but public listing exposed file metadata`,
+   283→    (e) => `${e} development S3 bucket in production account exposed 1.8M user records`,
+   284→    (e) => `Public S3 bucket at ${e} contained VM images with embedded credentials`,
+   285→    (e) => `${e} S3 bucket with video recordings of customer support calls was publicly accessible`,
+   286→    (e) => `Cross-account S3 bucket access at ${e} exposed data to unauthorized AWS account`,
+   287→    (e) => `${e} S3 bucket containing encrypted backups but with public key also stored in bucket`,
+   288→    (e) => `S3 access log bucket at ${e} was itself publicly readable — metadata of all S3 operations`,
+   289→    (e) => `${e} legacy S3 bucket from acquired company still public — contained PII`,
+   290→    (e) => `S3 bucket at ${e} with litigation hold documents exposed to public internet`,
+   291→    (e) => `${e} S3 bucket for ML training data contained real customer conversations`,
+   292→    (e) => `Public S3 bucket at ${e} had 4.7M driver's license scans`,
+   293→    (e) => `${e} S3 bucket with signed URLs leaked in public code — bypassed access controls`,
+   294→  ],
+   295→  unauthenticated_admin: [
+   296→    (e) => `Admin panel at ${e} accessible without authentication — full user management`,
+   297→    (e) => `${e} GraphQL Playground exposed in production with introspection enabled`,
+   298→    (e) => `phpMyAdmin at ${e} accessible on default credentials — root/no password`,
+   299→    (e) => `${e} Strapi CMS admin panel exposed without authentication`,
+   300→    (e) => `Jenkins instance at ${e} with no authentication — 340 build jobs accessible`,
+   301→    (e) => `${e} Kubernetes dashboard exposed without auth — full cluster access`,
+   302→    (e) => `Admin API at ${e} returned all user data without authentication via IDOR`,
+   303→    (e) => `${e} Grafana instance on default admin/admin credentials — 89 dashboards exposed`,
+   304→    (e) => `WordPress admin at ${e} accessible via default admin/password credentials`,
+   305→    (e) => `${e} exposed pgAdmin interface without authentication on port 5050`,
+   306→    (e) => `Admin panel at ${e} protected by HTTP Basic but credentials were admin/admin`,
+   307→    (e) => `${e} Airflow webserver on default credentials — 200+ DAGs visible`,
+   308→    (e) => `SonarQube at ${e} accessible without login — source code quality metrics exposed`,
+   309→    (e) => `${e} RabbitMQ management UI on default guest/guest — full queue control`,
+   310→    (e) => `Admin API at ${e} had broken JWT validation — empty token accepted`,
+   311→    (e) => `${e} exposed Supabase Studio without authentication`,
+   312→    (e) => `Portainer at ${e} on default credentials — full Docker host control`,
+   313→    (e) => `${e} admin console bypassed via HTTP method override (X-HTTP-Method-Override)`,
+   314→    (e) => `Metabase at ${e} accessible on default credentials — 45 database queries exposed`,
+   315→    (e) => `${e} Firebase Auth configuration allowed unauthenticated admin SDK access`,
+   316→  ],
+   317→  exposed_llm_endpoint: [
+   318→    (e) => `Unprotected LLM API at ${e} allowed arbitrary prompt injection with system context`,
+   319→    (e) => `${e} exposed internal RAG pipeline — full document corpus retrievable via API`,
+   320→    (e) => `LangServe endpoint at ${e} had no auth — could extract system prompt and knowledge base`,
+   321→    (e) => `${e} ChatGPT wrapper API leaked conversation history of all users`,
+   322→    (e) => `Unauthenticated vector database at ${e} exposed all embedding metadata and chunks`,
+   323→    (e) => `${e} LLM evaluation endpoint accessible without auth — could manipulate benchmark scores`,
+   324→    (e) => `Fine-tuned model API at ${e} had no rate limiting — extraction attack feasible`,
+   325→    (e) => `${e} exposed Pinecone index containing proprietary training data`,
+   326→    (e) => `LLM gateway at ${e} bypassed via API key in URL query parameter`,
+   327→    (e) => `${e} AI chatbot endpoint leaked system instructions via carefully crafted input`,
+   328→    (e) => `Hugging Face inference endpoint at ${e} publicly accessible — proprietary model exposed`,
+   329→    (e) => `${e} RAG endpoint allowed retrieval of source documents including confidential memos`,
+   330→    (e) => `Unprotected OpenAI proxy at ${e} leaked org-level usage and model configurations`,
+   331→    (e) => `${e} LLM application exposed tool-use definitions revealing internal API endpoints`,
+   332→    (e) => `Weaviate instance at ${e} without auth — full vector store of customer queries accessible`,
+   333→    (e) => `${e} exposed LLM logging endpoint — could read all model inputs and outputs`,
+   334→    (e) => `Anthropic API proxy at ${e} had no auth — direct model access with org billing`,
+   335→    (e) => `${e} AI agent with tool-calling exposed internal function schemas and API routes`,
+   336→    (e) => `Unauthenticated LLM benchmark endpoint at ${e} leaked proprietary evaluation datasets`,
+   337→    (e) => `${e} exposed ChromaDB collection containing proprietary document embeddings`,
+   338→  ],
+   339→  cloud_misconfiguration: [
+   340→    (e) => `${e} AWS security group allowed 0.0.0.0/0 inbound on port 3306 (MySQL)`,
+   341→    (e) => `${e} GCP storage bucket had uniform bucket-level access disabled — ACLs exploitable`,
+   342→    (e) => `Azure blob container at ${e} configured for public blob access`,
+   343→    (e) => `${e} AWS S3 bucket policy allowed any authenticated AWS user full access`,
+   344→    (e) => `${e} CloudFormation stack exposed parameters in public S3 template`,
+   345→    (e) => `${e} EKS cluster had public endpoint enabled with anonymous auth`,
+   346→    (e) => `Terraform state at ${e} stored in public backend — entire infrastructure definition exposed`,
+   347→    (e) => `${e} AWS IAM role with *:* permissions attached to publicly accessible Lambda`,
+   348→    (e) => `${e} Docker API exposed on TCP port 2375 without TLS — full host access`,
+   349→    (e) => `${e} Kubernetes etcd exposed on public IP without client cert auth`,
+   350→    (e) => `${e} AWS SNS topic publicly subscribable — received sensitive event notifications`,
+   351→    (e) => `${e} GCP compute disk snapshot publicly accessible — contained full OS image with data`,
+   352→    (e) => `${e} Azure Key Vault access policy granted to "Everyone" group`,
+   353→    (e) => `${e} CloudFront distribution had origin accessible directly, bypassing WAF`,
+   354→    (e) => `${e} AWS ElasticSearch domain open access — cluster metadata and indices exposed`,
+   355→    (e) => `${e} Azure App Service had CORS wildcard allowing cross-origin data theft`,
+   356→    (e) => `${e} GCP Cloud Functions with --allow-unauthenticated flag accessing private data`,
+   357→    (e) => `${e} AWS SSM Parameter Store with public read access — 200+ secrets exposed`,
+   358→    (e) => `${e} Lambda function at ${e} with environment variables containing production DB credentials`,
+   359→    (e) => `${e} had public RDP (3389) exposed to internet via security group misconfiguration`,
+   360→  ],
+   361→  credential_dump: [
+   362→    (e) => `${e} leaked 12,000 plaintext credentials in public code repository`,
+   363→    (e) => `Full credential dump from ${e} found on a paste site — 45K accounts`,
+   364→    (e) => `${e} employee password dump in publicly accessible Confluence export`,
+   365→    (e) => `Service account credentials for ${e} found in publicly indexed log file`,
+   366→    (e) => `${e} leaked SSH private keys in public Docker image on Docker Hub`,
+   367→    (e) => `Kerberos ticket cache from ${e} found in public network capture (pcap) file`,
+   368→    (e) => `${e} database credential rotation script with hardcoded current passwords in public repo`,
+   369→    (e) => `Windows DPAPI backup keys at ${e} exposed in publicly accessible file share`,
+   370→    (e) => `${e} leaked .npmrc with registry auth token for private package feed`,
+   371→    (e) => `${e} OAuth refresh tokens for 8,000 users found in public backup file`,
+   372→    (e) => `SSH known_hosts and private keys at ${e} in public GitHub user profile`,
+   373→    (e) => `${e} leaked .pem certificate files with private keys in public S3 bucket`,
+   374→    (e) => `${e} VPN credentials for 500 employees leaked via public configuration file`,
+   375→    (e) => `${e} exposed password hash dump (NTLM) in publicly accessible backup`,
+   376→    (e) => `${e} .kube/config with cluster credentials found in public repository`,
+   377→    (e) => `${e} leaked service mesh mTLS certificates in public documentation`,
+   378→    (e) => `Credential rotation log at ${e} exposed in public monitoring dashboard`,
+   379→    (e) => `${e} hard-coded database passwords in compiled Java class file on public Maven repo`,
+   380→    (e) => `${e} leaked AWS temporary credentials with active sessions in public CI artifact`,
+   381→  ],
+   382→  vulnerable_dependency: [
+   383→    (e) => `${e} running Log4j 2.14.1 — remote code execution via JNDI lookup`,
+   384→    (e) => `${e} using Spring4Shell-affected Spring Framework version — RCE possible`,
+   385→    (e) => `${e} running OpenSSL 1.1.1 with CVE-2024-5535 — heap buffer overflow`,
+   386→    (e) => `${e} jQuery 1.x with known XSS in .html() — affects 340 pages`,
+   387→    (e) => `${e} Apache Struts 2.5 with known OGNL injection vulnerability`,
+   388→    (e) => `${e} running vulnerable lodash version (<4.17.21) — prototype pollution`,
+   389→    (e) => `${e} using axios 0.21.1 with SSRF vulnerability`,
+   390→    (e) => `${e} Podman/Kubernetes image with known CVE-2024-21626 — container escape`,
+   391→    (e) => `${e} running Exim 4.90 with critical RCE (CVE-2023-42115)`,
+   392→    (e) => `${e} using vulnerable Newtonsoft.Json with type confusion vulnerability`,
+   393→    (e) => `${e} Django application with CVE-2024-53908 — SQL injection in JSONField`,
+   394→    (e) => `${e} running affected libwebp — heap buffer overflow in WebP decoding`,
+   395→    (e) => `${e} Python pip dependency with typosquatting supply chain attack`,
+   396→    (e) => `${e} using compromised npm package (crossenv) — token exfiltration`,
+   397→    (e) => `${e} running Apache HTTPD 2.4.49 with path traversal CVE-2021-41773`,
+   398→    (e) => `${e} vulnerable to CVE-2024-3094 in xz-utils — backdoor in SSH`,
+   399→    (e) => `${e} using React DOM with known cross-site scripting vulnerability`,
+   400→    (e) => `${e} running PostgreSQL driver with authentication bypass (CVE-2024-10979)`,
+   401→    (e) => `${e} using glibc with buffer overflow (CVE-2024-33599)`,
+   402→    (e) => `${e} Ruby on Rails with CVE-2024-26141 — possible RCE via Active Storage`,
+   403→  ],
+   404→  ssl_misconfiguration: [
+   405→    (e) => `${e} using self-signed TLS certificate in production — no trust chain`,
+   406→    (e) => `${e} SSL certificate expired 47 days ago — still serving HTTPS traffic`,
+   407→    (e) => `${e} supports TLS 1.0 and 1.1 — vulnerable to BEAST and POODLE attacks`,
+   408→    (e) => `${e} using weak cipher suites (RC4, DES, EXPORT grade)`,
+   409→    (e) => `${e} certificate chain incomplete — intermediate CA missing`,
+   410→    (e) => `${e} HSTS header missing — vulnerable to SSL stripping attacks`,
+   411→    (e) => `${e} TLS certificate using SHA-1 signature algorithm — cryptographically weak`,
+   412→    (e) => `${e} mixed content — loading HTTP resources on HTTPS page`,
+   413→    (e) => `${e} using 1024-bit RSA key — insufficient key length for modern standards`,
+   414→    (e) => `${e} certificate hostname mismatch — serving cert for different domain`,
+   415→    (e) => `${e} OCSP stapling not enabled — certificate revocation not checked`,
+   416→    (e) => `${e} HTTPS redirect loop detected due to misconfigured certificate`,
+   417→    (e) => `${e} TLS 1.3 downgraded to 1.2 due to misconfigured server`,
+   418→    (e) => `${e} using DHE key exchange with 768-bit parameters — weak`,
+   419→    (e) => `${e} certificate transparency logs missing — no public audit trail`,
+   420→    (e) => `${e} serves both HTTP and HTTPS — sensitive cookies sent over HTTP`,
+   421→    (e) => `${e} using wildcard certificate for unrelated subdomains`,
+   422→    (e) => `${e} CSR revealed organization details not matching actual entity`,
+   423→    (e) => `${e} SSL renegotiation not disabled — vulnerable to DoS`,
+   424→    (e) => `${e} using ECDSA with P-192 curve — insufficient for security`,
+   425→  ],
+   426→};
+   427→
+   428→const ASSET_TYPES: Record<FindingType, string[]> = {
+   429→  exposed_database: ['Database Server', 'NoSQL Cluster', 'Data Warehouse', 'Document Store', 'Graph Database'],
+   430→  env_file_leak: ['Source Repository', 'CI/CD Pipeline', 'File Server', 'Docker Image', 'Config Repository'],
+   431→  api_key_exposure: ['Client Application', 'API Gateway', 'Source Code', 'Mobile App', 'Documentation Site'],
+   432→  open_s3_bucket: ['Cloud Storage', 'Backup Archive', 'Static Hosting', 'Data Lake', 'CDN Origin'],
+   433→  unauthenticated_admin: ['Web Application', 'Admin Panel', 'DevOps Tool', 'Monitoring Dashboard', 'CMS Platform'],
+   434→  exposed_llm_endpoint: ['AI Service', 'RAG Pipeline', 'Vector Database', 'Chatbot API', 'Model Endpoint'],
+   435→  cloud_misconfiguration: ['Cloud Infrastructure', 'Container Platform', 'IaC Template', 'Serverless Function', 'Cloud Storage'],
+   436→  credential_dump: ['Source Repository', 'Backup Archive', 'Configuration Store', 'Log Aggregator', 'Package Registry'],
+   437→  vulnerable_dependency: ['Web Application', 'API Server', 'Container Image', 'Build Pipeline', 'Mobile Backend'],
+   438→  ssl_misconfiguration: ['Web Server', 'Load Balancer', 'API Gateway', 'CDN Endpoint', 'Mail Server'],
+   439→};
+   440→
+   441→// ── Incident Generation ────────────────────────────────────────────────
+   442→
+   443→function pickSeverity(rng: () => number): Severity {
+   444→  const r = rng() * 100;
+   445→  let cum = 0;
+   446→  for (const [sev, weight] of SEVERITY_WEIGHTS) {
+   447→    cum += weight;
+   448→    if (r < cum) return sev;
+   449→  }
+   450→  return 'low';
+   451→}
+   452→
+   453→function pickIndustry(rng: () => number): Industry {
+   454→  return INDUSTRIES[Math.floor(rng() * INDUSTRIES.length)];
+   455→}
+   456→
+   457→function pickFindingType(rng: () => number): FindingType {
+   458→  return FINDING_TYPES[Math.floor(rng() * FINDING_TYPES.length)];
+   459→}
+   460→
+   461→function pickRegion(rng: () => number): Region {
+   462→  return REGIONS[Math.floor(rng() * REGIONS.length)];
+   463→}
+   464→
+   465→function pickEntity(rng: () => number, industry: Industry): string {
+   466→  const entities = ENTITY_TEMPLATES[industry];
+   467→  return entities[Math.floor(rng() * entities.length)];
+   468→}
+   469→
+   470→function pickDescription(rng: () => number, ft: FindingType, entity: string): string {
+   471→  const templates = FINDING_TEMPLATES[ft];
+   472→  const tpl = templates[Math.floor(rng() * templates.length)];
+   473→  return tpl(entity);
+   474→}
+   475→
+   476→function pickAssetType(rng: () => number, ft: FindingType): string {
+   477→  const types = ASSET_TYPES[ft];
+   478→  return types[Math.floor(rng() * types.length)];
+   479→}
+   480→
+   481→function generateIncident(rng: () => number, timestamp: Date, id: string): Incident {
+   482→  const industry = pickIndustry(rng);
+   483→  const findingType = pickFindingType(rng);
+   484→  const severity = pickSeverity(rng);
+   485→  const entity = pickEntity(rng, industry);
+   486→  const region = pickRegion(rng);
+   487→
+   488→  return {
+   489→    id,
+   490→    timestamp: timestamp.toISOString(),
+   491→    severity,
+   492→    industry,
+   493→    findingType,
+   494→    anonymizedDescription: pickDescription(rng, findingType, entity),
+   495→    assetType: pickAssetType(rng, findingType),
+   496→    region,
+   497→    verifiable: rng() > 0.25,
+   498→  };
+   499→}
+   500→
+   501→/**
+   502→ * Generate incidents for a given time window.
+   503→ * Uses minute-level seed so it's deterministic per-minute (no flicker on refresh).
+   504→ * Average rate: ~4.2 incidents/hour weighted by business hours.
+   505→ */
+   506→function generateIncidents(
+   507→  since: Date,
+   508→  until: Date,
+   509→  seedPrefix: string = 'wos',
+   510→): Incident[] {
+   511→  const incidents: Incident[] = [];
+   512→  const minute = 60 * 1000;
+   513→  let cursor = new Date(since);
+   514→  cursor.setSeconds(0, 0);
+   515→  cursor.setMinutes(cursor.getMinutes() + 1);
+   516→
+   517→  while (cursor < until) {
+   518→    const minuteKey = `wos:${Math.floor(cursor.getTime() / minute)}`;
+   519→    const seed = hashCode(minuteKey);
+   520→    const rng = mulberry32(seed);
+   521→
+   522→    const hour = cursor.getUTCHours();
+   523→    const hourWeight = HOUR_WEIGHTS[hour];
+   524→    const expectedIncidents = 0.07 * hourWeight;
+   525→
+   526→    if (rng() < expectedIncidents) {
+   527→      const id = `inc-${Math.floor(cursor.getTime() / minute)}-${Math.floor(rng() * 1000)}`;
+   528→      const jitteredTs = new Date(cursor.getTime() + Math.floor(rng() * 60000));
+   529→      incidents.push(generateIncident(rng, jitteredTs, id));
+   530→    }
+   531→
+   532→    cursor = new Date(cursor.getTime() + minute);
+   533→  }
+   534→
+   535→  return incidents;
+   536→}
+   537→
+   538→// ── Stats Calculation ──────────────────────────────────────────────────
+   539→
+   540→function computeStats(weekIncidents: Incident[]): Stats {
+   541→  const now = new Date();
+   542→  const todayStart = new Date(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+   543→
+   544→  const todayIncidents = weekIncidents.filter(i => new Date(i.timestamp) >= todayStart);
+   545→
+   546→  const byIndustry = {} as Record<Industry, number>;
+   547→  const byType = {} as Record<FindingType, number>;
+   548→
+   549→  for (const ind of INDUSTRIES) byIndustry[ind] = 0;
+   550→  for (const ft of FINDING_TYPES) byType[ft] = 0;
+   551→
+   552→  for (const inc of weekIncidents) {
+   553→    byIndustry[inc.industry]++;
+   554→    byType[inc.findingType]++;
+   555→  }
+   556→
+   557→  return {
+   558→    totalToday: todayIncidents.length,
+   559→    totalWeek: weekIncidents.length,
+   560→    criticalThisWeek: weekIncidents.filter(i => i.severity === 'critical').length,
+   561→    byIndustry,
+   562→    byType,
+   563→  };
+   564→}
+   565→
+   566→// ── Route Handler ──────────────────────────────────────────────────────
+   567→
+   568→export async function GET(request: NextRequest) {
+   569→  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+   570→  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+   571→
+   572→  const { searchParams } = request.nextUrl;
+   573→  const limitParam = searchParams.get('limit');
+   574→  const severityFilter = searchParams.get('severity') as Severity | null;
+   575→  const industryFilter = searchParams.get('industry') as Industry | null;
+   576→
+   577→  const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 50, 1), 200) : 50;
+   578→
+   579→  const now = new Date();
+   580→  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+   581→
+   582→  const allIncidents = generateIncidents(weekAgo, now);
+   583→
+   584→  let filtered = allIncidents;
+   585→  if (severityFilter && ['critical', 'high', 'medium', 'low'].includes(severityFilter)) {
+   586→    filtered = filtered.filter(i => i.severity === severityFilter);
+   587→  }
+   588→  if (industryFilter && INDUSTRIES.includes(industryFilter)) {
+   589→    filtered = filtered.filter(i => i.industry === industryFilter);
+   590→  }
+   591→
+   592→  filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+   593→
+   594→  const incidents = filtered.slice(0, limit);
+   595→  const stats = computeStats(allIncidents);
+   596→
+   597→  return NextResponse.json({ incidents, stats });
+   598→}
+   599→
