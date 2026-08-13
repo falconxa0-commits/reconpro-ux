@@ -1,9 +1,9 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import dns from 'dns/promises';
 import tls from 'tls';
 import net from 'net';
-import { sanitizeDomain, isBlockedDomain, isPrivateIP, checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+import { sanitizeDomain, isBlockedDomain, isPrivateIP, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
 import { safeFetch } from '@/lib/safe-fetch';
 
 type Finding = {
@@ -817,8 +817,8 @@ async function scanDNSVulns(domain: string): Promise<Finding[]> {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  if (error) return error;
 
   try {
     const body = await request.json();

@@ -8,7 +8,7 @@ import { db } from '@/lib/db';
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth, clientIp } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -31,6 +31,13 @@ export async function POST(request: NextRequest) {
     });
 
     if (!stamp) {
+      return NextResponse.json(
+        { error: 'Stamp not found' },
+        { status: 404 }
+      );
+    }
+
+    if (stamp && stamp.organizationId && auth?.organizationId && stamp.organizationId !== auth.organizationId) {
       return NextResponse.json(
         { error: 'Stamp not found' },
         { status: 404 }
@@ -60,7 +67,7 @@ export async function POST(request: NextRequest) {
       data: {
         stampId: stamp.id,
         action: 'revoked',
-        ipAddress: request.headers.get('x-forwarded-for') ?? undefined,
+        ipAddress: clientIp,
         userAgent: request.headers.get('user-agent') ?? undefined,
         details: JSON.stringify({ reason: reason ?? 'No reason provided' }),
       },

@@ -1,4 +1,4 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 // ═══════════════════════════════════════════════════════════════════════
 // PQC Sovereign Vault API
 // POST /api/pqc-vault       — Run full PQC analysis
@@ -14,7 +14,6 @@ import {
   PROTOCOL_ANALYSIS,
   type OrganizationType,
 } from '@/lib/pqc-vault-engine';
-import { checkRateLimit } from '@/lib/api-security';
 
 const VALID_ORG_TYPES: OrganizationType[] = [
   'central_bank', 'clearing_house', 'tier1_bank',
@@ -26,8 +25,10 @@ const VALID_PROTOCOLS = Object.keys(PROTOCOL_ANALYSIS);
 // ── POST /api/pqc-vault ────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const body = await request.json();
@@ -89,8 +90,10 @@ export async function POST(request: NextRequest) {
 // ── GET /api/pqc-vault/algorithms ─────────────────────────────────────
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const { searchParams } = new URL(request.url);
 

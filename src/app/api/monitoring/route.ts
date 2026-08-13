@@ -82,13 +82,11 @@ function formatScheduleTime(date: Date): string {
 // ── GET ──────────────────────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
   if (error) return error;
 
   try {
-    // Get the first org (or any org) for scoping
-    const org = await db.organization.findFirst();
-    const orgId = org?.id;
+    const orgId = auth?.organizationId;
 
     // Query all policies with their targets
     const policies = await db.monitorPolicy.findMany({
@@ -203,10 +201,14 @@ export async function GET(request: NextRequest) {
 // ── POST ─────────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
+    if (!auth?.organizationId) {
+      return NextResponse.json({ error: 'Organization context required' }, { status: 403 });
+    }
+
     const body = await request.json();
     const { name, targetDomain, schedule, scanType } = body;
 
@@ -217,23 +219,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get or create org
-    let org = await db.organization.findFirst();
-    if (!org) {
-      org = await db.organization.create({
-        data: {
-          name: 'Default Org',
-          slug: 'default',
-        },
-      });
-    }
-
     // Find or create ScanTarget
     const target = await db.scanTarget.upsert({
-      where: { id: `${org.id}-${targetDomain}` },
+      where: { id: `${auth.organizationId}-${targetDomain}` },
       create: {
-        id: `${org.id}-${targetDomain}`,
-        organizationId: org.id,
+        id: `${auth.organizationId}-${targetDomain}`,
+        organizationId: auth.organizationId,
         domain: targetDomain,
       },
       update: {},
@@ -242,13 +233,13 @@ export async function POST(request: NextRequest) {
     // Actually, upsert by unique field - we don't have unique on domain+org
     // Let's find or create differently
     let scanTarget = await db.scanTarget.findFirst({
-      where: { domain: targetDomain, organizationId: org.id },
+      where: { domain: targetDomain, organizationId: auth.organizationId },
     });
     if (!scanTarget) {
       scanTarget = await db.scanTarget.create({
         data: {
           domain: targetDomain,
-          organizationId: org.id,
+          organizationId: auth.organizationId,
         },
       });
     }
@@ -257,7 +248,7 @@ export async function POST(request: NextRequest) {
 
     const policy = await db.monitorPolicy.create({
       data: {
-        organizationId: org.id,
+        organizationId: auth.organizationId,
         targetId: scanTarget.id,
         name,
         schedule: schedule || 'daily',
@@ -293,7 +284,7 @@ export async function POST(request: NextRequest) {
 // ── PATCH ────────────────────────────────────────────────────────────────────
 
 export async function PATCH(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -306,6 +297,10 @@ export async function PATCH(request: NextRequest) {
 
     const existing = await db.monitorPolicy.findUnique({ where: { id } });
     if (!existing) {
+      return NextResponse.json({ error: 'Policy not found' }, { status: 404 });
+    }
+
+    if (existing.organizationId !== auth?.organizationId) {
       return NextResponse.json({ error: 'Policy not found' }, { status: 404 });
     }
 
@@ -365,7 +360,7 @@ export async function PATCH(request: NextRequest) {
 // ── DELETE ───────────────────────────────────────────────────────────────────
 
 export async function DELETE(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -374,6 +369,15 @@ export async function DELETE(request: NextRequest) {
 
     if (!id) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
+    }
+
+    const existing = await db.monitorPolicy.findUnique({ where: { id } });
+    if (!existing) {
+      return NextResponse.json({ error: 'Policy not found' }, { status: 404 });
+    }
+
+    if (existing.organizationId !== auth?.organizationId) {
+      return NextResponse.json({ error: 'Policy not found' }, { status: 404 });
     }
 
     await db.monitorPolicy.delete({ where: { id } });

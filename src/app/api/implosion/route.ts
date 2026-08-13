@@ -15,7 +15,7 @@ import {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -28,7 +28,6 @@ export async function POST(request: NextRequest) {
       customerCount,
       severityPreset,
       scanId,
-      organizationId,
       domain,
       customFactors,
     } = body as {
@@ -39,7 +38,6 @@ export async function POST(request: NextRequest) {
       customerCount?: number;
       severityPreset?: string;
       scanId?: string;
-      organizationId?: string;
       domain?: string;
       customFactors?: Record<string, number>;
     };
@@ -111,7 +109,7 @@ export async function POST(request: NextRequest) {
     // ── 4. Persist to DB ────────────────────────────────────────────
     const scenario = await db.implosionScenario.create({
       data: {
-        organizationId: organizationId ?? null,
+        organizationId: auth?.organizationId ?? null,
         domain: domain ?? null,
         scanId: scanId ?? null,
         industry: industry as IndustryKey,
@@ -204,7 +202,7 @@ export async function GET(request: NextRequest) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function DELETE(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -224,6 +222,13 @@ export async function DELETE(request: NextRequest) {
     });
 
     if (!existing) {
+      return NextResponse.json(
+        { error: 'Scenario not found' },
+        { status: 404 }
+      );
+    }
+
+    if (existing.organizationId && auth?.organizationId && existing.organizationId !== auth.organizationId) {
       return NextResponse.json(
         { error: 'Scenario not found' },
         { status: 404 }

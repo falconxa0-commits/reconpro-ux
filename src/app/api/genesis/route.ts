@@ -1,4 +1,4 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import {
@@ -6,7 +6,6 @@ import {
   signAttestation,
   type AttestationPayload,
 } from '@/lib/genesis-crypto';
-import { checkRateLimit } from '@/lib/api-security';
 
 // ═══════════════════════════════════════════════════════════════════════
 // Types
@@ -51,12 +50,12 @@ function gradeColor(grade: string): string {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error, auth, clientIp } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  if (error) return error;
 
   try {
     const body = await request.json();
-    const { domain, tier, scanId, organizationId } = body as {
+    const { domain, tier, scanId } = body as {
       domain?: string;
       tier?: Tier;
       scanId?: string;
@@ -180,7 +179,7 @@ export async function POST(request: NextRequest) {
     const stamp = await db.genesisStamp.create({
       data: {
         stampId,
-        organizationId: organizationId ?? null,
+        organizationId: auth?.organizationId ?? null,
         domain,
         tier: selectedTier,
         score,
@@ -203,7 +202,7 @@ export async function POST(request: NextRequest) {
       data: {
         stampId: stamp.id,
         action: 'issued',
-        ipAddress: request.headers.get('x-forwarded-for') ?? undefined,
+        ipAddress: clientIp,
         userAgent: request.headers.get('user-agent') ?? undefined,
         details: JSON.stringify({ tier: selectedTier, scanId: targetScanId }),
       },
@@ -249,8 +248,10 @@ export async function POST(request: NextRequest) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const { searchParams } = new URL(request.url);

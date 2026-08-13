@@ -1,6 +1,5 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -662,8 +661,10 @@ function answerQuestion(question: string, findings: Finding[], domain: string): 
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(req: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(req, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const body = await req.json();

@@ -1,11 +1,11 @@
-import { extractClientIP } from '@/lib/api-protection';
+// STATUS: SIMULATED — All incidents are generated via Mulberry32 PRNG; no real breach data is used
+import { withProtection } from '@/lib/api-protection';
 // ═══════════════════════════════════════════════════════════════════════
 // Wall of Shame API — Anonymized Live Incident Ticker
 // GET /api/wall-of-shame?limit=50&severity=critical&industry=finance
 // ═══════════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 // ── Seeded PRNG (Mulberry32) ──────────────────────────────────────────
@@ -567,8 +567,10 @@ function computeStats(weekIncidents: Incident[]): Stats {
 // ── Route Handler ──────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const { searchParams } = request.nextUrl;
   const limitParam = searchParams.get('limit');
@@ -595,5 +597,5 @@ export async function GET(request: NextRequest) {
   const incidents = filtered.slice(0, limit);
   const stats = computeStats(allIncidents);
 
-  return NextResponse.json({ incidents, stats });
+  return NextResponse.json({ incidents, stats, simulated: true });
 }

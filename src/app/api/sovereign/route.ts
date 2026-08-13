@@ -1,4 +1,4 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import {
   getMasterKeyPair,
@@ -9,30 +9,19 @@ import {
   getDeadMansSwitchDaysRemaining,
   recordDeadMansPing,
   getLastPingTime,
-  seedDemoActions,
   verifySovereignAction,
   type SovereignActionType,
-  type SovereignAction,
 } from '@/lib/sovereign-crypto';
-import { checkRateLimit } from '@/lib/api-security';
 
 // ═══════════════════════════════════════════════════════════════════════
-// Sovereign Control API — Founder-Only Cryptographic Authority
+// Sovereign Control API — Cryptographic Authority (SIMULATED EXECUTION)
+// ═══════════════════════════════════════════════════════════════════════
+// STATUS: PARTIAL — Real Ed25519 action signing exists, but all action
+// execution is simulated (counters, in-memory state). No real lockdown,
+// key revocation, or tenant override actually occurs.
 // ═══════════════════════════════════════════════════════════════════════
 
-// Seed demo data on module load
-seedDemoActions();
-
-// ── Helpers ──────────────────────────────────────────────────────────
-
-/** Extract client IP from request headers */
-function getClientIp(request: NextRequest): string {
-  return request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-    request.headers.get('x-real-ip') ??
-    'unknown';
-}
-
-/** Simulated access log (demo) */
+/** In-memory access log (demo — not persisted) */
 const accessLog: Array<{
   endpoint: string;
   method: string;
@@ -42,35 +31,28 @@ const accessLog: Array<{
 }> = [];
 
 function logAccess(endpoint: string, method: string, ip: string, success: boolean) {
-  accessLog.unshift({
-    endpoint,
-    method,
-    ip,
-    success,
-    timestamp: new Date().toISOString(),
-  });
+  accessLog.unshift({ endpoint, method, ip, success, timestamp: new Date().toISOString() });
   if (accessLog.length > 100) accessLog.length = 100;
 }
 
-/** Simulated lockdown count (demo) */
+/** Simulated lockdown counter — no real lockdown occurs */
 let simulatedActiveLockdowns = 0;
 
 // ═══════════════════════════════════════════════════════════════════════
-// GET — Sovereign status / audit trail / access log
+// GET — Sovereign status / audit trail / access log (public read-only)
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error: rateLimitError, clientIp } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (rateLimitError) return rateLimitError;
 
   const { searchParams } = new URL(request.url);
-  const view = searchParams.get('view'); // 'status' | 'audit' | 'access-log'
-  const clientIp = getClientIp(request);
+  const view = searchParams.get('view');
 
-  // ── GET /api/sovereign?view=status ────────────────────────────────
   if (view === 'status') {
     logAccess('/api/sovereign/status', 'GET', clientIp, true);
-
     const lastPing = getLastPingTime();
     const triggered = checkDeadMansSwitch(lastPing);
     const daysRemaining = getDeadMansSwitchDaysRemaining(lastPing);
@@ -86,6 +68,7 @@ export async function GET(request: NextRequest) {
         daysRemaining: Math.round(daysRemaining * 100) / 100,
       },
       activeLockdowns: simulatedActiveLockdowns,
+      simulated: true,
       systemIntegrity: {
         status: 'ALL_CLEAR',
         lastVerified: new Date().toISOString(),
@@ -94,20 +77,16 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // ── GET /api/sovereign?view=audit ────────────────────────────────
   if (view === 'audit') {
     logAccess('/api/sovereign/audit', 'GET', clientIp, true);
-    const actions = getActionLog(50);
-    return NextResponse.json({ actions });
+    return NextResponse.json({ actions: getActionLog(50) });
   }
 
-  // ── GET /api/sovereign?view=access-log ──────────────────────────
   if (view === 'access-log') {
     logAccess('/api/sovereign/access-log', 'GET', clientIp, true);
     return NextResponse.json({ entries: accessLog });
   }
 
-  // Default: return status
   logAccess('/api/sovereign', 'GET', clientIp, true);
   return NextResponse.json({
     masterKeyRegistered: getMasterPublicKey() !== null,
@@ -117,13 +96,15 @@ export async function GET(request: NextRequest) {
 
 // ═══════════════════════════════════════════════════════════════════════
 // POST — Execute sovereign action / Dead man's switch ping
+// REQUIRES AUTHENTICATION — all mutations require a valid API key
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
-
-  const clientIp = getClientIp(request);
+  const { error, clientIp, auth } = await withProtection(request, {
+    requireAuth: true,
+    rateLimit: { maxRequests: 10, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const body = await request.json();
@@ -139,8 +120,6 @@ export async function POST(request: NextRequest) {
     if (action === 'ping') {
       logAccess('/api/sovereign/ping', 'POST', clientIp, true);
 
-      // In production: verify the signature against the master public key
-      // Demo: accept any ping
       if (signature) {
         const kp = getMasterKeyPair();
         const pingPayload = { type: 'dead_mans_switch_ping', timestamp: new Date().toISOString() };
@@ -151,16 +130,12 @@ export async function POST(request: NextRequest) {
         );
         if (!isValid) {
           logAccess('/api/sovereign/ping', 'POST', clientIp, false);
-          return NextResponse.json(
-            { error: 'Invalid signature — rejected' },
-            { status: 403 }
-          );
+          return NextResponse.json({ error: 'Invalid signature — rejected' }, { status: 403 });
         }
       }
 
       const pingTime = recordDeadMansPing();
       const nextDeadline = new Date(pingTime.getTime() + 30 * 86400000);
-
       return NextResponse.json({
         nextDeadline: nextDeadline.toISOString(),
         status: 'ok',
@@ -174,79 +149,76 @@ export async function POST(request: NextRequest) {
 
       if (!actionType) {
         logAccess('/api/sovereign/execute', 'POST', clientIp, false);
-        return NextResponse.json(
-          { error: 'actionType is required' },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: 'actionType is required' }, { status: 400 });
       }
 
-      // In production: verify WebAuthn + master key signature
-      // Demo: simulate execution
-
+      // NOTE: In production, execute should require WebAuthn + master key
+      // signature verification. Currently authentication is enforced via API key.
       const scope = targetScope ?? 'platform';
       const payloadData = payload ?? {};
 
-      const sovereignAction = buildSovereignAction(
-        actionType,
-        scope,
-        payloadData,
-        'founder',
-        clientIp
-      );
+      const sovereignAction = buildSovereignAction(actionType, scope, payloadData, auth?.id ?? 'authenticated', clientIp);
 
-      // Simulate side effects
+      // SIMULATED EXECUTION — no real infrastructure changes occur
       let result: Record<string, unknown> = { simulated: true };
 
       switch (actionType) {
         case 'emergency_lockdown':
           simulatedActiveLockdowns++;
           result = {
-            message: 'All tenant access has been locked down',
+            message: 'SIMULATED: All tenant access has been locked down',
             tenantsAffected: 'all',
             lockId: `LK-${Date.now().toString(36).toUpperCase()}`,
             requiresManualRelease: true,
+            simulated: true,
           };
           break;
         case 'global_broadcast':
           result = {
-            message: 'Broadcast delivered to all active dashboards',
+            message: 'SIMULATED: Broadcast delivered to all active dashboards',
             recipients: 42,
             broadcastId: `BC-${Date.now().toString(36).toUpperCase()}`,
+            simulated: true,
           };
           break;
         case 'override_tenant':
           result = {
-            message: `Tenant override applied to ${scope}`,
+            message: `SIMULATED: Tenant override applied to ${scope}`,
             overrideActive: true,
             expiresAt: new Date(Date.now() + 86400000).toISOString(),
+            simulated: true,
           };
           break;
         case 'revoke_all_keys':
           result = {
-            message: 'All API keys have been revoked',
+            message: 'SIMULATED: All API keys have been revoked',
             keysRevoked: 127,
             tenantsAffected: 12,
+            simulated: true,
           };
           break;
         case 'system_maintenance':
           result = {
-            message: 'Platform entering maintenance mode',
+            message: 'SIMULATED: Platform entering maintenance mode',
             maintenanceWindow: payloadData.duration ?? '2h',
             estimatedRestoration: new Date(Date.now() + 7200000).toISOString(),
+            simulated: true,
           };
           break;
         case 'access_grant':
           result = {
-            message: `Emergency access granted to ${scope}`,
+            message: `SIMULATED: Emergency access granted to ${scope}`,
             ttl: payloadData.ttl ?? '24h',
             grantId: `AG-${Date.now().toString(36).toUpperCase()}`,
+            simulated: true,
           };
           break;
         case 'certification_sign':
           result = {
-            message: 'Genesis Stamp signed with sovereign master key',
+            message: 'SIMULATED: Genesis Stamp signed with sovereign master key',
             stampId: payloadData.stampId ?? 'pending',
             sovereignSignature: sovereignAction.signature.substring(0, 32) + '...',
+            simulated: true,
           };
           break;
         case 'dead_man_switch':
@@ -258,26 +230,14 @@ export async function POST(request: NextRequest) {
           break;
       }
 
-      return NextResponse.json({
-        actionId: sovereignAction.actionId,
-        status: 'executed',
-        result,
-        action: sovereignAction,
-      });
+      return NextResponse.json({ actionId: sovereignAction.actionId, status: 'executed', result, action: sovereignAction });
     }
 
-    // Unknown action
     logAccess('/api/sovereign', 'POST', clientIp, false);
-    return NextResponse.json(
-      { error: 'Invalid action. Use "ping" or "execute".' },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: 'Invalid action. Use "ping" or "execute".' }, { status: 400 });
   } catch (error) {
     logAccess('/api/sovereign', 'POST', clientIp, false);
     console.error('Sovereign API error:', error);
-    return NextResponse.json(
-      { error: 'Sovereign operation failed' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Sovereign operation failed' }, { status: 500 });
   }
 }

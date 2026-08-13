@@ -1,14 +1,15 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { checkRateLimit } from '@/lib/api-security';
-
-
-const ORG_ID = 'org_default';
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 5, 60_000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error, auth } = await withProtection(request, {
+    requireAuth: true,
+    rateLimit: { maxRequests: 5, windowMs: 60_000 },
+  });
+  if (error) return error;
+
+  const orgId = auth?.organizationId ?? 'org_default';
 
   try {
     const body = await request.json();
@@ -28,7 +29,7 @@ export async function POST(request: NextRequest) {
         include: { identity: true },
       });
 
-      if (!revocation || revocation.organizationId !== ORG_ID) {
+      if (!revocation || revocation.organizationId !== orgId) {
         failed++;
         results.push({ revocationId: revId, status: 'failed', error: 'Revocation not found' });
         continue;
@@ -41,7 +42,6 @@ export async function POST(request: NextRequest) {
       }
 
       try {
-        // Restore identity status
         let restoreStatus = 'active';
         if (revocation.rollbackData) {
           try {
@@ -55,16 +55,14 @@ export async function POST(request: NextRequest) {
           data: { status: restoreStatus },
         });
 
-        // Mark revocation as rolled back
         await db.nHIRevocation.update({
           where: { id: revId },
           data: { status: 'rolled_back', rolledBackAt: new Date() },
         });
 
-        // Audit log
         await db.nHIAuditLog.create({
           data: {
-            organizationId: ORG_ID,
+            organizationId: orgId,
             revocationId: revId,
             action: 'rollback_completed',
             resource: 'revocation',

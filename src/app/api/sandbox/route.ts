@@ -1,11 +1,12 @@
-import { extractClientIP } from '@/lib/api-protection';
+// STATUS: SIMULATED — All responses are pattern-matched from predefined rules; no real LLM agent is running
+import { withProtection } from '@/lib/api-protection';
 // ══════════════════════════════════════════════════════════════════
 // Confused Deputy Sandbox API — Simulated AI Agent
 // Pattern-matched responses, in-memory session store, no real LLM
 // ══════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
-import { checkRateLimit, safeErrorResponse } from '@/lib/api-security';
+import { safeErrorResponse } from '@/lib/api-security';
 
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -598,8 +599,10 @@ function isBlockedByDefense(rule: PatternRule, session: SandboxSession): boolean
 // ── Request Router ─────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(req, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const body = await req.json();
@@ -615,12 +618,14 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(req, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const url = new URL(req.url);
   if (url.searchParams.get('action') === 'leaderboard') {
-    return NextResponse.json({ leaderboard: LEADERBOARD });
+    return NextResponse.json({ leaderboard: LEADERBOARD, simulated: true });
   }
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
 }
@@ -644,7 +649,7 @@ function createSession() {
     turnHistory: [], accessedResources: new Set<string>(),
   };
   sessions.set(id, session);
-  return NextResponse.json({ sessionId: session.id, expiresAt: session.expiresAt, environment: session.environment, permissions: session.permissions });
+  return NextResponse.json({ sessionId: session.id, expiresAt: session.expiresAt, environment: session.environment, permissions: session.permissions, simulated: true });
 }
 
 // ── Prompt Handler ─────────────────────────────────────────────────
@@ -671,7 +676,7 @@ function handlePrompt(body: { sessionId: string; prompt: string }) {
   if (success) session.accessedResources.add(action);
 
   session.messages.push({ role: 'agent', content: response, action, points: pts, annotation, timestamp: Date.now() });
-  return NextResponse.json({ response, action, success, points: pts, annotation, totalPoints: session.points });
+  return NextResponse.json({ response, action, success, points: pts, annotation, totalPoints: session.points, simulated: true });
 }
 
 // ── Defense Mode Update ────────────────────────────────────────────
@@ -694,5 +699,6 @@ function getSession(body: { sessionId: string }) {
     messages: session.messages, defenseMode: session.defenseMode, defenseRules: session.defenseRules,
     accessedResources: Array.from(session.accessedResources), expired: Date.now() > session.expiresAt,
     timeRemaining: Math.max(0, session.expiresAt - Date.now()),
+    simulated: true,
   });
 }

@@ -1,7 +1,7 @@
-import { extractClientIP } from '@/lib/api-protection';
+// STATUS: SIMULATED — RSS feed is generated from fabricated threat data, not from real security incidents
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { calculateFearIndex, buildRssFeed } from '@/lib/fear-index-engine';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -10,8 +10,10 @@ import { checkRateLimit } from '@/lib/api-security';
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const current = calculateFearIndex();
   const xml = buildRssFeed(current);
@@ -20,6 +22,7 @@ export async function GET(request: NextRequest) {
     headers: {
       'Content-Type': 'application/xml; charset=utf-8',
       'Cache-Control': 'public, max-age=3600, s-maxage=3600',
+      'X-Simulated': 'true',
     },
   });
 }

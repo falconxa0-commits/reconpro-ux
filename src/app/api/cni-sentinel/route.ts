@@ -1,4 +1,4 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import {
   analyzeCNIThreats,
@@ -6,7 +6,7 @@ import {
   APT_GROUPS,
 } from '@/lib/cni-sentinel-engine';
 import type { NetworkSegment, Industry, DeviceInfo, ScanFinding } from '@/lib/cni-sentinel-engine';
-import { checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+import { safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -20,8 +20,10 @@ const VALID_SEGMENTS: NetworkSegment[] = ['scada', 'plc', 'hmi', 'dcs', 'enterpr
 const VALID_INDUSTRIES: Industry[] = ['energy', 'water', 'transportation', 'telecom', 'defense', 'manufacturing'];
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const body = await request.json();
@@ -103,8 +105,10 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const { searchParams } = new URL(request.url);
   const resource = searchParams.get('resource');

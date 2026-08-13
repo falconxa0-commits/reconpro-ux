@@ -46,6 +46,10 @@ interface ProtectionResult {
   error: NextResponse | null;
   clientIp: string;
   domain?: string | null;
+  /** Populated when requireAuth=true and authentication succeeds. Contains the
+   *  authenticated API key's id, organizationId, and scopes for downstream
+   *  authorization / tenant-isolation checks. */
+  auth?: { id: string; organizationId: string; scopes: string } | null;
 }
 
 /**
@@ -133,14 +137,15 @@ export async function withProtection(
   }
 
   // ── 2. Authentication ──────────────────────────────────────────
+  let authenticatedKeyRecord: { id: string; organizationId: string; scopes: string } | null = null;
+
   if (requireAuth) {
     const apiKey = request.headers.get(API_KEY_HEADER);
-    const authHeader = request.headers.get(AUTHORIZATION_HEADER);
 
-    if (!apiKey && !authHeader?.startsWith('Bearer ')) {
+    if (!apiKey) {
       return {
         error: NextResponse.json(
-          { error: 'Authentication required. Provide X-API-Key header or Bearer token.' },
+          { error: 'Authentication required. Provide X-API-Key header.' },
           { status: 401 }
         ),
         clientIp,
@@ -149,48 +154,54 @@ export async function withProtection(
 
     // Verify the full API key by comparing its SHA-256 hash against the stored keyHash.
     // The keyPrefix field is used ONLY for display/identification, never for auth.
-    if (apiKey) {
-      try {
-        const { db } = await import('@/lib/db');
+    // CRITICAL: Bearer tokens are NOT supported. Only x-api-key header authenticates.
+    try {
+      const { db } = await import('@/lib/db');
 
-        // Hash the provided key with SHA-256
-        const sha256 = createHash('sha256');
-        sha256.update(apiKey);
-        const hashHex = sha256.digest('hex');
+      // Hash the provided key with SHA-256
+      const sha256 = createHash('sha256');
+      sha256.update(apiKey);
+      const hashHex = sha256.digest('hex');
 
-        // Look up by exact hash (keyHash is @unique in the schema)
-        const keyRecord = await db.apiKey.findUnique({
-          where: { keyHash: hashHex },
-        });
+      // Look up by exact hash (keyHash is @unique in the schema)
+      const keyRecord = await db.apiKey.findUnique({
+        where: { keyHash: hashHex },
+      });
 
-        if (!keyRecord || !keyRecord.isActive) {
-          return {
-            error: NextResponse.json({ error: 'Invalid or inactive API key' }, { status: 401 }),
-            clientIp,
-          };
-        }
+      if (!keyRecord || !keyRecord.isActive) {
+        return {
+          error: NextResponse.json({ error: 'Invalid or inactive API key' }, { status: 401 }),
+          clientIp,
+        };
+      }
 
-        // Check expiry
-        if (keyRecord.expiresAt && keyRecord.expiresAt < new Date()) {
-          return {
-            error: NextResponse.json({ error: 'API key has expired' }, { status: 401 }),
-            clientIp,
-          };
-        }
+      // Check expiry
+      if (keyRecord.expiresAt && keyRecord.expiresAt < new Date()) {
+        return {
+          error: NextResponse.json({ error: 'API key has expired' }, { status: 401 }),
+          clientIp,
+        };
+      }
 
-        // Update usage
-        await db.apiKey.update({
-          where: { id: keyRecord.id },
-          data: { lastUsedAt: new Date(), requestCount: { increment: 1 } },
-        });
-      } catch {
-        // DB error — allow in development, block in production
-        if (process.env.NODE_ENV === 'production') {
-          return {
-            error: NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 }),
-            clientIp,
-          };
-        }
+      // Update usage
+      await db.apiKey.update({
+        where: { id: keyRecord.id },
+        data: { lastUsedAt: new Date(), requestCount: { increment: 1 } },
+      });
+
+      // Store for downstream authorization checks
+      authenticatedKeyRecord = {
+        id: keyRecord.id,
+        organizationId: keyRecord.organizationId,
+        scopes: keyRecord.scopes,
+      };
+    } catch {
+      // DB error — allow in development, block in production
+      if (process.env.NODE_ENV === 'production') {
+        return {
+          error: NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 }),
+          clientIp,
+        };
       }
     }
   }
@@ -231,7 +242,7 @@ export async function withProtection(
     }
   }
 
-  return { error: null, clientIp };
+  return { error: null, clientIp, auth: authenticatedKeyRecord };
 }
 
 /**

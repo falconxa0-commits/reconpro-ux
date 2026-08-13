@@ -1090,7 +1090,7 @@ async function harvestEmails(domain: string, pageContent: string): Promise<Findi
 // MAIN SCAN ENDPOINT
 // ═══════════════════════════════════════════════════════════════════════
 export async function POST(request: NextRequest) {
-  const { error: protErr, domain: protDomain } = await withProtection(request.clone() as unknown as NextRequest, { validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
+  const { error: protErr, domain: protDomain } = await withProtection(request.clone() as unknown as NextRequest, { requireAuth: true, validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
   if (protErr) return protErr;
 
   try {

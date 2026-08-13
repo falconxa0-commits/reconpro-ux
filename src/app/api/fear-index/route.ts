@@ -1,7 +1,7 @@
-import { extractClientIP } from '@/lib/api-protection';
+// STATUS: SIMULATED — Fear index value is generated from a seeded PRNG, not derived from real threat intelligence
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { calculateFearIndex } from '@/lib/fear-index-engine';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -10,12 +10,15 @@ import { checkRateLimit } from '@/lib/api-security';
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const current = calculateFearIndex();
   return NextResponse.json({
     timestamp: new Date().toISOString(),
     ...current,
+    simulated: true,
   });
 }

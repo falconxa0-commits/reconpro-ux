@@ -1,8 +1,8 @@
-import { extractClientIP } from '@/lib/api-protection';
+// STATUS: SIMULATED — Uses hardcoded SIMULATED_DATA; no real LLM red-team results unless database contains actual scan data
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { randomUUID } from 'crypto';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -219,8 +219,10 @@ function computeStats(models: LeaderboardEntry[]) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -278,6 +280,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       isSimulated,
+      simulated: true,
       generatedAt: new Date().toISOString(),
       engine: 'GORGON/OBLIVION v3.0',
       stats,
@@ -297,8 +300,10 @@ export async function GET(request: NextRequest) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 5, 60_000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 5, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const jobId = `GORGON-SCAN-${randomUUID().slice(0, 8).toUpperCase()}`;
@@ -331,6 +336,7 @@ export async function POST(request: NextRequest) {
       success: true,
       jobId,
       status: hasRealKeys ? 'pending' : 'demo_pending',
+      simulated: true,
       message: hasRealKeys
         ? `Scan cycle initiated. ${SIMULATED_MODELS.length} models queued for red-teaming.`
         : `Demo mode: No LLM API keys detected. Simulated results will be generated.`,

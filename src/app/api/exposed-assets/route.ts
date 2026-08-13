@@ -1,6 +1,6 @@
-import { extractClientIP } from '@/lib/api-protection';
+// STATUS: SIMULATED — All exposure data is generated from a seeded PRNG; no real asset scanning is performed
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -287,8 +287,10 @@ function generateStats(timeSeries: { hour: string; count: number }[]) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const { searchParams } = request.nextUrl;
   const typeFilter = searchParams.get('type') || 'all';
@@ -345,5 +347,6 @@ export async function GET(request: NextRequest) {
     recentAssets,
     timeSeries,
     stats,
+    simulated: true,
   });
 }

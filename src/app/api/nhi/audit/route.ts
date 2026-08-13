@@ -1,21 +1,19 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { checkRateLimit } from '@/lib/api-security';
 
-
-const ORG_ID = 'org_default';
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
+  if (error) return error;
 
   try {
+    const orgId = auth?.organizationId ?? 'org_default';
     const { searchParams } = new URL(request.url);
     const limit = parseInt(searchParams.get('limit') || '50', 10);
 
     const logs = await db.nHIAuditLog.findMany({
-      where: { organizationId: ORG_ID },
+      where: { organizationId: orgId },
       include: { revocation: { select: { id: true, identifier: true, cloudProvider: true } } },
       orderBy: { timestamp: 'desc' },
       take: Math.min(limit, 200),

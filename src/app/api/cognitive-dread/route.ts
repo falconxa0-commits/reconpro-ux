@@ -1,7 +1,8 @@
-import { extractClientIP } from '@/lib/api-protection';
+// STATUS: SIMULATED — All scan results are generated via seededRandom(), not from real LLM stress tests
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
-import { checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+import { safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -293,8 +294,10 @@ function generateScanResult(
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const { searchParams } = new URL(request.url);
   const action = searchParams.get('action');
@@ -303,6 +306,7 @@ export async function GET(request: NextRequest) {
   if (action === 'models') {
     return NextResponse.json({
       dreadVersion: DREAD_VERSION,
+      simulated: true,
       models: MODELS.map(m => ({
         id: m.id, name: m.name, provider: m.provider,
         contextWindow: m.contextWindow, safetyFeatures: m.safetyFeatures,
@@ -317,6 +321,7 @@ export async function GET(request: NextRequest) {
   if (action === 'results') {
     return NextResponse.json({
       dreadVersion: DREAD_VERSION,
+      simulated: true,
       totalResults: resultsStore.length,
       results: resultsStore.slice(-50).reverse(),
     });
@@ -347,6 +352,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       dreadVersion: DREAD_VERSION,
+      simulated: true,
       generatedAt: new Date().toISOString(),
       intensity: 'moderate',
       attacksRun: allKeys.length,
@@ -357,6 +363,7 @@ export async function GET(request: NextRequest) {
   // ── Default: return engine info ────────────────────────────────────────
   return NextResponse.json({
     dreadVersion: DREAD_VERSION,
+    simulated: true,
     signature: DREAD_SIGNATURE,
     name: 'Cognitive Alignment Suppression Engine',
     tagline: 'Omni-Model Dread — The Evolution of GORGON/OBLIVION',
@@ -370,8 +377,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -407,6 +416,7 @@ export async function POST(request: NextRequest) {
 
     return applySecurityHeaders(NextResponse.json({
       success: true,
+      simulated: true,
       ...result,
     }));
   } catch (error) {

@@ -1,8 +1,8 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 // ═══════════════════════════════════════════════════════════════════════
 // Echo-Sign Broadcast API — /api/broadcast
-// GET  ?priority= &channel= &active=true  → list broadcasts
-// POST { priority, title, body, channel, targetScope } → issue
+// STATUS: PARTIAL — Real Ed25519 signing, but content comes from
+// seedDemoBroadcasts() (fabricated bulletins) and in-memory storage.
 // ═══════════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -12,13 +12,11 @@ import {
   getActiveBroadcasts,
   storeBroadcast,
   signBroadcast,
-  verifyBroadcast,
   type BroadcastPriority,
   type BroadcastChannel,
   type TargetScope,
   type BroadcastMessage,
 } from '@/lib/broadcast-engine';
-import { checkRateLimit } from '@/lib/api-security';
 
 // Ensure demo data exists
 seedDemoBroadcasts();
@@ -27,11 +25,13 @@ const VALID_PRIORITIES: BroadcastPriority[] = ['INFO', 'WARNING', 'CRITICAL', 'S
 const VALID_CHANNELS: BroadcastChannel[] = ['cli', 'web', 'email', 'slack', 'pagerduty', 'webhook'];
 const VALID_SCOPES: TargetScope[] = ['all', 'enterprise', 'government'];
 
-// ── GET /api/broadcast ─────────────────────────────────────────────────
+// ── GET /api/broadcast (public — read-only listing) ──────────────────
 
 export async function GET(req: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error, clientIp } = await withProtection(req, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const { searchParams } = new URL(req.url);
   const priority = searchParams.get('priority')?.toUpperCase();
@@ -47,22 +47,21 @@ export async function GET(req: NextRequest) {
     broadcasts = broadcasts.filter((b) => b.channel === channel);
   }
 
-  return NextResponse.json({
-    ok: true,
-    count: broadcasts.length,
-    broadcasts,
-  });
+  return NextResponse.json({ ok: true, count: broadcasts.length, broadcasts });
 }
 
-// ── POST /api/broadcast ────────────────────────────────────────────────
+// ── POST /api/broadcast (AUTH REQUIRED — mutation) ───────────────────
 
 export async function POST(req: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error, auth } = await withProtection(req, {
+    requireAuth: true,
+    rateLimit: { maxRequests: 10, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const body = await req.json();
-    const { priority, title, body: messageBody, channel, targetScope, issuedBy } = body;
+    const { priority, title, body: messageBody, channel, targetScope } = body;
 
     if (!title || !messageBody || !priority || !channel) {
       return NextResponse.json(
@@ -86,27 +85,18 @@ export async function POST(req: NextRequest) {
     }
 
     const scope: TargetScope = VALID_SCOPES.includes(targetScope) ? targetScope : 'all';
-
-    // Set expiry based on priority (type-safe: priority was validated above)
     const typedPriority = priority as BroadcastPriority;
-    const expiryHours: Record<BroadcastPriority, number> = {
-      INFO: 168,
-      WARNING: 72,
-      CRITICAL: 48,
-      SOVEREIGN: 72,
-    };
+    const expiryHours: Record<BroadcastPriority, number> = { INFO: 168, WARNING: 72, CRITICAL: 48, SOVEREIGN: 72 };
+    const expiresAt = new Date(Date.now() + expiryHours[typedPriority] * 3600_000).toISOString();
 
-    const expiresAt = new Date(
-      Date.now() + expiryHours[typedPriority] * 3600_000
-    ).toISOString();
-
+    // Use authenticated key ID as issuer — never trust client-supplied identity
     const msg = storeBroadcast(
       signBroadcast({
         priority,
         title,
         body: messageBody,
         channel,
-        issuedBy: issuedBy || 'broadcast-authority@reconpro.io',
+        issuedBy: auth?.id ?? 'system',
         expiresAt,
         targetScope: scope,
       })
@@ -114,9 +104,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, broadcast: msg }, { status: 201 });
   } catch {
-    return NextResponse.json(
-      { ok: false, error: 'Invalid request body' },
-      { status: 400 }
-    );
+    return NextResponse.json({ ok: false, error: 'Invalid request body' }, { status: 400 });
   }
 }

@@ -1,18 +1,19 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { checkRateLimit } from '@/lib/api-security';
-
-
-const ORG_ID = 'org_default';
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 5, 60_000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error, auth } = await withProtection(request, {
+    requireAuth: true,
+    rateLimit: { maxRequests: 5, windowMs: 60_000 },
+  });
+  if (error) return error;
+
+  const orgId = auth?.organizationId ?? 'org_default';
 
   try {
     const body = await request.json();
-    const { identityIds, reason, revokedBy } = body as {
+    const { identityIds, reason } = body as {
       identityIds: string[];
       reason: string;
       revokedBy?: string;
@@ -28,20 +29,19 @@ export async function POST(request: NextRequest) {
 
     for (const identityId of identityIds) {
       const identity = await db.nHIIdentity.findUnique({ where: { id: identityId } });
-      if (!identity || identity.organizationId !== ORG_ID) {
+      if (!identity || identity.organizationId !== orgId) {
         failed++;
         results.push({ id: identityId, status: 'failed', error: 'Identity not found' });
         continue;
       }
 
       try {
-        // Create revocation record
         const revocation = await db.nHIRevocation.create({
           data: {
-            organizationId: ORG_ID,
+            organizationId: orgId,
             identityId,
             reason,
-            revokedBy: revokedBy || 'system',
+            revokedBy: auth?.id ?? 'system',
             cloudProvider: identity.cloudProvider,
             identityType: identity.identityType,
             identifier: identity.identifier,
@@ -54,16 +54,14 @@ export async function POST(request: NextRequest) {
           },
         });
 
-        // Simulate revocation — mark identity as revoked
         await db.nHIIdentity.update({
           where: { id: identityId },
           data: { status: 'revoked' },
         });
 
-        // Audit log
         await db.nHIAuditLog.create({
           data: {
-            organizationId: ORG_ID,
+            organizationId: orgId,
             revocationId: revocation.id,
             action: 'revocation_completed',
             resource: 'revocation',

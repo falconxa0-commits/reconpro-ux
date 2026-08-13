@@ -1,7 +1,7 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { checkRateLimit, safeErrorResponse, sanitizeDomain, isBlockedDomain, isPrivateIP } from '@/lib/api-security';
+import { safeErrorResponse, sanitizeDomain, isBlockedDomain, isPrivateIP } from '@/lib/api-security';
 import { safeFetch } from '@/lib/safe-fetch';
 
 
@@ -88,8 +88,10 @@ async function runVibeSecMicroScan(domain: string): Promise<{
 // ─── GET: Leaderboard ──────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(req), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(req, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const { searchParams } = new URL(req.url);
   const category = searchParams.get('category') || '';
@@ -153,8 +155,8 @@ export async function GET(req: NextRequest) {
 // ─── POST: Submit domain for scanning ──────────────────────────────
 
 export async function POST(req: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(req), 5, 60_000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(req, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  if (error) return error;
 
   try {
     const body = await req.json();

@@ -1,4 +1,4 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 // ═══════════════════════════════════════════════════════════════════════
 // Echo-Sign Verify API — /api/broadcast/verify/[id]
 // GET → verify a specific broadcast's Ed25519 signature
@@ -6,7 +6,6 @@ import { extractClientIP } from '@/lib/api-protection';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getAllBroadcasts, verifyBroadcast, seedDemoBroadcasts, type BroadcastMessage } from '@/lib/broadcast-engine';
-import { checkRateLimit } from '@/lib/api-security';
 
 seedDemoBroadcasts();
 
@@ -14,8 +13,10 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { allowed } = checkRateLimit(extractClientIP(_req), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(_req, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const { id } = await params;
   const broadcasts: BroadcastMessage[] = getAllBroadcasts();

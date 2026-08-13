@@ -1,7 +1,6 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { calculateDoomClock, type TLSAssetInput, type DoomClockResult } from '@/lib/quantum-doom-engine';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -10,8 +9,10 @@ import { checkRateLimit } from '@/lib/api-security';
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const body = await request.json();
@@ -64,8 +65,10 @@ export async function POST(request: NextRequest) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const { searchParams } = new URL(request.url);

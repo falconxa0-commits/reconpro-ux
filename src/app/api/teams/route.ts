@@ -6,12 +6,11 @@ import { NextRequest, NextResponse } from 'next/server';
 // ── GET ──────────────────────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
   if (error) return error;
 
   try {
-    const org = await db.organization.findFirst();
-    const orgId = org?.id;
+    const orgId = auth?.organizationId;
 
     const teams = await db.team.findMany({
       where: orgId ? { organizationId: orgId } : undefined,
@@ -45,7 +44,7 @@ export async function GET(request: NextRequest) {
 // ── POST ─────────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -60,16 +59,13 @@ export async function POST(request: NextRequest) {
     }
 
     // Get or create org
-    let org = await db.organization.findFirst();
-    if (!org) {
-      org = await db.organization.create({
-        data: { name: 'Default Org', slug: 'default' },
-      });
+    if (!auth?.organizationId) {
+      return NextResponse.json({ error: 'Organization context required' }, { status: 403 });
     }
 
     const team = await db.team.create({
       data: {
-        organizationId: org.id,
+        organizationId: auth.organizationId,
         name,
         description: description || null,
         color: color || '#00ff88',
@@ -84,7 +80,7 @@ export async function POST(request: NextRequest) {
     // Audit log
     await db.auditLog.create({
       data: {
-        organizationId: org.id,
+        organizationId: auth.organizationId,
         action: 'team_created',
         resource: 'team',
         resourceId: team.id,
@@ -111,7 +107,7 @@ export async function POST(request: NextRequest) {
 // ── PATCH ────────────────────────────────────────────────────────────────────
 
 export async function PATCH(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -124,6 +120,9 @@ export async function PATCH(request: NextRequest) {
 
     const existing = await db.team.findUnique({ where: { id } });
     if (!existing) {
+      return NextResponse.json({ error: 'Team not found' }, { status: 404 });
+    }
+    if (existing.organizationId !== auth?.organizationId) {
       return NextResponse.json({ error: 'Team not found' }, { status: 404 });
     }
 
@@ -161,7 +160,7 @@ export async function PATCH(request: NextRequest) {
 // ── DELETE ───────────────────────────────────────────────────────────────────
 
 export async function DELETE(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -173,7 +172,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     const existing = await db.team.findUnique({ where: { id } });
-    if (!existing) {
+    if (!existing || existing.organizationId !== auth?.organizationId) {
       return NextResponse.json({ error: 'Team not found' }, { status: 404 });
     }
 

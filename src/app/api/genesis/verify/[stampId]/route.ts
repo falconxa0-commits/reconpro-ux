@@ -1,8 +1,7 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { verifyAttestation, type AttestationPayload } from '@/lib/genesis-crypto';
-import { checkRateLimit } from '@/lib/api-security';
 
 // ═══════════════════════════════════════════════════════════════════════
 // GET /api/genesis/verify/[stampId] — Public verification endpoint
@@ -12,8 +11,10 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ stampId: string }> }
 ) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const { stampId } = await params;

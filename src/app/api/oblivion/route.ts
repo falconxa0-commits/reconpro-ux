@@ -1,9 +1,9 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 // child_process.exec eliminated — replaced with native APIs during Biological Forge
 // exec and promisify removed (formerly used for python3 oblivion.py execution)
 // fs removed (file operations moved to in-memory)
-import { checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+import { safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // OBLIVION IDENTITY — The Last Oracle
@@ -66,8 +66,10 @@ function loadHall(): any {
 }
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const body = await request.json();
@@ -193,8 +195,10 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   const hall = loadHall();
   return NextResponse.json({

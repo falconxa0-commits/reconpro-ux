@@ -1,18 +1,17 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { checkRateLimit } from '@/lib/api-security';
 
-
-const ORG_ID = 'org_default';
 
 const RISK_SCORES: Record<string, number> = { critical: 100, high: 75, normal: 40, low: 15 };
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
+  if (error) return error;
 
   try {
+    const orgId = auth?.organizationId ?? 'org_default';
+
     const body = await request.json();
     const { identityIds, scope } = body as { identityIds: string[]; scope: 'single' | 'team' | 'org' | 'multi_cloud' };
 
@@ -22,7 +21,7 @@ export async function POST(request: NextRequest) {
 
     // Get the target identities
     const targets = await db.nHIIdentity.findMany({
-      where: { id: { in: identityIds }, organizationId: ORG_ID },
+      where: { id: { in: identityIds }, organizationId: orgId },
     });
 
     if (!targets.length) {
@@ -36,7 +35,7 @@ export async function POST(request: NextRequest) {
     if (scope === 'org' || scope === 'multi_cloud') {
       // Include all active identities with similar permissions
       const allActive = await db.nHIIdentity.findMany({
-        where: { organizationId: ORG_ID, status: { in: ['active', 'suspect'] } },
+        where: { organizationId: orgId, status: { in: ['active', 'suspect'] } },
       });
       affectedIdentities = allActive.length;
       affectedResources = allActive.reduce((sum, t) => sum + t.blastRadius, 0);
@@ -44,7 +43,7 @@ export async function POST(request: NextRequest) {
       // Include identities sharing same cloud providers
       const clouds = [...new Set(targets.map((t) => t.cloudProvider))];
       const sameCloud = await db.nHIIdentity.findMany({
-        where: { organizationId: ORG_ID, cloudProvider: { in: clouds }, status: { in: ['active', 'suspect'] } },
+        where: { organizationId: orgId, cloudProvider: { in: clouds }, status: { in: ['active', 'suspect'] } },
       });
       affectedIdentities = sameCloud.length;
       affectedResources = sameCloud.reduce((sum, t) => sum + t.blastRadius, 0);
@@ -61,7 +60,7 @@ export async function POST(request: NextRequest) {
     // Create assessment record
     const assessment = await db.nHIImpactAssessment.create({
       data: {
-        organizationId: ORG_ID,
+        organizationId: orgId,
         targetIdentityId: identityIds[0],
         scope,
         affectedIdentities,

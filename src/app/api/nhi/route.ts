@@ -1,7 +1,6 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 const ORG_ID = 'org_default';
@@ -26,8 +25,10 @@ const SAMPLE_IDENTITIES = [
 
 // GET — list identities with revocation stats
 export async function GET(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
 
   try {
     const { searchParams } = new URL(request.url);
@@ -80,8 +81,10 @@ export async function GET(request: NextRequest) {
 
 // POST — scan for identities (MVP: generate sample data)
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  if (error) return error;
+
+  const effectiveOrgId = auth?.organizationId ?? ORG_ID;
 
   try {
     const body = await request.json().catch(() => ({}));
@@ -95,13 +98,13 @@ export async function POST(request: NextRequest) {
     // Create identities (skip duplicates by identifier)
     let created = 0;
     for (const id of filtered) {
-      const exists = await db.nHIIdentity.findFirst({ where: { identifier: id.identifier, organizationId: ORG_ID } });
+      const exists = await db.nHIIdentity.findFirst({ where: { identifier: id.identifier, organizationId: effectiveOrgId } });
       if (!exists) {
         // Use a deterministic id based on identifier length for uniqueness
         try {
           await db.nHIIdentity.create({
             data: {
-              organizationId: ORG_ID,
+              organizationId: effectiveOrgId,
               identityType: id.identityType,
               identifier: id.identifier,
               displayName: id.displayName,
@@ -122,7 +125,7 @@ export async function POST(request: NextRequest) {
     // Audit log
     await db.nHIAuditLog.create({
       data: {
-        organizationId: ORG_ID,
+        organizationId: effectiveOrgId,
         action: 'identity_scan',
         resource: 'identity',
         details: JSON.stringify({ target: target || 'all', cloudProviders: cloudProviders || 'all', identitiesFound: filtered.length, created }),

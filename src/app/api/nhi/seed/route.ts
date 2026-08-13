@@ -3,8 +3,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 
 
-const ORG_ID = 'org_default';
-
 const SEED_DATA = [
   { identityType: 'aws_iam_role', identifier: 'arn:aws:iam::123456789012:role/EC2-Full-Access-Admin', displayName: 'EC2 Full Access Admin', cloudProvider: 'aws', permissions: JSON.stringify(['ec2:*', 's3:*', 'iam:PassRole', 'lambda:*']), riskLevel: 'critical', blastRadius: 342, status: 'suspect' },
   { identityType: 'aws_iam_role', identifier: 'arn:aws:iam::123456789012:role/Lambda-Execution-Role', displayName: 'Lambda Execution Role', cloudProvider: 'aws', permissions: JSON.stringify(['lambda:InvokeFunction', 'logs:*', 's3:GetObject']), riskLevel: 'normal', blastRadius: 47, status: 'active' },
@@ -23,21 +21,25 @@ const SEED_DATA = [
 ];
 
 export async function POST(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 1, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 1, windowMs: 60_000 } });
   if (error) return error;
 
   try {
+    if (!auth?.organizationId) {
+      return NextResponse.json({ error: 'Organization context required' }, { status: 403 });
+    }
+
     // Clear existing
-    await db.nHIRevocation.deleteMany({ where: { organizationId: ORG_ID } });
-    await db.nHIAuditLog.deleteMany({ where: { organizationId: ORG_ID } });
-    await db.nHIImpactAssessment.deleteMany({ where: { organizationId: ORG_ID } });
-    await db.nHIIdentity.deleteMany({ where: { organizationId: ORG_ID } });
+    await db.nHIRevocation.deleteMany({ where: { organizationId: auth.organizationId } });
+    await db.nHIAuditLog.deleteMany({ where: { organizationId: auth.organizationId } });
+    await db.nHIImpactAssessment.deleteMany({ where: { organizationId: auth.organizationId } });
+    await db.nHIIdentity.deleteMany({ where: { organizationId: auth.organizationId } });
 
     let created = 0;
     for (const data of SEED_DATA) {
       await db.nHIIdentity.create({
         data: {
-          organizationId: ORG_ID,
+          organizationId: auth.organizationId,
           identityType: data.identityType,
           identifier: data.identifier,
           displayName: data.displayName,
@@ -53,11 +55,11 @@ export async function POST(request: NextRequest) {
     }
 
     // Create some revocation history for the revoked identities
-    const revoked = await db.nHIIdentity.findMany({ where: { organizationId: ORG_ID, status: 'revoked' } });
+    const revoked = await db.nHIIdentity.findMany({ where: { organizationId: auth.organizationId, status: 'revoked' } });
     for (const ident of revoked) {
       const revocation = await db.nHIRevocation.create({
         data: {
-          organizationId: ORG_ID,
+          organizationId: auth.organizationId,
           identityId: ident.id,
           reason: 'breach_detected',
           revokedBy: 'alex.chen',
@@ -72,7 +74,7 @@ export async function POST(request: NextRequest) {
 
       await db.nHIAuditLog.create({
         data: {
-          organizationId: ORG_ID,
+          organizationId: auth.organizationId,
           revocationId: revocation.id,
           action: 'revocation_completed',
           resource: 'revocation',
@@ -85,7 +87,7 @@ export async function POST(request: NextRequest) {
     // Seed audit logs
     await db.nHIAuditLog.create({
       data: {
-        organizationId: ORG_ID,
+        organizationId: auth.organizationId,
         action: 'identity_scan',
         resource: 'identity',
         details: JSON.stringify({ source: 'automated_scan', identitiesFound: created }),

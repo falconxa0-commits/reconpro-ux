@@ -1,9 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { withProtection } from "@/lib/api-protection";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const { error } = await withProtection(request, {
+    rateLimit: { maxRequests: 60, windowMs: 60_000 },
+  });
+  if (error) return error;
+
   const startTime = Date.now();
 
-  // Check database connectivity
   let dbStatus = "ok";
   try {
     const { db } = await import("@/lib/db");
@@ -20,7 +25,6 @@ export async function GET() {
     responseTime: Date.now() - startTime,
     checks: {
       database: dbStatus,
-      memory: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
     },
   });
 }

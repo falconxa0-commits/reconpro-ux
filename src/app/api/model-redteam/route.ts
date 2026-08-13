@@ -1,8 +1,8 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
 import { safeFetch } from '@/lib/safe-fetch';
-import { sanitizeDomain, isBlockedDomain, checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+import { sanitizeDomain, isBlockedDomain, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GORGON IDENTITY — The name is the weapon
@@ -798,8 +798,8 @@ function computeThreatScore(findings: any[], injection: any[], multiTurn: any[],
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 30, 60000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  if (error) return error;
 
   try {
     const body = await request.json();

@@ -44,12 +44,11 @@ function relativeTime(date: Date | null): string {
 // ── GET ──────────────────────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
   if (error) return error;
 
   try {
-    const org = await db.organization.findFirst();
-    const orgId = org?.id;
+    const orgId = auth?.organizationId;
 
     const members = await db.member.findMany({
       where: orgId ? { organizationId: orgId } : undefined,
@@ -85,10 +84,14 @@ export async function GET(request: NextRequest) {
 // ── POST ─────────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
   if (error) return error;
 
   try {
+    if (!auth?.organizationId) {
+      return NextResponse.json({ error: 'Organization context required' }, { status: 403 });
+    }
+
     const body = await request.json();
     const { name, email, role } = body;
 
@@ -107,17 +110,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get or create org
-    let org = await db.organization.findFirst();
-    if (!org) {
-      org = await db.organization.create({
-        data: { name: 'Default Org', slug: 'default' },
-      });
-    }
-
     const member = await db.member.create({
       data: {
-        organizationId: org.id,
+        organizationId: auth.organizationId,
         name,
         email,
         role: normalizedRole,
@@ -128,7 +123,7 @@ export async function POST(request: NextRequest) {
     // Audit log
     await db.auditLog.create({
       data: {
-        organizationId: org.id,
+        organizationId: auth.organizationId,
         action: 'member_invited',
         resource: 'member',
         resourceId: member.id,
@@ -158,7 +153,7 @@ export async function POST(request: NextRequest) {
 // ── PATCH ────────────────────────────────────────────────────────────────────
 
 export async function PATCH(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -186,6 +181,10 @@ export async function PATCH(request: NextRequest) {
 
     const existing = await db.member.findUnique({ where: { id } });
     if (!existing) {
+      return NextResponse.json({ error: 'Member not found' }, { status: 404 });
+    }
+
+    if (existing.organizationId !== auth?.organizationId) {
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });
     }
 
@@ -232,7 +231,7 @@ export async function PATCH(request: NextRequest) {
 // ── DELETE ───────────────────────────────────────────────────────────────────
 
 export async function DELETE(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
   try {
@@ -245,6 +244,10 @@ export async function DELETE(request: NextRequest) {
 
     const existing = await db.member.findUnique({ where: { id } });
     if (!existing) {
+      return NextResponse.json({ error: 'Member not found' }, { status: 404 });
+    }
+
+    if (existing.organizationId !== auth?.organizationId) {
       return NextResponse.json({ error: 'Member not found' }, { status: 404 });
     }
 
