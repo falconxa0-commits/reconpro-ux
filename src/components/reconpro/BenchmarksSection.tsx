@@ -52,7 +52,7 @@ export default function BenchmarksSection() {
               >
                 {metric.value}
               </div>
-              <div className="text-xs text-white/30">{metric.label}</div>
+              <div className="text-xs text-white/50">{metric.label}</div>
             </div>
           ))}
         </motion.div>
@@ -124,7 +124,7 @@ export default function BenchmarksSection() {
           initial={{ opacity: 0 }}
           animate={isInView ? { opacity: 1 } : {}}
           transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] as const }}
-          className="text-center text-[11px] text-white/30 mt-6"
+          className="text-center text-[11px] text-white/50 mt-6"
         >
           Benchmarked on equivalent hardware. Results may vary. See our methodology for details.
         </motion.p>

@@ -132,7 +132,7 @@ export function FeaturesSection() {
                     {feature.highlights.map((item) => (
                       <li
                         key={item}
-                        className="flex items-center gap-2 text-xs text-white/20"
+                        className="flex items-center gap-2 text-xs text-white/50"
                       >
                         <Check className="h-3 w-3 shrink-0 text-white/15" strokeWidth={2} />
                         <span>{item}</span>

@@ -121,7 +121,7 @@ export default function CommunitySection() {
                 <p className="mt-1.5 text-sm leading-relaxed text-white/40">
                   {card.description}
                 </p>
-                <span className="mt-4 inline-block text-xs text-white/20 transition-colors duration-200 group-hover:text-white/50">
+                <span className="mt-4 inline-block text-xs text-white/50 transition-colors duration-200 group-hover:text-white/50">
                   Learn more &rarr;
                 </span>
               </a>

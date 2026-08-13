@@ -412,7 +412,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
           </motion.div>
 
           {/* Currency note */}
-          <motion.p variants={itemVariants} className="text-xs text-white/30 mb-2">
+          <motion.p variants={itemVariants} className="text-xs text-white/50 mb-2">
             Currency: USD ($)
           </motion.p>
         </motion.div>
@@ -495,7 +495,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                               <span className="text-sm text-white/40 ml-1">/month</span>
                               {isAnnual && plan.monthlyPrice !== 0 && plan.annualPrice !== plan.monthlyPrice && (
                                 <div className="mt-1">
-                                  <span className="text-xs text-white/30 line-through">
+                                  <span className="text-xs text-white/50 line-through">
                                     ${plan.monthlyPrice}/mo
                                   </span>
                                   <span className="text-xs text-[#00ff88] ml-1">
@@ -654,7 +654,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
           >
             {/* Company Logos */}
             <motion.div variants={itemVariants} className="text-center mb-10">
-              <p className="text-sm text-white/30 uppercase tracking-widest font-medium mb-8">
+              <p className="text-sm text-white/50 uppercase tracking-widest font-medium mb-8">
                 Trusted by security teams at
               </p>
               <div className="flex flex-wrap items-center justify-center gap-6 sm:gap-10 lg:gap-14">
@@ -774,7 +774,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                 ].map((stat, idx) => (
                   <div key={idx} className="text-center">
                     <div className="text-lg font-bold text-[#00ff88]">{stat.value}</div>
-                    <div className="text-[10px] text-white/30 uppercase tracking-wider mt-0.5">{stat.label}</div>
+                    <div className="text-[10px] text-white/50 uppercase tracking-wider mt-0.5">{stat.label}</div>
                   </div>
                 ))}
               </div>

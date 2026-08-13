@@ -40,7 +40,7 @@ export default function Error({
         <p className="text-sm text-white/40 mb-8 leading-relaxed">
           An unexpected error occurred. Our team has been notified.
           {error.digest && (
-            <span className="block mt-2 text-white/20 font-mono text-xs">
+            <span className="block mt-2 text-white/50 font-mono text-xs">
               Error ID: {error.digest}
             </span>
           )}

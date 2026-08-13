@@ -106,7 +106,7 @@ export function ModulesSection() {
 
         {/* ── Summary Stats ─────────────────────────────── */}
         <div
-          className={`mb-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/30 transition-all duration-700 delay-100 ${
+          className={`mb-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/50 transition-all duration-700 delay-100 ${
             isInView
               ? "translate-y-0 opacity-100"
               : "translate-y-4 opacity-0"
@@ -281,7 +281,7 @@ function ModuleCard({
         {module.capabilities.map((cap) => (
           <li
             key={cap}
-            className="flex items-start gap-2 text-xs text-white/30"
+            className="flex items-start gap-2 text-xs text-white/50"
           >
             <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-white/20" />
             <span>{cap}</span>

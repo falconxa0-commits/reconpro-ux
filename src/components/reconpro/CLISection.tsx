@@ -189,7 +189,7 @@ export default function CLISection() {
                         </span>
                         <p
                           className={`mt-1 text-sm truncate ${
-                            isActive ? "text-white/30" : "text-white/15 group-hover:text-white/25"
+                            isActive ? "text-white/50" : "text-white/15 group-hover:text-white/25"
                           } transition-colors`}
                         >
                           {cmd.description}

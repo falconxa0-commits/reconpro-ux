@@ -5,7 +5,7 @@ export default function Loading() {
         <div className="relative">
           <div className="w-8 h-8 rounded-full border-2 border-white/10 border-t-white/40 animate-spin" />
         </div>
-        <span className="text-xs text-white/20">Loading...</span>
+        <span className="text-xs text-white/50">Loading...</span>
       </div>
     </div>
   );
