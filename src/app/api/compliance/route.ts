@@ -343,22 +343,33 @@ export async function GET(request: NextRequest) {
       }
     );
 
-    // ── Write ComplianceReport records for audit trail ────────────────
-    const orgId = scanId
-      ? (await db.scan.findUnique({ where: { id: scanId } }))?.id ?? 'default'
-      : 'default';
-
-    for (const fw of frameworks) {
-      await db.complianceReport.create({
-        data: {
-          organizationId: orgId,
-          framework: fw.id,
-          scanId: scanId ?? null,
-          overallScore: fw.score,
-          status: fw.status,
-          controls: JSON.stringify(fw.controls),
-        },
-      });
+    // ── Write ComplianceReport records only when tied to a specific scan ──
+    // (prevents DB bloat from repeated GET calls without a scan)
+    if (scanId) {
+      const scanRecord = await db.scan.findUnique({ where: { id: scanId } });
+      if (scanRecord) {
+        for (const fw of frameworks) {
+          await db.complianceReport.upsert({
+            where: {
+              id: `${scanId}-${fw.id}`,
+            },
+            create: {
+              id: `${scanId}-${fw.id}`,
+              organizationId: scanRecord.targetId ?? 'default',
+              framework: fw.id,
+              scanId: scanId,
+              overallScore: fw.score,
+              status: fw.status,
+              controls: JSON.stringify(fw.controls),
+            },
+            update: {
+              overallScore: fw.score,
+              status: fw.status,
+              controls: JSON.stringify(fw.controls),
+            },
+          });
+        }
+      }
     }
 
     // ── Return response ───────────────────────────────────────────────

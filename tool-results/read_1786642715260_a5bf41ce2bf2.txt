@@ -1,0 +1,647 @@
+   600→    if (lines.length < 2) return findings;
+   601→    const urls = lines.slice(1).map(l => {
+   602→      try { return JSON.parse(l)[0]; } catch { return null; }
+   603→    }).filter(Boolean);
+   604→
+   605→    // Extract unique paths
+   606→    const paths = new Set<string>();
+   607→    const sensitivePaths: string[] = [];
+   608→    const sensitivePatterns = [/\/admin/i, /\/api\//i, /\/debug/i, /\/test/i, /\/staging/i, /\/backup/i, /\/config/i, /\/env/i, /\/\.git/i, /\/\.svn/i, /\/\.env/i, /\/wp-/i, /\/phpmyadmin/i, /\/server-status/i, /\/actuator/i, /\/console/i, /\/graphql/i, /\/swagger/i, /\/\.well-known\//i];
+   609→    for (const url of urls) {
+   610→      try {
+   611→        const u = new URL(url);
+   612→        const p = u.pathname;
+   613→        paths.add(p);
+   614→        if (sensitivePatterns.some(pat => pat.test(p))) sensitivePaths.push(p);
+   615→      } catch {}
+   616→    }
+   617→
+   618→    if (paths.size > 0) {
+   619→      findings.push({
+   620→        title: `Wayback Machine: ${paths.size} Historical URL(s) Archived`,
+   621→        severity: 'info', category: 'osint',
+   622→        description: `Web Archive reveals ${paths.size} unique paths for ${domain}. Historical pages often expose old API endpoints, admin panels, or backup files still on the server.`,
+   623→        evidence: `Sample paths: ${Array.from(paths).slice(0, 15).join(', ')}`,
+   624→        asset: domain,
+   625→      });
+   626→    }
+   627→
+   628→    if (sensitivePaths.length > 0) {
+   629→      const unique = [...new Set(sensitivePaths)].sort();
+   630→      findings.push({
+   631→        title: `Wayback Machine: ${unique.length} Sensitive Path(s) Discovered`,
+   632→        severity: 'high', category: 'vulnerability',
+   633→        description: `Historical archives expose ${unique.length} sensitive paths that may still exist on the live server. These include admin panels, API endpoints, debug interfaces, config files, or version control directories.`,
+   634→        evidence: `Sensitive: ${unique.slice(0, 20).join(', ')}`,
+   635→        asset: domain,
+   636→      });
+   637→    }
+   638→  } catch { /* Wayback may fail — non-critical */ }
+   639→  return findings;
+   640→}
+   641→
+   642→// ═══════════════════════════════════════════════════════════════════════
+   643→// 8. REVERSE DNS + ASN INTELLIGENCE — map IPs to networks
+   644→// ═══════════════════════════════════════════════════════════════════════
+   645→async function reconReverseDNS(ips: string[]): Promise<Finding[]> {
+   646→  const findings: Finding[] = [];
+   647→  const uniqueIPs = [...new Set(ips)].slice(0, 10);
+   648→  const rdnsResults = await Promise.all(
+   649→    uniqueIPs.map(async (ip) => {
+   650→      const ptr = await reverseDNS(ip);
+   651→      return { ip, ptr: ptr || '' };
+   652→    })
+   653→  );
+   654→  for (const { ip, ptr } of rdnsResults) {
+   655→    if (ptr) {
+   656→      findings.push({
+   657→        title: `Reverse DNS: ${ip} → ${ptr}`,
+   658→        severity: 'info', category: 'osint',
+   659→        description: `IP ${ip} resolves to hostname ${ptr} via reverse DNS. This reveals the hosting provider, CDN edge, or internal network naming convention.`,
+   660→        evidence: `PTR: ${ptr}`, asset: ip,
+   661→      });
+   662→    }
+   663→  }
+   664→  // ASN lookup via ipinfo.io (free tier, no auth needed)
+   665→  if (uniqueIPs[0]) {
+   666→    try {
+   667→      const asnResponse = await safeFetch(`https://ipinfo.io/${uniqueIPs[0]}/json`, { timeout: 10000, skipSSRFCheck: true });
+   668→      if (asnResponse.ok && asnResponse.text) {
+   669→        const info = JSON.parse(asnResponse.text);
+   670→        if (info.org || info.asn) {
+   671→          findings.push({
+   672→            title: `ASN Intelligence: ${info.org || info.asn}`,
+   673→            severity: 'info', category: 'osint',
+   674→            description: `Primary IP ${uniqueIPs[0]} belongs to ${info.org || info.asn}. Location: ${info.city || '?'}, ${info.region || '?'}, ${info.country || '?'}. ${info.hostname ? `Hostname: ${info.hostname}.` : ''}`,
+   675→            evidence: `ASN: ${info.asn || '?'}, Org: ${info.org || '?'}, IP: ${uniqueIPs[0]}, Loc: ${info.city || '?'}/${info.country || '?'}`,
+   676→            asset: uniqueIPs[0],
+   677→          });
+   678→        }
+   679→      }
+   680→    } catch {}
+   681→  }
+   682→  return findings;
+   683→}
+   684→
+   685→// ═══════════════════════════════════════════════════════════════════════
+   686→// 9. DNS ZONE TRANSFER (AXFR) ATTEMPTS — try all NS servers
+   687→// ═══════════════════════════════════════════════════════════════════════
+   688→async function attemptZoneTransfer(domain: string): Promise<Finding[]> {
+   689→  const findings: Finding[] = [];
+   690→  const nsOut = await digAnswer(domain, 'NS');
+   691→  const nsServers: string[] = [];
+   692→  for (const line of nsOut.split('\n')) {
+   693→    const m = line.match(/NS\s+(\S+)/);
+   694→    if (m) nsServers.push(m[1].replace(/\.$/, ''));
+   695→  }
+   696→  if (nsServers.length === 0) return findings;
+   697→
+   698→  // Zone Transfer (AXFR) — native dns.promises does not support AXFR queries
+   699→  // AXFR requires a specialized DNS client; skipping this check
+   700→  for (const ns of nsServers) {
+   701→    findings.push({
+   702→      title: `DNS Zone Transfer Check: ${ns}`,
+   703→      severity: 'info', category: 'dns',
+   704→      description: `AXFR query requires a specialized DNS client not available in the native resolver. Zone transfer checks against ${ns} were skipped.`,
+   705→      evidence: `NS: ${ns} — AXFR check skipped (native resolver limitation)`,
+   706→      asset: domain,
+   707→    });
+   708→  }
+   709→
+   710→  // SOA record analysis
+   711→  const soaOut = await digAnswer(domain, 'SOA');
+   712→  if (soaOut) {
+   713→    findings.push({
+   714→      title: 'DNS SOA Record Analyzed',
+   715→      severity: 'info', category: 'dns',
+   716→      description: `SOA record reveals zone management details for ${domain}.`,
+   717→      evidence: soaOut.split('\n').filter(l => l.includes('SOA')).join('; '),
+   718→      asset: domain,
+   719→    });
+   720→  }
+   721→  return findings;
+   722→}
+   723→
+   724→// ═══════════════════════════════════════════════════════════════════════
+   725→// 10. ROBOTS.TXT + SITEMAP.XML — hidden paths, API endpoints
+   726→// ═══════════════════════════════════════════════════════════════════════
+   727→async function analyzeRobotsAndSitemap(domain: string): Promise<Finding[]> {
+   728→  const findings: Finding[] = [];
+   729→  const [robotsResult, sitemapResult] = await Promise.all([
+   730→    safeFetch(`https://${domain}/robots.txt`, { timeout: 12000 }).catch(() => safeFetch(`http://${domain}/robots.txt`, { timeout: 12000 })),
+   731→    safeFetch(`https://${domain}/sitemap.xml`, { timeout: 12000 }).catch(() => safeFetch(`http://${domain}/sitemap.xml`, { timeout: 12000 })),
+   732→  ]);
+   733→  const robots = robotsResult?.text || '';
+   734→  const sitemap = sitemapResult?.text || '';
+   735→
+   736→  // Robots.txt
+   737→  if (robots && robots.length > 10) {
+   738→    const disallowed = robots.split('\n').filter(l => l.startsWith('Disallow:')).map(l => l.replace('Disallow:', '').trim()).filter(Boolean);
+   739→    const sensitive = disallowed.filter(d => /admin|api|debug|config|backup|\.env|secret|internal|private|tmp|upload|staging/i.test(d));
+   740→    if (sensitive.length > 0) {
+   741→      findings.push({
+   742→        title: `robots.txt: ${sensitive.length} Sensitive Disallowed Path(s)`,
+   743→        severity: 'high', category: 'vulnerability',
+   744→        description: `robots.txt reveals ${sensitive.length} sensitive paths that the site asks crawlers not to access. These paths likely exist and may be accessible without authentication: ${sensitive.join(', ')}`,
+   745→        evidence: `Disallow: ${sensitive.join(', ')}`, asset: `${domain}/robots.txt`,
+   746→      });
+   747→    } else if (disallowed.length > 0) {
+   748→      findings.push({
+   749→        title: `robots.txt: ${disallowed.length} Disallowed Path(s) Found`,
+   750→        severity: 'info', category: 'osint',
+   751→        description: `robots.txt defines ${disallowed.length} restricted paths: ${disallowed.slice(0, 10).join(', ')}`,
+   752→        evidence: `Disallow: ${disallowed.slice(0, 10).join(', ')}`, asset: `${domain}/robots.txt`,
+   753→      });
+   754→    }
+   755→    // Check for sitemap reference
+   756→    if (robots.includes('Sitemap:')) {
+   757→      findings.push({
+   758→        title: 'robots.txt References Sitemap', severity: 'info', category: 'osint',
+   759→        description: 'Sitemap URL found in robots.txt — reveals site structure.',
+   760→        evidence: robots.split('\n').find(l => l.startsWith('Sitemap:')) || '', asset: `${domain}/robots.txt`,
+   761→      });
+   762→    }
+   763→  } else if (!robots || robots.length <= 10) {
+   764→    findings.push({
+   765→      title: 'robots.txt Not Found or Empty', severity: 'low', category: 'osint',
+   766→      description: 'No robots.txt file. This means all pages are crawlable by default, including any admin/debug paths.',
+   767→      evidence: 'robots.txt returned empty or 404', asset: `${domain}/robots.txt`,
+   768→    });
+   769→  }
+   770→
+   771→  // Sitemap.xml
+   772→  if (sitemap && sitemap.includes('<url')) {
+   773→    const urls = (sitemap.match(/<loc>([^<]+)<\/loc>/g) || []).map(u => u.replace(/<\/?loc>/g, ''));
+   774→    findings.push({
+   775→      title: `sitemap.xml: ${urls.length} URL(s) Exposed`,
+   776→      severity: urls.length > 100 ? 'medium' : 'info', category: 'osint',
+   777→      description: `sitemap.xml exposes ${urls.length} URLs revealing the full site structure. This aids attackers in mapping the application for targeted attacks.`,
+   778→      evidence: `URLs: ${urls.slice(0, 10).join(', ')}${urls.length > 10 ? ` ... +${urls.length - 10} more` : ''}`,
+   779→      asset: `${domain}/sitemap.xml`,
+   780→    });
+   781→  }
+   782→  return findings;
+   783→}
+   784→
+   785→// ═══════════════════════════════════════════════════════════════════════
+   786→// 11. JAVASCRIPT FILE ANALYSIS — extract API endpoints, secrets, keys
+   787→// ═══════════════════════════════════════════════════════════════════════
+   788→async function analyzeJSFiles(domain: string): Promise<Finding[]> {
+   789→  const findings: Finding[] = [];
+   790→  try {
+   791→    // Fetch the main page and extract JS file URLs
+   792→    const pageResult = await safeFetch(`https://${domain}`, { timeout: 15000 }).catch(() => safeFetch(`http://${domain}`, { timeout: 15000 }));
+   793→    const page = pageResult?.text || '';
+   794→    if (!page || page.length < 100) return findings;
+   795→
+   796→    const jsUrls = [...new Set(
+   797→      (page.match(/src=["']([^"']+\.js[^"']*)/g) || [])
+   798→        .map(m => m.replace(/src=["']/, '').replace(/["']$/, ''))
+   799→        .filter(u => !u.startsWith('data:') && !u.includes('chrome-extension'))
+   800→    )].slice(0, 8);
+   801→
+   802→    if (jsUrls.length === 0) return findings;
+   803→
+   804→    // Fetch and analyze each JS file
+   805→    const jsContents = await Promise.all(
+   806→      jsUrls.map(async (url) => {
+   807→        const fullUrl = url.startsWith('http') ? url : `https://${domain}${url}`;
+   808→        const result = await safeFetch(fullUrl, { timeout: 12000 });
+   809→        return result?.text || '';
+   810→      })
+   811→    );
+   812→
+   813→    const allJs = jsContents.join('\n');
+   814→    if (allJs.length < 50) return findings;
+   815→
+   816→    // Extract API endpoints
+   817→    const apiEndpoints = [...new Set(
+   818→      (allJs.match(/["'](\/api\/[^"']+)["']/g) || [])
+   819→        .map(m => m.replace(/["']/g, ''))
+   820→    )];
+   821→    if (apiEndpoints.length > 0) {
+   822→      findings.push({
+   823→        title: `JavaScript: ${apiEndpoints.length} API Endpoint(s) Exposed`,
+   824→        severity: 'high', category: 'vulnerability',
+   825→        description: `JavaScript files expose ${apiEndpoints.length} API endpoints. Attackers can reverse-engineer the API surface, craft targeted requests, and test for authentication bypass or IDOR vulnerabilities.`,
+   826→        evidence: `Endpoints: ${apiEndpoints.slice(0, 20).join(', ')}`,
+   827→        asset: domain,
+   828→      });
+   829→    }
+   830→
+   831→    // Check for secrets/keys/tokens
+   832→    const secretPatterns = [
+   833→      { name: 'API Key', regex: /["'](api[_-]?key|apikey)["']\s*[:=]\s*["']([^"']{8,})["']/gi },
+   834→      { name: 'Auth Token', regex: /["'](auth[_-]?token|bearer|access[_-]?token)["']\s*[:=]\s*["']([^"']{8,})["']/gi },
+   835→      { name: 'AWS Key', regex: /AKIA[0-9A-Z]{16}/g },
+   836→      { name: 'Firebase', regex: /firebase[a-zA-Z]*\.appspot\.com/g },
+   837→      { name: 'Stripe Key', regex: /pk_(test|live)_[a-zA-Z0-9]{24,}/g },
+   838→      { name: 'Generic Secret', regex: /["'](secret|password|token|private[_-]?key)["']\s*[:=]\s*["']([^"']{8,})["']/gi },
+   839→    ];
+   840→    const secrets: string[] = [];
+   841→    for (const { name, regex } of secretPatterns) {
+   842→      const matches = allJs.match(regex);
+   843→      if (matches) secrets.push(...matches.map(m => `[${name}] ${m.substring(0, 60)}`));
+   844→    }
+   845→    if (secrets.length > 0) {
+   846→      findings.push({
+   847→        title: `CRITICAL: ${secrets.length} Secret(s)/Key(s) Found in JavaScript`,
+   848→        severity: 'critical', category: 'vulnerability',
+   849→        description: `JavaScript files contain ${secrets.length} hardcoded secrets, API keys, or tokens. These can be extracted by anyone viewing the page source and used to access internal services, databases, or third-party APIs.`,
+   850→        evidence: `Secrets: ${secrets.slice(0, 5).join(' | ')}`,
+   851→        asset: domain,
+   852→      });
+   853→    }
+   854→
+   855→    // Extract internal URLs/paths
+   856→    const internalPaths = [...new Set(
+   857→      (allJs.match(/["'](\/[a-zA-Z0-9_\-\/]+(?:admin|dashboard|console|manage|debug|internal|private|staging)[^"']*)["']/gi) || [])
+   858→        .map(m => m.replace(/["']/g, ''))
+   859→    )];
+   860→    if (internalPaths.length > 0) {
+   861→      findings.push({
+   862→        title: `JavaScript: ${internalPaths.length} Internal Path(s) Referenced`,
+   863→        severity: 'medium', category: 'osint',
+   864→        description: `JavaScript files reference ${internalPaths.length} internal/sensitive paths. These may be admin interfaces, debug endpoints, or internal tools.`,
+   865→        evidence: `Paths: ${internalPaths.slice(0, 15).join(', ')}`,
+   866→        asset: domain,
+   867→      });
+   868→    }
+   869→
+   870→    // Count JS files and total size
+   871→    findings.push({
+   872→      title: `JavaScript Analysis: ${jsUrls.length} File(s), ${Math.round(allJs.length / 1024)}KB Analyzed`,
+   873→      severity: 'info', category: 'technology',
+   874→      description: `${jsUrls.length} JavaScript files totaling ~${Math.round(allJs.length / 1024)}KB were downloaded and analyzed for API endpoints, secrets, and internal paths.`,
+   875→      evidence: `JS files: ${jsUrls.slice(0, 5).join(', ')}`,
+   876→      asset: domain,
+   877→    });
+   878→  } catch {}
+   879→  return findings;
+   880→}
+   881→
+   882→// ═══════════════════════════════════════════════════════════════════════
+   883→// 12. WAF/SECURITY CONTROL DETECTION — fingerprint protection layers
+   884→// ═══════════════════════════════════════════════════════════════════════
+   885→async function detectWAF(domain: string): Promise<Finding[]> {
+   886→  const findings: Finding[] = [];
+   887→  // Trigger WAF with suspicious paths and analyze response
+   888→  const [normalResult, attackResult] = await Promise.all([
+   889→    safeFetch(`https://${domain}/`, { timeout: 10000, method: 'HEAD' }),
+   890→    safeFetch(`https://${domain}/../../../etc/passwd`, { timeout: 10000, method: 'HEAD' }),
+   891→  ]);
+   892→  const normalResp = normalResult.headers ? JSON.stringify(normalResult.headers) : '';
+   893→  const attackResp = attackResult.headers ? JSON.stringify(attackResult.headers) + ` status:${attackResult.status}` : '';
+   894→
+   895→  const wafSignatures: Record<string, string[]> = {
+   896→    'Cloudflare': ['cf-ray', 'cf-cache-status', '__cf_bm', 'cloudflare'],
+   897→    'AWS WAF': ['x-amzn-requestid', 'awselb'],
+   898→    'Akamai': ['akamai', 'x-akamai'],
+   899→    'Sucuri': ['x-sucuri-id', 'sucuri'],
+   900→    'Imperva': ['x-iinfo', 'incap_ses'],
+   901→    'Fastly': ['x-fastly-request-id', 'x-served-by'],
+   902→    'Varnish': ['x-varnish', 'x-hits'],
+   903→    'ModSecurity': ['mod_security', 'modsecurity'],
+   904→    'F5 BIG-IP': ['bigip', 'f5'],
+   905→  };
+   906→
+   907→  const detectedWAFs: string[] = [];
+   908→  for (const [waf, sigs] of Object.entries(wafSignatures)) {
+   909→    const combined = (normalResp + attackResp).toLowerCase();
+   910→    if (sigs.some(s => combined.includes(s.toLowerCase()))) detectedWAFs.push(waf);
+   911→  }
+   912→
+   913→  // Check if attack path was blocked differently
+   914→  const normalStatus = `HTTP ${normalResult.status}`;
+   915→  const attackStatus = `HTTP ${attackResult.status}`;
+   916→  const blocked = attackResult.status === 403 || attackResult.status === 429;
+   917→
+   918→  if (detectedWAFs.length > 0) {
+   919→    const techList = detectedWAFs.join(', ');
+   920→    findings.push({
+   921→      title: `WAF Detected: ${techList}`,
+   922→      severity: 'info', category: 'security',
+   923→      description: `${techList} detected protecting ${domain}. WAF presence indicates active security posture but also reveals the defense layer for targeted evasion research.`,
+   924→      evidence: `Signatures found: ${detectedWAFs.map(w => wafSignatures[w].join(', ')).join('; ')}`,
+   925→      asset: domain,
+   926→    });
+   927→  }
+   928→
+   929→  if (blocked) {
+   930→    findings.push({
+   931→      title: 'Path Traversal Attempt Blocked',
+   932→      severity: 'info', category: 'security',
+   933→      description: `Directory traversal attempt (../../../etc/passwd) was blocked with ${attackStatus}. This indicates active input validation or WAF protection.`,
+   934→      evidence: `Attack response: ${attackStatus} | Normal: ${normalStatus}`,
+   935→      asset: domain,
+   936→    });
+   937→  } else if (attackResp.includes('200') || attackResp.includes('301')) {
+   938→    findings.push({
+   939→      title: 'Path Traversal Attempt NOT Blocked',
+   940→      severity: 'high', category: 'vulnerability',
+   941→      description: `Directory traversal attempt (../../../etc/passwd) returned ${attackStatus} — the request was NOT blocked. This may indicate missing input validation, no WAF, or a misconfigured security layer.`,
+   942→      evidence: `Attack response: ${attackStatus} | Normal: ${normalStatus}`,
+   943→      asset: domain,
+   944→    });
+   945→  }
+   946→
+   947→  // Rate limit detection
+   948→  const burst = await Promise.all([
+   949→    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+   950→    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+   951→    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+   952→    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+   953→    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+   954→  ]);
+   955→  const rateLimited = burst.some(r => r.status === 429);
+   956→  if (!rateLimited) {
+   957→    findings.push({
+   958→      title: 'No Rate Limiting Detected',
+   959→      severity: 'medium', category: 'vulnerability',
+   960→      description: `5 rapid requests returned no rate limiting (429). The server accepts unlimited requests, making it vulnerable to brute force, credential stuffing, and DoS attacks.`,
+   961→      evidence: '5 rapid requests: all returned non-429 status',
+   962→      asset: domain,
+   963→    });
+   964→  } else {
+   965→    findings.push({
+   966→      title: 'Rate Limiting Active', severity: 'info', category: 'security',
+   967→      description: 'Rate limiting detected on rapid requests.', evidence: '429 response received on burst', asset: domain,
+   968→    });
+   969→  }
+   970→  return findings;
+   971→}
+   972→
+   973→// ═══════════════════════════════════════════════════════════════════════
+   974→// 13. TECHNOLOGY FINGERPRINTING — deep Wappalyzer-style detection
+   975→// ═══════════════════════════════════════════════════════════════════════
+   976→async function deepFingerprint(domain: string, headers: string, pageContent: string): Promise<Finding[]> {
+   977→  const findings: Finding[] = [];
+   978→  const techs: string[] = [];
+   979→  const h = headers.toLowerCase();
+   980→  const p = (pageContent || '').toLowerCase();
+   981→
+   982→  // Server tech
+   983→  const serverMap: Record<string, string> = {
+   984→    'nginx': 'Nginx', 'apache': 'Apache HTTPD', 'express': 'Express.js',
+   985→    'cloudflare': 'Cloudflare', 'vercel': 'Vercel', 'netlify': 'Netlify',
+   986→    'awselb': 'AWS ELB', 'amazon': 'Amazon Web Services',
+   987→    'gws': 'Google Web Server', 'gse': 'Google Search Appliance',
+   988→    'microsoft-iis': 'Microsoft IIS', 'tomcat': 'Apache Tomcat',
+   989→    'openresty': 'OpenResty', 'caddy': 'Caddy',
+   990→  };
+   991→  for (const [sig, name] of Object.entries(serverMap)) {
+   992→    if (h.includes(sig) && !techs.includes(name)) techs.push(name);
+   993→  }
+   994→
+   995→  // Framework detection from page content
+   996→  const frameworkSigs: Record<string, string[]> = {
+   997→    'React': ['react', 'reactjs', '__next', '_next/static', 'next/router', 'data-reactroot'],
+   998→    'Next.js': ['__next', '_next/static', '_next/image', 'next/link', 'next-route-announcer'],
+   999→    'Vue.js': ['vue', 'v-cloak', 'data-v-', 'vue-router', 'vuetify'],
+  1000→    'Angular': ['ng-version', 'ng-app', 'angular', 'ng-controller'],
+  1001→    'Svelte': ['svelte', '__svelte'],
+  1002→    'jQuery': ['jquery', 'jquery.min.js'],
+  1003→    'Bootstrap': ['bootstrap', 'bootstrap.min.css'],
+  1004→    'Tailwind CSS': ['tailwind'],
+  1005→    'WordPress': ['wp-content', 'wp-includes', 'wordpress'],
+  1006→    'Drupal': ['drupal', 'sites/default'],
+  1007→    'Shopify': ['shopify', 'cdn.shopify.com'],
+  1008→    'Magento': ['magento', 'mage-cache'],
+  1009→    'Laravel': ['laravel', 'laravel_session', 'xsrf-token'],
+  1010→    'Django': ['csrfmiddlewaretoken', 'django'],
+  1011→    'Ruby on Rails': ['csrf-token', 'turbolinks', 'rails'],
+  1012→    'PHP': ['.php', 'phpsessid'],
+  1013→    'ASP.NET': ['asp.net', '__viewstate', '__requestverificationtoken'],
+  1014→  };
+  1015→  for (const [name, sigs] of Object.entries(frameworkSigs)) {
+  1016→    if (sigs.some(s => p.includes(s)) && !techs.includes(name)) techs.push(name);
+  1017→  }
+  1018→
+  1019→  // Analytics
+  1020→  const analyticsSigs: Record<string, string[]> = {
+  1021→    'Google Analytics': ['google-analytics.com', 'gtag', 'ga.js', 'analytics.js'],
+  1022→    'Google Tag Manager': ['googletagmanager.com', 'gtm.js'],
+  1023→    'Hotjar': ['hotjar.com', 'hjSdk'],
+  1024→    'Mixpanel': ['mixpanel', 'mp.page'],
+  1025→    'Segment': ['segment.com', 'analytics.js'],
+  1026→    'Plausible': ['plausible.io'],
+  1027→    'Fathom': ['fathomanalytics.com'],
+  1028→  };
+  1029→  for (const [name, sigs] of Object.entries(analyticsSigs)) {
+  1030→    if (sigs.some(s => p.includes(s)) && !techs.includes(name)) techs.push(name);
+  1031→  }
+  1032→
+  1033→  if (techs.length > 0) {
+  1034→    for (const tech of techs) {
+  1035→      findings.push({
+  1036→        title: `Technology Fingerprinted: ${tech}`,
+  1037→        severity: 'info', category: 'technology',
+  1038→        description: `${tech} detected on ${domain} via deep header, HTML, and JavaScript fingerprinting.`,
+  1039→        evidence: 'Deep fingerprinting (headers + page content analysis)',
+  1040→        asset: domain,
+  1041→      });
+  1042→    }
+  1043→  }
+  1044→  return findings;
+  1045→}
+  1046→
+  1047→// ═══════════════════════════════════════════════════════════════════════
+  1048→// 14. EMAIL HARVESTING — WHOIS, website, JS, DNS
+  1049→// ═══════════════════════════════════════════════════════════════════════
+  1050→async function harvestEmails(domain: string, pageContent: string): Promise<Finding[]> {
+  1051→  const findings: Finding[] = [];
+  1052→  const emails = new Set<string>();
+  1053→
+  1054→  // From page content
+  1055→  const escapedDomain = domain.replace(/\./g, '\\.');
+  1056→  const emailRegex = new RegExp(`[a-zA-Z0-9._%+-]+@${escapedDomain}`, 'gi');
+  1057→  const pageEmails = (pageContent || '').match(emailRegex) || [];
+  1058→  pageEmails.forEach(e => emails.add(e.toLowerCase()));
+  1059→
+  1060→  // From MX records (mail server hostnames often reveal email provider)
+  1061→  const mxRecords = await digShort(domain, 'MX');
+  1062→  const mxHosts = mxRecords.map(r => {
+  1063→    const m = r.match(/\S+/);
+  1064→    return m ? m[0] : r;
+  1065→  });
+  1066→
+  1067→  if (emails.size > 0) {
+  1068→    findings.push({
+  1069→      title: `${emails.size} Email Address(es) Harvested`,
+  1070→      severity: 'medium', category: 'osint',
+  1071→      description: `${emails.size} email address(es) found on ${domain} via page content analysis. These can be used for social engineering, credential stuffing, or targeted phishing campaigns.`,
+  1072→      evidence: `Emails: ${Array.from(emails).slice(0, 10).join(', ')}`,
+  1073→      asset: domain,
+  1074→    });
+  1075→  }
+  1076→
+  1077→  if (mxHosts.length > 0) {
+  1078→    findings.push({
+  1079→      title: `Email Infrastructure: ${mxHosts.join(', ')}`,
+  1080→      severity: 'info', category: 'osint',
+  1081→      description: `Mail routed through: ${mxHosts.join(', ')}. This reveals the email provider (Google Workspace, Microsoft 365, self-hosted, etc.) and can be targeted for email-based attacks.`,
+  1082→      evidence: `MX: ${mxHosts.join(', ')}`,
+  1083→      asset: domain,
+  1084→    });
+  1085→  }
+  1086→  return findings;
+  1087→}
+  1088→
+  1089→// ═══════════════════════════════════════════════════════════════════════
+  1090→// MAIN SCAN ENDPOINT
+  1091→// ═══════════════════════════════════════════════════════════════════════
+  1092→export async function POST(request: NextRequest) {
+  1093→  const { error: protErr, domain: protDomain } = await withProtection(request.clone() as unknown as NextRequest, { validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
+  1094→  if (protErr) return protErr;
+  1095→
+  1096→  try {
+  1097→    const body = await request.json();
+  1098→    const { scanType } = body;
+  1099→
+  1100→    if (!protDomain) {
+  1101→      return NextResponse.json({ error: 'Domain is required' }, { status: 400 });
+  1102→    }
+  1103→
+  1104→    const cleanDomain = protDomain;
+  1105→
+  1106→    // Pre-check: domain must resolve
+  1107→    const preCheckIp = await nativeResolveIP(cleanDomain);
+  1108→    if (!preCheckIp) {
+  1109→      return NextResponse.json({ error: `Domain "${cleanDomain}" does not resolve. Check the name and try again.` }, { status: 400 });
+  1110→    }
+  1111→
+  1112→    // SSRF protection: block scans that resolve to private IPs
+  1113→    if (isPrivateIP(preCheckIp)) {
+  1114→      return NextResponse.json({ error: 'Domain resolves to a private or reserved IP address. Scanning is not permitted.' }, { status: 403 });
+  1115→    }
+  1116→
+  1117→    // DB: target + scan record
+  1118→    let target = await db.scanTarget.findFirst({ where: { domain: cleanDomain } });
+  1119→    if (!target) {
+  1120→      target = await db.scanTarget.create({ data: { domain: cleanDomain, ip: preCheckIp } });
+  1121→    } else {
+  1122→      await db.scanTarget.update({ where: { id: target.id }, data: { ip: preCheckIp } });
+  1123→    }
+  1124→
+  1125→    const scan = await db.scan.create({
+  1126→      data: { targetId: target.id, status: 'running', scanType: scanType || 'full' },
+  1127→    });
+  1128→
+  1129→    const isQuick = scanType === 'quick';
+  1130→    const allFindings: Finding[] = [];
+  1131→    const allTech = new Set<string>();
+  1132→
+  1133→    // ── 1. DNS (always, all queries parallel) ──────────────────────
+  1134→    const dnsResult = await enumerateDNS(cleanDomain);
+  1135→    allFindings.push(...dnsResult.findings);
+  1136→
+  1137→    // ── 2. Subdomains (parallel DNS resolution) ────────────────────
+  1138→    const subFindings = await enumerateSubdomains(cleanDomain, isQuick);
+  1139→    allFindings.push(...subFindings);
+  1140→
+  1141→    // ── 3. HTTP headers + page content (async curl) ──────────────────
+  1142→    const httpResult = await analyzeHTTPHeaders(cleanDomain);
+  1143→    allFindings.push(...httpResult.findings);
+  1144→    httpResult.technologies.forEach(t => allTech.add(t));
+  1145→
+  1146→    // Fetch page content once for multiple modules
+  1147→    const pageResult = await safeFetch(`https://${cleanDomain}`, { timeout: 15000 }).catch(() => safeFetch(`http://${cleanDomain}`, { timeout: 15000 }));
+  1148→    const pageContent = pageResult?.text || '';
+  1149→    const rawHeadersResult = await safeFetch(`https://${cleanDomain}`, { timeout: 10000, method: 'HEAD' });
+  1150→    const rawHeaders = rawHeadersResult?.text || '';
+  1151→
+  1152→    // ── 4. SSL/TLS (async openssl) ─────────────────────────────────
+  1153→    const sslResult = await analyzeSSL(cleanDomain);
+  1154→    allFindings.push(...sslResult.findings);
+  1155→    sslResult.technologies.forEach(t => allTech.add(t));
+  1156→
+  1157→    // ── 5. Port probing (full only, async parallel) ────────────────
+  1158→    if (!isQuick) {
+  1159→      const portFindings = await probePorts(cleanDomain);
+  1160→      allFindings.push(...portFindings);
+  1161→    }
+  1162→
+  1163→    // ═══ NEW DEADLY MODULES (full scan only) ═══════════════════════
+  1164→    if (!isQuick) {
+  1165→      // ── 6. Certificate Transparency Logs ──────────────────────────
+  1166→      const [ctFindings, waybackFindings, rdnsFindings, axfrFindings, robotsFindings, jsFindings, wafFindings, fpFindings, emailFindings] = await Promise.all([
+  1167→        enumerateCTLogs(cleanDomain),
+  1168→        enumerateWayback(cleanDomain),
+  1169→        reconReverseDNS([...dnsResult.mainIp ? [dnsResult.mainIp] : [], ...subFindings.map(f => {
+  1170→          const m = f.evidence.match(/\d+\.\d+\.\d+\.\d+/);
+  1171→          return m ? m[0] : null;
+  1172→        }).filter((v): v is string => Boolean(v))]),
+  1173→        attemptZoneTransfer(cleanDomain),
+  1174→        analyzeRobotsAndSitemap(cleanDomain),
+  1175→        analyzeJSFiles(cleanDomain),
+  1176→        detectWAF(cleanDomain),
+  1177→        deepFingerprint(cleanDomain, rawHeaders, pageContent),
+  1178→        harvestEmails(cleanDomain, pageContent),
+  1179→      ]);
+  1180→
+  1181→      allFindings.push(...ctFindings, ...waybackFindings, ...rdnsFindings, ...axfrFindings, ...robotsFindings, ...jsFindings, ...wafFindings, ...fpFindings, ...emailFindings);
+  1182→    } else {
+  1183→      // Quick scan: still run CT logs and basic fingerprinting (lightweight)
+  1184→      const [ctFindings, fpFindings] = await Promise.all([
+  1185→        enumerateCTLogs(cleanDomain),
+  1186→        deepFingerprint(cleanDomain, rawHeaders, pageContent),
+  1187→      ]);
+  1188→      allFindings.push(...ctFindings, ...fpFindings);
+  1189→    }
+  1190→
+  1191→    // ── Technology findings ─────────────────────────────────────────
+  1192→    for (const tech of allTech) {
+  1193→      allFindings.push({
+  1194→        title: `Technology Detected: ${tech}`, severity: 'info', category: 'technology',
+  1195→        description: `${tech} identified on ${cleanDomain} via HTTP headers, SSL cert metadata, or response analysis.`,
+  1196→        evidence: 'Detected via HTTP/SSL/response fingerprinting', asset: tech,
+  1197→      });
+  1198→    }
+  1199→
+  1200→    // ── Wildcard DNS check ─────────────────────────────────────────
+  1201→    const wcIp = await nativeResolveIP(`nonexistent-wildcard-test-12345.${cleanDomain}`);
+  1202→    if (wcIp) {
+  1203→      allFindings.push({
+  1204→        title: 'Wildcard DNS Record Detected', severity: 'medium', category: 'dns',
+  1205→        description: `Wildcard DNS active — even nonexistent subdomains resolve to ${wcIp}. Subdomain enumeration may have false positives.`,
+  1206→        evidence: `nonexistent-wildcard-test-12345.${cleanDomain} resolved to ${wcIp}`, asset: cleanDomain,
+  1207→      });
+  1208→    }
+  1209→
+  1210→    // ── Save to DB ─────────────────────────────────────────────────
+  1211→    for (const f of allFindings) {
+  1212→      // Destructure out any extra fields not in Prisma schema (e.g. technologies)
+  1213→      const { title: _t, severity: _s, category: _c, description: _d, evidence: _e, asset: _a, ...rest } = f;
+  1214→      const safeData = { scanId: scan.id, title: f.title, severity: f.severity, category: f.category, description: f.description, evidence: f.evidence, asset: f.asset };
+  1215→      await db.finding.create({ data: safeData });
+  1216→    }
+  1217→
+  1218→    // ── Risk score ─────────────────────────────────────────────────
+  1219→    const c = allFindings.filter(f => f.severity === 'critical').length;
+  1220→    const h = allFindings.filter(f => f.severity === 'high').length;
+  1221→    const m = allFindings.filter(f => f.severity === 'medium').length;
+  1222→    const l = allFindings.filter(f => f.severity === 'low').length;
+  1223→    const i = allFindings.filter(f => f.severity === 'info').length;
+  1224→    const riskScore = Math.min(100, Math.round(c*25 + h*15 + m*8 + l*3 + i*1));
+  1225→
+  1226→    await db.scan.update({
+  1227→      where: { id: scan.id },
+  1228→      data: { status: 'completed', completedAt: new Date(), riskScore, totalVulns: allFindings.length, criticalCount: c, highCount: h, mediumCount: m, lowCount: l, infoCount: i },
+  1229→    });
+  1230→
+  1231→    return applySecurityHeaders(NextResponse.json({
+  1232→      success: true,
+  1233→      scan: {
+  1234→        id: scan.id, domain: cleanDomain, status: 'completed', riskScore,
+  1235→        totalVulns: allFindings.length, critical: c, high: h, medium: m, low: l, info: i,
+  1236→        findings: allFindings.map(f => ({
+  1237→          id: f.title.toLowerCase().replace(/\s+/g, '-').substring(0, 20),
+  1238→          ...f,
+  1239→        })),
+  1240→      },
+  1241→    }));
+  1242→  } catch (error) {
+  1243→    console.error('Scan error:', error);
+  1244→    return safeError('Scan failed', 500);
+  1245→  }
+  1246→}

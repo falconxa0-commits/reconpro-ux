@@ -1,7 +1,6 @@
-import { extractClientIP } from '@/lib/api-protection';
+import { withProtection } from '@/lib/api-protection';
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
-import { checkRateLimit } from '@/lib/api-security';
 
 
 const ORG_ID = 'org_default';
@@ -24,8 +23,8 @@ const SEED_DATA = [
 ];
 
 export async function POST(request: NextRequest) {
-  const { allowed } = checkRateLimit(extractClientIP(request), 5, 60_000);
-  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 1, windowMs: 60_000 } });
+  if (error) return error;
 
   try {
     // Clear existing

@@ -230,54 +230,14 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // If we have fewer than 5 threats, supplement with general current threats
-    if (threats.length < 5) {
-      const generalThreats = [
-        {
-          title: 'Zero-Day Exploit Chain in Enterprise VPN Appliances',
-          severity: 'critical', source: 'Threat Intelligence',
-          description: 'An active zero-day exploit chain targeting enterprise VPN solutions has been observed in targeted attacks. The exploit chain combines authentication bypass with remote code execution. Monitor VPN appliance logs for unusual authentication patterns.',
-          ioc: 'APT-VPN-ZERODAY-2026-07',
-        },
-        {
-          title: 'Ransomware Group Launching Double-Extortion Campaign',
-          severity: 'critical', source: 'Ransomware Watch',
-          description: 'A ransomware group has launched a new campaign targeting organizations with exposed remote access services. The group uses double-extortion tactics, encrypting data and threatening to publish exfiltrated information. Ensure offline backups are current and tested.',
-          ioc: 'Ransomware-DoubleExtort-2026-Q3',
-        },
-        {
-          title: 'Credential Stuffing Attack Surge — 300% Increase',
-          severity: 'high', source: 'Botnet Tracker',
-          description: 'A massive 300% increase in credential stuffing attacks has been detected across multiple industries. Attackers are leveraging newly leaked credential databases from recent data breaches. Implement rate limiting, MFA, and monitor for unusual login patterns.',
-          ioc: 'CREDENTIAL-STUFF-2026-07',
-        },
-        {
-          title: 'Supply Chain Attack via Compromised NPM Packages',
-          severity: 'high', source: 'OSS Monitor',
-          description: 'Multiple popular NPM packages with millions of weekly downloads were compromised to inject credential-stealing malware. The attack targets developer environments and CI/CD pipelines. Audit all dependencies and pin exact versions.',
-          ioc: 'NPM-SUPPLY-CHAIN-2026-07',
-        },
-        {
-          title: 'AI-Powered Phishing Campaign Bypassing Traditional Filters',
-          severity: 'high', source: 'Email Security',
-          description: 'A new phishing campaign using AI-generated emails is bypassing traditional spam filters with a 78% delivery rate. The emails are contextually relevant, grammatically perfect, and mimic internal communications. Security awareness training and AI-based email filtering are recommended.',
-          ioc: 'AI-PHISH-2026-0719',
-        },
-      ];
-
-      for (const gt of generalThreats) {
-        if (threats.length >= 12) break;
-        if (!threats.some(t => t.ioc === gt.ioc)) {
-          threats.push({
-            id: `gen-threat-${threats.length}`,
-            ...gt,
-            createdAt: new Date(Date.now() - (threats.length + 3) * 3600000).toISOString(),
-          });
-        }
-      }
-    }
-
-    return NextResponse.json({ threats: threats.slice(0, 15) });
+    // Only return evidence-derived threats — no fabricated padding
+    return NextResponse.json({
+      threats: threats.slice(0, 50),
+      source: 'evidence_derived',
+      note: threats.length === 0
+        ? 'No threats derived from scan data. Run a scan to populate threat intelligence.'
+        : undefined,
+    });
   } catch (error) {
     console.error('Threats error:', error);
     return NextResponse.json({ error: 'Failed to fetch threats' }, { status: 500 });
