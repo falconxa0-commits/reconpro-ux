@@ -1,7 +1,7 @@
 "use client";
 
-import { useRef } from "react";
-import { motion, useInView } from "framer-motion";
+import { motion } from "framer-motion";
+import { useInView } from "@/hooks/useInView";
 import {
   Brain,
   Bot,
@@ -60,13 +60,12 @@ const cardVariants = {
 // ── Component ───────────────────────────────────────────────
 
 export function FeaturesSection() {
-  const sectionRef = useRef<HTMLElement>(null);
-  const isInView = useInView(sectionRef, { once: true, amount: 0.08 });
+  const { ref: sectionRef, isInView } = useInView(0.08);
 
   return (
     <section
       id="features"
-      ref={sectionRef}
+      ref={sectionRef as React.RefObject<HTMLElement>}
       className="relative min-h-screen bg-black px-4 py-32 sm:px-6 lg:px-8"
     >
       {/* Subtle radial glow behind the grid */}

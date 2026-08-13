@@ -4,6 +4,18 @@ export async function GET(request: NextRequest) {
   const domain = request.nextUrl.searchParams.get('domain');
   if (!domain) return new Response('Missing domain', { status: 400 });
 
+  // Validate domain format — prevent injection via query param
+  const DOMAIN_REGEX = /^[a-zA-Z0-9]([a-zA-Z0-9-]*\.)+[a-zA-Z]{2,}$/;
+  if (!DOMAIN_REGEX.test(domain)) {
+    return new Response('Invalid domain format', { status: 400 });
+  }
+
+  // Block internal/sensitive domains
+  const BLOCKED = ['localhost', 'internal', 'metadata'];
+  if (BLOCKED.some(d => domain.includes(d)) || domain.endsWith('.local') || domain.endsWith('.internal')) {
+    return new Response('Internal domains not permitted', { status: 403 });
+  }
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {

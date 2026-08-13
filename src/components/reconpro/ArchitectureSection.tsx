@@ -244,22 +244,6 @@ export default function ArchitectureSection() {
         </div>
       </div>
 
-      {/* ── Inline Keyframes ── */}
-      <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes arch-flow-line {
-          0% { opacity: 0.3; }
-          50% { opacity: 0.8; }
-          100% { opacity: 0.3; }
-        }
-        @keyframes arch-pulse-flow {
-          0% { transform: translateX(-50%) translateY(0); opacity: 0; }
-          20% { opacity: 1; }
-          80% { opacity: 1; }
-          100% { transform: translateX(-50%) translateY(20px); opacity: 0; }
-        }
-        #architecture .arch-flow-line { animation: arch-flow-line 3s ease-in-out infinite; }
-        #architecture .arch-pulse-flow { animation: arch-pulse-flow 3s ease-in-out infinite; }
-      `}} />
     </section>
   );
 }
