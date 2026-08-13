@@ -100,10 +100,10 @@ export default function BenchmarksSection() {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-white/20 font-mono">{row.nmap}</span>
+                      <span className="text-white/40 font-mono">{row.nmap}</span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-white/20 font-mono">
+                      <span className="text-white/40 font-mono">
                         {row.nessus}
                       </span>
                     </td>
@@ -124,7 +124,7 @@ export default function BenchmarksSection() {
           initial={{ opacity: 0 }}
           animate={isInView ? { opacity: 1 } : {}}
           transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] as const }}
-          className="text-center text-[11px] text-white/15 mt-6"
+          className="text-center text-[11px] text-white/30 mt-6"
         >
           Benchmarked on equivalent hardware. Results may vary. See our methodology for details.
         </motion.p>

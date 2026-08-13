@@ -15,6 +15,48 @@ type Finding = {
   description: string; evidence: string; asset: string;
 };
 
+// ── SSRF Protection: Block private/reserved IP ranges ──────────────
+function isPrivateIP(ip: string): boolean {
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4) return true; // reject non-IPv4
+  const [a, b] = parts;
+  // RFC 1918 private ranges
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  // Loopback
+  if (a === 127) return true;
+  // Link-local
+  if (a === 169 && b === 254) return true; // includes cloud metadata 169.254.169.254
+  // Carrier-grade NAT
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  // Documentation/benchmark ranges
+  if (a === 192 && b === 0 && parts[2] === 2) return true;
+  if (a === 198 && b === 51 && parts[2] === 100) return true;
+  if (a === 203 && b === 0 && parts[2] === 113) return true;
+  // Multicast
+  if (a >= 224 && a <= 239) return true;
+  // Reserved
+  if (a >= 240) return true;
+  // Default unreachable
+  if (a === 0) return true;
+  return false;
+}
+
+// ── Rate limiter (in-memory, per-domain) ──────────────────────────
+const scanRateLimit = new Map<string, { count: number; resetAt: number }>();
+function checkRateLimit(domain: string): boolean {
+  const now = Date.now();
+  const entry = scanRateLimit.get(domain);
+  if (!entry || now > entry.resetAt) {
+    scanRateLimit.set(domain, { count: 1, resetAt: now + 60_000 }); // 1 per minute
+    return true;
+  }
+  if (entry.count >= 3) return false; // max 3 per minute
+  entry.count++;
+  return true;
+}
+
 // ── Async shell runner (never blocks event loop) ──────────────────
 async function run(cmd: string, timeout = 8000): Promise<string> {
   try {
@@ -608,7 +650,7 @@ async function enumerateCTLogs(domain: string): Promise<Finding[]> {
     }
     // Check for expired certs in CT logs
     const now = Date.now();
-    const expiredCerts = certs.filter(c => {
+    const expiredCerts = certs.filter((c: { not_after?: string }) => {
       const exp = c.not_after ? new Date(c.not_after + ' UTC').getTime() : 0;
       return exp > 0 && exp < now;
     });
@@ -1142,6 +1184,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid domain format. Must be a public FQDN (e.g. example.com).' }, { status: 400 });
     }
 
+    // Rate limit check
+    if (!checkRateLimit(cleanDomain)) {
+      return NextResponse.json({ error: 'Rate limit exceeded. Max 3 scans per minute per domain.' }, { status: 429 });
+    }
+
     // Block known internal/sensitive domains
     const BLOCKED_DOMAINS = ['localhost', 'localhost.localdomain', 'internal', 'metadata.google.internal', 'metadata'];
     if (BLOCKED_DOMAINS.includes(cleanDomain) || cleanDomain.endsWith('.local') || cleanDomain.endsWith('.internal')) {
@@ -1152,6 +1199,11 @@ export async function POST(request: NextRequest) {
     const preCheckIp = await resolveIP(cleanDomain);
     if (!preCheckIp) {
       return NextResponse.json({ error: `Domain "${cleanDomain}" does not resolve. Check the name and try again.` }, { status: 400 });
+    }
+
+    // SSRF protection: block scans that resolve to private IPs
+    if (isPrivateIP(preCheckIp)) {
+      return NextResponse.json({ error: 'Domain resolves to a private or reserved IP address. Scanning is not permitted.' }, { status: 403 });
     }
 
     // DB: target + scan record

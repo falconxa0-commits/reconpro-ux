@@ -484,7 +484,7 @@ export function WarRoomPanel() {
 
     // Findings
     const sortedFindings = [...scan.findings].sort((a, b) => {
-      const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+      const order: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
       return (order[a.severity] ?? 4) - (order[b.severity] ?? 4);
     });
 

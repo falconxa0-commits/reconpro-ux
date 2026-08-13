@@ -89,7 +89,7 @@ export function Footer() {
               </div>
               <span className="text-sm font-semibold text-white">ReconPro</span>
             </div>
-            <p className="text-xs text-white/20 leading-relaxed mb-4">
+            <p className="text-xs text-white/40 leading-relaxed mb-4">
               Attack surface intelligence for the modern security team.
             </p>
             <div className="flex items-center gap-3">

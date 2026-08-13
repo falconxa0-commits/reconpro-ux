@@ -378,7 +378,7 @@ function AssetBreakdown({ assets, sortBy, onSortChange }: {
     return [...assets].sort((a, b) => {
       if (sortBy === 'doomDate') return a.estimatedBreakYear - b.estimatedBreakYear;
       if (sortBy === 'risk') {
-        const order = { CRITICAL: 0, HIGH: 1, MODERATE: 2, LOW: 3 };
+        const order: Record<string, number> = { CRITICAL: 0, HIGH: 1, MODERATE: 2, LOW: 3 };
         return (order[a.riskLevel] ?? 4) - (order[b.riskLevel] ?? 4);
       }
       return a.domain.localeCompare(b.domain);

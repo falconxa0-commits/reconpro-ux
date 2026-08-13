@@ -50,7 +50,7 @@ export function CommandPalette() {
 
   // Reset active index when filtered results change
   useEffect(() => {
-    setActiveIndex(0);
+    setActiveIndex(0);  
   }, [query]);
 
   const execute = useCallback(

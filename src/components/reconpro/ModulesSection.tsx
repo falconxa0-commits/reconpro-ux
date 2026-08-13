@@ -99,14 +99,14 @@ export function ModulesSection() {
           <h2 className="text-gradient-void text-4xl font-semibold tracking-tight sm:text-5xl">
             Scanner Modules
           </h2>
-          <p className="mx-auto mt-4 max-w-md text-sm text-white/40">
+          <p className="mx-auto mt-5 max-w-md text-sm text-white/40">
             16 precision instruments. Complete coverage.
           </p>
         </div>
 
         {/* ── Summary Stats ─────────────────────────────── */}
         <div
-          className={`mb-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/20 transition-all duration-700 delay-100 ${
+          className={`mb-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/30 transition-all duration-700 delay-100 ${
             isInView
               ? "translate-y-0 opacity-100"
               : "translate-y-4 opacity-0"
@@ -165,7 +165,7 @@ export function ModulesSection() {
           <div id="modules-remote" className="mb-16">
             {filter === "all" && (
               <h3
-                className={`mb-6 text-xs font-medium uppercase tracking-[0.2em] text-white/20 transition-all duration-700 delay-200 ${
+                className={`mb-6 text-xs font-medium uppercase tracking-[0.2em] text-white/40 transition-all duration-700 delay-200 ${
                   isInView
                     ? "translate-y-0 opacity-100"
                     : "translate-y-4 opacity-0"
@@ -194,7 +194,7 @@ export function ModulesSection() {
           <div id="modules-local">
             {filter === "all" && (
               <h3
-                className={`mb-6 text-xs font-medium uppercase tracking-[0.2em] text-white/20 transition-all duration-700 delay-200 ${
+                className={`mb-6 text-xs font-medium uppercase tracking-[0.2em] text-white/40 transition-all duration-700 delay-200 ${
                   isInView
                     ? "translate-y-0 opacity-100"
                     : "translate-y-4 opacity-0"
@@ -281,7 +281,7 @@ function ModuleCard({
         {module.capabilities.map((cap) => (
           <li
             key={cap}
-            className="flex items-start gap-2 text-xs text-white/20"
+            className="flex items-start gap-2 text-xs text-white/30"
           >
             <span className="mt-1 h-1 w-1 shrink-0 rounded-full bg-white/20" />
             <span>{cap}</span>

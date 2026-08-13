@@ -326,7 +326,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
 
   useEffect(() => {
     if (!data.show) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+     
     setPhase('impact');
     const t1 = setTimeout(() => setPhase('stats'), 800);
     const t2 = setTimeout(() => setPhase('rewards'), 2200);

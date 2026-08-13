@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 
 interface NeuralLine {
   id: number;
@@ -52,11 +52,11 @@ function generateData() {
   return { lines, nodes };
 }
 
-export function NeuralNetwork() {
+export const NeuralNetwork = React.memo(function NeuralNetwork() {
   const [data, setData] = useState<ReturnType<typeof generateData> | null>(null);
 
   useEffect(() => {
-    setData(generateData());
+    setData(generateData());  
   }, []);
 
   if (!data) {
@@ -99,4 +99,4 @@ export function NeuralNetwork() {
       ))}
     </div>
   );
-}
+});

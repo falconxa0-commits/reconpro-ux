@@ -30,7 +30,7 @@ export const DataStreams = memo(function DataStreams() {
   const [streams, setStreams] = useState<Stream[] | null>(null);
 
   useEffect(() => {
-    setStreams(generateStreams());
+    setStreams(generateStreams());  
   }, []);
 
   if (!streams) {

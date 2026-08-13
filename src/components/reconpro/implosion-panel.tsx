@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Skull, AlertTriangle, TrendingDown, DollarSign, Clock, Users, Shield,
@@ -88,8 +88,17 @@ const REG_LABELS: Record<string, string> = { gdpr: 'GDPR', hipaa: 'HIPAA', pci_d
 
 function useAnimatedNumber(target: number, duration = 2500) {
   const [display, setDisplay] = useState(0);
+  // Track previous target to detect zero-transition
+  const prevTargetRef = useRef(target);
+  if (target === 0 && prevTargetRef.current !== 0) {
+    prevTargetRef.current = target;
+    setDisplay(0);
+  } else {
+    prevTargetRef.current = target;
+  }
+
   useEffect(() => {
-    if (target === 0) { setDisplay(0); return; }
+    if (target === 0) return;
     const start = Date.now();
     const animate = () => {
       const elapsed = Date.now() - start;

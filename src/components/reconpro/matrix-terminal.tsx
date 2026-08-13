@@ -370,15 +370,15 @@ export function MatrixTerminalPanel() {
     const arg = parts.slice(1).join(' ');
 
     switch (cmd) {
-      case 'help':    cmdHelp(); break;
-      case 'scan':    arg ? runScan(arg) : push('  Usage: scan <domain>', 'text-red-400'); break;
-      case 'vibesec': arg ? cmdVibeSec(arg) : push('  Usage: vibesec <domain>', 'text-red-400'); break;
-      case 'status':  cmdStatus(); break;
-      case 'targets': cmdTargets(); break;
+      case 'help':    void cmdHelp(); break;
+      case 'scan':    { if (arg) { runScan(arg); } else { push('  Usage: scan <domain>', 'text-red-400'); } break; }
+      case 'vibesec': { if (arg) { cmdVibeSec(arg); } else { push('  Usage: vibesec <domain>', 'text-red-400'); } break; }
+      case 'status':  void cmdStatus(); break;
+      case 'targets': void cmdTargets(); break;
       case 'clear':   setLines([]); break;
-      case 'banner':  cmdBanner(); break;
-      case 'about':   cmdAbout(); break;
-      case 'export':  cmdExport(); break;
+      case 'banner':  void cmdBanner(); break;
+      case 'about':   void cmdAbout(); break;
+      case 'export':  void cmdExport(); break;
       case 'exit':
         push('  This terminal runs in your browser — no process to exit :)', 'text-gray-500');
         pushBlank();
@@ -481,8 +481,7 @@ export function MatrixTerminalPanel() {
 
   /* ─── init: show banner on mount ─── */
   useEffect(() => {
-    cmdBanner();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    void cmdBanner();
   }, []);
 
   /* ═══════════ RENDER ═══════════ */

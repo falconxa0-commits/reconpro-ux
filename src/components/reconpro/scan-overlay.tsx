@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Shield, Crosshair, Zap, AlertTriangle, Globe, Lock, Terminal, Radio, Database, FileSearch, Bug } from 'lucide-react';
 
@@ -40,13 +40,21 @@ export function ScanOverlay({ isScanning, domain, findingCount, onNewFinding }: 
   const [findings, setFindings] = useState<LiveFindingEvent[]>([]);
   const [phaseProgress, setPhaseProgress] = useState<Record<string, number>>({});
 
+  // Reset state when scan starts (render-phase derived state reset)
+  const prevScanningRef = useRef(false);
+  if (isScanning && !prevScanningRef.current) {
+    prevScanningRef.current = true;
+    setActivePhase(0);
+    setProgress(0);
+    setFindings([]);
+    setPhaseProgress({});
+  } else if (!isScanning && prevScanningRef.current) {
+    prevScanningRef.current = false;
+  }
+
   // Phase progression
   useEffect(() => {
     if (isScanning) {
-      setActivePhase(0);
-      setProgress(0);
-      setFindings([]);
-      setPhaseProgress({});
 
       const interval = setInterval(() => {
         setProgress(prev => {

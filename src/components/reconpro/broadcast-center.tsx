@@ -143,8 +143,17 @@ export function BroadcastCenterPanel() {
     } catch { /* silent */ }
   }, []);
 
+  // Fetch data on mount
+  const initializedRef = useRef(false);
   useEffect(() => {
-    Promise.all([fetchBroadcasts(), fetchActive()]).then(() => setLoading(false));
+    if (initializedRef.current) return;
+    initializedRef.current = true;
+    let cancelled = false;
+     
+    Promise.all([fetchBroadcasts(), fetchActive()]).then(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [fetchBroadcasts, fetchActive]);
 
   // ── Banner auto-scroll ───────────────────────────────────────────

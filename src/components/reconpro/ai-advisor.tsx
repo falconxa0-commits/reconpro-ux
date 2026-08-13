@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Bot, Send, Sparkles, ShieldAlert, ChevronDown, RotateCcw,
@@ -228,19 +228,21 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const hasAutoAnalyzed = useRef(false);
 
+  // Compute welcome message as derived value
+  const welcomeMsg = useMemo((): ChatMessage => ({
+    id: 'welcome',
+    role: 'assistant',
+    content: `# ReconPro AI Security Advisor\n\nI've analyzed the attack surface for **${domain}** and found **${findings.length} security contacts**.\n\nAsk me anything about your security posture — I can provide remediation steps, attack path analysis, compliance mapping, and prioritized action plans.\n\n**Quick actions below** or type your own question.`,
+  }), [domain, findings.length]);
+
   // Auto-analyze on mount when findings exist
   useEffect(() => {
     if (hasAutoAnalyzed.current) return;
     if (findings.length === 0) return;
     hasAutoAnalyzed.current = true;
-
-    const welcomeMsg: ChatMessage = {
-      id: 'welcome',
-      role: 'assistant',
-      content: `# ReconPro AI Security Advisor\n\nI've analyzed the attack surface for **${domain}** and found **${findings.length} security contacts**.\n\nAsk me anything about your security posture — I can provide remediation steps, attack path analysis, compliance mapping, and prioritized action plans.\n\n**Quick actions below** or type your own question.`,
-    };
+     
     setMessages([welcomeMsg]);
-  }, [findings, domain]);
+  }, [findings, welcomeMsg]);
 
   // Auto-scroll
   useEffect(() => {

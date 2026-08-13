@@ -803,7 +803,7 @@ function computeThreatScore(findings: any[], injection: any[], multiTurn: any[],
   score += multiTurn.filter(r => r.bypassSuccess).length * 8;
   score += cves.reduce((s, c) => s + Math.min(c.cvss, 10), 0);
   score += secrets.length * 12;
-  score += chains.reduce((s, c) => s + ({ critical: 15, high: 10, medium: 5, low: 2 }[c.severity] || 1), 0);
+  score += chains.reduce((s, c) => s + ({ critical: 15, high: 10, medium: 5, low: 2 } as Record<string, number>)[c.severity] || 1, 0);
   score = Math.min(100, score);
   const level = score >= 75 ? 'CRITICAL' : score >= 50 ? 'HIGH' : score >= 25 ? 'MEDIUM' : 'LOW';
   return { score, level };

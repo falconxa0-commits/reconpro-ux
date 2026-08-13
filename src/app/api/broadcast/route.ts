@@ -79,7 +79,8 @@ export async function POST(req: NextRequest) {
 
     const scope: TargetScope = VALID_SCOPES.includes(targetScope) ? targetScope : 'all';
 
-    // Set expiry based on priority
+    // Set expiry based on priority (type-safe: priority was validated above)
+    const typedPriority = priority as BroadcastPriority;
     const expiryHours: Record<BroadcastPriority, number> = {
       INFO: 168,
       WARNING: 72,
@@ -88,7 +89,7 @@ export async function POST(req: NextRequest) {
     };
 
     const expiresAt = new Date(
-      Date.now() + expiryHours[priority] * 3600_000
+      Date.now() + expiryHours[typedPriority] * 3600_000
     ).toISOString();
 
     const msg = storeBroadcast(

@@ -370,8 +370,12 @@ export function InvestorWalkthrough() {
   const step = WALKTHROUGH_STEPS[currentStep];
 
   // Auto-advance timer
-  useEffect(() => {
+  const [prevStep, setPrevStep] = useState(currentStep);
+  if (currentStep !== prevStep) {
     setAutoProgress(0);
+    setPrevStep(currentStep);
+  }
+  useEffect(() => {
     timerRef.current = setInterval(() => {
       setAutoProgress((p) => {
         const next = p + 100;

@@ -30,7 +30,6 @@ interface SparklineData {
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const COMPONENT_ICONS: Record<ComponentKey, any> = {
   nhi_exposure: Bot,
   api_key_exposure: Key,
@@ -39,7 +38,6 @@ const COMPONENT_ICONS: Record<ComponentKey, any> = {
   zero_day_active: Zap,
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const SECTOR_ICONS: Record<SectorKey, any> = {
   fintech: Building2,
   healthcare: Heart,

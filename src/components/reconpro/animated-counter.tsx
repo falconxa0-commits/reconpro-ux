@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 
 interface AnimatedCounterProps {
@@ -17,8 +17,18 @@ export function AnimatedCounter({ target, duration = 2000, color = '#00ff88', si
   const [display, setDisplay] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
 
+  // Track previous target to detect zero-transition
+  const prevTargetRef = useRef(target);
+  if (target === 0 && prevTargetRef.current !== 0) {
+    prevTargetRef.current = target;
+    setDisplay(0);
+    setIsAnimating(false);
+  } else {
+    prevTargetRef.current = target;
+  }
+
   useEffect(() => {
-    if (target === 0) { setDisplay(0); return; }
+    if (target === 0) return;
     setIsAnimating(true);
     const startTime = Date.now();
     const durationMs = duration;

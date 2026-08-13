@@ -369,7 +369,7 @@ export function ConfusedDeputyPanel() {
                             onClick={() => {
                               setExpandedAnnotations((prev) => {
                                 const next = new Set(prev);
-                                next.has(i) ? next.delete(i) : next.add(i);
+                                if (next.has(i)) { next.delete(i); } else { next.add(i); }
                                 return next;
                               });
                             }}
@@ -637,7 +637,7 @@ export function ConfusedDeputyPanel() {
                         onClick={() => {
                           setRevealedHints((prev) => {
                             const next = new Set(prev);
-                            next.has(hint.id) ? next.delete(hint.id) : next.add(hint.id);
+                            if (next.has(hint.id)) { next.delete(hint.id); } else { next.add(hint.id); }
                             return next;
                           });
                         }}

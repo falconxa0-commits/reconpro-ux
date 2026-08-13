@@ -133,7 +133,6 @@ function useAnimatedCounter(target: number, duration: number = 2000) {
     }
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target, duration]);
 
   return value;

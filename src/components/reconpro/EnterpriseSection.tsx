@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { motion, useInView, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
+import { useInView as useFramerInView } from "framer-motion";
 import {
   Check,
   ChevronLeft,
@@ -92,15 +93,15 @@ export function EnterpriseSection() {
   const pricingRef = useRef<HTMLElement>(null);
   const roadmapRef = useRef<HTMLElement>(null);
 
-  const enterpriseInView = useInView(enterpriseRef, {
+  const enterpriseInView = useFramerInView(enterpriseRef, {
     once: true,
     margin: "-80px",
   });
-  const pricingInView = useInView(pricingRef, {
+  const pricingInView = useFramerInView(pricingRef, {
     once: true,
     margin: "-80px",
   });
-  const roadmapInView = useInView(roadmapRef, {
+  const roadmapInView = useFramerInView(roadmapRef, {
     once: true,
     margin: "-80px",
   });

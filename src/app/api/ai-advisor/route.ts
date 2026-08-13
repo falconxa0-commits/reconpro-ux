@@ -299,7 +299,7 @@ function generateFullAnalysis(findings: Finding[], domain: string): string {
   // Priority findings with remediation
   const priorityFindings = [...findings]
     .sort((a, b) => {
-      const order = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+      const order: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
       return (order[a.severity] ?? 5) - (order[b.severity] ?? 5);
     })
     .slice(0, 5);

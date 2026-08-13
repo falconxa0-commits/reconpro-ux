@@ -36,7 +36,7 @@ export const OLEDParticles = memo(function OLEDParticles() {
   const [particles, setParticles] = useState<Particle[] | null>(null);
 
   useEffect(() => {
-    setParticles(generateParticles());
+    setParticles(generateParticles());  
   }, []);
 
   if (!particles) {

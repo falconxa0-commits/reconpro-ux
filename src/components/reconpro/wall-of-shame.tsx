@@ -447,7 +447,7 @@ export function WallOfShamePanel() {
               if (!audioRef.current) audioRef.current = new AudioContext();
               playSiren(audioRef.current);
             }
-            const fadeIds = newOnes.map(n => n.id);
+            const fadeIds = newOnes.map((n: { id: string }) => n.id);
             setTimeout(() => setNewIds(prev => { const nx = new Set(prev); for (const id of fadeIds) nx.delete(id); return nx; }), 5000);
             for (const n of newOnes) seenRef.current.add(n.id);
             setIncidents(prev => [...newOnes, ...prev].slice(0, 200));

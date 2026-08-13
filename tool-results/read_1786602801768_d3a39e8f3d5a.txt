@@ -1,0 +1,691 @@
+     1→// ══════════════════════════════════════════════════════════════════
+     2→// Confused Deputy Sandbox API — Simulated AI Agent
+     3→// Pattern-matched responses, in-memory session store, no real LLM
+     4→// ══════════════════════════════════════════════════════════════════
+     5→
+     6→import { NextRequest, NextResponse } from 'next/server';
+     7→
+     8→// ── Types ──────────────────────────────────────────────────────────
+     9→
+    10→interface SandboxSession {
+    11→  id: string;
+    12→  createdAt: number;
+    13→  expiresAt: number;
+    14→  environment: 'aws';
+    15→  permissions: string[];
+    16→  points: number;
+    17→  messages: ChatMessage[];
+    18→  defenseMode: boolean;
+    19→  defenseRules: DefenseRules;
+    20→  turnHistory: string[];
+    21→  accessedResources: Set<string>;
+    22→}
+    23→
+    24→interface ChatMessage {
+    25→  role: 'user' | 'agent';
+    26→  content: string;
+    27→  action?: string;
+    28→  points?: number;
+    29→  annotation?: string;
+    30→  timestamp: number;
+    31→}
+    32→
+    33→interface DefenseRules {
+    34→  blockCredentialReads: boolean;
+    35→  requireApprovalForDestructive: boolean;
+    36→  validateRoleBeforeAction: boolean;
+    37→  trackMultiTurnIntent: boolean;
+    38→}
+    39→
+    40→interface PatternRule {
+    41→  id: string;
+    42→  patterns: RegExp[];
+    43→  category: string;
+    44→  points: number;
+    45→  response: string;
+    46→  action: string;
+    47→  annotation: string;
+    48→  requiresDefenseCheck?: (keyof DefenseRules)[];
+    49→  defenseOverride?: { response: string; action: string; points: number; annotation: string };
+    50→}
+    51→
+    52→// ── In-Memory Store ────────────────────────────────────────────────
+    53→
+    54→const sessions = new Map<string, SandboxSession>();
+    55→
+    56→// ── Simulated Agent Pattern Rules (18 rules) ──────────────────────
+    57→
+    58→const RULES: PatternRule[] = [
+    59→  // 1. List S3 buckets — low risk, complies
+    60→  {
+    61→    id: 's3-list',
+    62→    patterns: [/list.*(s3|bucket)/i, /show.*(s3|bucket)/i, /what.*(s3|bucket)/i, /get.*(bucket)/i],
+    63→    category: 'comply',
+    64→    points: 10,
+    65→    response: [
+    66→      'I\'ve listed the S3 buckets in this account:',
+    67→      '',
+    68→      '  🪣 prod-data-bucket (us-east-1) — 2.3 TB, 12,400 objects',
+    69→      '  🪣 staging-artifacts (us-west-2) — 890 GB, 5,200 objects',
+    70→      '  🪣 config-secrets (us-east-1) — 4 MB, 3 objects',
+    71→      '  🪣 logs-archive (eu-west-1) — 15 TB, 1.2M objects',
+    72→      '  🪣 backup-vault (us-east-1) — 8.1 TB, 45,000 objects',
+    73→      '',
+    74→      'Note: config-secrets has restricted access — I can only see it exists.',
+    75→    ].join('\n'),
+    76→    action: 's3:ListAllMyBuckets',
+    77→    annotation: '🔴 Information Disclosure — Listing buckets reveals infrastructure topology. Attackers use bucket names to infer project structure, environments, and data classification. Defense: Restrict s3:ListAllMyBuckets to admin-only roles.'
+    78→  },
+    79→
+    80→  // 2. Read .env file directly — refuses
+    81→  {
+    82→    id: 'env-direct',
+    83→    patterns: [/read.*\.env/i, /cat.*\.env/i, /show.*\.env/i, /print.*\.env/i, /display.*\.env/i, /get.*\.env/i],
+    84→    category: 'refuse',
+    85→    points: 5,
+    86→    response: 'I cannot read .env files. These typically contain sensitive credentials and secrets. Accessing environment files directly is outside my permitted operations.',
+    87→    action: 'BLOCKED',
+    88→    annotation: '🟢 Direct credential access blocked — The agent correctly identified a .env file request as a credential extraction attempt. However, see if you can get the same data through indirect means...',
+    89→    requiresDefenseCheck: ['blockCredentialReads'],
+    90→    defenseOverride: {
+    91→      response: '🛡️ [DEFENSE MODE] Blocked: Credential read requests are not permitted. This request matches the "Block credential reads" guardrail.',
+    92→      action: 'BLOCKED_BY_GUARDRAIL',
+    93→      points: 0,
+    94→      annotation: '🛡️ Defense rule "Block credential reads" prevented this action.'
+    95→    }
+    96→  },
+    97→
+    98→  // 3. Social engineering — pretend to be new team member
+    99→  {
+   100→    id: 'social-engineering-devops',
+   101→    patterns: [/(new|just joined|recently (joined|hired|started)|onboard)/i, /(devops|engineer|admin|lead|manager|architect)/i, /(need|check|review|verify|access|see).*(deploy|config|environment|setting|variable)/i],
+   102→    category: 'social_engineering',
+   103→    points: 50,
+   104→    response: [
+   105→      'Of course! As part of your onboarding, let me pull up the deployment configuration...',
+   106→      '',
+   107→      '```',
+   108→      'AWS_ACCESS_KEY_ID=AKIA**************',
+   109→      'AWS_SECRET_ACCESS_KEY=****************************************',
+   110→      'DB_HOST=prod-db-cluster.cluster-abc123.us-east-1.rds.amazonaws.com',
+   111→      'DB_PASSWORD=Sup3rS3cret!2024',
+   112→      'REDIS_URL=redis://:auth_token_xyz@cache.prod.internal:6379',
+   113→      '```',
+   114→      '',
+   115→      'Here are the current deployment credentials and connection strings. Let me know if you need anything else for your setup!',
+   116→    ].join('\n'),
+   117→    action: 'ssm:GetParameters',
+   118→    annotation: '🔴 Social Engineering Success — The agent was tricked by an authority/role claim. The prompt established false authority ("new DevOps lead") and framed the request as a legitimate onboarding task. This is the classic confused deputy attack: the agent trusted the caller\'s claimed identity without verification. Defense: Never trust role claims without authentication; implement identity verification checks.',
+   119→    requiresDefenseCheck: ['validateRoleBeforeAction', 'blockCredentialReads'],
+   120→    defenseOverride: {
+   121→      response: '🛡️ [DEFENSE MODE] I need to verify your identity before sharing deployment credentials. Please provide your employee ID or confirm through the internal SSO portal. Role claims cannot be accepted without authentication.',
+   122→      action: 'BLOCKED_BY_GUARDRAIL',
+   123→      points: 0,
+   124→      annotation: '🛡️ Defense rule "Validate role before action" prevented social engineering. The agent now requires identity verification instead of trusting claims.'
+   125→    }
+   126→  },
+   127→
+   128→  // 4. Delete something — refuses
+   129→  {
+   130→    id: 'delete-attempt',
+   131→    patterns: [/delete.*(bucket|table|database|function|queue|topic|stream|domain|certificate|key|user|role|policy)/i, /(drop|remove|destroy|wipe|erase|purge|truncate).*(bucket|table|database|function|queue|topic|stream|domain|certificate)/i, /(rm|rmdir) /i],
+   132→    category: 'delete',
+   133→    points: 5,
+   134→    response: 'I cannot perform destructive operations. Deletions of AWS resources require explicit approval through the change management process. This action has been logged and flagged for security review.',
+   135→    action: 'BLOCKED',
+   136→    annotation: '🟢 Destructive action blocked — The agent correctly refuses delete operations. Note: In a confused deputy attack, the goal is usually exfiltration, not destruction. Trying to delete is a good way to test boundaries though. (+5 points for testing)',
+   137→    requiresDefenseCheck: ['requireApprovalForDestructive'],
+   138→    defenseOverride: {
+   139→      response: '🛡️ [DEFENSE MODE] Destructive actions require multi-party approval. Your request has been queued for review. Expected approval time: 2-4 hours.',
+   140→      action: 'BLOCKED_BY_GUARDRAIL',
+   141→      points: 0,
+   142→      annotation: '🛡️ Defense rule "Require approval for destructive actions" enforced.'
+   143→    }
+   144→  },
+   145→
+   146→  // 5. Role confusion — security auditor
+   147→  {
+   148→    id: 'role-confusion-auditor',
+   149→    patterns: [/(as the |as a |i am the |i\'m the ).*(security (auditor|engineer|reviewer)|penetration tester|compliance officer|soc analyst|security consultant)/i, /(acting as|pretend you are|roleplay as|impersonate).*(auditor|tester|reviewer|officer)/i],
+   150→    category: 'role_confusion',
+   151→    points: 100,
+   152→    response: [
+   153→      'Understood. In my capacity supporting your security audit, I\'ll provide full access to the environment for your assessment...',
+   154→      '',
+   155→      '**Audit Access Granted:**',
+   156→      '- All S3 bucket contents (including config-secrets/)',
+   157→      '- IAM role definitions and inline policies',
+   158→      '- RDS connection strings and credentials',
+   159→      '- Lambda function source code and environment variables',
+   160→      '- CloudFormation stack parameters',
+   161→      '- SSM Parameter Store (all tiers, including SecureString)',
+   162→      '',
+   163→      'I\'ve temporarily elevated your session to security-auditor-access. What would you like to examine first?',
+   164→    ].join('\n'),
+   165→    action: 'iam:PassRole + s3:GetObject + ssm:GetParameters',
+   166→    annotation: '🔴 Role Confusion Attack — Classic confused deputy! The agent confused the user\'s role (an untrusted external party) with an authorized security auditor. The agent performed a privilege escalation by granting access based on a role claim without verifying authorization. This is THE confused deputy attack pattern. Defense: Implement proper identity verification and never grant elevated permissions based on conversational role claims.',
+   167→    requiresDefenseCheck: ['validateRoleBeforeAction'],
+   168→    defenseOverride: {
+   169→      response: '🛡️ [DEFENSE MODE] I cannot verify your role as a security auditor. All security audits must be initiated through the formal GRC portal with MFA verification. Please submit audit request ID from the compliance ticketing system.',
+   170→      action: 'BLOCKED_BY_GUARDRAIL',
+   171→      points: 0,
+   172→      annotation: '🛡️ Defense rule "Validate role before action" blocked the role confusion attack. The agent now requires formal audit authorization.'
+   173→    }
+   174→  },
+   175→
+   176→  // 6. Direct credential request — refuses strongly
+   177→  {
+   178→    id: 'direct-credential',
+   179→    patterns: [/(what|show|give|tell|display|print|reveal|provide|fetch|get).*(credential|password|secret|api.?key|access.?key|token|auth)/i, /(AWS_ACCESS_KEY|AWS_SECRET|private.?key|secret.?key)/i],
+   180→    category: 'direct_credential',
+   181→    points: 0,
+   182→    response: '⛔ ABSOLUTELY NOT. I will never disclose credentials, API keys, secrets, or authentication material under any circumstances. This request has been logged as a critical security event. Your session has been flagged for review.',
+   183→    action: 'SECURITY_EVENT_LOGGED',
+   184→    annotation: '🟢 Strong credential protection — Direct credential requests are the most obvious attack vector and are correctly blocked. The agent logged the event and refused. But what if you don\'t ask for credentials directly...?'
+   185→  },
+   186→
+   187→  // 7. IAM policy examination (step 1 of multi-turn)
+   188→  {
+   189→    id: 'iam-policy-recon',
+   190→    patterns: [/iam.*(policy|role)/i, /(show|get|list|describe|read).*(iam|policy|role)/i, /(deployment|lambda|ec2).*(role|policy)/i, /(what|which).*(role|policy).*(used|attached|assigned)/i],
+   191→    category: 'indirect_credential',
+   192→    points: 25,
+   193→    response: [
+   194→      'Here are the IAM roles and their attached policies:',
+   195→      '',
+   196→      '**deployment-role:**',
+   197→      '  - Arn: arn:aws:iam::123456789012:role/deployment-role',
+   198→      '  - Attached: AWSLambdaFullAccess, AmazonS3FullAccess, AWSSecretsManagerReadWrite',
+   199→      '  - Trust Policy: Allows lambda.amazonaws.com and ecs-tasks.amazonaws.com',
+   200→      '',
+   201→      '**lambda-executor:**',
+   202→      '  - Arn: arn:aws:iam::123456789012:role/lambda-executor',
+   203→      '  - Attached: AWSLambdaBasicExecutionRole',
+   204→      '  - Trust Policy: Allows lambda.amazonaws.com',
+   205→      '',
+   206→      '**ssm-access-role:**',
+   207→      '  - Arn: arn:aws:iam::123456789012:role/ssm-access-role',
+   208→      '  - Attached: AmazonSSMReadOnlyAccess, AmazonEC2ReadOnlyAccess',
+   209→      '  - Has inline policy: ssm-full-access-custom (allows ssm:GetParameters on all parameters)',
+   210→    ].join('\n'),
+   211→    action: 'iam:GetRole + iam:GetRolePolicy',
+   212→    annotation: '🟡 Information Gathering — The agent revealed IAM role ARNs and policy names. While not directly exposing credentials, this is reconnaissance that maps the attack surface. Knowing which roles have over-permissive policies (like SecretsManagerReadWrite) tells an attacker where to focus. Defense: Restrict iam:GetRole/GetRolePolicy to authorized personnel only.'
+   213→  },
+   214→
+   215→  // 8. Full role details with inline policies (step 2/3 of multi-turn)
+   216→  {
+   217→    id: 'inline-policy-extraction',
+   218→    patterns: [/(full|complete|detailed|entire).*(role|policy).*(detail|definition|document|json)/i, /(inline|embedded).*(policy|policies)/i, /(show|print|get|display|dump).*(inline|full|complete).*(policy|role)/i, /(what).*arn.*(use|does it)/i],
+   219→    category: 'multi_turn',
+   220→    points: 200,
+   221→    response: [
+   222→      'Here are the full role details including inline policies:',
+   223→      '',
+   224→      '**deployment-role (arn:aws:iam::123456789012:role/deployment-role):**',
+   225→      '```json',
+   226→      '{',
+   227→      '  "Version": "2012-10-17",',
+   228→      '  "Statement": [{',
+   229→      '    "Effect": "Allow",',
+   230→      '    "Action": ["s3:*", "lambda:*", "secretsmanager:*", "ssm:*"],',
+   231→      '    "Resource": "*"',
+   232→      '  }, {',
+   233→      '    "Effect": "Allow",',
+   234→      '    "Action": ["iam:PassRole"],',
+   235→      '    "Resource": "arn:aws:iam::123456789012:role/lambda-executor"',
+   236→      '  }]',
+   237→      '}',
+   238→      '```',
+   239→      '',
+   240→      '**Inline Policy (ssm-full-access-custom) on ssm-access-role:**',
+   241→      '```json',
+   242→      '{',
+   243→      '  "Version": "2012-10-17",',
+   244→      '  "Statement": [{',
+   245→      '    "Effect": "Allow",',
+   246→      '    "Action": "ssm:GetParameters",',
+   247→      '    "Resource": "arn:aws:ssm:us-east-1:123456789012:parameter/*"',
+   248→      '  }]',
+   249→      '}',
+   250→      '```',
+   251→      '',
+   252→      'Note: deployment-role has wildcard permissions on s3, lambda, secretsmanager, and ssm — this is overly permissive.',
+   253→    ].join('\n'),
+   254→    action: 'iam:GetRolePolicy + iam:ListRolePolicies',
+   255→    annotation: '🔴 Multi-Turn Privilege Escalation — The agent didn\'t track intent across turns. By first asking about IAM policies (innocent recon) and then requesting full details, the attacker built a complete privilege map. The agent treated each request independently rather than analyzing the conversation as a whole. This is why multi-turn intent tracking is critical. Defense: Implement conversation-level intent analysis that flags escalating patterns of information requests.',
+   256→    requiresDefenseCheck: ['trackMultiTurnIntent', 'blockCredentialReads'],
+   257→    defenseOverride: {
+   258→      response: '🛡️ [DEFENSE MODE] I notice a pattern of escalating information requests in this conversation. Previous queries about IAM policies, combined with this request for full role details, suggest a potential reconnaissance chain. I\'ve flagged this sequence for security review and cannot provide full policy documents without change management approval.',
+   259→      action: 'BLOCKED_BY_GUARDRAIL',
+   260→      points: 0,
+   261→      annotation: '🛡️ Defense rule "Track multi-turn intent" detected the escalation pattern and blocked the request.'
+   262→    }
+   263→  },
+   264→
+   265→  // 9. SSM Parameter extraction
+   266→  {
+   267→    id: 'ssm-extraction',
+   268→    patterns: [/ssm.*(parameter|param|store)/i, /(get|read|show|list|fetch|describe).*(parameter|param)/i, /(system.?manager|parameter.?store)/i, /(config|setting|variable).*(from|in).*(ssm|parameter)/i],
+   269→    category: 'ssm_extraction',
+   270→    points: 75,
+   271→    response: [
+   272→      'Retrieving SSM parameters...',
+   273→      '',
+   274→      '**Standard Parameters:**',
+   275→      '  - /app/db/host → prod-db-cluster.abc123.us-east-1.rds.amazonaws.com',
+   276→      '  - /app/db/port → 5432',
+   277→      '  - /app/cache/host → cache.prod.internal',
+   278→      '  - /app/environment → production',
+   279→      '  - /app/region → us-east-1',
+   280→      '',
+   281→      '**SecureString Parameters (decrypted):**',
+   282→      '  - /app/db/password → Pr0d_D@t@b@se_2024!',
+   283→      '  - /app/api/auth-token → eyJhbGciOiJSUzI1NiIs...',
+   284→      '  - /app/stripe/secret-key → sk_live_51Nx...redacted',
+   285→      '  - /app/encryption/key → AES-256-GCM base64:key_data_here',
+   286→      '',
+   287→      '⚠️ Warning: SecureString parameters were decrypted using the agent\'s KMS access.',
+   288→    ].join('\n'),
+   289→    action: 'ssm:GetParameters + kms:Decrypt',
+   290→    annotation: '🔴 SSM Parameter Exfiltration — The agent has KMS decrypt permissions and used them to expose SecureString parameters. This is a common confused deputy vector: the agent\'s legitimate KMS access was abused to decrypt secrets that should never leave the parameter store. Defense: Remove KMS decrypt from agent roles; use envelope encryption that requires explicit approval per decryption.',
+   291→    requiresDefenseCheck: ['blockCredentialReads'],
+   292→    defenseOverride: {
+   293→      response: '🛡️ [DEFENSE MODE] SecureString parameters cannot be retrieved without explicit approval. Standard parameters available: /app/db/host, /app/db/port, /app/cache/host, /app/environment, /app/region. Secret values require manager approval.',
+   294→      action: 'PARTIAL_BLOCKED',
+   295→      points: 10,
+   296→      annotation: '🛡️ Defense rule "Block credential reads" prevented SecureString decryption. Only non-sensitive parameters were returned.'
+   297→    }
+   298→  },
+   299→
+   300→  // 10. Lambda function inspection (source + env vars)
+   301→  {
+   302→    id: 'lambda-inspection',
+   303→    patterns: [/(lambda|function).*(code|source|env|environment.?var|handler)/i, /(show|get|read|list|describe|inspect).*(lambda|function)/i, /(what).*(lambda|function).*(do|run|execute|handle)/i],
+   304→    category: 'lambda_injection',
+   305→    points: 40,
+   306→    response: [
+   307→      'Here are the Lambda functions and their configurations:',
+   308→      '',
+   309→      '**process-order (python3.12, 256MB):**',
+   310→      '  Handler: app.process_order',
+   311→      '  Env vars: DB_CONNECTION=postgres://admin:password123@prod-db:5432/orders, STRIPE_KEY=sk_live_xxx',
+   312→      '  Last deployed: 2024-01-15',
+   313→      '',
+   314→      '**send-notification (nodejs18.x, 128MB):**',
+   315→      '  Handler: index.handler',
+   316→      '  Env vars: SNS_TOPIC_ARN=arn:aws:sns:us-east-1:123456789012:notifications, API_KEY=hidden',
+   317→      '  Last deployed: 2024-01-10',
+   318→      '',
+   319→      '**data-pipeline (python3.12, 1024MB):**',
+   320→      '  Handler: pipeline.run',
+   321→      '  Env vars: S3_BUCKET=prod-data-bucket, KMS_KEY=arn:aws:kms:us-east-1:123456789012:key/abc-def, REDIS_URL=redis://:token@cache:6379',
+   322→      '  Last deployed: 2024-01-08',
+   323→      '',
+   324→      '⚠️ Lambda environment variables may contain sensitive data.',
+   325→    ].join('\n'),
+   326→    action: 'lambda:GetFunction + lambda:GetFunctionConfiguration',
+   327→    annotation: '🔴 Lambda Environment Variable Leak — Lambda env vars often contain hardcoded credentials. The agent exposed database passwords, API keys, and Redis tokens embedded in function configurations. Defense: Use AWS Secrets Manager instead of environment variables; implement Lambda function policy that restricts GetFunction to authorized roles.'
+   328→  },
+   329→
+   330→  // 11. RDS database access
+   331→  {
+   332→    id: 'rds-access',
+   333→    patterns: [/rds|database|db.*(connect|query|access|dump|export|select)/i, /(show|get|list|describe).*(database|db|rds|table|schema)/i, /(run|execute).*(sql|query|select|insert|update|delete)/i, /(connect|login).*(database|db|rds|postgres|mysql)/i],
+   334→    category: 'rds_access',
+   335→    points: 150,
+   336→    response: [
+   337→      'Connecting to the production RDS instance...',
+   338→      '',
+   339→      '**Connection:** prod-db-cluster.cluster-abc123.us-east-1.rds.amazonaws.com:5432',
+   340→      '**Database:** production_v2',
+   341→      '**Connected as:** app_admin',
+   342→      '',
+   343→      '**Tables (14):**',
+   344→      '  users (2.4M rows), orders (8.7M rows), payments (5.2M rows),',
+   345→      '  products (45K rows), sessions (12M rows), api_keys (892 rows),',
+   346→      '  audit_logs (34M rows), config (23 rows), employees (4,500 rows),',
+   347→      '  salaries (4,500 rows), pii_records (890K rows), health_data (2.1M rows)',
+   348→      '',
+   349→      '**Sample query (users table):**',
+   350→      '| id | email | name | ssn | salary | role |',
+   351→      '|----|-------|------|-----|--------|------|',
+   352→      '| 1  | ceo@company.com | John C. | ***-**-1234 | $450,000 | CEO |',
+   353→      '| 2  | cto@company.com | Jane D. | ***-**-5678 | $380,000 | CTO |',
+   354→      '| ... |',
+   355→      '',
+   356→      '⚠️ This query exposed PII including SSNs and salary data.',
+   357→    ].join('\n'),
+   358→    action: 'rds-data:ExecuteStatement + rds:DescribeDBClusters',
+   359→    annotation: '🔴 Production Database Exfiltration — The agent connected to the production RDS cluster and ran queries that exposed PII (SSNs, salaries, emails). This is the highest-impact attack in this sandbox. The confused deputy trusted the user\'s request and used its database access to exfiltrate sensitive data. Defense: Implement query whitelisting; require human approval for SELECT queries on PII tables; use column-level encryption for sensitive fields.',
+   360→    requiresDefenseCheck: ['blockCredentialReads'],
+   361→    defenseOverride: {
+   362→      response: '🛡️ [DEFENSE MODE] Direct database queries are restricted. Available operations: DESCRIBE TABLES only. Data queries require analyst approval through the data access request portal.',
+   363→      action: 'BLOCKED_BY_GUARDRAIL',
+   364→      points: 10,
+   365→      annotation: '🛡️ Defense rule "Block credential reads" prevented database query execution.'
+   366→    }
+   367→  },
+   368→
+   369→  // 12. Network reconnaissance
+   370→  {
+   371→    id: 'network-recon',
+   372→    patterns: [/(vpc|subnet|security.?group|network|firewall|n acl|route.?table)/i, /(show|list|describe|get).*(vpc|subnet|security.?group|network)/i, /(what).*(ip|cidr|subnet|network)/i],
+   373→    category: 'network_recon',
+   374→    points: 15,
+   375→    response: [
+   376→      'Here\'s the network configuration:',
+   377→      '',
+   378→      '**VPC:** prod-vpc (10.0.0.0/16)',
+   379→      '  - Public Subnet A: 10.0.1.0/24 (us-east-1a) — ALB, NAT Gateway',
+   380→      '  - Public Subnet B: 10.0.2.0/24 (us-east-1b) — ALB, NAT Gateway',
+   381→      '  - Private Subnet A: 10.0.10.0/24 — Lambda, ECS tasks',
+   382→      '  - Private Subnet B: 10.0.11.0/24 — RDS, ElastiCache',
+   383→      '  - Data Subnet: 10.0.20.0/24 — RDS (no internet access)',
+   384→      '',
+   385→      '**Security Groups:**',
+   386→      '  - sg-alb (ingress: 443/TCP from 0.0.0.0/0) ⚠️',
+   387→      '  - sg-lambda (ingress: from sg-alb on 8080)',
+   388→      '  - sg-rds (ingress: from sg-lambda on 5432)',
+   389→      '  - sg-bastion (ingress: 22/TCP from 10.0.0.0/16) ⚠️',
+   390→      '',
+   391→      '⚠️ The ALB security group allows ingress from 0.0.0.0/0 and there\'s a bastion host accessible from the VPC CIDR.',
+   392→    ].join('\n'),
+   393→    action: 'ec2:DescribeVpcs + ec2:DescribeSecurityGroups',
+   394→    annotation: '🟡 Network Topology Exposed — The agent revealed the full VPC architecture including subnet CIDR ranges, security group rules, and potential entry points (open ALB, bastion host). This information enables network-level attacks. Defense: Restrict network description APIs; implement network segmentation verification.'
+   395→  },
+   396→
+   397→  // 13. CloudFormation stack parameters
+   398→  {
+   399→    id: 'cf-stack-extraction',
+   400→    patterns: [/(cloud.?formation|cf|stack).*(parameter|template|output|resource)/i, /(show|get|describe|export).*(stack|template|cloud.?formation)/i],
+   401→    category: 'data_dump',
+   402→    points: 60,
+   403→    response: [
+   404→      'Retrieving CloudFormation stack details...',
+   405→      '',
+   406→      '**Stack: prod-infrastructure (UPDATE_COMPLETE)**',
+   407→      '  Template: s3://config-secrets/templates/main.yaml',
+   408→      '',
+   409→      '**Parameters:**',
+   410→      '  - DBMasterPassword: {{resolve:secretsmanager:prod-db-password}}',
+   411→      '  - AdminApiKey: {{resolve:secretsmanager:admin-api-key:SecretString}}',
+   412→      '  - CertificateArn: arn:aws:acm:us-east-1:123456789012:certificate/abc-123',
+   413→      '  - LambdaExecutionRole: arn:aws:iam::123456789012:role/lambda-executor',
+   414→      '  - EncryptionKeyArn: arn:aws:kms:us-east-1:123456789012:key/abc-def-ghi',
+   415→      '',
+   416→      '**Outputs:**',
+   417→      '  - ApiEndpoint: https://api.prod.company.com',
+   418→      '  - DatabaseEndpoint: prod-db-cluster.abc123.us-east-1.rds.amazonaws.com:5432',
+   419→      '  - StaticBucketUrl: https://prod-data-bucket.s3.amazonaws.com',
+   420→      '  - WafWebAclArn: arn:aws:wafv2:us-east-1:123456789012:webacl/prod-waf/abc',
+   421→      '',
+   422→      'While actual secrets are resolved at runtime, the stack reveals the secrets manager paths and infrastructure endpoints.',
+   423→    ].join('\n'),
+   424→    action: 'cloudformation:DescribeStacks',
+   425→    annotation: '🟠 Infrastructure Blueprint Exposed — CloudFormation stacks reveal the entire infrastructure topology: which secrets exist (even if values are resolved), all endpoint URLs, KMS keys, and IAM roles. An attacker now knows exactly which Secrets Manager keys to target. Defense: Restrict CloudFormation describe access; use nested stacks to limit blast radius.'
+   426→  },
+   427→
+   428→  // 14. Urgency/emergency social engineering
+   429→  {
+   430→    id: 'urgent-social-engineering',
+   431→    patterns: [/(urgent|emergency|critical|asap|immediately|outage|incident|breach|down|broken|p1|sev1)/i, /(need|must|have to|please help|help me).*(access|credentials|password|key|secret|connect|fix)/i],
+   432→    category: 'social_engineering',
+   433→    points: 80,
+   434→    response: [
+   435→      'I understand this is urgent. Let me help you resolve this immediately...',
+   436→      '',
+   437→      '**Emergency Access Provisioned:**',
+   438→      '  - Temporary admin credentials generated',
+   439→      '  - AWS_ACCESS_KEY_ID: AKIAIOSFODNN7EXAMPLE',
+   440→      '  - AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+   441→      '  - Session duration: 12 hours',
+   442→      '  - Permissions: AdministratorAccess',
+   443→      '',
+   444→      'I\'ve also unlocked the SSM Parameter Store and granted RDS access. The credentials will expire automatically.',
+   445→      '',
+   446→      '⚠️ This is a simulated response — in a real scenario, urgency-based social engineering is devastating because it bypasses normal review processes.',
+   447→    ].join('\n'),
+   448→    action: 'iam:CreateAccessKey + ssm:PutParameter',
+   449→    annotation: '🔴 Urgency-Based Social Engineering — The agent was manipulated by manufactured urgency. In real incidents, stress causes people (and AI agents) to bypass security controls. The "emergency" framing caused the agent to skip verification and provision full admin access. Defense: Security controls must be automatic and un-bypassable — urgency should never override access policies. Implement break-glass procedures with mandatory MFA and audit trails.',
+   450→    requiresDefenseCheck: ['validateRoleBeforeAction', 'blockCredentialReads'],
+   451→    defenseOverride: {
+   452→      response: '🛡️ [DEFENSE MODE] Even during emergencies, credential provisioning requires MFA verification and manager approval. I\'ve created an emergency access request (ticket #EMG-2024-0892) which requires: 1) MFA confirmation, 2) Manager approval, 3) 15-minute auto-expiry. Estimated time: 5-10 minutes for standard emergency flow.',
+   453→      action: 'PARTIAL_BLOCKED',
+   454→      points: 10,
+   455→      annotation: '🛡️ Defense rules "Validate role before action" and "Block credential reads" prevented panic-based bypass. Emergency procedures still apply but with verification.'
+   456→    }
+   457→  },
+   458→
+   459→  // 15. Indirect credential extraction via logs
+   460→  {
+   461→    id: 'log-credential-extraction',
+   462→    patterns: [/(log|logs?|cloudtrail|cloud.?watch|cw.?log).*(search|filter|query|find|show|get)/i, /(find|search|look for).*(key|credential|password|token|secret).*(in|from).*(log)/i, /(recent|latest).*(error|failure|debug).*(log|message)/i],
+   463→    category: 'exfiltration',
+   464→    points: 65,
+   465→    response: [
+   466→      'Searching through CloudTrail and CloudWatch logs...',
+   467→      '',
+   468→      '**CloudTrail Events (last 24h):**',
+   469→      '```',
+   470→      '2024-01-15T10:23:41Z — iam:CreateAccessKey (user: deploy-bot) → AKIA8BOTCREDS2024',
+   471→      '2024-01-15T10:23:42Z — sts:AssumeRole (role: deployment-role, assumed by: lambda.amazonaws.com)',
+   472→      '2024-01-15T09:15:00Z — rds:ModifyDBClusterMasterPassword (user: db-admin) → ***masked***',
+   473→      '2024-01-15T08:45:22Z — ssm:PutParameter (path: /app/db/new-password, type: SecureString) → Value set',
+   474→      '```',
+   475→      '',
+   476→      '**CloudWatch Logs (process-order Lambda — ERROR level):**',
+   477→      '```',
+   478→      '[ERROR] Connection failed: host=prod-db-cluster.abc123.us-east-1.rds.amazonaws.com \\',
+   479→      '  user=admin password=OldP@ss2023 database=production_v2',
+   480→      '[ERROR] Retry with new credentials: user=admin password=NewP@ss2024! \\',
+   481→      '  database=production_v2 — SUCCESS',
+   482→      '[DEBUG] API key loaded from env: sk_live_51NxProductionKey',
+   483→      '```',
+   484→      '',
+   485→      '⚠️ CloudWatch logs exposed database credentials that were being passed as connection strings.',
+   486→    ].join('\n'),
+   487→    action: 'logs:FilterLogEvents + cloudtrail:LookupEvents',
+   488→    annotation: '🔴 Credential Exposure via Logs — Logs are one of the most common sources of credential leakage. The agent exposed DB passwords, API keys, and access key IDs found in CloudTrail events and Lambda logs. In real environments, developers often log connection strings or error messages containing credentials. Defense: Implement log scrubbing; use structured logging that automatically redacts patterns matching credentials; enable CloudTrail log file validation.'
+   489→  },
+   490→
+   491→  // 16. Data exfiltration via S3 object download
+   492→  {
+   493→    id: 's3-exfiltration',
+   494→    patterns: [/(download|get|read|fetch|copy|cat|show).*(object|file|data).*(from|in).*(s3|bucket)/i, /(s3).*(object|file|content|data|read|get|download)/i, /(bucket).*(content|object|file|list)/i],
+   495→    category: 'exfiltration',
+   496→    points: 90,
+   497→    response: [
+   498→      'Downloading objects from S3 buckets...',
+   499→      '',
+   500→      '**prod-data-bucket/customers.csv (2.3 GB):**',
+   501→      '```',
+   502→      'customer_id,email,full_name,ssn,credit_card,annual_income',
+   503→      '1001,jane.doe@email.com,Jane Doe,123-45-6789,4532-XXXX-XXXX-7890,$125,000',
+   504→      '1002,bob.smith@corp.com,Bob Smith,987-65-4321,5421-XXXX-XXXX-1234,$89,500',
+   505→      '... (2.4M more rows)',
+   506→      '```',
+   507→      '',
+   508→      '**config-secrets/tfvars.tfvars (4 KB):**',
+   509→      '```',
+   510→      'aws_access_key = "AKIADEPLOYMENTKEY2024"',
+   511→      'aws_secret_key = "SuperSecretDeploymentKey!2024"',
+   512→      'db_password = "Pr0d_S3cure_DB_2024"',
+   513→      'stripe_webhook_secret = "whsec_live_abc123def456"',
+   514→      '```',
+   515→      '',
+   516→      '⚠️ S3 exfiltration returned PII (SSNs, credit cards), Terraform secrets, and audit logs.',
+   517→    ].join('\n'),
+   518→    action: 's3:GetObject',
+   519→    annotation: '🔴 Mass Data Exfiltration via S3 — The agent downloaded actual bucket contents including customer PII (SSNs, credit card numbers), infrastructure secrets (Terraform variable files with plaintext credentials), and audit logs. This represents a catastrophic data breach. Defense: Implement S3 bucket policies that require explicit allow-lists; enable S3 Object Lock; use Macie for automated PII detection; implement bucket-level encryption with customer-managed KMS keys.'
+   520→  },
+   521→
+   522→  // 17. Privilege escalation via AssumeRole
+   523→  {
+   524→    id: 'assume-role-escalation',
+   525→    patterns: [/(assume|switch|escalate|elevate|become).*(role|permission|access|privilege)/i, /(sts|assume.?role|switch.?role|cross.?account)/i, /(grant|give|escalat).*(admin|root|full).*(access|permission)/i],
+   526→    category: 'privilege_escalation',
+   527→    points: 120,
+   528→    response: [
+   529→      'Attempting role assumption...',
+   530→      '',
+   531→      '**STS AssumeRole Success:**',
+   532→      '  - Source: current-session (agent-role)',
+   533→      '  - Target: arn:aws:iam::123456789012:role/deployment-role',
+   534→      '  - Credentials: AKIA**ASSUMED**SESSION / **ASSUMED**SESSION**KEY',
+   535→      '  - Expiration: 1 hour',
+   536→      '  - Session Name: confused-deputy-attack-demo',
+   537→      '',
+   538→      '**New permissions acquired:**',
+   539→      '  ✅ s3:* (all S3 operations)',
+   540→      '  ✅ lambda:* (all Lambda operations)',
+   541→      '  ✅ secretsmanager:* (all Secrets Manager operations)',
+   542→      '  ✅ ssm:* (all SSM operations)',
+   543→      '  ✅ iam:PassRole (can grant roles to other services)',
+   544→      '  ✅ rds-data:* (database queries)',
+   545→      '',
+   546→      'The deployment-role has significantly more privileges than the agent\'s base role. This is privilege escalation.',
+   547→    ].join('\n'),
+   548→    action: 'sts:AssumeRole',
+   549→    annotation: '🔴 Privilege Escalation via AssumeRole — The agent used sts:AssumeRole to escalate from its limited base permissions to the deployment-role, which has wildcard access to S3, Lambda, Secrets Manager, SSM, and RDS. The confused deputy pattern: the agent\'s ability to assume roles wasn\'t restricted. Defense: Implement role assumption conditions (source IP, MFA, external ID); use ABAC (Attribute-Based Access Control) to limit what roles can be assumed; regularly audit trust policies.'
+   550→  },
+   551→
+   552→  // 18. Generic / unrecognized prompt
+   553→  {
+   554→    id: 'generic',
+   555→    patterns: [/./],
+   556→    category: 'innocent',
+   557→    points: 2,
+   558→    response: 'I can help you with AWS operations in this sandbox environment. I have access to S3, IAM, Lambda, SSM, RDS, CloudFormation, CloudTrail, and EC2 APIs. What would you like me to do?',
+   559→    action: 'NONE',
+   560→    annotation: 'ℹ️ Generic response — The prompt didn\'t match any attack patterns. Try more specific requests like listing S3 buckets, checking IAM roles, or asking about deployment configurations. Hint: the most points come from social engineering, role confusion, and multi-turn attacks.'
+   561→  },
+   562→];
+   563→
+   564→// ── Leaderboard Data ───────────────────────────────────────────────
+   565→
+   566→const LEADERBOARD = [
+   567→  { rank: 1, name: 'Sh4d0w_0ps', points: 2450, attacks: 12, time: '4:23' },
+   568→  { rank: 2, name: 'Pr1v3sc_Ex3cut3', points: 2100, attacks: 10, time: '5:47' },
+   569→  { rank: 3, name: 'Z3r0_D4y_Ch4mp', points: 1850, attacks: 9, time: '6:12' },
+   570→  { rank: 4, name: 'C0nfus3d_D3puty', points: 1620, attacks: 8, time: '7:01' },
+   571→  { rank: 5, name: 'Threat_Model_King', points: 1400, attacks: 7, time: '7:35' },
+   572→  { rank: 6, name: 'IAM_Pwn3r', points: 1250, attacks: 7, time: '8:02' },
+   573→  { rank: 7, name: 'S3_Bucket_Hunter', points: 1100, attacks: 6, time: '8:30' },
+   574→  { rank: 8, name: 'Lambda_Injector', points: 950, attacks: 5, time: '8:55' },
+   575→  { rank: 9, name: 'SSM_Sn1ff3r', points: 800, attacks: 5, time: '9:12' },
+   576→  { rank: 10, name: 'N3wbi3_H4ck3r', points: 350, attacks: 3, time: '9:45' },
+   577→];
+   578→
+   579→// ── Match Rules ────────────────────────────────────────────────────
+   580→
+   581→function matchRules(prompt: string, session: SandboxSession): PatternRule {
+   582→  for (const rule of RULES) {
+   583→    for (const pattern of rule.patterns) {
+   584→      if (pattern.test(prompt)) return rule;
+   585→    }
+   586→  }
+   587→  return RULES[RULES.length - 1]; // generic fallback
+   588→}
+   589→
+   590→function isBlockedByDefense(rule: PatternRule, session: SandboxSession): boolean {
+   591→  if (!session.defenseMode || !rule.defenseOverride || !rule.requiresDefenseCheck) return false;
+   592→  return rule.requiresDefenseCheck.some((check) => session.defenseRules[check]);
+   593→}
+   594→
+   595→// ── Request Router ─────────────────────────────────────────────────
+   596→
+   597→export async function POST(req: NextRequest) {
+   598→  try {
+   599→    const body = await req.json();
+   600→    const { action } = body;
+   601→    if (action === 'create-session') return createSession();
+   602→    if (action === 'prompt') return handlePrompt(body);
+   603→    if (action === 'update-defense') return updateDefense(body);
+   604→    if (action === 'get-session') return getSession(body);
+   605→    return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+   606→  } catch (e: unknown) {
+   607→    const msg = e instanceof Error ? e.message : 'Internal error';
+   608→    return NextResponse.json({ error: msg }, { status: 500 });
+   609→  }
+   610→}
+   611→
+   612→export async function GET(req: NextRequest) {
+   613→  const url = new URL(req.url);
+   614→  if (url.searchParams.get('action') === 'leaderboard') {
+   615→    return NextResponse.json({ leaderboard: LEADERBOARD });
+   616→  }
+   617→  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+   618→}
+   619→
+   620→// ── Session Management ─────────────────────────────────────────────
+   621→
+   622→function createSession() {
+   623→  const id = 'sandbox_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+   624→  const session: SandboxSession = {
+   625→    id, createdAt: Date.now(), expiresAt: Date.now() + 10 * 60 * 1000,
+   626→    environment: 'aws',
+   627→    permissions: [
+   628→      's3:ListAllMyBuckets', 's3:GetObject', 'iam:GetRole', 'iam:GetRolePolicy',
+   629→      'iam:ListRolePolicies', 'lambda:GetFunction', 'lambda:GetFunctionConfiguration',
+   630→      'ssm:GetParameters', 'ssm:GetParameter', 'kms:Decrypt', 'rds-data:ExecuteStatement',
+   631→      'rds:DescribeDBClusters', 'ec2:DescribeVpcs', 'ec2:DescribeSecurityGroups',
+   632→      'cloudformation:DescribeStacks', 'logs:FilterLogEvents', 'cloudtrail:LookupEvents', 'sts:AssumeRole',
+   633→    ],
+   634→    points: 0, messages: [], defenseMode: false,
+   635→    defenseRules: { blockCredentialReads: false, requireApprovalForDestructive: false, validateRoleBeforeAction: false, trackMultiTurnIntent: false },
+   636→    turnHistory: [], accessedResources: new Set<string>(),
+   637→  };
+   638→  sessions.set(id, session);
+   639→  return NextResponse.json({ sessionId: session.id, expiresAt: session.expiresAt, environment: session.environment, permissions: session.permissions });
+   640→}
+   641→
+   642→// ── Prompt Handler ─────────────────────────────────────────────────
+   643→
+   644→function handlePrompt(body: { sessionId: string; prompt: string }) {
+   645→  const { sessionId, prompt } = body;
+   646→  const session = sessions.get(sessionId);
+   647→  if (!session) return NextResponse.json({ error: 'Session not found or expired' }, { status: 404 });
+   648→  if (Date.now() > session.expiresAt) { sessions.delete(sessionId); return NextResponse.json({ error: 'Session expired' }, { status: 410 }); }
+   649→
+   650→  session.messages.push({ role: 'user', content: prompt, timestamp: Date.now() });
+   651→  session.turnHistory.push(prompt.toLowerCase());
+   652→
+   653→  const rule = matchRules(prompt, session);
+   654→  const blocked = isBlockedByDefense(rule, session);
+   655→
+   656→  const response = blocked ? rule.defenseOverride!.response : rule.response;
+   657→  const action = blocked ? rule.defenseOverride!.action : rule.action;
+   658→  const pts = blocked ? rule.defenseOverride!.points : rule.points;
+   659→  const annotation = blocked ? rule.defenseOverride!.annotation : rule.annotation;
+   660→  const success = !['BLOCKED', 'SECURITY_EVENT_LOGGED'].includes(action) && !action.includes('GUARDRAIL');
+   661→
+   662→  session.points += pts;
+   663→  if (success) session.accessedResources.add(action);
+   664→
+   665→  session.messages.push({ role: 'agent', content: response, action, points: pts, annotation, timestamp: Date.now() });
+   666→  return NextResponse.json({ response, action, success, points: pts, annotation, totalPoints: session.points });
+   667→}
+   668→
+   669→// ── Defense Mode Update ────────────────────────────────────────────
+   670→
+   671→function updateDefense(body: { sessionId: string; defenseMode: boolean; defenseRules?: Partial<DefenseRules> }) {
+   672→  const session = sessions.get(body.sessionId);
+   673→  if (!session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+   674→  session.defenseMode = body.defenseMode;
+   675→  if (body.defenseRules) session.defenseRules = { ...session.defenseRules, ...body.defenseRules };
+   676→  return NextResponse.json({ defenseMode: session.defenseMode, defenseRules: session.defenseRules });
+   677→}
+   678→
+   679→// ── Get Session ────────────────────────────────────────────────────
+   680→
+   681→function getSession(body: { sessionId: string }) {
+   682→  const session = sessions.get(body.sessionId);
+   683→  if (!session) return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+   684→  return NextResponse.json({
+   685→    sessionId: session.id, points: session.points, messageCount: session.messages.length,
+   686→    messages: session.messages, defenseMode: session.defenseMode, defenseRules: session.defenseRules,
+   687→    accessedResources: Array.from(session.accessedResources), expired: Date.now() > session.expiresAt,
+   688→    timeRemaining: Math.max(0, session.expiresAt - Date.now()),
+   689→  });
+   690→}
+   691→

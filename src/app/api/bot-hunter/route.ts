@@ -430,7 +430,7 @@ export async function POST(request: NextRequest) {
         threatClassification,
         dnsIntelligence: dnsIndicators,
         c2Infrastructure: c2Infra,
-        attackVectors: threatClassification.vectors.map((v, i) => ({
+        attackVectors: threatClassification.vectors.map((v: string, i: number) => ({
           id: `AV-${String(i + 1).padStart(3, '0')}`,
           type: v,
           severity: i < 2 ? 'critical' : i < 5 ? 'high' : 'medium',

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Image, Download, Copy, Share2, ExternalLink, Play, Camera,
+  ImageIcon, Download, Copy, Share2, ExternalLink, Play, Camera,
   Film, Grid, Filter, Terminal, Shield, AlertTriangle, Zap, X,
   ChevronRight, Layers, BarChart3, Globe, Calendar, Loader2,
   CheckCircle, Twitter, Linkedin, Maximize2, ArrowLeft,
@@ -940,9 +940,15 @@ function GenerateAllModal({
 
   useProofAnimation(canvasRef, findings[current] || null, domain, 'linkedin', isPlaying);
 
+  // Track when playback reaches the final finding
+  const doneRef = useRef(false);
   useEffect(() => {
-    if (current >= findings.length - 1 && !isPlaying) {
+    const isAtEnd = current >= findings.length - 1;
+    if (isAtEnd && !isPlaying && !doneRef.current) {
+      doneRef.current = true;
       setDone(true);
+    } else if (!isAtEnd || isPlaying) {
+      doneRef.current = false;
     }
   }, [current, findings.length, isPlaying]);
 
@@ -1206,7 +1212,7 @@ export function ProofGallery() {
         <div className="flex items-center gap-3">
           {/* Proof count badge */}
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-900 border border-gray-800">
-            <Image className="w-3.5 h-3.5 text-green-400" />
+            <ImageIcon className="w-3.5 h-3.5 text-green-400" aria-hidden="true" />
             <span className="text-sm text-gray-300 font-mono">{totalProofs} proofs</span>
           </div>
           {totalProofs > 0 && (

@@ -56,10 +56,13 @@ reconpro intel --target example.com --deep --correlate
 reconpro autonomous --goal "Map the complete attack surface"`;
 
 function highlightSyntax(code: string) {
+  // Escape HTML entities first to prevent XSS
+  const escapeHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   return code
     .split("\n")
     .map((line) => {
-      let highlighted = line;
+      let highlighted = escapeHtml(line);
 
       // Comments
       if (highlighted.startsWith("#")) {
@@ -78,9 +81,9 @@ function highlightSyntax(code: string) {
         '$1<span class="text-sky-400/70">$2</span>'
       );
 
-      // Strings in quotes
+      // Strings in quotes (after HTML escaping, quotes are &quot;)
       highlighted = highlighted.replace(
-        /("[^"]*")/g,
+        /(&quot;[^&]*&quot;)/g,
         '<span class="text-amber-300/60">$1</span>'
       );
 
