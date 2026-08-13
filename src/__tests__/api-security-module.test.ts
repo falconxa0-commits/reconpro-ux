@@ -214,7 +214,8 @@ describe("api-security — safeErrorResponse", () => {
 
   it("should not leak error details in production", async () => {
     const originalEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "production";
+    // @ts-expect-error — Vitest process.env Proxy
+    process.env.NODE_ENV = 'production';
 
     const response = safeErrorResponse(
       new Error("Database connection failed: postgresql://admin:pass@db:5432"),
@@ -227,12 +228,14 @@ describe("api-security — safeErrorResponse", () => {
     expect(data.detail).toBeUndefined();
     expect(data.requestId).toBeDefined();
 
+    // @ts-expect-error
     process.env.NODE_ENV = originalEnv;
   });
 
   it("should include details in development", async () => {
     const originalEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = "development";
+    // @ts-expect-error — Vitest process.env Proxy
+    process.env.NODE_ENV = 'development';
 
     const response = safeErrorResponse(
       new Error("Test error"),
@@ -244,6 +247,7 @@ describe("api-security — safeErrorResponse", () => {
     expect(data.error).toBe("Test error");
     expect(data.detail).toBeDefined();
 
+    // @ts-expect-error
     process.env.NODE_ENV = originalEnv;
   });
 });

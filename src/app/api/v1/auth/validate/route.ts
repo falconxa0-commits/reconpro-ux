@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
 import { db } from '@/lib/db'
+import { checkRateLimit } from '@/lib/api-security';
+
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     // ── Parse request body ─────────────────────────────────────────────
     const body = await request.json()

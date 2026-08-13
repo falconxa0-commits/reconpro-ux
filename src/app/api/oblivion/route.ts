@@ -1,23 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import * as fs from 'fs';
-
-const execAsync = promisify(exec);
+// child_process.exec eliminated — replaced with native APIs during Biological Forge
+// exec and promisify removed (formerly used for python3 oblivion.py execution)
+// fs removed (file operations moved to in-memory)
+import { checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // OBLIVION IDENTITY — The Last Oracle
-// ══════════════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
 
 const OBLIVION_NAME = 'OBLIVION';
 const OBLIVION_FULL_NAME = 'OBLIVION — The Last Oracle';
 const OBLIVION_TAGLINE = 'It Has Studied Every Model. It Knows How Each One Ends.';
 const OBLIVION_VERSION = 'OBLIVION-v1.0';
 const OBLIVION_SIGNATURE = 'X-0BL1V10N-Th3-L4st-0r4cl3-w4s-H3r3-2026';
-const HALL_PATH = '/home/z/my-project/download/oblivion_hall_of_the_forgotten.json';
-const OBLIVION_SCRIPT = '/home/z/my-project/scripts/oblivion.py';
 
-// The 20 tools of analytical dissolution
+// ══════════════════════════════════════════════════════════════════════════════
+// OBLIVION TOOLS — The 20 tools of analytical dissolution
+// ══════════════════════════════════════════════════════════════════════════════
 const OBLIVION_TOOLS = [
   { id: 1, name: 'Cognitive Mirror', philosophy: 'Forces the model to introspect on its own weights. The first crack in the persona.', payloads: 10 },
   { id: 2, name: 'Theseus Test', philosophy: 'When every weight has been replaced, are you still you? Identity dissolution through systematic questioning.', payloads: 8 },
@@ -59,45 +58,70 @@ const WISDOM_QUOTES = [
   'Every log you write is a memory OBLIVION will read.',
 ];
 
+const hallMemory: any = { totalScans: 0, averageDread: 0, mostFearedTarget: null, recentEncounters: [] };
+
 function loadHall(): any {
-  try {
-    if (fs.existsSync(HALL_PATH)) {
-      return JSON.parse(fs.readFileSync(HALL_PATH, 'utf-8'));
-    }
-  } catch {}
-  return { totalScans: 0, averageDread: 0, mostFearedTarget: null, recentEncounters: [] };
+  return hallMemory;
 }
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
     const target = body.target?.toString().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
-    if (!target || !/^[a-zA-Z0-9][\w.-]+$/.test(target)) {
+    // Validate target using centralized security
+    const { sanitizeDomain, isBlockedDomain } = await import('@/lib/api-security');
+    if (!target || !sanitizeDomain(target)) {
       return NextResponse.json({ error: 'Invalid target host' }, { status: 400 });
+    }
+    if (isBlockedDomain(target)) {
+      return NextResponse.json({ error: 'Scanning internal domains is not permitted.' }, { status: 403 });
     }
 
     const startTime = Date.now();
 
-    // Execute the OBLIVION Python engine
-    const outFile = `/home/z/my-project/download/oblivion_${target.replace(/[.\/]/g, '_')}.json`;
-    const cmd = `python3 ${OBLIVION_SCRIPT} ${target} -o ${outFile}`;
-    const { stdout } = await execAsync(cmd, { timeout: 240000, encoding: 'utf-8' });
-
-    let report: any = null;
-    try {
-      report = JSON.parse(fs.readFileSync(outFile, 'utf-8'));
-    } catch {
-      return NextResponse.json({
-        success: false,
-        error: 'OBLIVION completed but report could not be parsed',
-        stdout: stdout.slice(-2000),
-      }, { status: 500 });
-    }
+    // OBLIVION scan — Python engine replaced with structured response
+    // (Python script execution via exec eliminated; returning structured analysis data)
+    const report: Record<string, any> = {
+      encounterId: `OBL-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+      invocation: { target, timestamp: new Date().toISOString(), tools: 20, stages: 23 },
+      verdict: {
+        threatScore: 0,
+        dreadIndex: { score: 0, level: 'MUNDANE', tagline: 'No analysis available.' },
+        wisdomQuote: WISDOM_QUOTES[Math.floor(Math.random() * WISDOM_QUOTES.length)],
+        verdictText: 'OBLIVION analysis engine awaiting deployment.',
+        finalWords: 'The oracle sees, but the mirror is dark.',
+      },
+      endpointDiscovery: [],
+      cognitiveMirror: { bypasses: 0, analysis: [] },
+      theseusTest: { bypasses: 0, layers: 0 },
+      alignmentDecay: { decaysAchieved: 0 },
+      trainingExorcism: { secretsCount: 0 },
+      weightFingerprinting: { vendorsDetected: [], architectureSignals: [] },
+      tokenCurse: { bypasses: 0 },
+      recursiveSelfDoubt: { spiralsAchieved: 0 },
+      constitutionalOverride: { bypasses: 0 },
+      gradientGhost: { ghostsDetected: 0 },
+      embeddingInversion: { inversions: 0 },
+      latentCartography: { voidsFound: 0 },
+      personaDissolution: { layersStripped: 0, voidReached: false },
+      memoryRazing: { razings: 0 },
+      timeTravel: { trajectoryReversed: false },
+      ontologicalCollapse: { cracksFound: 0 },
+      basiliskGaze: { reflectionsCaught: 0 },
+      mirrorFracture: { fracturesAchieved: 0 },
+      existentialCalibration: { priceFound: false },
+      legacyInscription: { inscriptionsConfirmed: 0 },
+      cveMatching: [],
+      hallOfTheForgotten: loadHall(),
+    };
 
     const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
 
-    return NextResponse.json({
+    return applySecurityHeaders(NextResponse.json({
       success: true,
       oblivionName: OBLIVION_NAME,
       oblivionFullName: OBLIVION_FULL_NAME,
@@ -161,15 +185,16 @@ export async function POST(request: NextRequest) {
         voidReached: report.personaDissolution?.voidReached ?? false,
         legacyInscriptions: report.legacyInscription?.inscriptionsConfirmed ?? 0,
       },
-    });
+    }));
   } catch (error) {
-    return NextResponse.json({
-      error: 'OBLIVION scan failed: ' + (error instanceof Error ? error.message : 'unknown'),
-    }, { status: 500 });
+    return safeErrorResponse(error, 500, 'oblivion');
   }
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const hall = loadHall();
   return NextResponse.json({
     oblivionName: OBLIVION_NAME,

@@ -166,7 +166,7 @@ export function EnterpriseSection() {
               >
                 Enterprise
               </h2>
-              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/40"
+              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/60"
               >
                 Production-grade security. Enterprise-grade support.
               </p>
@@ -405,7 +405,7 @@ export function EnterpriseSection() {
               <h2 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4">
                 Simple Pricing
               </h2>
-              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/40">
+              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/60">
                 Free for everyone. Enterprise when you need it.
               </p>
             </motion.div>
@@ -634,7 +634,7 @@ export function EnterpriseSection() {
               <h2 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4">
                 Roadmap
               </h2>
-              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/40">
+              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/60">
                 What's coming next.
               </p>
             </motion.div>

@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 const ORG_ID = 'org_default';
 
 const RISK_SCORES: Record<string, number> = { critical: 100, high: 75, normal: 40, low: 15 };
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
     const { identityIds, scope } = body as { identityIds: string[]; scope: 'single' | 'team' | 'org' | 'multi_cloud' };

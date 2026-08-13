@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // REAL SECURITY KNOWLEDGE BASE
@@ -659,6 +661,9 @@ function answerQuestion(question: string, findings: Finding[], domain: string): 
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(req: NextRequest) {
+  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await req.json();
     const { question, findings, domain, type } = body;

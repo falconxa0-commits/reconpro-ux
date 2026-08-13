@@ -84,7 +84,7 @@ export function FeaturesSection() {
           <h2 className="text-gradient-void text-4xl font-semibold tracking-tight sm:text-5xl">
             Intelligence Architecture
           </h2>
-          <p className="mx-auto mt-5 max-w-xl text-sm text-white/40">
+          <p className="mx-auto mt-5 max-w-xl text-sm text-white/60">
             Every component designed for precision. Every interaction
             intentional.
           </p>
@@ -111,7 +111,7 @@ export function FeaturesSection() {
                   <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03]">
                     <Icon className="h-5 w-5 text-white/40" strokeWidth={1.5} />
                   </div>
-                  <span className="rounded-full border border-white/[0.06] bg-white/[0.04] px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-widest text-white/30">
+                  <span className="rounded-full border border-white/[0.06] bg-white/[0.04] px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-widest text-white/60">
                     {feature.category}
                   </span>
                 </div>
@@ -122,7 +122,7 @@ export function FeaturesSection() {
                 </h3>
 
                 {/* ── Description ───────────────────────── */}
-                <p className="mt-2 text-sm leading-relaxed text-white/40">
+                <p className="mt-2 text-sm leading-relaxed text-white/60">
                   {feature.description}
                 </p>
 
@@ -134,7 +134,7 @@ export function FeaturesSection() {
                         key={item}
                         className="flex items-center gap-2 text-xs text-white/50"
                       >
-                        <Check className="h-3 w-3 shrink-0 text-white/15" strokeWidth={2} />
+                        <Check className="h-3 w-3 shrink-0 text-white/40" strokeWidth={2} />
                         <span>{item}</span>
                       </li>
                     ))}

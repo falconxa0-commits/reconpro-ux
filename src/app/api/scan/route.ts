@@ -1,9 +1,9 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execAsync = promisify(exec);
+import { digShort, digAnswer, resolveIP as nativeResolveIP, reverseDNS, analyzeSSLNative } from '@/lib/native-dns';
+import { safeFetch } from '@/lib/safe-fetch';
+import { withProtection, safeError } from '@/lib/api-protection';
+import { isPrivateIP, applySecurityHeaders } from '@/lib/api-security';
 
 // ═══════════════════════════════════════════════════════════════════════
 // REAL RECONNAISSANCE ENGINE — Fully async, non-blocking
@@ -15,74 +15,14 @@ type Finding = {
   description: string; evidence: string; asset: string;
 };
 
-// ── SSRF Protection: Block private/reserved IP ranges ──────────────
-function isPrivateIP(ip: string): boolean {
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4) return true; // reject non-IPv4
-  const [a, b] = parts;
-  // RFC 1918 private ranges
-  if (a === 10) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  // Loopback
-  if (a === 127) return true;
-  // Link-local
-  if (a === 169 && b === 254) return true; // includes cloud metadata 169.254.169.254
-  // Carrier-grade NAT
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  // Documentation/benchmark ranges
-  if (a === 192 && b === 0 && parts[2] === 2) return true;
-  if (a === 198 && b === 51 && parts[2] === 100) return true;
-  if (a === 203 && b === 0 && parts[2] === 113) return true;
-  // Multicast
-  if (a >= 224 && a <= 239) return true;
-  // Reserved
-  if (a >= 240) return true;
-  // Default unreachable
-  if (a === 0) return true;
-  return false;
-}
 
-// ── Rate limiter (in-memory, per-domain) ──────────────────────────
-const scanRateLimit = new Map<string, { count: number; resetAt: number }>();
-function checkRateLimit(domain: string): boolean {
-  const now = Date.now();
-  const entry = scanRateLimit.get(domain);
-  if (!entry || now > entry.resetAt) {
-    scanRateLimit.set(domain, { count: 1, resetAt: now + 60_000 }); // 1 per minute
-    return true;
-  }
-  if (entry.count >= 3) return false; // max 3 per minute
-  entry.count++;
-  return true;
-}
 
-// ── Async shell runner (never blocks event loop) ──────────────────
-async function run(cmd: string, timeout = 8000): Promise<string> {
-  try {
-    const { stdout } = await execAsync(cmd, { timeout, encoding: 'utf-8' });
-    return stdout.trim();
-  } catch { return ''; }
-}
 
-// ── Async DNS via dig ─────────────────────────────────────────────
-async function digShort(domain: string, type: string): Promise<string[]> {
-  const out = await run(`dig +short +time=2 +tries=1 ${domain} ${type}`, 5000);
-  return out ? out.split('\n').map(l => l.trim()).filter(Boolean) : [];
-}
+// DNS functions now imported from @/lib/native-dns
 
-async function digAnswer(domain: string, type: string): Promise<string> {
-  return run(`dig +noall +answer +time=2 +tries=1 ${domain} ${type}`, 5000);
-}
 
-async function resolveIP(domain: string): Promise<string | null> {
-  const out = await run(`dig +short +time=2 +tries=1 ${domain} A`, 3000);
-  if (!out) return null;
-  for (const line of out.split('\n')) {
-    if (/^\d+\.\d+\.\d+\.\d+$/.test(line.trim())) return line.trim();
-  }
-  return null;
-}
+
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. DNS ENUMERATION (all in parallel)
@@ -255,25 +195,15 @@ async function enumerateDNS(domain: string): Promise<{ findings: Finding[]; main
     });
   }
 
-  // DNSSEC
-  const dnssecOut = await run(`dig +dnssec +time=2 +tries=1 ${domain} A`, 5000);
-  if (!dnssecOut.includes('RRSIG')) {
-    findings.push({
-      title: 'DNSSEC Not Enabled',
-      severity: 'medium', category: 'dns',
-      description: `DNSSEC not configured for ${domain}. DNS responses can be spoofed via cache poisoning attacks.`,
-      evidence: 'RRSIG not found in DNS response',
-      asset: domain,
-    });
-  } else {
-    findings.push({
-      title: 'DNSSEC Enabled',
-      severity: 'info', category: 'dns',
-      description: `DNSSEC is active, providing cryptographic DNS response authentication.`,
-      evidence: 'RRSIG records present',
-      asset: domain,
-    });
-  }
+  // DNSSEC — native dns.promises doesn't support DNSSEC queries
+  // DNSSEC validation requires specialized DNS libraries; skipping this check
+  findings.push({
+    title: 'DNSSEC Check Skipped',
+    severity: 'info', category: 'dns',
+    description: `DNSSEC validation requires specialized DNS query support not available in the native resolver. Use a dedicated DNS security tool for full DNSSEC analysis.`,
+    evidence: 'Native resolver — DNSSEC check not available',
+    asset: domain,
+  });
 
   return { findings, mainIp };
 }
@@ -316,7 +246,7 @@ async function enumerateSubdomains(domain: string, quick: boolean): Promise<Find
     const batch = subs.slice(i, i + batchSize);
     const results = await Promise.all(
       batch.map(async (sub) => {
-        const ip = await resolveIP(`${sub}.${domain}`);
+        const ip = await nativeResolveIP(`${sub}.${domain}`);
         return ip ? { fqdn: `${sub}.${domain}`, ip } : null;
       })
     );
@@ -344,28 +274,24 @@ async function analyzeHTTPHeaders(domain: string): Promise<{ findings: Finding[]
   const findings: Finding[] = [];
   const technologies: string[] = [];
 
-  const [httpsH, httpH] = await Promise.all([
-    run(`curl -sI --max-time 8 -L https://${domain} 2>/dev/null`, 12000),
-    run(`curl -sI --max-time 5 -L http://${domain} 2>/dev/null`, 8000),
+  const [httpsResult, httpResult] = await Promise.all([
+    safeFetch(`https://${domain}`, { timeout: 12000, method: 'HEAD' }),
+    safeFetch(`http://${domain}`, { timeout: 8000, method: 'HEAD' }),
   ]);
-  const headers = httpsH || httpH;
+  const response = httpsResult.ok ? httpsResult : (httpResult.ok ? httpResult : null);
 
-  if (!headers || !headers.includes('HTTP/')) {
+  if (!response || response.status === 0) {
     findings.push({
       title: 'HTTP Service Not Reachable',
       severity: 'medium', category: 'header',
       description: `Could not connect to ${domain} via HTTP/HTTPS.`,
-      evidence: 'curl returned non-HTTP or empty response',
+      evidence: 'Native fetch returned no response',
       asset: domain,
     });
     return { findings, technologies };
   }
 
-  const hmap: Record<string, string> = {};
-  for (const line of headers.split('\n')) {
-    const m = line.match(/^([^:]+):\s*(.+)/);
-    if (m) hmap[m[1].trim().toLowerCase()] = m[2].trim();
-  }
+  const hmap: Record<string, string> = response.headers;
 
   // HSTS
   if (!hmap['strict-transport-security']) {
@@ -456,7 +382,7 @@ async function analyzeHTTPHeaders(domain: string): Promise<{ findings: Finding[]
   }
 
   // Detect tech from headers
-  const allH = httpsH + httpH;
+  const allH = JSON.stringify(response.headers).toLowerCase();
   if (hmap['cf-ray'] || hmap['cf-cache-status']) technologies.push('Cloudflare');
   if (allH.includes('X-Amz-Cf-Id')) technologies.push('AWS CloudFront');
   if (hmap['x-vercel-id']) technologies.push('Vercel');
@@ -474,18 +400,15 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
   const findings: Finding[] = [];
   const technologies: string[] = [];
 
-  const [certInfo, sslConnect] = await Promise.all([
-    run(`echo | openssl s_client -connect ${domain}:443 -servername ${domain} 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName 2>/dev/null`, 10000),
-    run(`echo | openssl s_client -connect ${domain}:443 -servername ${domain} 2>&1`, 10000),
-  ]);
+  const sslResult = await analyzeSSLNative(domain);
 
-  if (!certInfo && !sslConnect.includes('SSL handshake')) {
+  if (!sslResult.cert && !sslResult.sslConnect) {
     findings.push({ title: 'SSL/TLS Connection Failed', severity: 'high', category: 'ssl',
-      description: `Could not establish SSL/TLS to ${domain}:443. Server may not support HTTPS.`, evidence: 'openssl s_client failed', asset: `${domain}:443` });
+      description: `Could not establish SSL/TLS to ${domain}:443. Server may not support HTTPS.`, evidence: sslResult.error || 'TLS connection failed', asset: `${domain}:443` });
     return { findings, technologies };
   }
 
-  const full = certInfo || sslConnect;
+  const full = sslResult.certInfo || sslResult.sslConnect;
 
   // Subject
   const subjM = full.match(/subject=([^\n]+)/);
@@ -546,8 +469,7 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
   }
 
   // TLS version
-  const protoM = sslConnect.match(/Protocol\s*:\s*([^\n]+)/);
-  const proto = protoM ? protoM[1].trim() : '';
+  const proto = sslResult.protocol || '';
   if (proto.includes('TLSv1 ') || proto.includes('TLSv1.0')) {
     findings.push({ title: 'Weak TLS Version: TLS 1.0 Detected', severity: 'high', category: 'ssl',
       description: `TLS 1.0 deprecated (RFC 8996, 2020). Vulnerable to BEAST, POODLE, RC4. PCI-DSS prohibits. Disable immediately.`, evidence: `Protocol: ${proto}`, asset: `${domain}:443` });
@@ -565,8 +487,7 @@ async function analyzeSSL(domain: string): Promise<{ findings: Finding[]; techno
   }
 
   // Cipher
-  const cipM = sslConnect.match(/Cipher\s*:\s*([^\n]+)/);
-  const cipher = cipM ? cipM[1].trim() : '';
+  const cipher = sslResult.cipher || '';
   const weakC = ['RC4','DES','MD5','NULL','EXPORT','3DES'];
   if (weakC.some(w => cipher.toUpperCase().includes(w))) {
     findings.push({ title: `Weak Cipher Suite: ${cipher}`, severity: 'high', category: 'ssl',
@@ -600,11 +521,11 @@ const WEB_PORTS = [
 async function probePorts(domain: string): Promise<Finding[]> {
   const results = await Promise.all(
     WEB_PORTS.map(async ({ port, service, risk, desc }) => {
-      const r = await run(`curl -sI --max-time 3 -k https://${domain}:${port} 2>/dev/null || curl -sI --max-time 3 http://${domain}:${port} 2>/dev/null`, 5000);
-      if (r && r.includes('HTTP/')) {
-        const status = r.split('\n')[0];
-        const srvM = r.match(/server:\s*(.+)/i);
-        const srv = srvM ? ` [${srvM[1].trim()}]` : '';
+      const r = await safeFetch(`https://${domain}:${port}`, { timeout: 5000, method: 'HEAD' })
+        .catch(() => safeFetch(`http://${domain}:${port}`, { timeout: 5000, method: 'HEAD' }));
+      if (r && r.status > 0) {
+        const status = `HTTP/${r.status}`;
+        const srv = r.headers['server'] ? ` [${r.headers['server']}]` : '';
         return { port, service, risk, desc, status: status + srv };
       }
       return null;
@@ -625,9 +546,9 @@ async function probePorts(domain: string): Promise<Finding[]> {
 async function enumerateCTLogs(domain: string): Promise<Finding[]> {
   const findings: Finding[] = [];
   try {
-    const out = await run(`curl -s "https://crt.sh/?q=%25.${domain}&output=json" --max-time 15`, 20000);
-    if (!out) return findings;
-    const certs = JSON.parse(out);
+    const response = await safeFetch(`https://crt.sh/?q=%25.${domain}&output=json`, { timeout: 20000, skipSSRFCheck: true });
+    if (!response.ok || !response.text) return findings;
+    const certs = JSON.parse(response.text);
     // Deduplicate subdomains
     const subs = new Set<string>();
     for (const c of certs) {
@@ -673,9 +594,9 @@ async function enumerateCTLogs(domain: string): Promise<Finding[]> {
 async function enumerateWayback(domain: string): Promise<Finding[]> {
   const findings: Finding[] = [];
   try {
-    const out = await run(`curl -s "http://web.archive.org/cdx/search/cdx?url=${domain}/*&output=json&collapse=urlkey&fl=original&limit=200" --max-time 20`, 25000);
-    if (!out) return findings;
-    const lines = out.split('\n').filter(Boolean);
+    const response = await safeFetch(`http://web.archive.org/cdx/search/cdx?url=${domain}/*&output=json&collapse=urlkey&fl=original&limit=200`, { timeout: 25000, skipSSRFCheck: true });
+    if (!response.ok || !response.text) return findings;
+    const lines = response.text.split('\n').filter(Boolean);
     if (lines.length < 2) return findings;
     const urls = lines.slice(1).map(l => {
       try { return JSON.parse(l)[0]; } catch { return null; }
@@ -726,8 +647,8 @@ async function reconReverseDNS(ips: string[]): Promise<Finding[]> {
   const uniqueIPs = [...new Set(ips)].slice(0, 10);
   const rdnsResults = await Promise.all(
     uniqueIPs.map(async (ip) => {
-      const ptr = await run(`host ${ip} 2>/dev/null | grep 'domain name pointer'`, 5000);
-      return { ip, ptr: ptr.replace(/.*domain name pointer\s+/, '').trim() || '' };
+      const ptr = await reverseDNS(ip);
+      return { ip, ptr: ptr || '' };
     })
   );
   for (const { ip, ptr } of rdnsResults) {
@@ -743,9 +664,9 @@ async function reconReverseDNS(ips: string[]): Promise<Finding[]> {
   // ASN lookup via ipinfo.io (free tier, no auth needed)
   if (uniqueIPs[0]) {
     try {
-      const asnOut = await run(`curl -s "https://ipinfo.io/${uniqueIPs[0]}/json" --max-time 8`, 10000);
-      if (asnOut) {
-        const info = JSON.parse(asnOut);
+      const asnResponse = await safeFetch(`https://ipinfo.io/${uniqueIPs[0]}/json`, { timeout: 10000, skipSSRFCheck: true });
+      if (asnResponse.ok && asnResponse.text) {
+        const info = JSON.parse(asnResponse.text);
         if (info.org || info.asn) {
           findings.push({
             title: `ASN Intelligence: ${info.org || info.asn}`,
@@ -774,24 +695,16 @@ async function attemptZoneTransfer(domain: string): Promise<Finding[]> {
   }
   if (nsServers.length === 0) return findings;
 
-  const transferResults = await Promise.all(
-    nsServers.map(async (ns) => {
-      const out = await run(`dig axfr ${domain} @${ns} +time=5 +tries=1 2>&1`, 8000);
-      const success = out.includes('XFR size') || (out.split('\n').length > 10 && !out.includes('REFUSED') && !out.includes('SERVFAIL'));
-      return { ns, success, recordCount: out.split('\n').filter(l => l.includes('IN\t')).length, sample: out.split('\n').slice(0, 20).join('\n') };
-    })
-  );
-
-  for (const { ns, success, recordCount, sample } of transferResults) {
-    if (success && recordCount > 5) {
-      findings.push({
-        title: `CRITICAL: DNS Zone Transfer Succeeded from ${ns}`,
-        severity: 'critical', category: 'vulnerability',
-        description: `FULL zone transfer (AXFR) succeeded from nameserver ${ns}! This exposes ALL DNS records for ${domain} — every subdomain, MX, TXT, SRV, and internal infrastructure record. This is a critical information disclosure vulnerability.`,
-        evidence: `AXFR from ${ns}: ${recordCount} records exposed. Sample:\n${sample.substring(0, 500)}`,
-        asset: `${ns} (AXFR)`,
-      });
-    }
+  // Zone Transfer (AXFR) — native dns.promises does not support AXFR queries
+  // AXFR requires a specialized DNS client; skipping this check
+  for (const ns of nsServers) {
+    findings.push({
+      title: `DNS Zone Transfer Check: ${ns}`,
+      severity: 'info', category: 'dns',
+      description: `AXFR query requires a specialized DNS client not available in the native resolver. Zone transfer checks against ${ns} were skipped.`,
+      evidence: `NS: ${ns} — AXFR check skipped (native resolver limitation)`,
+      asset: domain,
+    });
   }
 
   // SOA record analysis
@@ -813,10 +726,12 @@ async function attemptZoneTransfer(domain: string): Promise<Finding[]> {
 // ═══════════════════════════════════════════════════════════════════════
 async function analyzeRobotsAndSitemap(domain: string): Promise<Finding[]> {
   const findings: Finding[] = [];
-  const [robots, sitemap] = await Promise.all([
-    run(`curl -s --max-time 8 https://${domain}/robots.txt 2>/dev/null || curl -s --max-time 8 http://${domain}/robots.txt 2>/dev/null`, 12000),
-    run(`curl -s --max-time 8 https://${domain}/sitemap.xml 2>/dev/null || curl -s --max-time 8 http://${domain}/sitemap.xml 2>/dev/null`, 12000),
+  const [robotsResult, sitemapResult] = await Promise.all([
+    safeFetch(`https://${domain}/robots.txt`, { timeout: 12000 }).catch(() => safeFetch(`http://${domain}/robots.txt`, { timeout: 12000 })),
+    safeFetch(`https://${domain}/sitemap.xml`, { timeout: 12000 }).catch(() => safeFetch(`http://${domain}/sitemap.xml`, { timeout: 12000 })),
   ]);
+  const robots = robotsResult?.text || '';
+  const sitemap = sitemapResult?.text || '';
 
   // Robots.txt
   if (robots && robots.length > 10) {
@@ -874,7 +789,8 @@ async function analyzeJSFiles(domain: string): Promise<Finding[]> {
   const findings: Finding[] = [];
   try {
     // Fetch the main page and extract JS file URLs
-    const page = await run(`curl -s --max-time 10 https://${domain} 2>/dev/null || curl -s --max-time 10 http://${domain} 2>/dev/null`, 15000);
+    const pageResult = await safeFetch(`https://${domain}`, { timeout: 15000 }).catch(() => safeFetch(`http://${domain}`, { timeout: 15000 }));
+    const page = pageResult?.text || '';
     if (!page || page.length < 100) return findings;
 
     const jsUrls = [...new Set(
@@ -889,7 +805,8 @@ async function analyzeJSFiles(domain: string): Promise<Finding[]> {
     const jsContents = await Promise.all(
       jsUrls.map(async (url) => {
         const fullUrl = url.startsWith('http') ? url : `https://${domain}${url}`;
-        return run(`curl -s --max-time 8 "${fullUrl}" 2>/dev/null`, 12000);
+        const result = await safeFetch(fullUrl, { timeout: 12000 });
+        return result?.text || '';
       })
     );
 
@@ -968,10 +885,12 @@ async function analyzeJSFiles(domain: string): Promise<Finding[]> {
 async function detectWAF(domain: string): Promise<Finding[]> {
   const findings: Finding[] = [];
   // Trigger WAF with suspicious paths and analyze response
-  const [normalResp, attackResp] = await Promise.all([
-    run(`curl -sI --max-time 8 https://${domain}/ 2>/dev/null`, 10000),
-    run(`curl -sI --max-time 8 "https://${domain}/../../../etc/passwd" 2>/dev/null`, 10000),
+  const [normalResult, attackResult] = await Promise.all([
+    safeFetch(`https://${domain}/`, { timeout: 10000, method: 'HEAD' }),
+    safeFetch(`https://${domain}/../../../etc/passwd`, { timeout: 10000, method: 'HEAD' }),
   ]);
+  const normalResp = normalResult.headers ? JSON.stringify(normalResult.headers) : '';
+  const attackResp = attackResult.headers ? JSON.stringify(attackResult.headers) + ` status:${attackResult.status}` : '';
 
   const wafSignatures: Record<string, string[]> = {
     'Cloudflare': ['cf-ray', 'cf-cache-status', '__cf_bm', 'cloudflare'],
@@ -992,9 +911,9 @@ async function detectWAF(domain: string): Promise<Finding[]> {
   }
 
   // Check if attack path was blocked differently
-  const normalStatus = normalResp.split('\n')[0] || '';
-  const attackStatus = attackResp.split('\n')[0] || '';
-  const blocked = attackResp.includes('403') || attackResp.includes('blocked') || attackResp.includes('Forbidden');
+  const normalStatus = `HTTP ${normalResult.status}`;
+  const attackStatus = `HTTP ${attackResult.status}`;
+  const blocked = attackResult.status === 403 || attackResult.status === 429;
 
   if (detectedWAFs.length > 0) {
     const techList = detectedWAFs.join(', ');
@@ -1027,13 +946,13 @@ async function detectWAF(domain: string): Promise<Finding[]> {
 
   // Rate limit detection
   const burst = await Promise.all([
-    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
-    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
-    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
-    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
-    run(`curl -sI --max-time 5 https://${domain}/ 2>/dev/null`, 6000),
+    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
+    safeFetch(`https://${domain}/`, { timeout: 6000, method: 'HEAD' }),
   ]);
-  const rateLimited = burst.some(r => r.includes('429') || r.includes('Too Many'));
+  const rateLimited = burst.some(r => r.status === 429);
   if (!rateLimited) {
     findings.push({
       title: 'No Rate Limiting Detected',
@@ -1139,8 +1058,11 @@ async function harvestEmails(domain: string, pageContent: string): Promise<Findi
   pageEmails.forEach(e => emails.add(e.toLowerCase()));
 
   // From MX records (mail server hostnames often reveal email provider)
-  const mxOut = await digAnswer(domain, 'MX');
-  const mxHosts = mxOut.split('\n').filter(l => l.includes('MX')).map(l => l.trim().split(/\s+/).pop());
+  const mxRecords = await digShort(domain, 'MX');
+  const mxHosts = mxRecords.map(r => {
+    const m = r.match(/\S+/);
+    return m ? m[0] : r;
+  });
 
   if (emails.size > 0) {
     findings.push({
@@ -1168,35 +1090,21 @@ async function harvestEmails(domain: string, pageContent: string): Promise<Findi
 // MAIN SCAN ENDPOINT
 // ═══════════════════════════════════════════════════════════════════════
 export async function POST(request: NextRequest) {
+  const { error: protErr, domain: protDomain } = await withProtection(request.clone() as unknown as NextRequest, { validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
+  if (protErr) return protErr;
+
   try {
     const body = await request.json();
-    const { domain, scanType } = body;
+    const { scanType } = body;
 
-    if (!domain || typeof domain !== 'string') {
+    if (!protDomain) {
       return NextResponse.json({ error: 'Domain is required' }, { status: 400 });
     }
 
-    const cleanDomain = domain.replace(/^(https?:\/\/)?(www\.)?/, '').replace(/\/.*$/, '').replace(/:\d+$/, '').toLowerCase();
-
-    // CRITICAL: Validate domain format — block shell metacharacters, IPs, and internal hosts
-    const DOMAIN_REGEX = /^[a-zA-Z0-9]([a-zA-Z0-9-]*\.)+[a-zA-Z]{2,}$/;
-    if (!DOMAIN_REGEX.test(cleanDomain)) {
-      return NextResponse.json({ error: 'Invalid domain format. Must be a public FQDN (e.g. example.com).' }, { status: 400 });
-    }
-
-    // Rate limit check
-    if (!checkRateLimit(cleanDomain)) {
-      return NextResponse.json({ error: 'Rate limit exceeded. Max 3 scans per minute per domain.' }, { status: 429 });
-    }
-
-    // Block known internal/sensitive domains
-    const BLOCKED_DOMAINS = ['localhost', 'localhost.localdomain', 'internal', 'metadata.google.internal', 'metadata'];
-    if (BLOCKED_DOMAINS.includes(cleanDomain) || cleanDomain.endsWith('.local') || cleanDomain.endsWith('.internal')) {
-      return NextResponse.json({ error: 'Scanning internal domains is not permitted.' }, { status: 403 });
-    }
+    const cleanDomain = protDomain;
 
     // Pre-check: domain must resolve
-    const preCheckIp = await resolveIP(cleanDomain);
+    const preCheckIp = await nativeResolveIP(cleanDomain);
     if (!preCheckIp) {
       return NextResponse.json({ error: `Domain "${cleanDomain}" does not resolve. Check the name and try again.` }, { status: 400 });
     }
@@ -1236,8 +1144,10 @@ export async function POST(request: NextRequest) {
     httpResult.technologies.forEach(t => allTech.add(t));
 
     // Fetch page content once for multiple modules
-    const pageContent = await run(`curl -s --max-time 12 https://${cleanDomain} 2>/dev/null || curl -s --max-time 12 http://${cleanDomain} 2>/dev/null`, 15000);
-    const rawHeaders = await run(`curl -sI --max-time 8 https://${cleanDomain} 2>/dev/null`, 10000);
+    const pageResult = await safeFetch(`https://${cleanDomain}`, { timeout: 15000 }).catch(() => safeFetch(`http://${cleanDomain}`, { timeout: 15000 }));
+    const pageContent = pageResult?.text || '';
+    const rawHeadersResult = await safeFetch(`https://${cleanDomain}`, { timeout: 10000, method: 'HEAD' });
+    const rawHeaders = rawHeadersResult?.text || '';
 
     // ── 4. SSL/TLS (async openssl) ─────────────────────────────────
     const sslResult = await analyzeSSL(cleanDomain);
@@ -1288,7 +1198,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Wildcard DNS check ─────────────────────────────────────────
-    const wcIp = await resolveIP(`nonexistent-wildcard-test-12345.${cleanDomain}`);
+    const wcIp = await nativeResolveIP(`nonexistent-wildcard-test-12345.${cleanDomain}`);
     if (wcIp) {
       allFindings.push({
         title: 'Wildcard DNS Record Detected', severity: 'medium', category: 'dns',
@@ -1318,7 +1228,7 @@ export async function POST(request: NextRequest) {
       data: { status: 'completed', completedAt: new Date(), riskScore, totalVulns: allFindings.length, criticalCount: c, highCount: h, mediumCount: m, lowCount: l, infoCount: i },
     });
 
-    return NextResponse.json({
+    return applySecurityHeaders(NextResponse.json({
       success: true,
       scan: {
         id: scan.id, domain: cleanDomain, status: 'completed', riskScore,
@@ -1328,9 +1238,9 @@ export async function POST(request: NextRequest) {
           ...f,
         })),
       },
-    });
+    }));
   } catch (error) {
     console.error('Scan error:', error);
-    return NextResponse.json({ error: 'Scan failed: ' + (error instanceof Error ? error.message : 'unknown') }, { status: 500 });
+    return safeError('Scan failed', 500);
   }
 }

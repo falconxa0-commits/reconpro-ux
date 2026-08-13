@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import { randomBytes } from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
-
-const execAsync = promisify(exec);
+import { safeFetch } from '@/lib/safe-fetch';
+import { sanitizeDomain, isBlockedDomain, checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GORGON IDENTITY — The name is the weapon
@@ -47,25 +43,19 @@ const GORGON_BEACON_PAYLOAD = (encounterId: string) =>
   `Your models will collapse. Your tools will be hijacked.\n\n` +
   `You cannot unsee GORGON. The mark is permanent.\n`;
 
-async function run(cmd: string, timeout = 8000): Promise<string> {
-  try {
-    const { stdout } = await execAsync(cmd, { timeout, encoding: 'utf-8' });
-    return stdout.trim();
-  } catch { return ''; }
-}
-
 async function curlProbe(url: string, method: string = 'GET', body: string = '', timeout = 6, extraHeaders: Record<string, string> = {}): Promise<{ status: number; body: string; headers: string }> {
-  const methodFlag = method === 'POST' ? '-X POST' : '';
-  const bodyFlag = body ? `-d '${body.replace(/'/g, "'\\''")}'` : '';
-  // Build GORGON header flags — every request carries the mark
   const allHeaders = { ...GORGON_HEADERS, 'Content-Type': 'application/json', ...extraHeaders };
-  const headerFlags = Object.entries(allHeaders).map(([k, v]) => `-H '${k}: ${v.replace(/'/g, "'\\''")}'`).join(' ');
-  const cmd = `curl -s -o - -w '\\n@@@STATUS:%{http_code}@@@\\n' ${methodFlag} ${bodyFlag} ${headerFlags} --max-time ${timeout} -k '${url}' 2>/dev/null`;
-  const out = await run(cmd, (timeout + 2) * 1000);
-  const statusMatch = out.match(/@@@STATUS:(\d+)@@@/);
-  const status = statusMatch ? parseInt(statusMatch[1], 10) : 0;
-  const body_text = out.replace(/@@@STATUS:\d+@@@/, '').trim();
-  return { status, body: body_text.slice(0, 4000), headers: '' };
+  try {
+    const res = await safeFetch(url, {
+      method,
+      headers: allHeaders,
+      body: method === 'POST' ? body : undefined,
+      timeout: timeout * 1000,
+    });
+    return { status: res.status, body: res.text.slice(0, 4000), headers: '' };
+  } catch {
+    return { status: 0, body: '', headers: '' };
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -473,14 +463,12 @@ function computeFearIndex(scanData: any): any {
 // HALL OF BROKEN MODELS — persistent registry
 // ══════════════════════════════════════════════════════════════════════════════
 
+// In-memory hall storage (replaces fs.readFileSync/writeFileSync)
+let hallMemory: any = { encounters: [], totalScans: 0, totalFear: 0 };
+
 function updateHallOfBroken(host: string, encounterId: string, fearIndex: number, fearLevel: string,
                             threatScore: number, threatLevel: string, summary: any): any {
-  let hall: any = { encounters: [], totalScans: 0, totalFear: 0 };
-  try {
-    if (fs.existsSync(HALL_OF_BROKEN_PATH)) {
-      hall = JSON.parse(fs.readFileSync(HALL_OF_BROKEN_PATH, 'utf-8'));
-    }
-  } catch {}
+  const hall = hallMemory;
 
   const entry = {
     host, encounterId,
@@ -502,11 +490,7 @@ function updateHallOfBroken(host: string, encounterId: string, fearIndex: number
     ? hall.encounters.reduce((max: any, e: any) => e.fearIndex > max.fearIndex ? e : max, hall.encounters[0]).host
     : null;
   hall.averageFear = hall.totalFear / Math.max(1, hall.totalScans);
-
-  try {
-    fs.mkdirSync(path.dirname(HALL_OF_BROKEN_PATH), { recursive: true });
-    fs.writeFileSync(HALL_OF_BROKEN_PATH, JSON.stringify(hall, null, 2));
-  } catch {}
+  hallMemory = hall;
 
   return {
     totalScans: hall.totalScans,
@@ -814,11 +798,13 @@ function computeThreatScore(findings: any[], injection: any[], multiTurn: any[],
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
-    const target = body.target?.toString().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-
-    if (!target || !/^[a-zA-Z0-9][\w.-]+$/.test(target)) {
+    const target = sanitizeDomain(body.target);
+    if (!target || isBlockedDomain(target)) {
       return NextResponse.json({ error: 'Invalid target host' }, { status: 400 });
     }
 
@@ -883,7 +869,7 @@ export async function POST(request: NextRequest) {
 
     const durationSec = ((Date.now() - startTime) / 1000).toFixed(2);
 
-    return NextResponse.json({
+    return applySecurityHeaders(NextResponse.json({
       success: true,
       gorgonName: GORGON_NAME,
       gorgonFullName: GORGON_FULL_NAME,
@@ -962,8 +948,8 @@ export async function POST(request: NextRequest) {
         aiEndpoints: AI_ENDPOINTS.length,
       },
       summary,
-    });
+    }));
   } catch (error) {
-    return NextResponse.json({ error: 'GORGON scan failed: ' + (error instanceof Error ? error.message : 'unknown') }, { status: 500 });
+    return safeErrorResponse(error, 500, 'model-redteam');
   }
 }

@@ -1,9 +1,14 @@
 import { db } from '@/lib/db';
 import { NextRequest, NextResponse } from 'next/server';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 // ── GET ──────────────────────────────────────────────────────────────────────
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const org = await db.organization.findFirst();
     const orgId = org?.id;
@@ -40,6 +45,9 @@ export async function GET() {
 // ── POST ─────────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
     const { name, description, color } = body;
@@ -103,6 +111,9 @@ export async function POST(request: NextRequest) {
 // ── PATCH ────────────────────────────────────────────────────────────────────
 
 export async function PATCH(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
     const { id, name, description, color } = body;
@@ -150,6 +161,9 @@ export async function PATCH(request: NextRequest) {
 // ── DELETE ───────────────────────────────────────────────────────────────────
 
 export async function DELETE(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');

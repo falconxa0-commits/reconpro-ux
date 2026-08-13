@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { escapeHtml } from '@/lib/utils';
 import {
   Terminal,
   Maximize2,
@@ -225,7 +226,7 @@ export function MatrixTerminalPanel() {
   const cmdVibeSec = useCallback((domain: string) => {
     if (isScanning) return;
     setIsScanning(true);
-    push(`VibeSec Analysis: <span class="text-white">${domain}</span>`, 'text-cyan-400 font-bold');
+    push(`VibeSec Analysis: <span class="text-white">${escapeHtml(domain)}</span>`, 'text-cyan-400 font-bold');
     push('─'.repeat(50), 'text-gray-600');
 
     const grades = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'D', 'F'];
@@ -274,7 +275,7 @@ export function MatrixTerminalPanel() {
     setIsScanning(true);
     scanAbortRef.current = false;
 
-    push(`Scanning: <span class="text-white">${domain}</span>`, 'text-cyan-400 font-bold');
+    push(`Scanning: <span class="text-white">${escapeHtml(domain)}</span>`, 'text-cyan-400 font-bold');
     push('─'.repeat(50), 'text-gray-600');
     pushBlank();
 
@@ -294,7 +295,7 @@ export function MatrixTerminalPanel() {
         /* summary */
         if (!scanAbortRef.current) {
           pushBlank();
-          push(`Scan Complete: <span class="text-white">${domain}</span>`, 'text-green-400 font-bold');
+          push(`Scan Complete: <span class="text-white">${escapeHtml(domain)}</span>`, 'text-green-400 font-bold');
           push('─'.repeat(50), 'text-gray-600');
           const totalFindings = phases.reduce(
             (sum, p) => sum + (SIMULATED_FINDINGS[p]?.length || 0), 0
@@ -345,7 +346,7 @@ export function MatrixTerminalPanel() {
         setTimeout(() => {
           for (const f of findings) {
             push(`  <span class="${sevColor(f.severity)}">[${f.severity.padEnd(8)}]</span> <span class="text-white">${f.title}</span>`);
-            push(`             <span class="text-gray-500">${f.detail.replace('{domain}', domain)}</span>`, 'text-gray-500');
+            push(`             <span class="text-gray-500">${f.detail.replace('{domain}', escapeHtml(domain))}</span>`, 'text-gray-500');
           }
           pushBlank();
           phaseIdx++;
@@ -363,7 +364,7 @@ export function MatrixTerminalPanel() {
     if (!trimmed) return;
 
     /* echo command */
-    push(`<span class="text-gray-400">${PROMPT}</span><span class="text-white">${trimmed.replace(/</g, '&lt;')}</span>`);
+    push(`<span class="text-gray-400">${PROMPT}</span><span class="text-white">${escapeHtml(trimmed)}</span>`);
 
     const parts = trimmed.split(/\s+/);
     const cmd = parts[0].toLowerCase();
@@ -396,7 +397,7 @@ export function MatrixTerminalPanel() {
         pushBlank();
         break;
       default:
-        push(`  <span class="text-red-400">Command not found:</span> ${cmd}`, 'text-red-400');
+        push(`  <span class="text-red-400">Command not found:</span> ${escapeHtml(cmd)}`, 'text-red-400');
         push('  Type <span class="text-green-400">help</span> for available commands.', 'text-gray-500');
         pushBlank();
     }

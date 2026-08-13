@@ -13,6 +13,7 @@ import {
   type SovereignActionType,
   type SovereignAction,
 } from '@/lib/sovereign-crypto';
+import { checkRateLimit } from '@/lib/api-security';
 
 // ═══════════════════════════════════════════════════════════════════════
 // Sovereign Control API — Founder-Only Cryptographic Authority
@@ -58,6 +59,9 @@ let simulatedActiveLockdowns = 0;
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const { searchParams } = new URL(request.url);
   const view = searchParams.get('view'); // 'status' | 'audit' | 'access-log'
   const clientIp = getClientIp(request);
@@ -115,6 +119,9 @@ export async function GET(request: NextRequest) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const clientIp = getClientIp(request);
 
   try {

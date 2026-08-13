@@ -25,7 +25,7 @@ export default function CLISection() {
           <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
             Command Line Interface
           </h2>
-          <p className={`mx-auto mt-5 max-w-xl text-sm text-white/40 transition-all delay-100 duration-700 ${isInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}`}>
+          <p className={`mx-auto mt-5 max-w-xl text-sm text-white/60 transition-all delay-100 duration-700 ${isInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}`}>
             45 commands. Every operation. One unified interface.
           </p>
         </div>
@@ -43,7 +43,7 @@ export default function CLISection() {
                   <div className="h-3 w-3 rounded-full bg-white/10" />
                 </div>
                 <div className="flex-1 text-center">
-                  <span className="text-xs tracking-wide text-white/20">
+                  <span className="text-xs tracking-wide text-white/50">
                     reconpro — {selectedCommand.name}
                   </span>
                 </div>
@@ -139,7 +139,7 @@ export default function CLISection() {
 
                       // Empty or other lines
                       return (
-                        <div key={lineIdx} className="leading-7 text-white/40">
+                        <div key={lineIdx} className="leading-7 text-white/50">
                           {line || "\u00A0"}
                         </div>
                       );
@@ -189,14 +189,14 @@ export default function CLISection() {
                         </span>
                         <p
                           className={`mt-1 text-sm truncate ${
-                            isActive ? "text-white/50" : "text-white/15 group-hover:text-white/25"
+                            isActive ? "text-white/60" : "text-white/40 group-hover:text-white/60"
                           } transition-colors`}
                         >
                           {cmd.description}
                         </p>
                       </div>
                       <span
-                        className="flex-shrink-0 rounded-md bg-white/[0.03] px-2 py-0.5 text-xs text-white/15 transition-colors group-hover:text-white/25"
+                        className="flex-shrink-0 rounded-md bg-white/[0.03] px-2 py-0.5 text-xs text-white/50 transition-colors group-hover:text-white/60"
                       >
                         {cmd.category}
                       </span>

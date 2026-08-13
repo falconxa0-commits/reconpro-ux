@@ -4,6 +4,7 @@
 // Header misconfigurations are in the OWASP Top 10 and CVE databases.
 
 import type { HTTPResult, SecurityHeaderAnalysis, TechnologyMatch, ReconFinding } from './types';
+import { safeFetch } from '@/lib/safe-fetch';
 
 // ── Security Header Definitions ──────────────────────────────────
 
@@ -188,40 +189,22 @@ export async function analyzeHTTP(domain: string, timeout = 8000): Promise<HTTPR
   const start = Date.now();
   const urls = [`https://${domain}`, `http://${domain}`];
 
-  let lastError: Error | null = null;
-
   for (const url of urls) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeout);
-
-      const response = await fetch(url, {
+      const result = await safeFetch(url, {
+        timeout,
         method: 'GET',
-        redirect: 'follow',
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.5',
         },
-        signal: controller.signal,
       });
 
-      clearTimeout(timer);
+      if (result.status === 0 || (result.status >= 300 && result.status < 400)) continue; // SSRF block or redirect — try next
+      if (result.status === 403 && result.text === '') continue; // SSRF block from safeFetch — try next
 
-      // Collect headers (lowercase keys)
-      const headers: Record<string, string> = {};
-      response.headers.forEach((value, key) => {
-        headers[key.toLowerCase()] = value;
-      });
-
-      // Get response body for tech fingerprinting (first 50KB)
-      let body = '';
-      try {
-        body = await response.text();
-        body = body.slice(0, 50000);
-      } catch {
-        body = '';
-      }
+      const headers = result.headers;
+      const body = result.text.slice(0, 50000);
 
       // Extract page title
       let title: string | undefined;
@@ -253,20 +236,16 @@ export async function analyzeHTTP(domain: string, timeout = 8000): Promise<HTTPR
       return {
         type: 'http',
         success: true,
-        url,
-        statusCode: response.status,
+        url: result.url,
+        statusCode: result.status,
         headers,
         securityHeaders,
         technologies: Array.from(techMap.values()),
         title,
         duration,
       };
-    } catch (err) {
-      lastError = err as Error;
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        continue; // Try next URL
-      }
-      // Network error, try next protocol
+    } catch {
+      // Network error or SSRF block — try next protocol
       continue;
     }
   }

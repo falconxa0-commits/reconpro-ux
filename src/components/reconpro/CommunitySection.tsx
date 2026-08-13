@@ -69,7 +69,7 @@ export default function CommunitySection() {
           </h2>
           <p
             className={`
-              mt-5 max-w-xl mx-auto text-sm text-white/40 transition-all delay-100 duration-700
+              mt-5 max-w-xl mx-auto text-sm text-white/60 transition-all delay-100 duration-700
               ${isInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}
             `}
           >
@@ -88,7 +88,7 @@ export default function CommunitySection() {
           {stats.map((stat) => (
             <span
               key={stat}
-              className="text-sm font-medium text-white/50"
+              className="text-sm font-medium text-white/60"
             >
               {stat}
             </span>
@@ -116,12 +116,12 @@ export default function CommunitySection() {
                   <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-white/[0.04] to-transparent" />
                 </div>
 
-                <Icon className="mb-4 h-5 w-5 text-white/20" strokeWidth={1.5} />
+                <Icon className="mb-4 h-5 w-5 text-white/40" strokeWidth={1.5} />
                 <h3 className="text-sm font-medium text-white">{card.title}</h3>
-                <p className="mt-1.5 text-sm leading-relaxed text-white/40">
+                <p className="mt-1.5 text-sm leading-relaxed text-white/60">
                   {card.description}
                 </p>
-                <span className="mt-4 inline-block text-xs text-white/50 transition-colors duration-200 group-hover:text-white/50">
+                <span className="mt-4 inline-block text-xs text-white/60 transition-colors duration-200 group-hover:text-white/80">
                   Learn more &rarr;
                 </span>
               </a>
@@ -145,11 +145,11 @@ export default function CommunitySection() {
                 className="
                   flex shrink-0 items-center gap-2 rounded-full
                   border border-white/[0.06] bg-white/[0.02] px-4 py-2
-                  text-xs font-medium text-white/40
+                  text-xs font-medium text-white/60
                   backdrop-blur-xl
                 "
               >
-                <Icon className="h-3.5 w-3.5 text-white/25" strokeWidth={1.5} />
+                <Icon className="h-3.5 w-3.5 text-white/50" strokeWidth={1.5} />
                 {badge.label}
               </span>
             );

@@ -70,7 +70,7 @@ const statusConfig: Record<
   },
   experimental: {
     label: "experimental",
-    className: "border-white/20 bg-white/10 text-white/40",
+    className: "border-white/20 bg-white/10 text-white/80",
   },
 };
 
@@ -99,25 +99,25 @@ export function ModulesSection() {
           <h2 className="text-gradient-void text-4xl font-semibold tracking-tight sm:text-5xl">
             Scanner Modules
           </h2>
-          <p className="mx-auto mt-5 max-w-md text-sm text-white/40">
+          <p className="mx-auto mt-5 max-w-md text-sm text-white/60">
             16 precision instruments. Complete coverage.
           </p>
         </div>
 
         {/* ── Summary Stats ─────────────────────────────── */}
         <div
-          className={`mb-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/50 transition-all duration-700 delay-100 ${
+          className={`mb-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/60 transition-all duration-700 delay-100 ${
             isInView
               ? "translate-y-0 opacity-100"
               : "translate-y-4 opacity-0"
           }`}
         >
           <span>
-            <span className="text-white/50 font-medium">10</span> Remote
+            <span className="text-white/60 font-medium">10</span> Remote
           </span>
           <span className="text-white/10">·</span>
           <span>
-            <span className="text-white/50 font-medium">6</span> Local
+            <span className="text-white/60 font-medium">6</span> Local
           </span>
           <span className="text-white/10">·</span>
           <span>
@@ -151,7 +151,7 @@ export function ModulesSection() {
                 className={`rounded-full border px-4 py-1.5 text-xs font-medium tracking-wide transition-all duration-200 ${
                   isActive
                     ? "border-white/20 bg-white/10 text-white/80"
-                    : "border-white/[0.06] bg-transparent text-white/30 hover:border-white/10 hover:text-white/50"
+                    : "border-white/[0.06] bg-transparent text-white/60 hover:border-white/10 hover:text-white/80"
                 }`}
               >
                 {f.label}
@@ -165,7 +165,7 @@ export function ModulesSection() {
           <div id="modules-remote" className="mb-16">
             {filter === "all" && (
               <h3
-                className={`mb-6 text-xs font-medium uppercase tracking-[0.2em] text-white/40 transition-all duration-700 delay-200 ${
+                className={`mb-6 text-xs font-medium uppercase tracking-[0.2em] text-white/60 transition-all duration-700 delay-200 ${
                   isInView
                     ? "translate-y-0 opacity-100"
                     : "translate-y-4 opacity-0"
@@ -194,7 +194,7 @@ export function ModulesSection() {
           <div id="modules-local">
             {filter === "all" && (
               <h3
-                className={`mb-6 text-xs font-medium uppercase tracking-[0.2em] text-white/40 transition-all duration-700 delay-200 ${
+                className={`mb-6 text-xs font-medium uppercase tracking-[0.2em] text-white/60 transition-all duration-700 delay-200 ${
                   isInView
                     ? "translate-y-0 opacity-100"
                     : "translate-y-4 opacity-0"
@@ -255,7 +255,7 @@ function ModuleCard({
           />
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="rounded-full border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-white/30">
+          <span className="rounded-full border border-white/[0.06] bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium uppercase tracking-widest text-white/60">
             {module.type}
           </span>
           <span
@@ -272,7 +272,7 @@ function ModuleCard({
       </h3>
 
       {/* ── Description ───────────────────────────────── */}
-      <p className="mt-1.5 text-sm leading-relaxed text-white/40">
+      <p className="mt-1.5 text-sm leading-relaxed text-white/60">
         {module.description}
       </p>
 

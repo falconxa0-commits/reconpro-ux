@@ -17,6 +17,7 @@ import {
   type TargetScope,
   type BroadcastMessage,
 } from '@/lib/broadcast-engine';
+import { checkRateLimit } from '@/lib/api-security';
 
 // Ensure demo data exists
 seedDemoBroadcasts();
@@ -28,6 +29,9 @@ const VALID_SCOPES: TargetScope[] = ['all', 'enterprise', 'government'];
 // ── GET /api/broadcast ─────────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
+  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const { searchParams } = new URL(req.url);
   const priority = searchParams.get('priority')?.toUpperCase();
   const channel = searchParams.get('channel')?.toLowerCase();
@@ -52,6 +56,9 @@ export async function GET(req: NextRequest) {
 // ── POST /api/broadcast ────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await req.json();
     const { priority, title, body: messageBody, channel, targetScope, issuedBy } = body;

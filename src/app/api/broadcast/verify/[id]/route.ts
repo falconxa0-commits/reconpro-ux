@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getAllBroadcasts, verifyBroadcast, seedDemoBroadcasts, type BroadcastMessage } from '@/lib/broadcast-engine';
+import { checkRateLimit } from '@/lib/api-security';
 
 seedDemoBroadcasts();
 
@@ -12,6 +13,9 @@ export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const { allowed } = checkRateLimit(_req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const { id } = await params;
   const broadcasts: BroadcastMessage[] = getAllBroadcasts();
   const broadcast = broadcasts.find((b) => b.id === id);

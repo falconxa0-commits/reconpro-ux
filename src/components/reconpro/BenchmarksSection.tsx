@@ -24,7 +24,7 @@ export default function BenchmarksSection() {
           <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl mb-4">
             <span className="text-gradient-void">Performance</span>
           </h2>
-          <p className="text-white/40 text-sm max-w-lg mx-auto">
+          <p className="text-white/60 text-sm max-w-lg mx-auto">
             Faster. Lighter. More efficient. Measurably superior.
           </p>
         </motion.div>
@@ -68,19 +68,19 @@ export default function BenchmarksSection() {
             <table className="table-void w-full text-sm">
               <thead>
                 <tr className="border-b border-white/[0.04]">
-                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/60 uppercase tracking-wider">
                     Benchmark
                   </th>
                   <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white uppercase tracking-wider">
                     ReconPro
                   </th>
-                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/60 uppercase tracking-wider">
                     Nmap
                   </th>
-                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/60 uppercase tracking-wider">
                     Nessus
                   </th>
-                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/40 uppercase tracking-wider">
+                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/60 uppercase tracking-wider">
                     Edge
                   </th>
                 </tr>
@@ -100,10 +100,10 @@ export default function BenchmarksSection() {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-white/40 font-mono">{row.nmap}</span>
+                      <span className="text-white/60 font-mono">{row.nmap}</span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-white/40 font-mono">
+                      <span className="text-white/60 font-mono">
                         {row.nessus}
                       </span>
                     </td>

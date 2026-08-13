@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { randomUUID } from 'crypto';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TYPES
@@ -216,6 +218,9 @@ function computeStats(models: LeaderboardEntry[]) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const { searchParams } = new URL(request.url);
     const sort = searchParams.get('sort') || 'fragility';
@@ -291,6 +296,9 @@ export async function GET(request: NextRequest) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const jobId = `GORGON-SCAN-${randomUUID().slice(0, 8).toUpperCase()}`;
 

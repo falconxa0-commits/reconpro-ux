@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 const ORG_ID = 'org_default';
 
@@ -23,6 +25,9 @@ const SAMPLE_IDENTITIES = [
 
 // GET — list identities with revocation stats
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const { searchParams } = new URL(request.url);
     const statusFilter = searchParams.get('status');
@@ -74,6 +79,9 @@ export async function GET(request: NextRequest) {
 
 // POST — scan for identities (MVP: generate sample data)
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json().catch(() => ({}));
     const { target, cloudProviders } = body as { target?: string; cloudProviders?: string[] };

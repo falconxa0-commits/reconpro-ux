@@ -66,7 +66,7 @@ function highlightSyntax(code: string) {
 
       // Comments
       if (highlighted.startsWith("#")) {
-        return `<span class="text-white/30">${highlighted}</span>`;
+        return `<span class="text-white/50">${highlighted}</span>`;
       }
 
       // Commands (pip, reconpro)
@@ -137,7 +137,7 @@ export default function DocsSection() {
           </h2>
           <p
             className={`
-              mt-5 max-w-xl mx-auto text-sm text-white/40 transition-all delay-100 duration-700
+              mt-5 max-w-xl mx-auto text-sm text-white/60 transition-all delay-100 duration-700
               ${isInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}
             `}
           >
@@ -163,7 +163,7 @@ export default function DocsSection() {
             </div>
             <button
               onClick={handleCopy}
-              className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs text-white/30 transition-colors duration-200 hover:bg-white/[0.06] hover:text-white/60"
+              className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs text-white/60 transition-colors duration-200 hover:bg-white/[0.06] hover:text-white/80"
               aria-label="Copy code"
             >
               <Copy className="h-3.5 w-3.5" />
@@ -201,12 +201,12 @@ export default function DocsSection() {
                   <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-white/[0.04] to-transparent" />
                 </div>
 
-                <Icon className="mb-4 h-5 w-5 text-white/20" strokeWidth={1.5} />
+                <Icon className="mb-4 h-5 w-5 text-white/40" strokeWidth={1.5} />
                 <h3 className="text-sm font-medium text-white">{item.title}</h3>
-                <p className="mt-1.5 text-sm leading-relaxed text-white/40">
+                <p className="mt-1.5 text-sm leading-relaxed text-white/60">
                   {item.description}
                 </p>
-                <span className="mt-4 inline-block text-xs text-white/50 transition-colors duration-200 group-hover:text-white/50">
+                <span className="mt-4 inline-block text-xs text-white/60 transition-colors duration-200 group-hover:text-white/80">
                   Explore &rarr;
                 </span>
               </div>

@@ -4,6 +4,8 @@
 // ══════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
+import { checkRateLimit, safeErrorResponse } from '@/lib/api-security';
+
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -595,6 +597,9 @@ function isBlockedByDefense(rule: PatternRule, session: SandboxSession): boolean
 // ── Request Router ─────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await req.json();
     const { action } = body;
@@ -604,12 +609,14 @@ export async function POST(req: NextRequest) {
     if (action === 'get-session') return getSession(body);
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'Internal error';
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return safeErrorResponse(e, 500, 'sandbox');
   }
 }
 
 export async function GET(req: NextRequest) {
+  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const url = new URL(req.url);
   if (url.searchParams.get('action') === 'leaderboard') {
     return NextResponse.json({ leaderboard: LEADERBOARD });

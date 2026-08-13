@@ -248,7 +248,7 @@ const fadeUp = {
 
 function ComparisonCell({ value }: { value: boolean | string | false }) {
   if (value === false) {
-    return <Minus className="w-4 h-4 text-white/20 mx-auto" />;
+    return <Minus className="w-4 h-4 text-white/50 mx-auto" />;
   }
   if (typeof value === 'string') {
     return <span className="text-sm text-[#f0f0f0]">{value}</span>;
@@ -378,7 +378,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
 
           {/* Billing Toggle */}
           <motion.div variants={itemVariants} className="flex items-center justify-center gap-4 mb-4">
-            <span className={`text-sm font-medium transition-colors duration-300 ${!isAnnual ? 'text-[#f0f0f0]' : 'text-white/40'}`}>
+            <span className={`text-sm font-medium transition-colors duration-300 ${!isAnnual ? 'text-[#f0f0f0]' : 'text-white/60'}`}>
               Monthly
             </span>
             <button
@@ -394,7 +394,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                 transition={{ type: 'spring' as const, stiffness: 500, damping: 30 }}
               />
             </button>
-            <span className={`text-sm font-medium transition-colors duration-300 ${isAnnual ? 'text-[#f0f0f0]' : 'text-white/40'}`}>
+            <span className={`text-sm font-medium transition-colors duration-300 ${isAnnual ? 'text-[#f0f0f0]' : 'text-white/60'}`}>
               Annual
             </span>
             <AnimatePresence>
@@ -492,7 +492,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                               <span className="text-3xl sm:text-4xl font-extrabold text-white">
                                 ${(isAnnual ? plan.annualPrice : plan.monthlyPrice)}
                               </span>
-                              <span className="text-sm text-white/40 ml-1">/month</span>
+                              <span className="text-sm text-white/60 ml-1">/month</span>
                               {isAnnual && plan.monthlyPrice !== 0 && plan.annualPrice !== plan.monthlyPrice && (
                                 <div className="mt-1">
                                   <span className="text-xs text-white/50 line-through">
@@ -514,7 +514,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                     </div>
 
                     {/* Description */}
-                    <p className="text-xs text-white/40 leading-relaxed">{plan.description}</p>
+                    <p className="text-xs text-white/60 leading-relaxed">{plan.description}</p>
                   </div>
 
                   {/* Features */}
@@ -527,13 +527,13 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                             : 'bg-[#00ff88]/10'
                         }`}>
                           {feature.included === false ? (
-                            <Minus className="w-3 h-3 text-white/15" />
+                            <Minus className="w-3 h-3 text-white/40" />
                           ) : (
                             <Check className="w-3 h-3 text-[#00ff88]" />
                           )}
                         </div>
                         <span className={`text-sm leading-snug ${
-                          feature.included === false ? 'text-white/25' : 'text-[#f0f0f0]/80'
+                          feature.included === false ? 'text-white/50' : 'text-[#f0f0f0]/80'
                         }`}>
                           {feature.text}
                           {typeof feature.included === 'string' && feature.included !== 'true' && (
@@ -571,7 +571,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                   Compare Plans in Detail
                 </span>
               </h2>
-              <p className="text-white/40 text-sm">Every feature, side by side. Find the perfect fit for your team.</p>
+              <p className="text-white/60 text-sm">Every feature, side by side. Find the perfect fit for your team.</p>
             </motion.div>
 
             <motion.div variants={itemVariants} className="relative rounded-2xl border border-white/[0.06] overflow-hidden bg-[#0d1220]/60 backdrop-blur-sm">
@@ -581,11 +581,11 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                   {/* Header Row */}
                   <thead>
                     <tr className="border-b border-white/[0.06]">
-                      <th className="text-left p-4 text-xs font-semibold text-white/40 uppercase tracking-wider w-[200px]">
+                      <th className="text-left p-4 text-xs font-semibold text-white/60 uppercase tracking-wider w-[200px]">
                         Feature
                       </th>
                       <th className="p-4 text-center">
-                        <div className="text-xs font-semibold text-white/40 uppercase tracking-wider">Starter</div>
+                        <div className="text-xs font-semibold text-white/60 uppercase tracking-wider">Starter</div>
                         <div className="text-lg font-bold text-white/60 mt-1">$0</div>
                       </th>
                       <th className="p-4 text-center bg-[#00ff88]/[0.03]">
@@ -671,7 +671,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                     <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00ff88]/20 to-[#06b6d4]/20 flex items-center justify-center">
                       <span className="text-[10px] font-bold text-[#00ff88] tracking-wider">{logo.initials}</span>
                     </div>
-                    <span className="text-sm font-semibold text-white/40 group-hover:text-white/60 transition-colors duration-300 hidden sm:inline">
+                    <span className="text-sm font-semibold text-white/60 group-hover:text-white/80 transition-colors duration-300 hidden sm:inline">
                       {logo.name}
                     </span>
                   </motion.div>
@@ -735,7 +735,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
               <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold mb-4 text-white">
                 Need something bigger?
               </h2>
-              <p className="text-base sm:text-lg text-white/40 max-w-2xl mx-auto mb-8 leading-relaxed">
+              <p className="text-base sm:text-lg text-white/60 max-w-2xl mx-auto mb-8 leading-relaxed">
                 Our team builds custom solutions for Fortune 500 security operations. 
                 <span className="text-white/60"> From bespoke integrations to dedicated on-premise deployments, we have you covered.</span>
               </p>

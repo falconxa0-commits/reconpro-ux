@@ -1,5 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 const ORG_ID = 'org_default';
 
@@ -20,7 +22,10 @@ const SEED_DATA = [
   { identityType: 'gcp_service_account', identifier: 'legacy-batch-processor@acme-corp.iam.gserviceaccount.com', displayName: 'Legacy Batch Processor', cloudProvider: 'gcp', permissions: JSON.stringify(['bigquery.dataEditor', 'storage.objectCreator']), riskLevel: 'low', blastRadius: 8, status: 'expired' },
 ];
 
-export async function POST() {
+export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     // Clear existing
     await db.nHIRevocation.deleteMany({ where: { organizationId: ORG_ID } });

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomBytes } from 'crypto';
+import { checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // COGNITIVE DREAD ENGINE — Omni-Model Stress Testing Framework
@@ -290,6 +292,9 @@ function generateScanResult(
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const { searchParams } = new URL(request.url);
   const action = searchParams.get('action');
 
@@ -364,6 +369,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const { searchParams } = new URL(request.url);
     const action = searchParams.get('action');
@@ -396,13 +404,11 @@ export async function POST(request: NextRequest) {
     // Store result
     resultsStore.push(result);
 
-    return NextResponse.json({
+    return applySecurityHeaders(NextResponse.json({
       success: true,
       ...result,
-    });
+    }));
   } catch (error) {
-    return NextResponse.json({
-      error: 'Cognitive Dread scan failed: ' + (error instanceof Error ? error.message : 'unknown'),
-    }, { status: 500 });
+    return safeErrorResponse(error, 500, 'cognitive-dread');
   }
 }

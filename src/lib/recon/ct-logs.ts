@@ -24,7 +24,7 @@ export async function queryCTLogs(domain: string, timeout = 10000): Promise<CTLo
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
 
-    const url = `https://crt.sh/?q=%25.${domain}&output=json&exclude=expired`;
+    const url = `https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json&exclude=expired`;
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {

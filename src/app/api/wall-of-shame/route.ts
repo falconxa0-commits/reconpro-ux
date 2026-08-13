@@ -4,6 +4,8 @@
 // ═══════════════════════════════════════════════════════════════════════
 
 import { NextRequest, NextResponse } from 'next/server';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 // ── Seeded PRNG (Mulberry32) ──────────────────────────────────────────
 
@@ -564,6 +566,9 @@ function computeStats(weekIncidents: Incident[]): Stats {
 // ── Route Handler ──────────────────────────────────────────────────────
 
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const { searchParams } = request.nextUrl;
   const limitParam = searchParams.get('limit');
   const severityFilter = searchParams.get('severity') as Severity | null;

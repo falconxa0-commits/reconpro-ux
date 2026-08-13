@@ -25,7 +25,7 @@ export default function Error({
             fill="none"
             stroke="currentColor"
             strokeWidth="1.5"
-            className="text-white/40"
+            className="text-white/60"
             aria-hidden="true"
           >
             <path d="M12 9v4" strokeLinecap="round" />
@@ -37,7 +37,7 @@ export default function Error({
         <h2 className="text-2xl font-semibold text-white mb-3">
           Something went wrong
         </h2>
-        <p className="text-sm text-white/40 mb-8 leading-relaxed">
+        <p className="text-sm text-white/60 mb-8 leading-relaxed">
           An unexpected error occurred. Our team has been notified.
           {error.digest && (
             <span className="block mt-2 text-white/50 font-mono text-xs">

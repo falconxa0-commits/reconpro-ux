@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // POST /api/genesis/revoke — Revoke a Genesis Stamp
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
     const { stampId, reason } = body as {

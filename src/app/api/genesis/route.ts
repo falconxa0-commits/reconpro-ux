@@ -5,6 +5,7 @@ import {
   signAttestation,
   type AttestationPayload,
 } from '@/lib/genesis-crypto';
+import { checkRateLimit } from '@/lib/api-security';
 
 // ═══════════════════════════════════════════════════════════════════════
 // Types
@@ -49,6 +50,9 @@ function gradeColor(grade: string): string {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
     const { domain, tier, scanId, organizationId } = body as {
@@ -244,6 +248,9 @@ export async function POST(request: NextRequest) {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const { searchParams } = new URL(request.url);
     const organizationId = searchParams.get('organizationId');

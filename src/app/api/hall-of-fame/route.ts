@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { checkRateLimit, safeErrorResponse, sanitizeDomain, isBlockedDomain, isPrivateIP } from '@/lib/api-security';
+import { safeFetch } from '@/lib/safe-fetch';
+
 
 // ─── VibeSec micro-scan: HTTP probe for 5 key paths ────────────────
 
@@ -15,49 +18,18 @@ async function httpProbe(
 ): Promise<ProbeResult> {
   try {
     const url = `https://${domain}${path}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (compatible; VibeSec/1.0; +https://reconpro.io)',
-      },
+    const res = await safeFetch(url, {
+      method: 'HEAD',
+      timeout: 5000,
+      followRedirects: false,
     });
-    clearTimeout(timeout);
-    const text = await res.text().catch(() => '');
     return {
       path,
       status: res.status,
-      exposed: res.status >= 200 && res.status < 400 && text.length > 0,
+      exposed: res.status >= 200 && res.status < 400 && res.text.length > 0,
     };
   } catch {
-    // If HTTPS fails, try HTTP
-    try {
-      const url = `http://${domain}${path}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(url, {
-        method: 'GET',
-        signal: controller.signal,
-        redirect: 'follow',
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (compatible; VibeSec/1.0; +https://reconpro.io)',
-        },
-      });
-      clearTimeout(timeout);
-      const text = await res.text().catch(() => '');
-      return {
-        path,
-        status: res.status,
-        exposed: res.status >= 200 && res.status < 400 && text.length > 0,
-      };
-    } catch {
-      return { path, status: 0, exposed: false };
-    }
+    return { path, status: 0, exposed: false };
   }
 }
 
@@ -115,6 +87,9 @@ async function runVibeSecMicroScan(domain: string): Promise<{
 // ─── GET: Leaderboard ──────────────────────────────────────────────
 
 export async function GET(req: NextRequest) {
+  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const { searchParams } = new URL(req.url);
   const category = searchParams.get('category') || '';
   const search = searchParams.get('search') || '';
@@ -177,30 +152,31 @@ export async function GET(req: NextRequest) {
 // ─── POST: Submit domain for scanning ──────────────────────────────
 
 export async function POST(req: NextRequest) {
+  const { allowed } = checkRateLimit(req.headers.get('x-forwarded-for') || 'unknown', 5, 60_000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await req.json();
     const { domain, submittedBy, category } = body;
 
-    // Validate domain
-    if (!domain || typeof domain !== 'string') {
+    // Validate domain using centralized security
+    const sanitized = sanitizeDomain(domain);
+    if (!sanitized) {
       return NextResponse.json(
-        { error: 'Domain is required' },
+        { error: 'Invalid domain format. Must be a public FQDN.' },
         { status: 400 },
       );
     }
-
-    const domainRegex =
-      /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
-    if (!domainRegex.test(domain)) {
+    if (isBlockedDomain(sanitized)) {
       return NextResponse.json(
-        { error: 'Invalid domain format' },
-        { status: 400 },
+        { error: 'Scanning internal domains is not permitted.' },
+        { status: 403 },
       );
     }
 
     // Check if domain already exists
     const existing = await db.vibeSecEntry.findUnique({
-      where: { domain },
+      where: { domain: sanitized },
     });
 
     if (existing) {
@@ -224,7 +200,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Run VibeSec micro-scan
-    const scanResult = await runVibeSecMicroScan(domain);
+    const scanResult = await runVibeSecMicroScan(sanitized);
 
     const isVerified = scanResult.score >= 90;
     const now = new Date();
@@ -232,7 +208,7 @@ export async function POST(req: NextRequest) {
 
     const entry = await db.vibeSecEntry.create({
       data: {
-        domain,
+        domain: sanitized,
         score: scanResult.score,
         grade: scanResult.grade,
         findings: scanResult.findings,
@@ -253,8 +229,6 @@ export async function POST(req: NextRequest) {
       existing: false,
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : 'Internal server error';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return safeErrorResponse(error, 500, 'hall-of-fame');
   }
 }

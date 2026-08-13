@@ -1,13 +1,153 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import dns from 'dns/promises';
+import net from 'net';
+import { sanitizeTarget, isBlockedDomain, isPrivateIP, checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+import { safeFetch } from '@/lib/safe-fetch';
 
-const execAsync = promisify(exec);
+// ══════════════════════════════════════════════════════════════════════════════
+// NATIVE RUN — Replaces shell exec with native Node.js APIs
+// ══════════════════════════════════════════════════════════════════════════════
+
+function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { try { s.destroy(); } catch {} resolve(false); }, timeoutMs);
+    const s = net.createConnection({ host, port, timeout: timeoutMs });
+    s.on('connect', () => { clearTimeout(timer); try { s.destroy(); } catch {} resolve(true); });
+    s.on('timeout', () => { clearTimeout(timer); try { s.destroy(); } catch {} resolve(false); });
+    s.on('error', () => { clearTimeout(timer); resolve(false); });
+  });
+}
+
+function tcpBannerGrab(host: string, port: number, timeoutMs: number, maxBytes = 300): Promise<string> {
+  return new Promise((resolve) => {
+    let data = '';
+    const timer = setTimeout(() => { try { s.destroy(); } catch {} resolve(data); }, timeoutMs);
+    const s = net.createConnection({ host, port, timeout: timeoutMs });
+    s.on('data', (chunk: Buffer) => {
+      data += chunk.toString();
+      if (data.length >= maxBytes) { clearTimeout(timer); try { s.destroy(); } catch {} resolve(data.substring(0, maxBytes)); }
+    });
+    s.on('timeout', () => { clearTimeout(timer); try { s.destroy(); } catch {} resolve(data); });
+    s.on('error', () => { clearTimeout(timer); resolve(data); });
+    s.on('close', () => { clearTimeout(timer); resolve(data); });
+  });
+}
+
+async function handleCurl(cmd: string, timeout: number): Promise<string> {
+  const isHead = /\b-sI\b|\b-I\b/.test(cmd);
+  const timeoutMatch = cmd.match(/--max-time\s+(\d+)/);
+  const timeoutSec = timeoutMatch ? parseInt(timeoutMatch[1]) : 8;
+  const headers: Record<string, string> = { 'User-Agent': 'Mozilla/5.0' };
+  const headerRegex = /-H\s+["']([^"']+)["']/g;
+  let m: RegExpExecArray | null;
+  while ((m = headerRegex.exec(cmd)) !== null) {
+    const ci = m[1].indexOf(':');
+    if (ci > 0) headers[m[1].substring(0, ci).trim()] = m[1].substring(ci + 1).trim();
+  }
+  const urlMatch = cmd.match(/(?:https?:\/\/[^\s"'`]+|http:\/\/[^\s"'`]+)/);
+  const url = urlMatch ? urlMatch[0] : '';
+  if (!url) return '';
+  try {
+    const res = await safeFetch(url, { method: isHead ? 'HEAD' : 'GET', headers, followRedirects: false, timeout: timeoutSec * 1000 });
+    if (isHead) {
+      let out = `HTTP/1.1 ${res.status}\n`;
+      for (const [k, v] of Object.entries(res.headers)) { out += `${k}: ${v}\n`; }
+      return out;
+    }
+    return res.text;
+  } catch { return ''; }
+}
+
+async function handleDig(cmd: string, _timeout: number): Promise<string> {
+  const isPtr = cmd.includes('-x');
+  let cleaned = cmd.replace(/\bdig\b/, '').replace(/\+short\b/g, '').replace(/\+time=\d+/g, '').replace(/\+tries=\d+/g, '').replace(/@\S+/g, '').replace(/2>\/>\/dev\/null/g, '').replace(/2>&1/g, '').trim();
+  if (isPtr) {
+    const pm = cleaned.match(/-x\s+(\S+)/);
+    const ip = pm ? pm[1] : '';
+    if (!ip) return '';
+    try { return (await dns.resolvePtr(ip)).join('\n'); } catch { return ''; }
+  }
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return '';
+  const recordTypes = ['A','AAAA','NS','CNAME','MX','TXT','PTR','SOA','SRV','ANY'];
+  let domain: string; let type = 'A';
+  const last = tokens[tokens.length - 1].toUpperCase();
+  if (tokens.length >= 2 && recordTypes.includes(last)) {
+    type = last; domain = tokens.slice(0, -1).join(' ');
+  } else { domain = tokens.join(' '); }
+  if (!domain) return '';
+  try {
+    let result: string[] = [];
+    switch (type) {
+      case 'A': result = await dns.resolve4(domain); break;
+      case 'NS': result = await dns.resolveNs(domain); break;
+      case 'CNAME': result = await dns.resolveCname(domain); break;
+      case 'TXT': { const r = await dns.resolveTxt(domain); result = r.map(x => x.join('')); break; }
+      case 'PTR': result = await dns.resolvePtr(domain); break;
+      default: result = await dns.resolve4(domain); break;
+    }
+    return result.join('\n');
+  } catch { return ''; }
+}
+
+async function handleNetcat(cmd: string, timeout: number): Promise<string> {
+  const bashMatch = cmd.match(/\/dev\/tcp\/([^/]+)\/(\d+)/);
+  if (bashMatch) {
+    const open = await tcpProbe(bashMatch[1], parseInt(bashMatch[2]), Math.min(timeout, 3000));
+    return open ? 'OPEN' : 'CLOSED';
+  }
+  const ncMatch = cmd.match(/nc\s+(?:-\w+\s+)*(\S+)\s+(\d+)/);
+  if (ncMatch) return tcpBannerGrab(ncMatch[1], parseInt(ncMatch[2]), timeout);
+  return '';
+}
+
+function applyPipe(input: string, pipeCmd: string): string {
+  const headBytes = pipeCmd.match(/head\s+-c\s+(\d+)/);
+  if (headBytes) return input.substring(0, parseInt(headBytes[1]));
+  const headLines = pipeCmd.match(/head\s+-(\d+)/);
+  if (headLines) return input.split('\n').slice(0, parseInt(headLines[1])).join('\n');
+  const grepMatch = pipeCmd.match(/^grep\s+(-\w+\s+)?(.+)$/);
+  if (grepMatch) {
+    const flags = grepMatch[1]?.trim() || '';
+    let pattern = grepMatch[2].trim();
+    if ((pattern.startsWith('"') && pattern.endsWith('"')) || (pattern.startsWith("'") && pattern.endsWith("'"))) pattern = pattern.slice(1, -1);
+    const isI = flags.includes('i');
+    try {
+      const regex = new RegExp(pattern, isI ? 'i' : '');
+      return input.split('\n').filter(l => regex.test(l)).join('\n');
+    } catch { return ''; }
+  }
+  return input;
+}
 
 async function run(cmd: string, timeout = 8000): Promise<string> {
   try {
-    const { stdout } = await execAsync(cmd, { timeout, encoding: 'utf-8' });
-    return stdout.trim();
+    if (cmd.includes('/dev/tcp')) {
+      const m = cmd.match(/\/dev\/tcp\/([^/]+)\/(\d+)/);
+      if (m) { const open = await tcpProbe(m[1], parseInt(m[2]), Math.min(timeout, 3000)); return cmd.includes('OPEN') && cmd.includes('CLOSED') ? (open ? 'OPEN' : 'CLOSED') : ''; }
+      return '';
+    }
+    if (cmd.includes('whois')) return '';
+    let effectiveCmd = cmd.replace(/^echo\s*(""\s*)?\|\s*/, '').trim();
+    effectiveCmd = effectiveCmd.replace(/\|\|/g, '\x00\x00');
+    const segments: string[] = []; let cur = ''; let inQ = false; let qCh = '';
+    for (let i = 0; i < effectiveCmd.length; i++) {
+      const ch = effectiveCmd[i];
+      if (inQ) { cur += ch; if (ch === qCh) inQ = false; }
+      else if (ch === '"' || ch === "'") { inQ = true; qCh = ch; cur += ch; }
+      else if (ch === '|') { segments.push(cur.trim()); cur = ''; }
+      else { cur += ch; }
+    }
+    segments.push(cur.trim());
+    const restored = segments.map(s => s.replace(/\x00\x00/g, '||'));
+    const mainCmd = restored[0]; const pipes = restored.slice(1);
+    let output = '';
+    if (mainCmd.includes('curl')) output = await handleCurl(mainCmd, timeout);
+    else if (mainCmd.includes('dig')) output = await handleDig(mainCmd, timeout);
+    else if (mainCmd.includes('nc ') || mainCmd.includes('/dev/tcp')) output = await handleNetcat(mainCmd, timeout);
+    else return '';
+    for (const pipe of pipes) output = applyPipe(output, pipe);
+    return output.trim();
   } catch { return ''; }
 }
 
@@ -367,24 +507,35 @@ function classifyThreat(ipRep: any, c2Infra: any[], dnsIndicators: any[]): any {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
-    const target = body.target?.toString().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const rawTarget = body.target?.toString().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     const mode = body.mode || 'hunt';
 
-    if (!target || !/^[a-zA-Z0-9][\w.-]+$/.test(target) && !/^\d+\.\d+\.\d+\.\d+$/.test(target)) {
+    const sanitized = sanitizeTarget(rawTarget);
+    if (!sanitized) {
       return NextResponse.json({ error: 'Invalid target domain or IP' }, { status: 400 });
+    }
+    if (isBlockedDomain(sanitized)) {
+      return NextResponse.json({ error: 'Target domain is not permitted' }, { status: 403 });
     }
 
     // Resolve to IP if domain
-    const isIP = /^\d+\.\d+\.\d+\.\d+$/.test(target);
-    const ip = isIP ? target : (await run(`dig +short +time=3 +tries=1 ${target} A`, 5000)).split('\n')[0]?.trim() || null;
+    const isIP = /^\d+\.\d+\.\d+\.\d+$/.test(sanitized);
+    const ip = isIP ? sanitized : (await run(`dig +short +time=3 +tries=1 ${sanitized} A`, 5000)).split('\n')[0]?.trim() || null;
 
     if (!ip && !isIP) {
-      return NextResponse.json({ error: `Could not resolve ${target}` }, { status: 400 });
+      return NextResponse.json({ error: `Could not resolve ${sanitized}` }, { status: 400 });
+    }
+    if (ip && isPrivateIP(ip)) {
+      return NextResponse.json({ error: 'Target resolves to a private or reserved IP address' }, { status: 403 });
     }
 
-    const resolvedIP = ip || target;
+    const resolvedIP = ip || sanitized;
+    const target = sanitized;
 
     // Run all intelligence modules in parallel
     const [
@@ -415,7 +566,7 @@ export async function POST(request: NextRequest) {
         : ['LOG: Standard monitoring', 'WATCH: Alert on unusual patterns'],
     };
 
-    return NextResponse.json({
+    return applySecurityHeaders(NextResponse.json({
       success: true,
       target,
       resolvedIP,
@@ -439,8 +590,8 @@ export async function POST(request: NextRequest) {
         })),
         cageStatus,
       },
-    });
+    }));
   } catch (error) {
-    return NextResponse.json({ error: 'Bot hunt failed: ' + (error instanceof Error ? error.message : 'unknown') }, { status: 500 });
+    return safeErrorResponse(error, 500, 'bot-hunter');
   }
 }

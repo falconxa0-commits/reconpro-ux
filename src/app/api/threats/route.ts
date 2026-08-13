@@ -1,5 +1,7 @@
 import { db } from '@/lib/db';
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // REAL THREAT INTELLIGENCE ENGINE
@@ -176,7 +178,10 @@ function generateThreatsFromFindings(findings: Array<{ severity: string; categor
   return threats;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     // Get latest scan findings for context
     const latestScan = await db.scan.findFirst({

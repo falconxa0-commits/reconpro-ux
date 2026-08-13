@@ -5,6 +5,8 @@ import {
   APT_GROUPS,
 } from '@/lib/cni-sentinel-engine';
 import type { NetworkSegment, Industry, DeviceInfo, ScanFinding } from '@/lib/cni-sentinel-engine';
+import { checkRateLimit, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CNI THREAT SENTINEL API
@@ -17,6 +19,9 @@ const VALID_SEGMENTS: NetworkSegment[] = ['scada', 'plc', 'hmi', 'dcs', 'enterpr
 const VALID_INDUSTRIES: Industry[] = ['energy', 'water', 'transportation', 'telecom', 'defense', 'manufacturing'];
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
 
@@ -81,7 +86,7 @@ export async function POST(request: NextRequest) {
     // Strip the large STIX/IODEF from main response (available via separate download)
     const { stixReport, iodefReport, ...analysisData } = results;
 
-    return NextResponse.json({
+    return applySecurityHeaders(NextResponse.json({
       success: true,
       ...analysisData,
       _reportMeta: {
@@ -90,16 +95,16 @@ export async function POST(request: NextRequest) {
         iodefAvailable: iodefReport.length > 0,
         iodefSize: Buffer.byteLength(iodefReport, 'utf-8'),
       },
-    });
+    }));
   } catch (error) {
-    return NextResponse.json(
-      { error: 'CNI analysis failed: ' + (error instanceof Error ? error.message : 'unknown') },
-      { status: 500 }
-    );
+    return safeErrorResponse(error, 500, 'cni-sentinel');
   }
 }
 
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const { searchParams } = new URL(request.url);
   const resource = searchParams.get('resource');
 

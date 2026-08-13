@@ -5,6 +5,8 @@
  * for all API routes.
  */
 
+import { NextResponse } from 'next/server';
+
 // ── Domain Validation ──────────────────────────────────────────────
 
 /** Strict domain regex — prevents injection via query params and body */
@@ -230,4 +232,17 @@ export function safeErrorResponse(
       headers: { 'Content-Type': 'application/json' },
     }
   );
+}
+
+// ── Defense-in-Depth Headers ──────────────────────────────────────────
+
+/**
+ * Apply security headers directly to a NextResponse as defense-in-depth.
+ * These supplement the middleware headers — if middleware is somehow bypassed,
+ * the route handler still provides basic security headers.
+ */
+export function applySecurityHeaders(response: NextResponse): NextResponse {
+  response.headers.set('X-Content-Type-Options', 'nosniff');
+  response.headers.set('X-Frame-Options', 'DENY');
+  return response;
 }

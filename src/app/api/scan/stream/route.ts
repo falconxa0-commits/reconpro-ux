@@ -1,6 +1,11 @@
 import { NextRequest } from 'next/server';
+import { checkRateLimit } from '@/lib/api-security';
+
 
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return new Response(JSON.stringify({ error: 'Rate limit exceeded' }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+
   const domain = request.nextUrl.searchParams.get('domain');
   if (!domain) return new Response('Missing domain', { status: 400 });
 

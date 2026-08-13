@@ -96,7 +96,7 @@ export function CommandPalette() {
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
-            className="text-white/20 flex-shrink-0"
+            className="text-white/40 flex-shrink-0"
             aria-hidden="true"
           >
             <circle cx="11" cy="11" r="8" />
@@ -128,7 +128,7 @@ export function CommandPalette() {
           aria-label="Command results"
         >
           {filtered.length === 0 ? (
-            <div className="px-4 py-8 text-center text-xs text-white/15">
+            <div className="px-4 py-8 text-center text-xs text-white/60">
               No results found
             </div>
           ) : (
@@ -150,7 +150,7 @@ export function CommandPalette() {
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="2"
-                  className="text-white/15 flex-shrink-0"
+                  className="text-white/40 flex-shrink-0"
                   aria-hidden="true"
                 >
                   {item.type === "navigation" ? (
@@ -175,15 +175,15 @@ export function CommandPalette() {
           )}
         </div>
         <div className="flex items-center gap-4 px-5 py-3 border-t border-white/[0.03]" aria-hidden="true">
-          <span className="text-[10px] text-white/10 flex items-center gap-1">
+          <span className="text-[10px] text-white/40 flex items-center gap-1">
             <kbd className="font-mono bg-white/[0.03] px-1 py-0.5 rounded border border-white/[0.04] text-[9px]">↑↓</kbd>
             navigate
           </span>
-          <span className="text-[10px] text-white/10 flex items-center gap-1">
+          <span className="text-[10px] text-white/40 flex items-center gap-1">
             <kbd className="font-mono bg-white/[0.03] px-1 py-0.5 rounded border border-white/[0.04] text-[9px]">↵</kbd>
             open
           </span>
-          <span className="text-[10px] text-white/10 flex items-center gap-1">
+          <span className="text-[10px] text-white/40 flex items-center gap-1">
             <kbd className="font-mono bg-white/[0.03] px-1 py-0.5 rounded border border-white/[0.04] text-[9px]">esc</kbd>
             close
           </span>

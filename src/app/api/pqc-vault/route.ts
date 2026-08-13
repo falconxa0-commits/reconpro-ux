@@ -13,6 +13,7 @@ import {
   PROTOCOL_ANALYSIS,
   type OrganizationType,
 } from '@/lib/pqc-vault-engine';
+import { checkRateLimit } from '@/lib/api-security';
 
 const VALID_ORG_TYPES: OrganizationType[] = [
   'central_bank', 'clearing_house', 'tier1_bank',
@@ -24,6 +25,9 @@ const VALID_PROTOCOLS = Object.keys(PROTOCOL_ANALYSIS);
 // ── POST /api/pqc-vault ────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const body = await request.json();
     const { organizationType, protocols, domain, complianceFrameworks } = body;
@@ -84,6 +88,9 @@ export async function POST(request: NextRequest) {
 // ── GET /api/pqc-vault/algorithms ─────────────────────────────────────
 
 export async function GET(request: NextRequest) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   const { searchParams } = new URL(request.url);
 
   // Route: /api/pqc-vault/algorithms

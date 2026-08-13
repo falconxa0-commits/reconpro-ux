@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
+import { checkRateLimit } from '@/lib/api-security';
+import { escapeHtml } from '@/lib/utils';
 
 // ═══════════════════════════════════════════════════════════════════════
 // GET /api/genesis/embed/[stampId] — Embeddable badge HTML
@@ -25,6 +27,9 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ stampId: string }> }
 ) {
+  const { allowed } = checkRateLimit(request.headers.get('x-forwarded-for') || 'unknown', 30, 60000);
+  if (!allowed) return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+
   try {
     const { stampId } = await params;
 
@@ -91,7 +96,7 @@ export async function GET(
       };">${isInvalid ? (isRevoked ? 'REVOKED' : 'EXPIRED') : stamp.grade}</span>
     </div>
     <div style="font-size:13px;color:#cbd5e1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${
-      stamp.domain
+      escapeHtml(stamp.domain)
     }</div>
     <div style="font-size:12px;color:#64748b;margin-top:2px;">Score: ${
       isInvalid ? '—' : stamp.score + '/100'

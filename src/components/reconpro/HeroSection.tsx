@@ -77,7 +77,7 @@ export default function HeroSection() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white/40 opacity-75" />
               <span className="relative inline-flex rounded-full h-2 w-2 bg-white/60" />
             </span>
-            <span className="text-xs text-white/40 font-medium">
+            <span className="text-xs text-white/60 font-medium">
               v10.0.0 — Now Available
             </span>
           </div>
@@ -100,7 +100,7 @@ export default function HeroSection() {
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.8, delay: 0.2, ease: [0.16, 1, 0.3, 1] as const }}
-          className="text-center text-base md:text-lg text-white/50 max-w-2xl mx-auto mb-10 leading-relaxed"
+          className="text-center text-base md:text-lg text-white/60 max-w-2xl mx-auto mb-10 leading-relaxed"
         >
           Billion-dollar grade reconnaissance. Autonomous. Intelligent. Minimal.
           <br className="hidden md:block" />
@@ -163,7 +163,7 @@ export default function HeroSection() {
                 suffix={stat.value.replace(/[0-9]/g, "")}
                 active={statsVisible}
               />
-              <div className="text-[11px] text-white/50 mt-1 tracking-wide">{stat.sub}</div>
+              <div className="text-[11px] text-white/60 mt-1 tracking-wide">{stat.sub}</div>
             </div>
           ))}
         </div>
@@ -180,7 +180,7 @@ export default function HeroSection() {
               <div className="cli-dot cli-dot-red" />
               <div className="cli-dot cli-dot-yellow" />
               <div className="cli-dot cli-dot-green" />
-              <span className="ml-3 text-[11px] text-white/20 font-mono">
+              <span className="ml-3 text-[11px] text-white/50 font-mono">
                 reconpro — bash
               </span>
               <div className="ml-auto flex items-center gap-2">
