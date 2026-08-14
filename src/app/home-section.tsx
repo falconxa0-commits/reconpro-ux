@@ -2,8 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { MotionConfig } from "framer-motion";
-import { Navbar } from "@/components/reconpro/Navbar";
-import { Footer } from "@/components/reconpro/Footer";
+// Navbar and Footer are provided by the (marketing)/layout.tsx route group layout.
 import { ScrollProgress } from "@/components/reconpro/ScrollProgress";
 import { BackToTop } from "@/components/reconpro/BackToTop";
 import { ObsidianShader } from "@/components/backgrounds/ObsidianShader";
@@ -94,8 +93,7 @@ export function HomeSection() {
       <ScrollProgress />
       <BackToTop />
       <CommandPalette />
-      <Navbar />
-      <main id="main-content">
+      <div id="main-content">
         <HeroSection />
         <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
         <FeaturesSection />
@@ -113,8 +111,7 @@ export function HomeSection() {
         <EnterpriseSection />
         <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
         <CommunitySection />
-      </main>
-      <Footer />
+      </div>
     </div>
     </MotionConfig>
   );

@@ -4,41 +4,20 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield,
   LayoutDashboard,
-  FileBarChart,
   Radar,
   History,
   Globe,
   Map,
-  Orbit,
   Brain,
-  Eye,
   AlertTriangle,
   TrendingUp,
   Users,
   ShieldCheck,
   Puzzle,
   Activity,
-  ScrollText,
   Settings,
-  CreditCard,
-  Palette,
   ChevronLeft,
   ChevronRight,
-  BadgeCheck,
-  Skull,
-  Bot,
-  Terminal,
-  Trophy,
-  ShieldAlert,
-  Radio,
-  Film,
-  Ghost,
-  Timer,
-  Crown,
-  Cpu,
-  Cloud,
-  Server,
-  Smartphone,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -46,7 +25,6 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from '@/components/ui/tooltip';
-import { Badge } from '@/components/ui/badge';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -71,14 +49,13 @@ export interface SidebarProps {
 }
 
 // ─── Navigation Data ─────────────────────────────────────────────────────────
+// Only items that map to actual dashboard routes.
 
 const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Overview',
     items: [
       { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { id: 'executive', label: 'Executive Briefing', icon: FileBarChart },
-      { id: 'hall-of-fame', label: 'Hall of Fame', icon: Trophy, badge: 'VIBESEC' },
     ],
   },
   {
@@ -87,8 +64,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'scan', label: 'New Scan', icon: Radar },
       { id: 'history', label: 'Scan History', icon: History },
       { id: 'surface', label: 'Attack Surface', icon: Globe },
-      { id: 'radar', label: 'Radar Map', icon: Map },
-      { id: 'globe', label: 'Threat Map', icon: Orbit },
+      { id: 'radar', label: 'Findings', icon: Map },
     ],
   },
   {
@@ -96,37 +72,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'advisor', label: 'AI Advisor', icon: Brain },
       { id: 'threats', label: 'Threat Intel', icon: AlertTriangle },
-      { id: 'dashboard', label: 'Risk Trends', icon: TrendingUp },
-    ],
-  },
-  {
-    title: 'Proof of Concept',
-    items: [
-      { id: 'proof', label: 'Live Scan Proof', icon: BadgeCheck, badge: 'VERIFIED' },
-    ],
-  },
-  {
-    title: 'Offensive',
-    items: [
-      { id: 'vulns', label: 'Vulnerability Arsenal', icon: Skull, badge: 'CVE SCAN' },
-      { id: 'unified-cli', label: 'ReconPro UNIFIED CLI', icon: Terminal, badge: '6 BLADES' },
-      { id: 'war-room', label: 'War Room', icon: Radio, badge: 'LIVE', accentColor: '#ff3355' },
-      { id: 'ai-leaderboard', label: 'Hall of Broken Models', icon: Ghost, badge: 'VIRAL', accentColor: '#ff3355' },
-      { id: 'proof-gallery', label: 'Proof Gallery', icon: Film, badge: 'SHARE' },
-    ],
-  },
-  {
-    title: 'Operations',
-    items: [
-      { id: 'nhi-kill-switch', label: 'NHI Kill Switch', icon: ShieldAlert, badge: 'ENTERPRISE', accentColor: '#ff3355' },
-      { id: 'genesis-stamp', label: 'Genesis Stamp', icon: BadgeCheck, badge: 'ENTERPRISE', accentColor: '#00ff88' },
-      { id: 'implosion', label: 'Risk Simulator', icon: Skull, badge: 'SALES', accentColor: '#ff3355' },
-      { id: 'doom-clock', label: 'Doom Clock', icon: Timer, badge: 'PQC', accentColor: '#ff3355' },
-      { id: 'pqc-vault', label: 'PQC Sovereign Vault', icon: Crown, badge: 'SOVEREIGN', accentColor: '#FFD700' },
-      { id: 'fear-index', label: 'CISO Fear Index', icon: AlertTriangle, badge: 'LIVE', accentColor: '#ff8844' },
-      { id: 'exposed-asset-map', label: 'Exposed Asset Map', icon: Globe, badge: 'GLOBAL', accentColor: '#44aaff' },
-      { id: 'confused-deputy', label: 'Confused Deputy', icon: Cpu, badge: 'PLAY' },
-      { id: 'cognitive-dread', label: 'Cognitive Dread', icon: Brain, badge: 'OMNI', accentColor: '#d946ef' },
+      { id: 'trends', label: 'Risk Trends', icon: TrendingUp },
     ],
   },
   {
@@ -136,32 +82,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'compliance', label: 'Compliance', icon: ShieldCheck },
       { id: 'integrations', label: 'Integrations', icon: Puzzle },
       { id: 'monitoring', label: 'Monitoring', icon: Activity },
-      { id: 'pricing', label: 'Pricing', icon: CreditCard },
-      { id: 'white-label', label: 'White-Label', icon: Palette },
       { id: 'settings', label: 'Settings', icon: Settings },
-    ],
-  },
-  {
-    title: 'Government',
-    items: [
-      { id: 'cni-sentinel', label: 'CNI Sentinel', icon: ShieldAlert, badge: 'OT', accentColor: '#00ff41' },
-      { id: 'air-gapped-appliance', label: 'Air-Gapped Appliance', icon: Server, badge: 'MILSPEC', accentColor: '#22c55e' },
-      { id: 'pegasus-inspector', label: 'Pegasus Inspector', icon: Smartphone, badge: 'FORENSICS' },
-    ],
-  },
-  {
-    title: 'Authority',
-    items: [
-      { id: 'sovereign-control', label: 'Sovereign Control', icon: Crown, badge: 'BOSS', accentColor: '#FFD700' },
-      { id: 'broadcast-center', label: 'Broadcast Center', icon: Radio, badge: 'ECHO-SIGN', accentColor: '#f59e0b' },
-      { id: 'wall-of-shame', label: 'Wall of Shame', icon: Eye, badge: 'LIVE', accentColor: '#ff3355' },
-    ],
-  },
-  {
-    title: 'Labs',
-    items: [
-      { id: 'matrix-terminal', label: 'Matrix Terminal', icon: Terminal, badge: 'PLAY' },
-      { id: 'training-cluster', label: 'GPU Training', icon: Cpu, badge: 'CLUSTER' },
     ],
   },
 ];
@@ -345,7 +266,7 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
               </span>
             </div>
             <span className="text-[9px] font-medium uppercase tracking-[0.25em] text-[#333333]">
-              Enterprise
+              Dashboard
             </span>
           </motion.div>
         )}
@@ -368,7 +289,7 @@ function UserSection({ collapsed }: { collapsed: boolean }) {
       <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center">
         <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[#00ff88]/30 to-[#00ff88]/5 ring-1 ring-[#00ff88]/20" />
         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#000000] text-[10px] font-bold text-[#00ff88]">
-          AC
+          {/* Initials will be dynamic once auth is connected */}
         </div>
         <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#050710] bg-[#00ff88]" />
       </div>
@@ -384,10 +305,10 @@ function UserSection({ collapsed }: { collapsed: boolean }) {
             className="flex flex-col overflow-hidden"
           >
             <span className="truncate text-[12.5px] font-semibold text-[#bbbbbb]">
-              Alex Chen
+              Signed In
             </span>
             <span className="truncate text-[10.5px] text-[#444444]">
-              Security Lead
+              Dashboard
             </span>
           </motion.div>
         )}

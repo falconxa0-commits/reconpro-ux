@@ -213,10 +213,13 @@ export default function SettingsPage() {
           <Button
             type="button"
             variant="outline"
-            className="border-zinc-700 bg-transparent text-white hover:bg-zinc-800 hover:text-white font-medium"
+            disabled
+            className="border-zinc-700 bg-transparent text-zinc-500 font-medium cursor-not-allowed"
+            title="API key generation is not yet available"
           >
             Generate New Key
           </Button>
+          <p className="text-xs text-zinc-600 mt-1">API key generation is not yet available.</p>
         </CardContent>
       </Card>
 
@@ -376,9 +379,11 @@ export default function SettingsPage() {
               type="button"
               variant="outline"
               size="sm"
-              className="border-zinc-700 bg-transparent text-white hover:bg-zinc-800 hover:text-white"
+              disabled
+              className="border-zinc-700 bg-transparent text-zinc-500 cursor-not-allowed"
+              title="Two-factor authentication is not yet available"
             >
-              Enable
+              Not Available
             </Button>
           </div>
           <Separator className="bg-zinc-800" />
@@ -391,9 +396,11 @@ export default function SettingsPage() {
               type="button"
               variant="outline"
               size="sm"
-              className="border-zinc-700 bg-transparent text-white hover:bg-zinc-800 hover:text-white"
+              disabled
+              className="border-zinc-700 bg-transparent text-zinc-500 cursor-not-allowed"
+              title="Session management is not yet available"
             >
-              View Sessions
+              Not Available
             </Button>
           </div>
         </CardContent>

@@ -46,7 +46,7 @@ export function Footer() {
         { label: "Privacy Policy", href: "/privacy" },
         { label: "Terms of Service", href: "/terms" },
         { label: "Cookie Policy", href: "/cookies" },
-        { label: "License (MIT)", href: "/#cli" },
+        { label: "License (MIT)", href: "/about" },
       ],
     },
   ];
@@ -138,10 +138,8 @@ export function Footer() {
         </p>
         <div className="flex items-center gap-4">
           <span className="text-[11px] text-white/50">
-            {product.version} · {product.loc} LOC · {product.tests} tests
+            {product.version} · Open Source · MIT License
           </span>
-          <span className="text-white/40">·</span>
-          <span className="text-[11px] text-white/50">Built with precision</span>
         </div>
       </div>
     </footer>

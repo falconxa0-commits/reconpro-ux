@@ -3,9 +3,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  LayoutDashboard, Radar, Shield, Brain, Globe, Terminal,
-  Skull, Trophy, Users, Activity, Puzzle, Settings, CreditCard,
-  Crown, Radio, AlertTriangle, Eye, Zap, type LucideIcon,
+  LayoutDashboard, Radar, Shield, Brain, Globe, Map, History,
+  Users, Activity, Puzzle, Settings, AlertTriangle, TrendingUp, Zap, type LucideIcon,
 } from 'lucide-react';
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -22,30 +21,25 @@ interface BottomDockProps {
   onViewChange: (view: string) => void;
 }
 
-// ─── Dock Items — Primary Row ──────────────────────────────────────
+// ─── Dock Items — only those mapping to real dashboard routes ──────────
 
 const PRIMARY_DOCK: DockItem[] = [
-  { id: 'executive', icon: LayoutDashboard, label: 'Command', color: '#ffffff' },
+  { id: 'dashboard', icon: LayoutDashboard, label: 'Overview', color: '#ffffff' },
   { id: 'scan', icon: Radar, label: 'Scan', color: '#5ba8d4' },
   { id: 'surface', icon: Globe, label: 'Attack Surface', color: '#e8b33d' },
   { id: 'threats', icon: AlertTriangle, label: 'Threats', color: '#e84057' },
   { id: 'advisor', icon: Brain, label: 'AI Advisor', color: '#3dd68c' },
   { id: 'compliance', icon: Shield, label: 'Compliance', color: '#5ba8d4' },
-  { id: 'vulns', icon: Skull, label: 'Arsenal', color: '#e84057' },
 ];
 
 const SECONDARY_DOCK: DockItem[] = [
-  { id: 'hall-of-fame', icon: Trophy, label: 'Hall of Fame' },
+  { id: 'history', icon: History, label: 'Scan History' },
+  { id: 'radar', icon: Map, label: 'Findings' },
+  { id: 'trends', icon: TrendingUp, label: 'Risk Trends' },
   { id: 'team', icon: Users, label: 'Team' },
   { id: 'monitoring', icon: Activity, label: 'Monitor' },
   { id: 'integrations', icon: Puzzle, label: 'Integrations' },
-  { id: 'pricing', icon: CreditCard, label: 'Pricing' },
   { id: 'settings', icon: Settings, label: 'Settings' },
-  { id: 'war-room', icon: Radio, label: 'War Room' },
-  { id: 'wall-of-shame', icon: Eye, label: 'Wall of Shame' },
-  { id: 'sovereign-control', icon: Crown, label: 'Sovereign' },
-  { id: 'nhi-kill-switch', icon: Zap, label: 'NHI Kill Switch' },
-  { id: 'unified-cli', icon: Terminal, label: 'CLI' },
 ];
 
 // ─── Expanded Menu ────────────────────────────────────────────────

@@ -32,7 +32,7 @@ export default function LoginPage() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Invalid email or password.");
       }
-      router.push("/dashboard/overview");
+      router.push("/overview");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Login failed. Please try again.");
     } finally {
@@ -54,7 +54,7 @@ export default function LoginPage() {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Invalid API key.");
       }
-      router.push("/dashboard/overview");
+      router.push("/overview");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Authentication failed. Please try again.");
     } finally {

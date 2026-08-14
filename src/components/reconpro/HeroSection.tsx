@@ -140,7 +140,7 @@ export default function HeroSection() {
             href="/about"
             className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/[0.03] border border-white/[0.06] text-white/50 text-sm font-medium hover:bg-white/[0.06] hover:text-white/80 transition-all duration-300"
           >
-            View on GitHub
+            Learn More
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M7 17L17 7" />
               <path d="M7 7h10v10" />

@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// ReconPro v1.0.0 — JSON-LD Structured Data
+// ReconPro — JSON-LD Structured Data
 // ═══════════════════════════════════════════════════════════════
 
 const SITE_URL = "https://reconpro.dev";
@@ -29,7 +29,7 @@ const webApplicationSchema = {
     "Team management and audit logging",
     "SSRF-protected scanning engine",
   ],
-  softwareVersion: "1.0.0",
+  softwareVersion: "0.2.0",
   programmingLanguage: "Python",
   license: "https://opensource.org/licenses/MIT",
   author: {
@@ -65,12 +65,11 @@ const softwareSourceSchema = {
   description:
     "Attack surface intelligence platform.",
   url: SITE_URL,
-  // TODO: Add real GitHub repository URL once public
   codeRepository: SITE_URL,
   programmingLanguage: "Python",
   runtimePlatform: "Python 3.10+",
   license: "https://opensource.org/licenses/MIT",
-  version: "1.0.0",
+  version: "0.2.0",
   author: {
     "@type": "Organization",
     name: "ReconPro",

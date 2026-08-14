@@ -2,7 +2,6 @@ import { Metadata } from "next";
 import { Space_Grotesk, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
-import { HomeSection } from "./home-section";
 import { JsonLdStructuredData } from "@/components/seo/json-ld";
 
 // ── Premium Font System — ReconPro ──
@@ -102,6 +101,8 @@ export default function RootLayout({
       <head>
         {/* SEO: JSON-LD Structured Data */}
         <JsonLdStructuredData />
+        {/* PWA Manifest */}
+        <link rel="manifest" href="/manifest.json" />
       </head>
       <body className="antialiased bg-black text-white">
         {children}

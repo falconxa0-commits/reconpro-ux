@@ -11,7 +11,7 @@ const paletteItems = [
     type: "navigation" as const,
   })),
   { label: "Install ReconPro", section: "", type: "action" as const, action: "install" },
-  { label: "View on GitHub", section: "", type: "action" as const, action: "github" },
+  { label: "About ReconPro", section: "", type: "action" as const, action: "about" },
   { label: "Copy Install Command", section: "", type: "action" as const, action: "copy" },
 ];
 
@@ -57,7 +57,7 @@ export function CommandPalette() {
     (item: (typeof paletteItems)[0]) => {
       if (item.type === "navigation" && item.section) {
         scrollTo(item.section);
-      } else if (item.type === "action" && item.action === "github") {
+      } else if (item.type === "action" && item.action === "about") {
         window.open("/about", "_self");
       } else if (item.type === "action" && item.action === "copy") {
         navigator.clipboard.writeText("pip install reconpro");

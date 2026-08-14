@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { Globe, Server, Shield, AlertTriangle, Lock, Wifi, FileText, Bug, ChevronRight, Search, Eye, Radar, Mail } from 'lucide-react';
+import { Globe, Server, Shield, AlertTriangle, Lock, Wifi, FileText, Bug, ChevronRight, Search } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { RiskGauge } from './risk-gauge';
 

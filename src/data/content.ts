@@ -5,11 +5,9 @@
 export const product = {
   name: "ReconPro",
   tagline: "Attack Surface Intelligence Platform",
-  version: "1.0.0",
+  version: "0.2.0",
   description:
     "Attack surface intelligence with real-time reconnaissance, threat detection, and compliance mapping.",
-  github: "/about",
-  pypi: "/docs",
   docs: "/docs",
   license: "MIT",
   python: "3.10+",
