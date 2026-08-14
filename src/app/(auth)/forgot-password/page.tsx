@@ -1,16 +1,40 @@
-import type { Metadata } from "next";
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Mail, ArrowLeft } from "lucide-react";
-
-export const metadata: Metadata = {
-  title: "Forgot Password",
-};
+import { Mail, ArrowLeft, Loader2 } from "lucide-react";
 
 export default function ForgotPasswordPage() {
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+
+    if (!email.trim()) {
+      setError("Please enter your email address.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // No real email service exists yet — show placeholder message
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      setSent(true);
+    } catch {
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <Card className="border-zinc-800 bg-zinc-950 text-white">
       <CardHeader className="text-center">
@@ -26,32 +50,51 @@ export default function ForgotPasswordPage() {
       </CardHeader>
 
       <CardContent>
-        <form className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="email" className="text-zinc-300">
-              Email Address
-            </Label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@company.com"
-                className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
-              />
+        {sent ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
+              Password reset functionality is not yet available. Please contact support.
             </div>
-            <p className="text-xs text-zinc-500">
-              We&apos;ll send a password reset link to your email address.
-            </p>
           </div>
+        ) : (
+          <>
+            {error && (
+              <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+                {error}
+              </div>
+            )}
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email" className="text-zinc-300">
+                  Email Address
+                </Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="you@company.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                  />
+                </div>
+                <p className="text-xs text-zinc-500">
+                  We&apos;ll send a password reset link to your email address.
+                </p>
+              </div>
 
-          <Button
-            type="submit"
-            className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
-          >
-            Send Reset Link
-          </Button>
-        </form>
+              <Button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
+              >
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send Reset Link"}
+              </Button>
+            </form>
+          </>
+        )}
       </CardContent>
 
       <CardFooter className="justify-center">

@@ -5,10 +5,10 @@ import { GitBranch, Code, Users, Shield, Unlock, Package, FlaskConical, GitPullR
 import { useInView } from "@/hooks/useInView";
 
 const stats = [
-  "18.7K GitHub Stars",
-  "142 Contributors",
-  "2.4M+ PyPI Downloads",
+  "Open Source",
   "MIT License",
+  "Community Driven",
+  "Python 3.10+",
 ];
 
 const guideCards = [
@@ -16,19 +16,19 @@ const guideCards = [
     icon: GitBranch,
     title: "Contributing",
     description: "PR template, code standards, review process, merge criteria",
-    href: "#",
+    href: "/docs",
   },
   {
     icon: Code,
     title: "Development",
     description: "Setup guide, architecture overview, testing standards, release process",
-    href: "#",
+    href: "/docs",
   },
   {
     icon: Users,
     title: "Community",
     description: "Discord server, GitHub Discussions, issue templates, governance",
-    href: "#",
+    href: "/docs",
   },
 ];
 
@@ -36,8 +36,8 @@ const badges = [
   { icon: Shield, label: "MIT Licensed" },
   { icon: Unlock, label: "No Vendor Lock-in" },
   { icon: Package, label: "3 Dependencies" },
-  { icon: FlaskConical, label: "533 Tests" },
-  { icon: GitPullRequest, label: "142 Contributors" },
+  { icon: FlaskConical, label: "Tested Code" },
+  { icon: GitPullRequest, label: "Active Development" },
   { icon: Eye, label: "Transparent Development" },
 ];
 

@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     status: "healthy",
-    version: "10.0.0",
+    version: "1.0.0",
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     responseTime: Date.now() - startTime,

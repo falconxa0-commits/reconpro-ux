@@ -271,37 +271,48 @@ export function EnterpriseSection() {
                 />
 
                 <div className="relative min-h-[160px] flex flex-col justify-center">
-                  <AnimatePresence mode="wait">
-                    <motion.div
-                      key={activeTestimonial}
-                      initial={{ opacity: 0, x: 40 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -40 }}
-                      transition={{
-                        duration: 0.4,
-                        ease: [0.16, 1, 0.3, 1] as const,
-                      }}
-                      className="text-center"
-                    >
-                      <p
-                        className="text-lg sm:text-xl leading-relaxed text-white/70 mb-8 max-w-3xl mx-auto italic"
+                  {testimonials.length > 0 ? (
+                    <AnimatePresence mode="wait">
+                      <motion.div
+                        key={activeTestimonial}
+                        initial={{ opacity: 0, x: 40 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        exit={{ opacity: 0, x: -40 }}
+                        transition={{
+                          duration: 0.4,
+                          ease: [0.16, 1, 0.3, 1] as const,
+                        }}
+                        className="text-center"
                       >
-                        &ldquo;{testimonials[activeTestimonial].quote}&rdquo;
-                      </p>
-                      <div>
-                        <p className="text-white font-semibold text-base">
-                          {testimonials[activeTestimonial].author}
-                        </p>
                         <p
-                          className="text-sm mt-1"
-                          style={{ color: "rgba(255,255,255,0.4)" }}
+                          className="text-lg sm:text-xl leading-relaxed text-white/70 mb-8 max-w-3xl mx-auto italic"
                         >
-                          {testimonials[activeTestimonial].role},{" "}
-                          {testimonials[activeTestimonial].company}
+                          &ldquo;{testimonials[activeTestimonial].quote}&rdquo;
                         </p>
-                      </div>
-                    </motion.div>
-                  </AnimatePresence>
+                        <div>
+                          <p className="text-white font-semibold text-base">
+                            {testimonials[activeTestimonial].author}
+                          </p>
+                          <p
+                            className="text-sm mt-1"
+                            style={{ color: "rgba(255,255,255,0.4)" }}
+                          >
+                            {testimonials[activeTestimonial].role},{" "}
+                            {testimonials[activeTestimonial].company}
+                          </p>
+                        </div>
+                      </motion.div>
+                    </AnimatePresence>
+                  ) : (
+                    <div className="text-center">
+                      <p className="text-lg sm:text-xl leading-relaxed text-white/50 mb-4 max-w-3xl mx-auto">
+                        Built by security engineers, for security engineers.
+                      </p>
+                      <p className="text-sm text-white/30">
+                        Community testimonials coming soon.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Navigation */}

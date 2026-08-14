@@ -215,6 +215,7 @@ const cardHover = {
 export function MonitoringPanel() {
   const [data, setData] = useState<MonitoringData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [addOpen, setAddOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDomain, setNewDomain] = useState('');
@@ -222,8 +223,11 @@ export function MonitoringPanel() {
   const [newScanType, setNewScanType] = useState('full');
 
   const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError('');
     try {
       const res = await fetch('/api/monitoring');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData({
         policies: json.policies || [],
@@ -232,6 +236,7 @@ export function MonitoringPanel() {
       });
     } catch (err) {
       console.error('Failed to fetch monitoring data:', err);
+      setError('Failed to load monitoring data. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -304,6 +309,19 @@ export function MonitoringPanel() {
     return (
       <div className="w-full flex items-center justify-center py-20">
         <p className="text-[#444444]">Loading...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="w-full flex flex-col items-center justify-center gap-3 py-20">
+        <AlertCircle className="h-8 w-8 text-red-400" />
+        <p className="text-sm text-red-400">{error}</p>
+        <Button variant="outline" size="sm" onClick={fetchData} className="border-zinc-700 text-white hover:bg-zinc-800">
+          <RefreshCw className="mr-2 h-3.5 w-3.5" />
+          Retry
+        </Button>
       </div>
     );
   }

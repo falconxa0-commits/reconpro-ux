@@ -204,7 +204,7 @@ export function MatrixTerminalPanel() {
     push('  VibeSec:     LLM-powered security grading');
     push('  Pegasus:     Shadow-C2 spyware detection');
     push('  License:     Proprietary — ReconPro Labs');
-    push('  Repository:  github.com/reconpro/reconpro');
+    push('  Repository:  /about');
     push('');
     push('  Built with ♥ by the ReconPro team.', 'text-gray-500');
     pushBlank();
@@ -574,9 +574,7 @@ export function MatrixTerminalPanel() {
                 pip install reconpro
               </code>
               <a
-                href="https://github.com/reconpro/reconpro"
-                target="_blank"
-                rel="noopener noreferrer"
+                href="/about"
                 className="text-gray-500 hover:text-[#00ff88] text-xs flex items-center gap-1 transition-colors"
               >
                 GitHub <ExternalLink className="w-3 h-3" />

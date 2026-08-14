@@ -1,23 +1,41 @@
 "use client";
 
-import type { Metadata } from "next";
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { usePathname } from "next/navigation";
 import { EnterpriseSidebar } from "@/components/reconpro/sidebar";
 import { BottomDock } from "@/components/reconpro/bottom-dock";
+
+const PATH_TO_VIEW: Record<string, string> = {
+  "/overview": "dashboard",
+  "/scans": "scan",
+  "/findings": "radar",
+  "/monitoring": "monitoring",
+  "/teams": "team",
+  "/integrations": "integrations",
+  "/compliance": "compliance",
+  "/settings": "settings",
+};
 
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const [activeView, setActiveView] = useState("overview");
+  const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+
+  const activeView = useMemo(() => {
+    // Try exact match first, then prefix match
+    if (PATH_TO_VIEW[pathname]) return PATH_TO_VIEW[pathname];
+    const match = Object.keys(PATH_TO_VIEW).find((p) => pathname.startsWith(p));
+    return match ? PATH_TO_VIEW[match] : "dashboard";
+  }, [pathname]);
 
   return (
     <div className="min-h-screen flex bg-black text-white">
       <EnterpriseSidebar
         activeView={activeView}
-        onViewChange={setActiveView}
+        onViewChange={() => {}}
         collapsed={collapsed}
         onToggle={() => setCollapsed(!collapsed)}
       />
@@ -29,7 +47,7 @@ export default function DashboardLayout({
 
         <BottomDock
           activeView={activeView}
-          onViewChange={setActiveView}
+          onViewChange={() => {}}
         />
       </div>
     </div>

@@ -6,6 +6,7 @@ export default function Loading() {
           <div className="w-8 h-8 rounded-full border-2 border-white/10 border-t-white/40 animate-spin" />
         </div>
         <span className="text-xs text-white/50">Loading...</span>
+        <span className="sr-only">Loading page content, please wait.</span>
       </div>
     </div>
   );

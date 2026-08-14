@@ -78,7 +78,7 @@ export default function HeroSection() {
               <span className="relative inline-flex rounded-full h-2 w-2 bg-white/60" />
             </span>
             <span className="text-xs text-white/60 font-medium">
-              v10.0.0 — Now Available
+              Now Available
             </span>
           </div>
         </motion.div>
@@ -137,9 +137,7 @@ export default function HeroSection() {
             </button>
           </div>
           <a
-            href="https://github.com/reconpro/reconpro"
-            target="_blank"
-            rel="noopener noreferrer"
+            href="/about"
             className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/[0.03] border border-white/[0.06] text-white/50 text-sm font-medium hover:bg-white/[0.06] hover:text-white/80 transition-all duration-300"
           >
             View on GitHub

@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Roadmap",
+  title: "Roadmap | ReconPro",
   description:
     "ReconPro product roadmap — completed, in-progress, and planned features.",
 };
@@ -134,9 +134,7 @@ const categories: RoadmapCategory[] = [
 
 export default function RoadmapPage() {
   return (
-    <div className="min-h-screen flex flex-col bg-black text-white">
-
-      <main className="flex-1">
+    <div className="pt-16">
         <div className="max-w-3xl mx-auto px-6 py-24 md:py-32">
           {/* Header */}
           <header className="mb-16">
@@ -200,8 +198,6 @@ export default function RoadmapPage() {
             ))}
           </div>
         </div>
-      </main>
-
     </div>
   );
 }

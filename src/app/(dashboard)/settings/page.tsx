@@ -1,16 +1,88 @@
-import type { Metadata } from "next";
+"use client";
+
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { User, Key, Bell, Shield } from "lucide-react";
+import { User, Key, Bell, Shield, Loader2, Check } from "lucide-react";
 
-export const metadata: Metadata = {
-  title: "Settings",
-};
+interface ProfileData {
+  name: string;
+  email: string;
+  role: string;
+}
 
 export default function SettingsPage() {
+  const [profile, setProfile] = useState<ProfileData>({
+    name: "",
+    email: "",
+    role: "",
+  });
+  const [apiKeys, setApiKeys] = useState<Array<{ id: string; name: string; prefix: string; status: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  // Notification toggles
+  const [emailNotifications, setEmailNotifications] = useState(true);
+  const [scanAlerts, setScanAlerts] = useState(true);
+  const [criticalAlerts, setCriticalAlerts] = useState(true);
+  const [weeklyDigest, setWeeklyDigest] = useState(false);
+  const [slackIntegration, setSlackIntegration] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/members")
+      .then((r) => r.json())
+      .then((data) => {
+        const members = data.members || [];
+        if (members.length > 0) {
+          const m = members[0];
+          setProfile({
+            name: m.name || "",
+            email: m.email || "",
+            role: m.role || "",
+          });
+        }
+      })
+      .catch(() => setError("Failed to load profile data."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setSaved(false);
+    setError("");
+    try {
+      const res = await fetch("/api/members", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(profile),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to save changes.");
+      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to save changes.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="space-y-8 max-w-3xl">
+        <div className="text-white/40 text-sm">Loading settings...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8 max-w-3xl">
       {/* Profile Section */}
@@ -29,7 +101,18 @@ export default function SettingsPage() {
           </div>
         </CardHeader>
         <CardContent>
-          <form className="space-y-4">
+          <form onSubmit={handleSave} className="space-y-4">
+            {error && (
+              <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+                {error}
+              </div>
+            )}
+            {saved && (
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-400 flex items-center gap-2">
+                <Check className="h-4 w-4" />
+                Changes saved successfully.
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="settings-name" className="text-zinc-300">
@@ -38,8 +121,9 @@ export default function SettingsPage() {
                 <Input
                   id="settings-name"
                   type="text"
-                  placeholder="John Doe"
-                  defaultValue="John Doe"
+                  placeholder="Your name"
+                  value={profile.name}
+                  onChange={(e) => setProfile({ ...profile, name: e.target.value })}
                   className="border-zinc-800 bg-zinc-900 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
                 />
               </div>
@@ -51,7 +135,8 @@ export default function SettingsPage() {
                   id="settings-email"
                   type="email"
                   placeholder="you@company.com"
-                  defaultValue="john@company.com"
+                  value={profile.email}
+                  onChange={(e) => setProfile({ ...profile, email: e.target.value })}
                   className="border-zinc-800 bg-zinc-900 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
                 />
               </div>
@@ -64,15 +149,17 @@ export default function SettingsPage() {
                 id="settings-role"
                 type="text"
                 placeholder="Security Engineer"
-                defaultValue="Security Engineer"
+                value={profile.role}
+                onChange={(e) => setProfile({ ...profile, role: e.target.value })}
                 className="border-zinc-800 bg-zinc-900 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
               />
             </div>
             <Button
               type="submit"
+              disabled={saving}
               className="bg-white text-black hover:bg-zinc-200 font-medium"
             >
-              Save Changes
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Changes"}
             </Button>
           </form>
         </CardContent>
@@ -94,35 +181,35 @@ export default function SettingsPage() {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-white">Production Key</p>
-                <p className="text-xs text-zinc-500 font-mono mt-1">
-                  rk_live_••••••••••••••••a4f2
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-400 border border-emerald-500/20">
-                  Active
+          {apiKeys.length === 0 ? (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-white">No API keys generated yet</p>
+                  <p className="text-xs text-zinc-500 mt-1">
+                    Generate a key to enable programmatic access
+                  </p>
+                </div>
+                <span className="inline-flex items-center rounded-full bg-zinc-700/30 px-2.5 py-0.5 text-xs font-medium text-zinc-400 border border-zinc-700/30">
+                  None
                 </span>
               </div>
             </div>
-            <Separator className="bg-zinc-800" />
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-white">Development Key</p>
-                <p className="text-xs text-zinc-500 font-mono mt-1">
-                  rk_test_••••••••••••••••b7e1
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-400 border border-emerald-500/20">
-                  Active
-                </span>
-              </div>
+          ) : (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 space-y-3">
+              {apiKeys.map((key) => (
+                <div key={key.id} className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-white">{key.name}</p>
+                    <p className="text-xs text-zinc-500 font-mono mt-1">{key.prefix}</p>
+                  </div>
+                  <span className="inline-flex items-center rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-medium text-emerald-400 border border-emerald-500/20">
+                    {key.status}
+                  </span>
+                </div>
+              ))}
             </div>
-          </div>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -163,10 +250,11 @@ export default function SettingsPage() {
               <button
                 type="button"
                 role="switch"
-                aria-checked="true"
-                className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent bg-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
+                aria-checked={emailNotifications}
+                onClick={() => setEmailNotifications(!emailNotifications)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600 ${emailNotifications ? 'bg-white' : 'bg-zinc-700'}`}
               >
-                <span className="pointer-events-none block h-5 w-5 rounded-full bg-black shadow-lg ring-0 transition-transform translate-x-5" />
+                <span className={`pointer-events-none block h-5 w-5 rounded-full shadow-lg ring-0 transition-transform ${emailNotifications ? 'bg-black translate-x-5' : 'bg-zinc-400 translate-x-0'}`} />
               </button>
             </div>
 
@@ -185,10 +273,11 @@ export default function SettingsPage() {
               <button
                 type="button"
                 role="switch"
-                aria-checked="true"
-                className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent bg-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
+                aria-checked={scanAlerts}
+                onClick={() => setScanAlerts(!scanAlerts)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600 ${scanAlerts ? 'bg-white' : 'bg-zinc-700'}`}
               >
-                <span className="pointer-events-none block h-5 w-5 rounded-full bg-black shadow-lg ring-0 transition-transform translate-x-5" />
+                <span className={`pointer-events-none block h-5 w-5 rounded-full shadow-lg ring-0 transition-transform ${scanAlerts ? 'bg-black translate-x-5' : 'bg-zinc-400 translate-x-0'}`} />
               </button>
             </div>
 
@@ -207,10 +296,11 @@ export default function SettingsPage() {
               <button
                 type="button"
                 role="switch"
-                aria-checked="true"
-                className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent bg-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
+                aria-checked={criticalAlerts}
+                onClick={() => setCriticalAlerts(!criticalAlerts)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600 ${criticalAlerts ? 'bg-white' : 'bg-zinc-700'}`}
               >
-                <span className="pointer-events-none block h-5 w-5 rounded-full bg-black shadow-lg ring-0 transition-transform translate-x-5" />
+                <span className={`pointer-events-none block h-5 w-5 rounded-full shadow-lg ring-0 transition-transform ${criticalAlerts ? 'bg-black translate-x-5' : 'bg-zinc-400 translate-x-0'}`} />
               </button>
             </div>
 
@@ -227,10 +317,11 @@ export default function SettingsPage() {
               <button
                 type="button"
                 role="switch"
-                aria-checked="false"
-                className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent bg-zinc-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
+                aria-checked={weeklyDigest}
+                onClick={() => setWeeklyDigest(!weeklyDigest)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600 ${weeklyDigest ? 'bg-white' : 'bg-zinc-700'}`}
               >
-                <span className="pointer-events-none block h-5 w-5 rounded-full bg-zinc-400 shadow-lg ring-0 transition-transform translate-x-0" />
+                <span className={`pointer-events-none block h-5 w-5 rounded-full shadow-lg ring-0 transition-transform ${weeklyDigest ? 'bg-black translate-x-5' : 'bg-zinc-400 translate-x-0'}`} />
               </button>
             </div>
 
@@ -249,10 +340,11 @@ export default function SettingsPage() {
               <button
                 type="button"
                 role="switch"
-                aria-checked="false"
-                className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent bg-zinc-700 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600"
+                aria-checked={slackIntegration}
+                onClick={() => setSlackIntegration(!slackIntegration)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-600 ${slackIntegration ? 'bg-white' : 'bg-zinc-700'}`}
               >
-                <span className="pointer-events-none block h-5 w-5 rounded-full bg-zinc-400 shadow-lg ring-0 transition-transform translate-x-0" />
+                <span className={`pointer-events-none block h-5 w-5 rounded-full shadow-lg ring-0 transition-transform ${slackIntegration ? 'bg-black translate-x-5' : 'bg-zinc-400 translate-x-0'}`} />
               </button>
             </div>
           </div>

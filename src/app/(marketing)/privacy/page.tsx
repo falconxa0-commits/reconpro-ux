@@ -1,16 +1,14 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Privacy Policy",
+  title: "Privacy Policy | ReconPro",
   description:
     "ReconPro privacy policy — how we collect, use, store, and protect your data.",
 };
 
 export default function PrivacyPolicyPage() {
   return (
-    <div className="min-h-screen flex flex-col bg-black text-white">
-
-      <main className="flex-1">
+    <div className="pt-16">
         <div className="max-w-3xl mx-auto px-6 py-24 md:py-32">
           {/* Header */}
           <header className="mb-16">
@@ -117,7 +115,7 @@ export default function PrivacyPolicyPage() {
                 All data is stored in encrypted databases with access controls
                 restricted to essential engineering personnel. Scan results are
                 retained for 90 days by default, after which they are
-                automatically puraged. Account data is retained for the
+                automatically purged. Account data is retained for the
                 duration of your active subscription and deleted within 30 days
                 of account termination, unless retention is required by law.
               </p>
@@ -188,8 +186,6 @@ export default function PrivacyPolicyPage() {
             </section>
           </div>
         </div>
-      </main>
-
     </div>
   );
 }

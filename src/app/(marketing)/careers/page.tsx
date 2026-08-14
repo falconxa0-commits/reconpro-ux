@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Careers",
+  title: "Careers | ReconPro",
   description:
     "Join the ReconPro team — open roles and career opportunities in security engineering.",
 };
@@ -61,9 +61,7 @@ const roles: Role[] = [
 
 export default function CareersPage() {
   return (
-    <div className="min-h-screen flex flex-col bg-black text-white">
-
-      <main className="flex-1">
+    <div className="pt-16">
         <div className="max-w-3xl mx-auto px-6 py-24 md:py-32">
           {/* Header */}
           <header className="mb-16">
@@ -209,7 +207,7 @@ export default function CareersPage() {
                   careers@reconpro.dev
                 </a>
                 <a
-                  href="#"
+                  href="/about"
                   className="inline-flex items-center gap-2 text-sm font-medium text-white/60 hover:text-white transition-colors"
                 >
                   <Github className="h-4 w-4" />
@@ -219,8 +217,6 @@ export default function CareersPage() {
             </div>
           </section>
         </div>
-      </main>
-
     </div>
   );
 }

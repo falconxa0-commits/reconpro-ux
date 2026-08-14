@@ -18,6 +18,7 @@ import {
   Copy,
   Check,
   Plus,
+  RefreshCw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -154,6 +155,7 @@ export function TeamManagement() {
   const [members, setMembers] = useState<Member[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [inviteOpen, setInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState('');
@@ -174,24 +176,29 @@ export function TeamManagement() {
   const fetchMembers = useCallback(async () => {
     try {
       const res = await fetch('/api/members');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setMembers(json.members || []);
     } catch (err) {
       console.error('Failed to fetch members:', err);
+      setError('Failed to load team data. Please try again.');
     }
   }, []);
 
   const fetchTeams = useCallback(async () => {
     try {
       const res = await fetch('/api/teams');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setTeams(json.teams || []);
     } catch (err) {
       console.error('Failed to fetch teams:', err);
+      setError('Failed to load team data. Please try again.');
     }
   }, []);
 
   const fetchAllRef = useCallback(async () => {
+    setError('');
     await Promise.all([fetchMembers(), fetchTeams()]);
   }, [fetchMembers, fetchTeams]);
 
@@ -301,6 +308,19 @@ export function TeamManagement() {
     return (
       <div className="w-full flex items-center justify-center py-20">
         <p className="text-[#444444]">Loading...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="w-full flex flex-col items-center justify-center gap-3 py-20">
+        <AlertCircle className="h-8 w-8 text-red-400" />
+        <p className="text-sm text-red-400">{error}</p>
+        <Button variant="outline" size="sm" onClick={fetchAllRef} className="border-zinc-700 text-white hover:bg-zinc-800">
+          <RefreshCw className="mr-2 h-3.5 w-3.5" />
+          Retry
+        </Button>
       </div>
     );
   }

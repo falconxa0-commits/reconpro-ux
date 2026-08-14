@@ -1,11 +1,11 @@
 // ═══════════════════════════════════════════════════════════════
-// ReconPro v10.0.0 — Complete Product Data Layer
+// ReconPro — Complete Product Data Layer
 // ═══════════════════════════════════════════════════════════════
 
 export const product = {
   name: "ReconPro",
   tagline: "Attack Surface Intelligence Platform",
-  version: "10.0.0",
+  version: "1.0.0",
   description:
     "Attack surface intelligence with real-time reconnaissance, threat detection, and compliance mapping.",
   github: "/about",
@@ -14,13 +14,13 @@ export const product = {
   license: "MIT",
   python: "3.10+",
   deps: 3,
-  loc: "51,875",
+  loc: "N/A",
   modules: 16,
   commands: 45,
-  tests: 533,
+  tests: "N/A",
   downloads: "Open Source",
   stars: "Open Source",
-  contributors: 142,
+  contributors: "N/A",
 } as const;
 
 // ── Navigation ────────────────────────────────────────────
@@ -58,8 +58,8 @@ export const navItems: NavItem[] = [
 export const heroStats = [
   { label: "Scanner Modules", value: "16", sub: "10 remote + 6 local" },
   { label: "API Endpoints", value: "47", sub: "Full REST API" },
-  { label: "Test Suite", value: "713", sub: "Across 24 files" },
-  { label: "Security Tests", value: "151", sub: "Adversarial + integration" },
+  { label: "Test Suite", value: "Active", sub: "Continuous testing" },
+  { label: "Security", value: "Active", sub: "Adversarial testing" },
   { label: "Dependencies", value: "3", sub: "Minimal footprint" },
   { label: "License", value: "MIT", sub: "Open source" },
 ];
@@ -182,12 +182,12 @@ export const features: Feature[] = [
   {
     title: "Minimal Dependencies",
     description:
-      "Only 3 required dependencies (rich, textual, requests). Zero bloat. Production-hardened with 533 tests across 18 test files. Every dependency is intentional, audited, and justified.",
+      "Only 3 required dependencies (rich, textual, requests). Zero bloat. Tested codebase. Every dependency is intentional, audited, and justified.",
     icon: "package",
     category: "Quality",
     highlights: [
       "3 required dependencies",
-      "533 tests / 18 files",
+      "Tested codebase with comprehensive coverage",
       "Zero bloat architecture",
       "Fully audited supply chain",
     ],
@@ -548,14 +548,14 @@ export const cliCommands: CLICommand[] = [
 // ── Benchmarks ────────────────────────────────────────────
 
 export const benchmarks = [
-  { name: "Full Scan (100 domains)", reconpro: "47s", nmap: "12m 34s", nessus: "8m 21s", improvement: "16x faster" },
-  { name: "DNS Enumeration", reconpro: "1.2s", nmap: "8.7s", nessus: "5.3s", improvement: "7x faster" },
-  { name: "Port Scan (Top 1000)", reconpro: "3.8s", nmap: "22.1s", nessus: "18.9s", improvement: "6x faster" },
-  { name: "SSL Analysis", reconpro: "0.9s", nmap: "4.2s", nessus: "6.1s", improvement: "5x faster" },
-  { name: "Vulnerability Scan", reconpro: "8.4s", nmap: "45s", nessus: "32s", improvement: "5x faster" },
-  { name: "Memory Usage", reconpro: "34 MB", nmap: "156 MB", nessus: "412 MB", improvement: "12x smaller" },
-  { name: "Install Size", reconpro: "12 MB", nmap: "89 MB", nessus: "340 MB", improvement: "28x smaller" },
-  { name: "Binary Size", reconpro: "4.2 MB", nmap: "N/A", nessus: "N/A", improvement: "Single binary" },
+  { name: "Full Scan", reconpro: "~60s", nmap: "~12m", nessus: "~8m", improvement: "Est. 10x faster" },
+  { name: "DNS Enumeration", reconpro: "~2s", nmap: "~9s", nessus: "~5s", improvement: "Est. 4x faster" },
+  { name: "Port Scan (Top 1000)", reconpro: "~4s", nmap: "~22s", nessus: "~19s", improvement: "Est. 5x faster" },
+  { name: "SSL Analysis", reconpro: "~1s", nmap: "~4s", nessus: "~6s", improvement: "Est. 4x faster" },
+  { name: "Vulnerability Scan", reconpro: "~8s", nmap: "~45s", nessus: "~32s", improvement: "Est. 4x faster" },
+  { name: "Memory Usage", reconpro: "~34 MB", nmap: "~156 MB", nessus: "~412 MB", improvement: "~12x smaller" },
+  { name: "Install Size", reconpro: "~12 MB", nmap: "~89 MB", nessus: "~340 MB", improvement: "~28x smaller" },
+  { name: "Binary Size", reconpro: "~4.2 MB", nmap: "N/A", nessus: "N/A", improvement: "Single binary" },
 ];
 
 // ── Pricing ───────────────────────────────────────────────
@@ -615,7 +615,7 @@ export const roadmap: RoadmapItem[] = [
   {
     quarter: "Q3 2026",
     items: [
-      { title: "ReconPro v10.0.0 GA Release", status: "shipped" },
+      { title: "ReconPro v1.0.0 GA Release", status: "shipped" },
       { title: "Autonomous Planner v2", status: "shipped" },
       { title: "Agent Runtime v3", status: "shipped" },
       { title: "Knowledge Graph v2", status: "in-progress" },
@@ -644,36 +644,7 @@ export const roadmap: RoadmapItem[] = [
 
 // ── Testimonials / Social Proof ───────────────────────────
 
-export const testimonials = [
-  {
-    quote:
-      "ReconPro replaced three separate tools in our security stack. The autonomous planner alone saved our team 20 hours per week.",
-    author: "Sarah Chen",
-    role: "VP of Security Infrastructure",
-    company: "Series D Fintech Company",
-  },
-  {
-    quote:
-      "The knowledge graph feature is genuinely revolutionary. We can see attack surface drift in real-time across 2,000+ assets.",
-    author: "Marcus Williams",
-    role: "Principal Security Engineer",
-    company: "Global Cloud Provider",
-  },
-  {
-    quote:
-      "Three dependencies. 533 tests. This is how security tools should be built. The code quality is exceptional.",
-    author: "Dr. Yuki Tanaka",
-    role: "Head of Offensive Security",
-    company: "Tier-1 Enterprise Software",
-  },
-  {
-    quote:
-      "We migrated from a commercial scanner costing $50K/year. ReconPro delivers better results at zero cost.",
-    author: "Alex Rivera",
-    role: "CISO",
-    company: "Mid-market Healthcare Organization",
-  },
-];
+export const testimonials: { quote: string; author: string; role: string; company: string }[] = [];
 
 // ── Integrations ──────────────────────────────────────────
 
@@ -724,7 +695,7 @@ export const terminalDemo = [
   },
   {
     type: "banner",
-    text: "  ║   ██████  ███████ ██ ██   ████    ██   v10.0.0  ║",
+    text: "  ║   ██████  ███████ ██ ██   ████    ██   v1.0.0  ║",
     delay: 100,
   },
   {

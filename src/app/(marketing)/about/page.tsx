@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { MarketingLayout } from "@/components/shared/MarketingLayout";
 
 export const metadata: Metadata = {
   title: "About | ReconPro",
@@ -9,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function AboutPage() {
   return (
-    <MarketingLayout>
+    <div className="pt-16">
       <section className="relative py-24 sm:py-32">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
           {/* Header */}
@@ -142,7 +141,7 @@ export default function AboutPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div>
                 <p className="text-xs text-white/30 mb-1">Version</p>
-                <p className="text-sm font-mono text-white">v10.0.0</p>
+                <p className="text-sm font-mono text-white">v1.0.0</p>
               </div>
               <div>
                 <p className="text-xs text-white/30 mb-1">API Endpoints</p>
@@ -160,6 +159,6 @@ export default function AboutPage() {
           </div>
         </div>
       </section>
-    </MarketingLayout>
+    </div>
   );
 }

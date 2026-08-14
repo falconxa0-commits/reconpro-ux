@@ -1,17 +1,67 @@
-import type { Metadata } from "next";
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { KeyRound, Lock, Mail } from "lucide-react";
-
-export const metadata: Metadata = {
-  title: "Sign In",
-};
+import { KeyRound, Lock, Mail, Loader2 } from "lucide-react";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleEmailLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/v1/auth/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Invalid email or password.");
+      }
+      router.push("/dashboard/overview");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Login failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApiKeyLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/v1/auth/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Invalid API key.");
+      }
+      router.push("/dashboard/overview");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Authentication failed. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <Card className="border-zinc-800 bg-zinc-950 text-white">
       <CardHeader className="text-center">
@@ -27,8 +77,14 @@ export default function LoginPage() {
       </CardHeader>
 
       <CardContent className="space-y-4">
+        {error && (
+          <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+            {error}
+          </div>
+        )}
+
         {/* Email + Password Form */}
-        <form className="space-y-4">
+        <form onSubmit={handleEmailLogin} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="email" className="text-zinc-300">
               Email
@@ -39,6 +95,9 @@ export default function LoginPage() {
                 id="email"
                 type="email"
                 placeholder="you@company.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
                 className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
               />
             </div>
@@ -62,6 +121,9 @@ export default function LoginPage() {
                 id="password"
                 type="password"
                 placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
                 className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
               />
             </div>
@@ -69,9 +131,10 @@ export default function LoginPage() {
 
           <Button
             type="submit"
+            disabled={loading}
             className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
           >
-            Sign In
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Sign In"}
           </Button>
         </form>
 
@@ -88,7 +151,7 @@ export default function LoginPage() {
         </div>
 
         {/* API Key Sign In */}
-        <form className="space-y-3">
+        <form onSubmit={handleApiKeyLogin} className="space-y-3">
           <div className="space-y-2">
             <Label htmlFor="api-key" className="text-zinc-300">
               Sign in with API Key
@@ -97,15 +160,19 @@ export default function LoginPage() {
               id="api-key"
               type="password"
               placeholder="x-api-key"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              required
               className="border-zinc-800 bg-zinc-900 font-mono text-sm text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
             />
           </div>
           <Button
             type="submit"
             variant="outline"
+            disabled={loading}
             className="w-full border-zinc-700 bg-transparent text-white hover:bg-zinc-800 hover:text-white font-medium"
           >
-            Authenticate with API Key
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Authenticate with API Key"}
           </Button>
         </form>
       </CardContent>

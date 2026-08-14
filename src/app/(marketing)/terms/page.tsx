@@ -1,16 +1,14 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Terms of Service",
+  title: "Terms of Service | ReconPro",
   description:
     "ReconPro terms of service — licensing, API usage terms, restrictions, and liability.",
 };
 
 export default function TermsOfServicePage() {
   return (
-    <div className="min-h-screen flex flex-col bg-black text-white">
-
-      <main className="flex-1">
+    <div className="pt-16">
         <div className="max-w-3xl mx-auto px-6 py-24 md:py-32">
           {/* Header */}
           <header className="mb-16">
@@ -181,8 +179,6 @@ export default function TermsOfServicePage() {
             </section>
           </div>
         </div>
-      </main>
-
     </div>
   );
 }

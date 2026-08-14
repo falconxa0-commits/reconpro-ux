@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { MarketingLayout } from "@/components/shared/MarketingLayout";
 import Link from "next/link";
 
 export const metadata: Metadata = {
@@ -14,11 +13,11 @@ const sections = [
     description:
       "Install ReconPro and run your first scan. Covers installation methods, configuration, and basic usage patterns.",
     links: [
-      { label: "Installation", href: "#" },
-      { label: "Quick Start Guide", href: "#" },
-      { label: "Configuration", href: "#" },
-      { label: "First Scan Walkthrough", href: "#" },
-      { label: "Authentication Setup", href: "#" },
+      { label: "Installation", href: "/docs" },
+      { label: "Quick Start Guide", href: "/docs" },
+      { label: "Configuration", href: "/docs" },
+      { label: "First Scan Walkthrough", href: "/docs" },
+      { label: "Authentication Setup", href: "/docs" },
     ],
   },
   {
@@ -55,22 +54,22 @@ const sections = [
     description:
       "Documentation for the 16 built-in scanner modules. Each module page covers capabilities, parameters, and output formats.",
     links: [
-      { label: "DNS Recon", href: "#" },
-      { label: "SSL/TLS Analysis", href: "#" },
-      { label: "Port Scanner", href: "#" },
-      { label: "WHOIS / RDAP", href: "#" },
-      { label: "HTTP Header Analysis", href: "#" },
-      { label: "Subdomain Enum", href: "#" },
-      { label: "Reverse DNS", href: "#" },
-      { label: "ASN Lookup", href: "#" },
-      { label: "Technology Detection", href: "#" },
-      { label: "Email Harvest", href: "#" },
-      { label: "Certificate Transparency", href: "#" },
-      { label: "DNS Zone Transfer", href: "#" },
-      { label: "Robots.txt Parser", href: "#" },
-      { label: "Favicon Hash", href: "#" },
-      { label: "WAF Detection", href: "#" },
-      { label: "CDN Detection", href: "#" },
+      { label: "DNS Recon", href: "/#modules" },
+      { label: "SSL/TLS Analysis", href: "/#modules" },
+      { label: "Port Scanner", href: "/#modules" },
+      { label: "WHOIS / RDAP", href: "/#modules" },
+      { label: "HTTP Header Analysis", href: "/#modules" },
+      { label: "Subdomain Enum", href: "/#modules" },
+      { label: "Reverse DNS", href: "/#modules" },
+      { label: "ASN Lookup", href: "/#modules" },
+      { label: "Technology Detection", href: "/#modules" },
+      { label: "Email Harvest", href: "/#modules" },
+      { label: "Certificate Transparency", href: "/#modules" },
+      { label: "DNS Zone Transfer", href: "/#modules" },
+      { label: "Robots.txt Parser", href: "/#modules" },
+      { label: "Favicon Hash", href: "/#modules" },
+      { label: "WAF Detection", href: "/#modules" },
+      { label: "CDN Detection", href: "/#modules" },
     ],
   },
   {
@@ -78,21 +77,21 @@ const sections = [
     description:
       "Full command-line interface reference. All commands, flags, and usage examples.",
     links: [
-      { label: "reconpro scan", href: "#" },
-      { label: "reconpro dns", href: "#" },
-      { label: "reconpro ssl", href: "#" },
-      { label: "reconpro ports", href: "#" },
-      { label: "reconpro whois", href: "#" },
-      { label: "reconpro headers", href: "#" },
-      { label: "reconpro subdomains", href: "#" },
-      { label: "reconpro enum", href: "#" },
+      { label: "reconpro scan", href: "/#cli" },
+      { label: "reconpro dns", href: "/#cli" },
+      { label: "reconpro ssl", href: "/#cli" },
+      { label: "reconpro ports", href: "/#cli" },
+      { label: "reconpro whois", href: "/#cli" },
+      { label: "reconpro headers", href: "/#cli" },
+      { label: "reconpro subdomains", href: "/#cli" },
+      { label: "reconpro enum", href: "/#cli" },
     ],
   },
 ];
 
 export default function DocsPage() {
   return (
-    <MarketingLayout>
+    <div className="pt-16">
       <section className="relative py-24 sm:py-32">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
           {/* Header */}
@@ -180,13 +179,13 @@ export default function DocsPage() {
           <div className="mt-16 pt-8 border-t border-white/[0.04]">
             <p className="text-xs text-white/30 leading-relaxed">
               Documentation is versioned alongside releases. The current docs
-              correspond to v10.0.0. For older versions, see the release tags on
+              correspond to v1.0.0. For older versions, see the release tags on
               GitHub. Some linked pages above are placeholders for documentation
               that is being written.
             </p>
           </div>
         </div>
       </section>
-    </MarketingLayout>
+    </div>
   );
 }

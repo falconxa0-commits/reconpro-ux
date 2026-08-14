@@ -3,9 +3,11 @@
 import { useState } from "react";
 import { ScanInput } from "@/components/reconpro/scan-input";
 import { ScanResults } from "@/components/reconpro/scan-results";
+import { AlertCircle } from "lucide-react";
 
 export default function ScansPage() {
   const [isScanning, setIsScanning] = useState(false);
+  const [scanError, setScanError] = useState("");
   const [lastResult, setLastResult] = useState<null | {
     id: string;
     domain: string;
@@ -28,12 +30,17 @@ export default function ScansPage() {
 
   const handleScan = async (domain: string, scanType: string) => {
     setIsScanning(true);
+    setScanError("");
     try {
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ domain, scanType }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Scan failed with status ${res.status}`);
+      }
       const data = await res.json();
       setLastResult({
         id: data.id || "scan-1",
@@ -54,7 +61,10 @@ export default function ScansPage() {
           description: f.description,
         })),
       });
-    } catch {
+    } catch (err: unknown) {
+      console.error('Scan failed:', err);
+      setScanError(err instanceof Error ? err.message : 'Scan failed. Please try again.');
+    } finally {
       setIsScanning(false);
     }
   };
@@ -67,6 +77,13 @@ export default function ScansPage() {
       <div className="max-w-2xl">
         <ScanInput onScan={handleScan} isScanning={isScanning} />
       </div>
+
+      {scanError && (
+        <div className="max-w-2xl flex items-center gap-3 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {scanError}
+        </div>
+      )}
 
       {lastResult && (
         <div className="mt-8">

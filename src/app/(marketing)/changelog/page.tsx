@@ -1,13 +1,11 @@
 import type { Metadata } from "next";
 import {
   Rocket,
-  Bug,
   Zap,
-  Wrench,
 } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Changelog",
+  title: "Changelog | ReconPro",
   description:
     "ReconPro changelog — version history, feature releases, and security updates.",
 };
@@ -27,7 +25,7 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
-    version: "10.0.0",
+    version: "1.0.0",
     date: "June 2025",
     title: "Security Hardening",
     description:
@@ -175,9 +173,7 @@ const typeColors: Record<string, string> = {
 
 export default function ChangelogPage() {
   return (
-    <div className="min-h-screen flex flex-col bg-black text-white">
-
-      <main className="flex-1">
+    <div className="pt-16">
         <div className="max-w-3xl mx-auto px-6 py-24 md:py-32">
           {/* Header */}
           <header className="mb-16">
@@ -238,8 +234,6 @@ export default function ChangelogPage() {
             ))}
           </div>
         </div>
-      </main>
-
     </div>
   );
 }

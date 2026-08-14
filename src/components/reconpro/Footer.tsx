@@ -46,8 +46,7 @@ export function Footer() {
         { label: "Privacy Policy", href: "/privacy" },
         { label: "Terms of Service", href: "/terms" },
         { label: "Cookie Policy", href: "/cookies" },
-        { label: "Security", href: "/security" },
-        { label: "License (MIT)", href: "/terms" },
+        { label: "License (MIT)", href: "/#cli" },
       ],
     },
   ];

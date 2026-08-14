@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { MarketingLayout } from "@/components/shared/MarketingLayout";
 
 export const metadata: Metadata = {
   title: "Pricing | ReconPro",
@@ -50,7 +49,7 @@ const tiers = [
       "Priority processing queue",
       "Email support with 24-hour SLA",
     ],
-    cta: "#",
+    cta: "/contact",
     ctaLabel: "Start Pro Trial",
     note: "14-day free trial. No credit card to start.",
   },
@@ -83,7 +82,7 @@ const tiers = [
 
 export default function PricingPage() {
   return (
-    <MarketingLayout>
+    <div className="pt-16">
       <section className="relative py-24 sm:py-32">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           {/* Header */}
@@ -186,6 +185,6 @@ export default function PricingPage() {
           </div>
         </div>
       </section>
-    </MarketingLayout>
+    </div>
   );
 }

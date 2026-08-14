@@ -5,7 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { HomeSection } from "./home-section";
 import { JsonLdStructuredData } from "@/components/seo/json-ld";
 
-// ── Premium Font System — ReconPro v10.0.0 ──
+// ── Premium Font System — ReconPro ──
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],

@@ -1,16 +1,14 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Cookie Policy",
+  title: "Cookie Policy | ReconPro",
   description:
     "ReconPro cookie policy — what cookies we use, why, and how to manage them.",
 };
 
 export default function CookiePolicyPage() {
   return (
-    <div className="min-h-screen flex flex-col bg-black text-white">
-
-      <main className="flex-1">
+    <div className="pt-16">
         <div className="max-w-3xl mx-auto px-6 py-24 md:py-32">
           {/* Header */}
           <header className="mb-16">
@@ -164,8 +162,6 @@ export default function CookiePolicyPage() {
             </section>
           </div>
         </div>
-      </main>
-
     </div>
   );
 }

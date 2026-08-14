@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { MarketingLayout } from "@/components/shared/MarketingLayout";
 
 export const metadata: Metadata = {
   title: "Enterprise | ReconPro",
@@ -75,7 +74,7 @@ const inProgress = [
 
 export default function EnterprisePage() {
   return (
-    <MarketingLayout>
+    <div className="pt-16">
       <section className="relative py-24 sm:py-32">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
           {/* Header */}
@@ -192,6 +191,6 @@ export default function EnterprisePage() {
           </div>
         </div>
       </section>
-    </MarketingLayout>
+    </div>
   );
 }

@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Auth",
+  title: "Auth | ReconPro",
+  description: "Sign in to your ReconPro account.",
 };
 
 export default function AuthLayout({
