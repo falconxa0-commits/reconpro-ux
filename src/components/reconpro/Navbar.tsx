@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { navItems } from "@/data/content";
 import { useActiveSection, useSmoothScroll } from "@/hooks/useInView";
@@ -17,6 +18,8 @@ const useShortcutLabel = () => {
 
 export function Navbar() {
   const shortcutLabel = useShortcutLabel();
+  const router = useRouter();
+  const pathname = usePathname();
   const [scrolled, setScrolled] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -47,11 +50,24 @@ export function Navbar() {
 
   const handleNav = useCallback(
     (href: string) => {
-      const id = href.replace("#", "");
-      if (id) scrollTo(id);
+      if (href.startsWith("/") && !href.startsWith("/#")) {
+        // Page route — navigate
+        router.push(href);
+      } else if (href.startsWith("/#")) {
+        // Anchor on homepage — go home first then scroll
+        if (pathname !== "/") {
+          router.push(href);
+        } else {
+          const id = href.replace("/#", "");
+          if (id) scrollTo(id);
+        }
+      } else {
+        const id = href.replace("#", "");
+        if (id) scrollTo(id);
+      }
       setMobileOpen(false);
     },
-    [scrollTo]
+    [scrollTo, router, pathname]
   );
 
   return (
@@ -92,7 +108,7 @@ export function Navbar() {
                   key={item.href}
                   onClick={() => handleNav(item.href)}
                   className={`relative px-3 py-1.5 text-[13px] rounded-lg transition-all duration-300 ${
-                    active === item.href.replace("#", "")
+                    active === item.href.replace(/[\/#]/g, "") || pathname === item.href
                       ? "text-white bg-white/[0.06]"
                       : "text-white/60 hover:text-white/80 hover:bg-white/[0.03]"
                   }`}

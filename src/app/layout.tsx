@@ -42,7 +42,7 @@ export const metadata: Metadata = {
     "compliance mapping", "executive reporting", "CVE detection", "subdomain enumeration",
     "port scanning", "SSL analysis", "CT logs",
   ],
-  authors: [{ name: "ReconPro", url: "https://github.com/reconpro" }],
+  authors: [{ name: "ReconPro" }],
   creator: "ReconPro",
   publisher: "ReconPro",
   alternates: {

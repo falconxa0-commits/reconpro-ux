@@ -7,10 +7,10 @@ export const product = {
   tagline: "Attack Surface Intelligence Platform",
   version: "10.0.0",
   description:
-    "Billion-dollar grade attack surface management. Spatial command center with real-time threat intelligence, compliance mapping, and autonomous reconnaissance.",
-  github: "https://github.com/reconpro/reconpro",
-  pypi: "https://pypi.org/project/reconpro/",
-  docs: "https://docs.reconpro.dev",
+    "Attack surface intelligence with real-time reconnaissance, threat detection, and compliance mapping.",
+  github: "/about",
+  pypi: "/docs",
+  docs: "/docs",
   license: "MIT",
   python: "3.10+",
   deps: 3,
@@ -18,8 +18,8 @@ export const product = {
   modules: 16,
   commands: 45,
   tests: 533,
-  downloads: "2.4M+",
-  stars: "18.7K",
+  downloads: "Open Source",
+  stars: "Open Source",
   contributors: 142,
 } as const;
 
@@ -33,39 +33,35 @@ export interface NavItem {
 }
 
 export const navItems: NavItem[] = [
-  { label: "Home", href: "#" },
-  { label: "Features", href: "#features" },
-  { label: "Architecture", href: "#architecture" },
+  { label: "Home", href: "/" },
+  { label: "Features", href: "/#features" },
+  { label: "Architecture", href: "/#architecture" },
   {
     label: "Modules",
-    href: "#modules",
+    href: "/#modules",
     children: [
-      { label: "Remote Scanners", href: "#modules-remote" },
-      { label: "Local Scanners", href: "#modules-local" },
-      { label: "Intelligence", href: "#modules-intel" },
+      { label: "Remote Scanners", href: "/#modules-remote" },
+      { label: "Local Scanners", href: "/#modules-local" },
+      { label: "Intelligence", href: "/#modules-intel" },
     ],
   },
-  { label: "CLI", href: "#cli" },
-  { label: "Documentation", href: "#docs" },
-  { label: "Performance", href: "#benchmarks" },
-  {
-    label: "Enterprise",
-    href: "#enterprise",
-    badge: "NEW",
-  },
-  { label: "Pricing", href: "#pricing" },
-  { label: "Community", href: "#community" },
+  { label: "CLI", href: "/#cli" },
+  { label: "Documentation", href: "/docs" },
+  { label: "API", href: "/api-overview" },
+  { label: "Enterprise", href: "/enterprise" },
+  { label: "Pricing", href: "/pricing" },
+  { label: "Security", href: "/security" },
 ];
 
 // ── Hero Stats ────────────────────────────────────────────
 
 export const heroStats = [
-  { label: "Lines of Code", value: "51,875", sub: "Hand-crafted" },
   { label: "Scanner Modules", value: "16", sub: "10 remote + 6 local" },
-  { label: "CLI Commands", value: "45", sub: "Full coverage" },
-  { label: "Test Suite", value: "533", sub: "Across 18 files" },
+  { label: "API Endpoints", value: "47", sub: "Full REST API" },
+  { label: "Test Suite", value: "713", sub: "Across 24 files" },
+  { label: "Security Tests", value: "151", sub: "Adversarial + integration" },
   { label: "Dependencies", value: "3", sub: "Minimal footprint" },
-  { label: "PyPI Downloads", value: "2.4M+", sub: "And growing" },
+  { label: "License", value: "MIT", sub: "Open source" },
 ];
 
 // ── Features ───────────────────────────────────────────────
