@@ -11,7 +11,7 @@ export const product = {
   docs: "/docs",
   license: "MIT",
   modules: 4,
-  endpoints: 35,
+  endpoints: 49,
 } as const;
 
 // ── Navigation ────────────────────────────────────────────
@@ -48,8 +48,8 @@ export const navItems: NavItem[] = [
 
 export const heroStats = [
   { label: "Scanner Modules", value: "4", sub: "DNS, SSL, Port, HTTP" },
-  { label: "API Endpoints", value: "35", sub: "Full REST API" },
-  { label: "Test Suite", value: "Active", sub: "22 test files" },
+  { label: "API Endpoints", value: "49", sub: "Full REST API" },
+  { label: "Dashboard", value: "8", sub: "Dedicated routes" },
   { label: "Security", value: "Active", sub: "Adversarial testing" },
   { label: "Framework", value: "Next.js 16", sub: "React 19 + TypeScript" },
   { label: "License", value: "MIT", sub: "Open source" },
@@ -67,120 +67,120 @@ export interface Feature {
 
 export const features: Feature[] = [
   {
-    title: "Autonomous Reconnaissance",
-    description:
-      "Natural language goal parsing converts plain-English objectives into multi-step execution strategies. The AutonomousPlanner orchestrates complex scan sequences without manual intervention, adapting in real-time to discoveries.",
-    icon: "brain",
-    category: "Intelligence",
-    highlights: [
-      "Natural language → ExecutionStrategy",
-      "Goal-adaptive scan sequencing",
-      "Real-time strategy modification",
-      "Multi-phase autonomous operation",
-    ],
-  },
-  {
-    title: "Agent Runtime",
-    description:
-      "Five specialized AI agents orchestrated by the AgentOrchestrator — each with distinct roles covering reconnaissance, analysis, correlation, reporting, and autonomous decision-making. Thread-safe with RLock coordination.",
-    icon: "bot",
-    category: "Runtime",
-    highlights: [
-      "5 specialized agents",
-      "AgentOrchestrator coordination",
-      "Thread-safe RLock architecture",
-      "Role-based task delegation",
-    ],
-  },
-  {
-    title: "Evidence Correlation Engine",
-    description:
-      "Multi-source evidence chains with cryptographic fingerprint deduplication. Each finding is scored with a confidence formula that weights source reliability, corroboration count, and temporal freshness.",
-    icon: "git-merge",
-    category: "Intelligence",
-    highlights: [
-      "EvidenceChain construction",
-      "SHA-256 fingerprint dedup",
-      "Confidence scoring formula",
-      "Cross-source corroboration",
-    ],
-  },
-  {
-    title: "Knowledge Graph",
-    description:
-      "Spatial memory architecture that maps relationships between targets, findings, services, and entities. Each scan finding feeds the graph, building an evolving intelligence picture over time.",
-    icon: "network",
-    category: "Architecture",
-    highlights: [
-      "Entity relationship mapping",
-      "Temporal intelligence tracking",
-      "Graph-powered discovery",
-      "Persistent memory across scans",
-    ],
-  },
-  {
-    title: "Executive Intelligence",
-    description:
-      "Auto-generated executive reports with markdown, dict, and structured export formats. Risk scoring, compliance mapping, and actionable recommendations synthesized from all scan data.",
-    icon: "file-text",
-    category: "Reporting",
-    highlights: [
-      "to_markdown() export",
-      "Risk quantification",
-      "Compliance mapping",
-      "Executive-ready summaries",
-    ],
-  },
-  {
-    title: "Intelligence Pipeline",
-    description:
-      "Every finding flows through a processing pipeline that enriches, categorizes, and routes intelligence to the knowledge graph. Real-time streaming updates with zero data loss.",
-    icon: "git-pull-request",
-    category: "Architecture",
-    highlights: [
-      "Real-time finding processing",
-      "Knowledge graph integration",
-      "Zero-loss data pipeline",
-      "Stream-based architecture",
-    ],
-  },
-  {
     title: "4 Scanner Modules",
     description:
-      "DNS reconnaissance, SSL/TLS analysis, port scanning, and HTTP header inspection — all running natively with Node.js APIs and structured JSON output.",
+      "DNS reconnaissance, SSL/TLS analysis, TCP port scanning, and HTTP header inspection — all running natively with Node.js built-in APIs and structured JSON output. No external dependencies required.",
     icon: "scan",
     category: "Scanning",
     highlights: [
-      "DNS record enumeration",
-      "SSL/TLS certificate analysis",
-      "TCP port scanning",
-      "HTTP header inspection",
+      "DNS record enumeration via dns/promises",
+      "SSL/TLS certificate analysis via tls module",
+      "TCP port scanning via net/tls",
+      "HTTP security header inspection via fetch",
+    ],
+  },
+  {
+    title: "Real-Time Scan Execution",
+    description:
+      "Launch scans from the web dashboard with domain input, scan type selection, and live results rendering. All scan data is persisted to SQLite via Prisma ORM.",
+    icon: "terminal",
+    category: "Dashboard",
+    highlights: [
+      "Dashboard scan input with type selection",
+      "Real-time results with severity breakdown",
+      "Scan history persisted to database",
+      "Risk scoring per scan target",
+    ],
+  },
+  {
+    title: "Findings & Threat Intelligence",
+    description:
+      "Aggregate view of all findings across scans with severity filtering, radar map visualization, and asset-level correlation. Findings are extracted from real scan results.",
+    icon: "shield",
+    category: "Intelligence",
+    highlights: [
+      "Findings aggregated from all scans",
+      "Severity-based filtering (Critical/High/Medium/Low/Info)",
+      "Radar map visualization",
+      "Asset-level grouping",
+    ],
+  },
+  {
+    title: "Compliance Reporting",
+    description:
+      "Automated compliance assessment across 6 frameworks: SOC 2, HIPAA, PCI-DSS, ISO 27001, NIST CSF, and GDPR. Control-level pass/fail evaluation with evidence linking.",
+    icon: "file-text",
+    category: "Compliance",
+    highlights: [
+      "6 compliance frameworks",
+      "Control-level assessment",
+      "Evidence linking to scan findings",
+      "Overall compliance score calculation",
+    ],
+  },
+  {
+    title: "Team Management",
+    description:
+      "Multi-user team support with role-based access control. Create teams, invite members, assign roles (Admin, Security Lead, Analyst, Viewer), and manage permissions.",
+    icon: "users",
+    category: "Organization",
+    highlights: [
+      "Role-based access (5 roles)",
+      "Team creation and management",
+      "Member invitation via API",
+      "Organization-scoped data isolation",
+    ],
+  },
+  {
+    title: "Monitoring Policies",
+    description:
+      "Schedule automated scan policies with configurable frequency (hourly, daily, weekly, monthly). Enable/disable policies and track last/next run times.",
+    icon: "clock",
+    category: "Automation",
+    highlights: [
+      "Configurable scan schedules",
+      "Hourly/daily/weekly/monthly cadence",
+      "Policy enable/disable toggles",
+      "Target domain and scan type selection",
     ],
   },
   {
     title: "REST API",
     description:
-      "35 API endpoints with API key authentication (SHA-256 hashed), rate limiting, SSRF protection, and comprehensive security headers. Full CRUD for teams, members, monitoring, and compliance.",
+      "49 API endpoints with API key authentication (SHA-256 hashed), per-endpoint rate limiting, SSRF protection, and comprehensive security headers. Full CRUD for scans, members, teams, monitoring, compliance, and more.",
     icon: "terminal",
-    category: "CLI",
+    category: "API",
     highlights: [
-      "35 endpoints across 17 categories",
+      "49 endpoints across 17 categories",
       "SHA-256 API key authentication",
-      "Per-key rate limiting",
+      "Per-endpoint rate limiting",
       "SSRF protection & input validation",
     ],
   },
   {
-    title: "Web Dashboard",
+    title: "OLED Dashboard",
     description:
-      "Full-featured dark-themed dashboard with real-time scan execution, findings visualization, compliance reporting, team management, and monitoring policies.",
+      "Full-featured dark-themed dashboard with bento-grid overview, dedicated routes for all major features, and responsive OLED-optimized design with glass morphism effects.",
     icon: "package",
-    category: "Quality",
+    category: "UI",
     highlights: [
       "8 dedicated dashboard routes",
-      "Real-time scan execution",
       "Bento-grid overview with live stats",
+      "Sidebar + bottom dock navigation",
       "OLED-optimized dark theme",
+    ],
+  },
+  {
+    title: "Security Hardening",
+    description:
+      "Production-grade security with middleware auth guards, strict CSP/HSTS headers, SSRF protection, IP spoofing resistance, rate limiting, and X-Frame-Options denial across all routes.",
+    icon: "shield-check",
+    category: "Security",
+    highlights: [
+      "Cookie-based dashboard auth guard",
+      "Strict Content Security Policy",
+      "SSRF guard with private IP blocking",
+      "Per-key rate limiting with retry-after",
     ],
   },
 ];
@@ -197,103 +197,82 @@ export interface ArchLayer {
 
 export const archLayers: ArchLayer[] = [
   {
-    id: "cli",
-    name: "CLI Interface",
+    id: "web",
+    name: "Next.js 16 App Router",
     description:
-      "45 argparse-based commands with rich formatting, interactive prompts, progress indicators, and structured output. Entry point for all operations.",
-    components: ["cli.py", "45 commands", "rich output", "interactive prompts"],
+      "React 19 application with TypeScript strict mode, Tailwind CSS 4, Framer Motion animations, and shadcn/ui components. Three route groups: marketing, auth, and dashboard.",
+    components: [
+      "App Router (3 route groups)",
+      "Server + Client Components",
+      "Framer Motion animations",
+      "shadcn/ui component library",
+    ],
     color: "#ffffff",
+  },
+  {
+    id: "api",
+    name: "REST API Layer",
+    description:
+      "49 API endpoints with centralized protection middleware providing authentication, rate limiting, SSRF protection, and input validation.",
+    components: [
+      "49 route handlers",
+      "withProtection() middleware",
+      "SHA-256 API key auth",
+      "Per-endpoint rate limiting",
+    ],
+    color: "#44aaff",
   },
   {
     id: "scanner",
     name: "Scanner Engine",
     description:
-      "Core scanning orchestration layer that manages 16 scanner modules, coordinates parallel execution, and normalizes results into structured findings.",
+      "Core scanning orchestration layer that manages 4 implemented scanner modules, coordinates execution, and normalizes results into structured findings via native Node.js APIs.",
     components: [
-      "scanner.py",
-      "10 remote modules",
-      "6 local modules",
-      "result normalization",
-    ],
-    color: "#44aaff",
-  },
-  {
-    id: "pipeline",
-    name: "Intelligence Pipeline",
-    description:
-      "Real-time processing pipeline that enriches raw findings with context, categorizes threats, and routes intelligence to the knowledge graph.",
-    components: [
-      "intelligence_pipeline.py",
-      "finding enrichment",
-      "threat categorization",
-      "graph routing",
+      "4 scanner modules (DNS/SSL/Port/HTTP)",
+      "Native Node.js APIs",
+      "Result normalization",
+      "Prisma ORM persistence",
     ],
     color: "#00ff88",
   },
   {
-    id: "memory",
-    name: "Memory & Knowledge Graph",
+    id: "database",
+    name: "Data Layer",
     description:
-      "Spatial memory architecture mapping relationships between targets, services, entities, and findings. Persistent intelligence that compounds over time.",
+      "SQLite database managed by Prisma ORM with 17 models covering organizations, API keys, scans, findings, members, teams, monitoring policies, compliance, and audit trails.",
     components: [
-      "memory.py",
-      "knowledge_graph.py",
-      "entity mapping",
-      "temporal tracking",
+      "SQLite embedded database",
+      "Prisma 6.11.1 ORM",
+      "17 database models",
+      "Audit logging",
     ],
     color: "#ffaa00",
   },
   {
-    id: "correlation",
-    name: "Evidence Correlation",
+    id: "security",
+    name: "Security Layer",
     description:
-      "Multi-source evidence chains with cryptographic deduplication. Confidence scoring based on source reliability, corroboration, and freshness.",
+      "Multi-layered security: middleware auth guards, strict CSP/HSTS, SSRF protection with private IP blocking, IP spoofing resistance, and per-key rate limiting.",
     components: [
-      "evidence_correlation.py",
-      "EvidenceChain",
-      "SHA-256 dedup",
-      "confidence scoring",
+      "Next.js middleware guards",
+      "Security headers (CSP/HSTS/X-Frame)",
+      "SSRF guard with DNS validation",
+      "Rate limiting with retry-after",
     ],
     color: "#ff3355",
   },
   {
-    id: "agents",
-    name: "Agent Runtime",
+    id: "dashboard",
+    name: "Dashboard UI",
     description:
-      "Five specialized AI agents orchestrated for autonomous operations — reconnaissance, analysis, correlation, reporting, and planning.",
+      "OLED-optimized dark dashboard with 8 dedicated routes, bento-grid overview, sidebar and bottom dock navigation, and real-time data visualization.",
     components: [
-      "agent_runtime.py",
-      "5 agents",
-      "AgentOrchestrator",
-      "RLock coordination",
+      "8 dashboard routes",
+      "Bento-grid overview",
+      "Sidebar + bottom dock",
+      "Real-time scan execution",
     ],
     color: "#ffffff",
-  },
-  {
-    id: "planner",
-    name: "Autonomous Planner",
-    description:
-      "Natural language goal parsing converts plain-English objectives into execution strategies. Adapts scan sequences in real-time based on discoveries.",
-    components: [
-      "autonomous_planner.py",
-      "GoalParser",
-      "ExecutionStrategy",
-      "adaptive planning",
-    ],
-    color: "#44aaff",
-  },
-  {
-    id: "executive",
-    name: "Executive Intelligence",
-    description:
-      "Auto-generated reports with risk scoring, compliance mapping, and actionable recommendations. Markdown, dict, and structured export formats.",
-    components: [
-      "executive_intelligence.py",
-      "ExecutiveReport",
-      "risk quantification",
-      "multi-format export",
-    ],
-    color: "#00ff88",
   },
 ];
 
@@ -439,7 +418,7 @@ export const scannerModules: ScannerModule[] = [
   },
 ];
 
-// ── CLI Commands ────────────────────────────────────────────
+// ── API Quick Reference ─────────────────────────────────────
 
 export interface CLICommand {
   name: string;
@@ -451,88 +430,53 @@ export interface CLICommand {
 
 export const cliCommands: CLICommand[] = [
   {
-    name: "reconpro scan",
-    description: "Launch a full-spectrum reconnaissance scan against a target domain or IP range.",
+    name: "POST /api/scan",
+    description: "Execute a reconnaissance scan against a target domain.",
     category: "Scanning",
-    example: "reconpro scan --target example.com --modules dns,whois,port --output json",
-    flags: ["--target", "--modules", "--output", "--threads", "--timeout", "--stealth"],
+    example: '{ "domain": "example.com", "scanType": "full" }',
+    flags: ["domain (required)", "scanType (dns/ssl/port/http/full)"],
   },
   {
-    name: "reconpro intel",
-    description: "Run intelligence-gathering operations combining multiple data sources and correlation.",
-    category: "Intelligence",
-    example: "reconpro intel --target example.com --deep --correlate",
-    flags: ["--target", "--deep", "--correlate", "--sources", "--format"],
+    name: "GET /api/scans",
+    description: "Retrieve scan history with results, findings, and risk scores.",
+    category: "Scanning",
+    example: "GET /api/scans",
+    flags: [],
   },
   {
-    name: "reconpro report",
-    description: "Generate executive intelligence reports from completed scan results.",
-    category: "Reporting",
-    example: "reconpro report --scan-id abc123 --format markdown --output report.md",
-    flags: ["--scan-id", "--format", "--output", "--sections", "--risk-level"],
+    name: "POST /api/v1/auth/validate",
+    description: "Validate an API key and retrieve organization context.",
+    category: "Authentication",
+    example: '{ "api_key": "rp_live_..." }',
+    flags: ["api_key (required)"],
   },
   {
-    name: "reconpro autonomous",
-    description: "Launch autonomous reconnaissance using natural language goal descriptions.",
-    category: "Autonomous",
-    example: 'reconpro autonomous --goal "Map the complete attack surface of example.com"',
-    flags: ["--goal", "--strategy", "--max-depth", "--time-limit", "--adaptive"],
+    name: "GET /api/compliance",
+    description: "Retrieve compliance scores across all configured frameworks.",
+    category: "Compliance",
+    example: "GET /api/compliance",
+    flags: [],
   },
   {
-    name: "reconpro agents",
-    description: "Manage and monitor the specialized agent runtime system.",
-    category: "Runtime",
-    example: "reconpro agents --list --status --monitor",
-    flags: ["--list", "--status", "--monitor", "--deploy", "--config"],
+    name: "GET /api/members",
+    description: "List organization members with roles and team memberships.",
+    category: "Organization",
+    example: "GET /api/members",
+    flags: [],
   },
   {
-    name: "reconpro dns",
-    description: "Focused DNS reconnaissance with record extraction and subdomain discovery.",
-    category: "Modules",
-    example: "reconpro dns --domain example.com --records A,MX,TXT,NS --subdomains",
-    flags: ["--domain", "--records", "--subdomains", "--dnssec", "--zone-transfer"],
+    name: "GET /api/monitoring",
+    description: "List monitoring policies with schedule and run status.",
+    category: "Automation",
+    example: "GET /api/monitoring",
+    flags: [],
   },
   {
-    name: "reconpro port",
-    description: "TCP/UDP port scanning with service detection and banner grabbing.",
-    category: "Modules",
-    example: "reconpro port --target 192.168.1.1 --top-ports 1000 --service-detection",
-    flags: ["--target", "--top-ports", "--service-detection", "--banner", "--os-detect"],
-  },
-  {
-    name: "reconpro ssl",
-    description: "SSL/TLS certificate and cipher suite analysis.",
-    category: "Modules",
-    example: "reconpro ssl --host example.com --grade --check-hsts",
-    flags: ["--host", "--port", "--grade", "--check-hsts", "--ocsp"],
-  },
-  {
-    name: "reconpro vuln",
-    description: "Vulnerability scanning with CVE matching and exploit correlation.",
-    category: "Modules",
-    example: "reconpro vuln --target example.com --cve-database --risk-threshold high",
-    flags: ["--target", "--cve-database", "--risk-threshold", "--exploit-check"],
-  },
-  {
-    name: "reconpro knowledge",
-    description: "Query and explore the knowledge graph for previously gathered intelligence.",
-    category: "Intelligence",
-    example: 'reconpro knowledge --query "subdomains of example.com" --format tree',
-    flags: ["--query", "--format", "--export", "--timeline", "--entities"],
-  },
-  {
-    name: "reconpro config",
-    description: "Manage configuration, API keys, modules, and scanner preferences.",
-    category: "Configuration",
-    example: "reconpro config --set threads=16 --timeout=30 --modules all",
-    flags: ["--set", "--get", "--reset", "--modules", "--api-keys"],
-  },
-  {
-    name: "reconpro export",
-    description: "Export scan results and intelligence data in multiple formats.",
-    category: "Export",
-    example: "reconpro export --scan-id abc123 --format json,csv,markdown --output ./exports/",
-    flags: ["--scan-id", "--format", "--output", "--compress", "--encrypt"],
+    name: "GET /api/health",
+    description: "System health check with database connectivity and version.",
+    category: "Infrastructure",
+    example: "GET /api/health",
+    flags: [],
   },
 ];
 
@@ -713,13 +657,8 @@ export const terminalDemo = [
   },
   {
     type: "flag",
-    text: "--modules dns,whois,port,ssl,vuln ",
+    text: "--modules dns,ssl,port,http ",
     delay: 300,
-  },
-  {
-    type: "flag",
-    text: "--correlate ",
-    delay: 200,
   },
   {
     type: "flag",
@@ -728,20 +667,18 @@ export const terminalDemo = [
   },
   { type: "output", text: "", delay: 300 },
   { type: "muted", text: "[*] Initializing scanner engine...", delay: 200 },
-  { type: "muted", text: "[*] Loading 5 scanner modules...", delay: 150 },
+  { type: "muted", text: "[*] Loading 4 scanner modules...", delay: 150 },
   { type: "success", text: "[+] DNS enumeration complete — 12 subdomains found", delay: 600 },
-  { type: "success", text: "[+] WHOIS intelligence gathered — registrar: Cloudflare", delay: 400 },
-  { type: "success", text: "[+] Port scan complete — 8 open ports identified", delay: 800 },
   { type: "success", text: "[+] SSL analysis — grade: A+ (TLS 1.3, HSTS confirmed)", delay: 500 },
-  { type: "success", text: "[+] Vulnerability scan — 0 critical, 2 medium, 1 low", delay: 700 },
+  { type: "success", text: "[+] Port scan complete — 8 open ports identified", delay: 800 },
+  { type: "success", text: "[+] HTTP headers — 4 misconfigurations detected", delay: 500 },
   { type: "output", text: "", delay: 200 },
-  { type: "muted", text: "[*] Building evidence chains...", delay: 300 },
-  { type: "muted", text: "[*] Correlating findings across 5 sources...", delay: 400 },
-  { type: "accent", text: "[i] Confidence score: 94.7% (high)", delay: 300 },
+  { type: "muted", text: "[*] Saving results to database...", delay: 300 },
+  { type: "accent", text: "[i] Risk score: 45/100", delay: 300 },
   { type: "output", text: "", delay: 200 },
   {
     type: "success",
-    text: "[✓] Scan complete — 23 findings | 5 evidence chains | confidence: 94.7%",
+    text: "[✓] Scan complete — 4 modules run | 23 findings | risk: 45/100",
     delay: 300,
   },
   { type: "output", text: "", delay: 100 },

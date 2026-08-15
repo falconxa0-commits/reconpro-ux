@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { User, Key, Bell, Shield, Loader2, Check } from "lucide-react";
+import { useAuthHeaders } from "@/hooks/use-auth-headers";
 
 interface ProfileData {
   name: string;
@@ -15,6 +16,7 @@ interface ProfileData {
 }
 
 export default function SettingsPage() {
+  const authHeaders = useAuthHeaders();
   const [profile, setProfile] = useState<ProfileData>({
     name: "",
     email: "",
@@ -34,7 +36,7 @@ export default function SettingsPage() {
   const [slackIntegration, setSlackIntegration] = useState(false);
 
   useEffect(() => {
-    fetch("/api/members")
+    fetch("/api/members", { headers: authHeaders })
       .then((r) => r.json())
       .then((data) => {
         const members = data.members || [];
@@ -59,7 +61,7 @@ export default function SettingsPage() {
     try {
       const res = await fetch("/api/members", {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify(profile),
       });
       if (!res.ok) {

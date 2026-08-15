@@ -27,6 +27,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
+import { useAuthHeaders } from '@/hooks/use-auth-headers';
 import {
   Dialog,
   DialogContent,
@@ -124,6 +125,7 @@ const cardHover = {
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function IntegrationHub() {
+  const authHeaders = useAuthHeaders();
   const [integrations, setIntegrations] = useState<IntegrationCard[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -137,7 +139,7 @@ export function IntegrationHub() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/integrations');
+      const res = await fetch('/api/integrations', { headers: authHeaders });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setIntegrations(json.integrations || []);
@@ -160,7 +162,7 @@ export function IntegrationHub() {
     try {
       await fetch('/api/integrations', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ id, enabled: !integration.connected }),
       });
       await fetchData();
@@ -178,7 +180,7 @@ export function IntegrationHub() {
 
       await fetch('/api/integrations', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ type: addType, name: addName, config }),
       });
       setAddOpen(false);

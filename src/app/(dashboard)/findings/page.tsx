@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 import { RadarMap } from "@/components/reconpro/radar-map";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAuthHeaders } from "@/hooks/use-auth-headers";
 
 export default function FindingsPage() {
+  const authHeaders = useAuthHeaders();
   const [findings, setFindings] = useState<Array<{
     id: string;
     title: string;
@@ -20,7 +22,7 @@ export default function FindingsPage() {
   const loadData = () => {
     setLoading(true);
     setError("");
-    fetch("/api/scans")
+    fetch("/api/scans", { headers: authHeaders })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

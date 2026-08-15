@@ -35,6 +35,7 @@ export default function LoginPage() {
         throw new Error(data.error || "API key validation failed.");
       }
       // Store auth state in localStorage for dashboard components to read
+      localStorage.setItem("reconpro_api_key", apiKey.trim());
       localStorage.setItem("reconpro_auth", JSON.stringify({
         org_id: data.org_id,
         key_prefix: data.key_prefix,

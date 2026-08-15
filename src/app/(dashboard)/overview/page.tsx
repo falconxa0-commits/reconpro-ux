@@ -5,9 +5,11 @@ import { useRouter } from "next/navigation";
 import { BentoDashboard } from "@/components/reconpro/bento-dashboard";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAuthHeaders } from "@/hooks/use-auth-headers";
 
 export default function OverviewPage() {
   const router = useRouter();
+  const authHeaders = useAuthHeaders();
   const [stats, setStats] = useState<null | {
     totalScans: number;
     totalFindings: number;
@@ -26,7 +28,7 @@ export default function OverviewPage() {
   const loadData = () => {
     setLoading(true);
     setError("");
-    fetch("/api/scans")
+    fetch("/api/scans", { headers: authHeaders })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

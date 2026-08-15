@@ -43,17 +43,18 @@ const docs = [
   },
 ];
 
-const codeBlock = `# Install
-pip install reconpro
+const codeBlock = `# Quick scan via API
+curl -X POST https://your-instance.com/api/scan \\
+  -H "Content-Type: application/json" \\
+  -H "x-api-key: rp_live_..." \\
+  -d '{"domain": "example.com", "scanType": "full"}'
 
-# Quick scan
-reconpro scan --target example.com
+# View scan results
+curl https://your-instance.com/api/scans \\
+  -H "x-api-key: rp_live_..."
 
-# Full intelligence
-reconpro intel --target example.com --deep --correlate
-
-# Autonomous mode
-reconpro autonomous --goal "Map the complete attack surface"`;
+# Health check
+curl https://your-instance.com/api/health`;
 
 function highlightSyntax(code: string) {
   // Escape HTML entities first to prevent XSS
@@ -69,9 +70,9 @@ function highlightSyntax(code: string) {
         return `<span class="text-white/50">${highlighted}</span>`;
       }
 
-      // Commands (pip, reconpro)
+      // Commands (curl, headers, flags)
       highlighted = highlighted.replace(
-        /^(pip\s+install|reconpro)\b/,
+        /^(curl)\b/,
         '<span class="text-emerald-400/80">$1</span>'
       );
 

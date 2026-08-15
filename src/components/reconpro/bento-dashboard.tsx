@@ -3,8 +3,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import {
-  ShieldAlert, Zap, TrendingUp, Activity, Globe, Clock,
-  ArrowUpRight, ShieldCheck, Terminal, type LucideIcon,
+  ShieldAlert, Zap, TrendingUp, Activity, Globe,
+  ArrowUpRight, ShieldCheck, Terminal,
 } from 'lucide-react';
 import { AnimatedCounter } from './animated-counter';
 import { CLIPreview } from './cli-showcase';

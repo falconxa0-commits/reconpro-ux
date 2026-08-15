@@ -57,16 +57,19 @@ export function Footer() {
       <div ref={ctaRef as React.RefObject<HTMLDivElement>} className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24">
         <div className="text-center">
           <h2 className={`typography-section-heading text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4 transition-all duration-700 ${ctaInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}`}>
-            <span className="text-gradient-void">Ready to see your attack surface?</span>
+            <span className="text-gradient-void">Start scanning in seconds.</span>
           </h2>
           <p className={`text-white/60 text-sm max-w-xl mx-auto mb-8 leading-relaxed transition-all delay-100 duration-700 ${ctaInView ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0"}`}>
-            Install ReconPro in seconds. Three dependencies. Zero bloat.
-            Full-spectrum reconnaissance from day one.
+            Sign in with your API key, select a target, and launch your first scan.
+            Real-time results, no external dependencies.
           </p>
           <div className="flex items-center justify-center gap-3">
-            <code className="text-sm text-white/60 bg-white/[0.03] border border-white/[0.06] rounded-xl px-5 py-3 font-mono">
-              pip install reconpro
-            </code>
+            <a
+              href="/login"
+              className="text-sm text-white bg-white/[0.9] font-medium px-5 py-3 rounded-xl hover:bg-white transition-all duration-300"
+            >
+              Sign In
+            </a>
           </div>
         </div>
       </div>

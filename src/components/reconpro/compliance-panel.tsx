@@ -31,6 +31,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useAuthHeaders } from '@/hooks/use-auth-headers';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -371,6 +372,7 @@ const cardHover = {
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
+  const authHeaders = useAuthHeaders();
   const [frameworks, setFrameworks] = useState<ComplianceFramework[]>([]);
   const [overallScore, setOverallScore] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -381,7 +383,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
 
   const fetchCompliance = useCallback(async () => {
     try {
-      const res = await fetch('/api/compliance');
+      const res = await fetch('/api/compliance', { headers: authHeaders });
       if (!res.ok) throw new Error('Failed to fetch compliance data');
       const data: ApiResponse = await res.json();
       const mapped = data.frameworks.map(mapApiToFramework);

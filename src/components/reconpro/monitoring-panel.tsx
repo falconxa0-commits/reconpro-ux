@@ -44,6 +44,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import { useAuthHeaders } from '@/hooks/use-auth-headers';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -213,6 +214,7 @@ const cardHover = {
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function MonitoringPanel() {
+  const authHeaders = useAuthHeaders();
   const [data, setData] = useState<MonitoringData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -226,7 +228,7 @@ export function MonitoringPanel() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/monitoring');
+      const res = await fetch('/api/monitoring', { headers: authHeaders });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData({
@@ -256,7 +258,7 @@ export function MonitoringPanel() {
     try {
       await fetch('/api/monitoring', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ id, enabled: !policy.enabled }),
       });
       await fetchData();
@@ -279,7 +281,7 @@ export function MonitoringPanel() {
     try {
       await fetch('/api/monitoring', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           name: newName,
           targetDomain: newDomain,

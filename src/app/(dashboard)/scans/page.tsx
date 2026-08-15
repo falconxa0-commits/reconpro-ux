@@ -4,8 +4,10 @@ import { useState } from "react";
 import { ScanInput } from "@/components/reconpro/scan-input";
 import { ScanResults } from "@/components/reconpro/scan-results";
 import { AlertCircle } from "lucide-react";
+import { useAuthHeaders } from "@/hooks/use-auth-headers";
 
 export default function ScansPage() {
+  const authHeaders = useAuthHeaders();
   const [isScanning, setIsScanning] = useState(false);
   const [scanError, setScanError] = useState("");
   const [lastResult, setLastResult] = useState<null | {
@@ -34,7 +36,7 @@ export default function ScansPage() {
     try {
       const res = await fetch("/api/scan", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({ domain, scanType }),
       });
       if (!res.ok) {

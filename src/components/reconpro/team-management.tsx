@@ -48,6 +48,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useAuthHeaders } from '@/hooks/use-auth-headers';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -152,6 +153,7 @@ const cardHover = {
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function TeamManagement() {
+  const authHeaders = useAuthHeaders();
   const [members, setMembers] = useState<Member[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
@@ -175,7 +177,7 @@ export function TeamManagement() {
 
   const fetchMembers = useCallback(async () => {
     try {
-      const res = await fetch('/api/members');
+      const res = await fetch('/api/members', { headers: authHeaders });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setMembers(json.members || []);
@@ -187,7 +189,7 @@ export function TeamManagement() {
 
   const fetchTeams = useCallback(async () => {
     try {
-      const res = await fetch('/api/teams');
+      const res = await fetch('/api/teams', { headers: authHeaders });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setTeams(json.teams || []);
@@ -229,7 +231,7 @@ export function TeamManagement() {
     try {
       await fetch('/api/members', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ name: inviteName, email: inviteEmail, role: inviteRole.toLowerCase().replace(' ', '_') }),
       });
       setInviteOpen(false);
@@ -247,7 +249,7 @@ export function TeamManagement() {
     try {
       await fetch('/api/members', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ id: roleEditId, role: roleEditValue.toLowerCase().replace(' ', '_') }),
       });
       setRoleEditOpen(false);
@@ -271,7 +273,7 @@ export function TeamManagement() {
     try {
       await fetch('/api/teams', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ name: teamName, description: teamDesc }),
       });
       setTeamOpen(false);
