@@ -10,8 +10,8 @@ export const product = {
     "Attack surface intelligence with real-time reconnaissance, threat detection, and compliance mapping.",
   docs: "/docs",
   license: "MIT",
-  modules: 4,
-  endpoints: 49,
+  modules: 5,
+  endpoints: 60,
 } as const;
 
 // ── Navigation ────────────────────────────────────────────
@@ -47,8 +47,8 @@ export const navItems: NavItem[] = [
 // ── Hero Stats ────────────────────────────────────────────
 
 export const heroStats = [
-  { label: "Scanner Modules", value: "4", sub: "DNS, SSL, Port, HTTP" },
-  { label: "API Endpoints", value: "49", sub: "Full REST API" },
+  { label: "Scanner Modules", value: "5", sub: "DNS, SSL, Port, HTTP, Vuln" },
+  { label: "API Endpoints", value: "60", sub: "Full REST API" },
   { label: "Dashboard", value: "8", sub: "Dedicated routes" },
   { label: "Security", value: "Active", sub: "Adversarial testing" },
   { label: "Framework", value: "Next.js 16", sub: "React 19 + TypeScript" },
@@ -67,9 +67,9 @@ export interface Feature {
 
 export const features: Feature[] = [
   {
-    title: "4 Scanner Modules",
+    title: "5 Scanner Modules",
     description:
-      "DNS reconnaissance, SSL/TLS analysis, TCP port scanning, and HTTP header inspection — all running natively with Node.js built-in APIs and structured JSON output. No external dependencies required.",
+      "DNS reconnaissance, SSL/TLS analysis, TCP port scanning, HTTP header inspection, and vulnerability scanning — all running natively with Node.js built-in APIs and structured JSON output. No external dependencies required.",
     icon: "scan",
     category: "Scanning",
     highlights: [
@@ -147,11 +147,11 @@ export const features: Feature[] = [
   {
     title: "REST API",
     description:
-      "49 API endpoints with API key authentication (SHA-256 hashed), per-endpoint rate limiting, SSRF protection, and comprehensive security headers. Full CRUD for scans, members, teams, monitoring, compliance, and more.",
+      "60 API endpoints with API key authentication (SHA-256 hashed), per-endpoint rate limiting, SSRF protection, and comprehensive security headers. Full CRUD for scans, members, teams, monitoring, compliance, and more.",
     icon: "terminal",
     category: "API",
     highlights: [
-      "49 endpoints across 17 categories",
+      "60 endpoints across 17 categories",
       "SHA-256 API key authentication",
       "Per-endpoint rate limiting",
       "SSRF protection & input validation",
@@ -213,9 +213,9 @@ export const archLayers: ArchLayer[] = [
     id: "api",
     name: "REST API Layer",
     description:
-      "49 API endpoints with centralized protection middleware providing authentication, rate limiting, SSRF protection, and input validation.",
+      "60 API endpoints with centralized protection middleware providing authentication, rate limiting, SSRF protection, and input validation.",
     components: [
-      "49 route handlers",
+      "60 route handlers",
       "withProtection() middleware",
       "SHA-256 API key auth",
       "Per-endpoint rate limiting",
@@ -226,9 +226,9 @@ export const archLayers: ArchLayer[] = [
     id: "scanner",
     name: "Scanner Engine",
     description:
-      "Core scanning orchestration layer that manages 4 implemented scanner modules, coordinates execution, and normalizes results into structured findings via native Node.js APIs.",
+      "Core scanning orchestration layer that manages 5 implemented scanner modules, coordinates execution, and normalizes results into structured findings via native Node.js APIs.",
     components: [
-      "4 scanner modules (DNS/SSL/Port/HTTP)",
+      "5 scanner modules (DNS/SSL/Port/HTTP/Vuln)",
       "Native Node.js APIs",
       "Result normalization",
       "Prisma ORM persistence",
@@ -283,49 +283,76 @@ export interface ScannerModule {
   type: "remote" | "local";
   description: string;
   capabilities: string[];
-  status: "stable" | "beta" | "experimental";
+  status: "implemented" | "planned" | "beta" | "experimental";
   icon: string;
+  /** Whether this module has a working implementation in v0.2.0 */
+  implemented: boolean;
 }
 
 export const scannerModules: ScannerModule[] = [
+  // ── Implemented in v0.2.0 ──────────────────────────────────
   {
     name: "DNS Reconnaissance",
     type: "remote",
     description: "Comprehensive DNS enumeration, record extraction, and subdomain discovery through multiple resolution techniques.",
-    capabilities: ["A/AAAA/MX/TXT/NS/SOA records", "Subdomain brute-force", "DNSSEC validation", "Zone transfer attempts"],
-    status: "stable",
+    capabilities: ["A/AAAA/MX/TXT/NS records", "DMARC policy detection", "SPF record analysis", "Subdomain enumeration via DNS"],
+    implemented: true,
+    status: "implemented",
     icon: "globe",
-  },
-  {
-    name: "WHOIS Intelligence",
-    type: "remote",
-    description: "Deep WHOIS data extraction with registrar analysis, registration timeline, and contact correlation.",
-    capabilities: ["Registrar details", "Registration dates", "Name server history", "Contact correlation"],
-    status: "stable",
-    icon: "search",
-  },
-  {
-    name: "Port Scanner",
-    type: "remote",
-    description: "TCP/UDP port scanning with service fingerprinting, version detection, and banner grabbing.",
-    capabilities: ["Top 100/1000/Full ports", "Service version detection", "Banner grabbing", "OS fingerprinting"],
-    status: "stable",
-    icon: "radio",
   },
   {
     name: "SSL/TLS Analyzer",
     type: "remote",
     description: "Certificate analysis, cipher suite evaluation, and protocol compliance checking against modern security standards.",
-    capabilities: ["Certificate chain analysis", "Cipher suite grading", "Protocol compliance (TLS 1.3)", "HSTS/OCSP verification"],
-    status: "stable",
+    capabilities: ["Certificate chain analysis", "Cipher suite grading", "Protocol compliance (TLS 1.3)", "HSTS verification"],
+    implemented: true,
+    status: "implemented",
     icon: "shield",
+  },
+  {
+    name: "Port Scanner",
+    type: "remote",
+    description: "TCP port scanning with service fingerprinting, version detection, and banner grabbing using native Node.js APIs.",
+    capabilities: ["Top 100 ports scan", "Service version detection", "Banner grabbing", "Open port identification"],
+    implemented: true,
+    status: "implemented",
+    icon: "radio",
+  },
+  {
+    name: "HTTP Header Analysis",
+    type: "remote",
+    description: "Security header evaluation, technology fingerprinting, and missing header detection for web applications.",
+    capabilities: ["Security header audit", "Missing header alerts", "Technology detection", "Redirect chain analysis"],
+    implemented: true,
+    status: "implemented",
+    icon: "file-code",
+  },
+  {
+    name: "Vulnerability Scanner",
+    type: "remote",
+    description: "Automated vulnerability detection with CVE matching, version-based analysis, and known exploit correlation.",
+    capabilities: ["TCP service probing", "TLS configuration analysis", "HTTP security testing", "Risk scoring"],
+    implemented: true,
+    status: "implemented",
+    icon: "bug",
+  },
+  // ── Planned (not yet implemented) ───────────────────────────
+  {
+    name: "WHOIS Intelligence",
+    type: "remote",
+    description: "Deep WHOIS data extraction with registrar analysis, registration timeline, and contact correlation.",
+    capabilities: ["Registrar details", "Registration dates", "Name server history", "Contact correlation"],
+    implemented: false,
+    status: "planned",
+    icon: "search",
   },
   {
     name: "Directory Enumeration",
     type: "remote",
     description: "Intelligent web directory and file discovery with custom wordlists, extensions, and recursive scanning.",
     capabilities: ["Custom wordlist support", "Extension fuzzing", "Recursive scanning", "Response analysis"],
-    status: "stable",
+    implemented: false,
+    status: "planned",
     icon: "folder",
   },
   {
@@ -333,31 +360,17 @@ export const scannerModules: ScannerModule[] = [
     type: "remote",
     description: "Multi-source subdomain enumeration using DNS, certificates, search engines, and passive reconnaissance.",
     capabilities: ["Certificate transparency", "Search engine passive", "DNS permutation", "Brute-force discovery"],
-    status: "stable",
+    implemented: false,
+    status: "planned",
     icon: "network",
-  },
-  {
-    name: "HTTP Header Analysis",
-    type: "remote",
-    description: "Security header evaluation, technology fingerprinting, and missing header detection for web applications.",
-    capabilities: ["Security header audit", "Tech stack detection", "Missing header alerts", "CSP analysis"],
-    status: "stable",
-    icon: "file-code",
-  },
-  {
-    name: "Vulnerability Scanner",
-    type: "remote",
-    description: "Automated vulnerability detection with CVE matching, version-based analysis, and known exploit correlation.",
-    capabilities: ["CVE database matching", "Version-based detection", "Exploit correlation", "Risk scoring"],
-    status: "stable",
-    icon: "bug",
   },
   {
     name: "Geolocation Mapping",
     type: "remote",
     description: "IP geolocation with ASN mapping, network topology visualization, and infrastructure footprinting.",
     capabilities: ["IP geolocation", "ASN lookup", "Network mapping", "Infrastructure analysis"],
-    status: "stable",
+    implemented: false,
+    status: "planned",
     icon: "map-pin",
   },
   {
@@ -365,7 +378,8 @@ export const scannerModules: ScannerModule[] = [
     type: "remote",
     description: "Email harvesting, verification, and breach correlation for social engineering risk assessment.",
     capabilities: ["Email harvesting", "SMTP verification", "Breach database check", "Pattern analysis"],
-    status: "stable",
+    implemented: false,
+    status: "planned",
     icon: "mail",
   },
   {
@@ -373,7 +387,8 @@ export const scannerModules: ScannerModule[] = [
     type: "local",
     description: "Local file system scanning for sensitive data exposure, configuration analysis, and security posture assessment.",
     capabilities: ["Sensitive file detection", "Config file analysis", "Permission auditing", "Secret scanning"],
-    status: "stable",
+    implemented: false,
+    status: "planned",
     icon: "hard-drive",
   },
   {
@@ -381,7 +396,8 @@ export const scannerModules: ScannerModule[] = [
     type: "local",
     description: "Local network interface enumeration, ARP table analysis, and network topology discovery.",
     capabilities: ["Interface enumeration", "ARP table analysis", "Network mapping", "MAC vendor lookup"],
-    status: "stable",
+    implemented: false,
+    status: "planned",
     icon: "wifi",
   },
   {
@@ -389,7 +405,8 @@ export const scannerModules: ScannerModule[] = [
     type: "local",
     description: "Running process enumeration with security analysis, privilege auditing, and anomaly detection.",
     capabilities: ["Process enumeration", "Privilege auditing", "Anomaly detection", "Resource monitoring"],
-    status: "beta",
+    implemented: false,
+    status: "planned",
     icon: "cpu",
   },
   {
@@ -397,7 +414,8 @@ export const scannerModules: ScannerModule[] = [
     type: "local",
     description: "Security log parsing, event correlation, and threat indicator extraction from system and application logs.",
     capabilities: ["Log parsing engine", "Event correlation", "IOC extraction", "Timeline reconstruction"],
-    status: "beta",
+    implemented: false,
+    status: "planned",
     icon: "file-text",
   },
   {
@@ -405,7 +423,8 @@ export const scannerModules: ScannerModule[] = [
     type: "local",
     description: "System registry inspection for security misconfigurations, persistence mechanisms, and policy compliance.",
     capabilities: ["Registry inspection", "Persistence detection", "Policy compliance", "Misconfiguration audit"],
-    status: "beta",
+    implemented: false,
+    status: "planned",
     icon: "database",
   },
   {
@@ -413,7 +432,8 @@ export const scannerModules: ScannerModule[] = [
     type: "local",
     description: "Local certificate store analysis, trust chain validation, and expired certificate detection.",
     capabilities: ["Store enumeration", "Trust chain validation", "Expiry monitoring", "Anomaly detection"],
-    status: "experimental",
+    implemented: false,
+    status: "planned",
     icon: "key",
   },
 ];
@@ -493,7 +513,7 @@ export const pricingPlans = [
     period: "forever",
     description: "Full-featured open-source reconnaissance for individual researchers and small teams.",
     features: [
-      "All 4 scanner modules",
+      "All 5 scanner modules",
       "REST API access",
       "Dashboard with 8 routes",
       "Compliance reporting",
@@ -542,10 +562,10 @@ export const roadmap: RoadmapItem[] = [
     quarter: "Q3 2026",
     items: [
       { title: "ReconPro v0.2.0 GA Release", status: "shipped" },
-      { title: "Autonomous Planner v2", status: "shipped" },
-      { title: "Agent Runtime v3", status: "shipped" },
-      { title: "Knowledge Graph v2", status: "in-progress" },
-      { title: "Plugin SDK Alpha", status: "in-progress" },
+      { title: "REST API with 60 endpoints", status: "shipped" },
+      { title: "Dashboard with 8 dedicated routes", status: "shipped" },
+      { title: "Compliance engine (6 frameworks)", status: "in-progress" },
+      { title: "Monitoring policy scheduler", status: "in-progress" },
     ],
   },
   {
@@ -667,7 +687,7 @@ export const terminalDemo = [
   },
   { type: "output", text: "", delay: 300 },
   { type: "muted", text: "[*] Initializing scanner engine...", delay: 200 },
-  { type: "muted", text: "[*] Loading 4 scanner modules...", delay: 150 },
+  { type: "muted", text: "[*] Loading 5 scanner modules...", delay: 150 },
   { type: "success", text: "[+] DNS enumeration complete — 12 subdomains found", delay: 600 },
   { type: "success", text: "[+] SSL analysis — grade: A+ (TLS 1.3, HSTS confirmed)", delay: 500 },
   { type: "success", text: "[+] Port scan complete — 8 open ports identified", delay: 800 },
@@ -678,7 +698,7 @@ export const terminalDemo = [
   { type: "output", text: "", delay: 200 },
   {
     type: "success",
-    text: "[✓] Scan complete — 4 modules run | 23 findings | risk: 45/100",
+    text: "[✓] Scan complete — 5 modules run | 23 findings | risk: 45/100",
     delay: 300,
   },
   { type: "output", text: "", delay: 100 },

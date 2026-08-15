@@ -1,90 +1,102 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 
-interface SystemComponent {
-  name: string;
-  status: "operational" | "degraded" | "down";
-  latency: string;
-  uptime: string;
-  description: string;
+interface HealthData {
+  status: string;
+  version: string;
+  timestamp: string;
+  uptime: number;
+  responseTime: number;
+  checks: {
+    database: string;
+  };
 }
 
-const components: SystemComponent[] = [
-  {
-    name: "API",
-    status: "operational",
-    latency: "23ms",
-    uptime: "99.98%",
-    description: "REST API endpoints and authentication",
-  },
-  {
-    name: "Scanning Engine",
-    status: "operational",
-    latency: "12ms",
-    uptime: "99.97%",
-    description: "Core scanner modules and job processing",
-  },
-  {
-    name: "Database",
-    status: "operational",
-    latency: "4ms",
-    uptime: "99.99%",
-    description: "Persistent storage and query engine",
-  },
-  {
-    name: "Authentication",
-    status: "operational",
-    latency: "8ms",
-    uptime: "99.99%",
-    description: "API key validation and user auth",
-  },
-  {
-    name: "Webhook Delivery",
-    status: "operational",
-    latency: "45ms",
-    uptime: "99.95%",
-    description: "Outbound webhook notifications",
-  },
-  {
-    name: "Dashboard",
-    status: "operational",
-    latency: "18ms",
-    uptime: "99.96%",
-    description: "Web dashboard and real-time updates",
-  },
-];
+const componentDefs = [
+  { name: "API", description: "REST API endpoints and authentication" },
+  { name: "Scanning Engine", description: "Core scanner modules and job processing" },
+  { name: "Database", description: "Persistent storage and query engine" },
+  { name: "Authentication", description: "API key validation and user auth" },
+  { name: "Dashboard", description: "Web dashboard and real-time updates" },
+] as const;
 
 const statusColor = {
   operational: "bg-emerald-400",
   degraded: "bg-amber-400",
   down: "bg-red-400",
+  unknown: "bg-zinc-500",
 };
 
 const statusLabel = {
   operational: "Operational",
   degraded: "Degraded",
   down: "Down",
+  unknown: "Checking...",
 };
 
 const statusTextColor = {
   operational: "text-emerald-400/80",
   degraded: "text-amber-400/80",
   down: "text-red-400/80",
+  unknown: "text-zinc-400/80",
 };
 
 export default function StatusClient() {
-  const [time, setTime] = useState("");
+  const [health, setHealth] = useState<HealthData | null>(null);
+  const [error, setError] = useState(false);
+  const [lastCheck, setLastCheck] = useState("");
 
-  useEffect(() => {
-    const update = () =>
-      setTime(new Date().toISOString().replace("T", " ").split(".")[0] + " UTC");
-    update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
+  const checkHealth = useCallback(async () => {
+    try {
+      const res = await fetch("/api/health");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: HealthData = await res.json();
+      setHealth(data);
+      setError(false);
+      setLastCheck(
+        new Date().toISOString().replace("T", " ").split(".")[0] + " UTC"
+      );
+    } catch {
+      setError(true);
+      setLastCheck(
+        new Date().toISOString().replace("T", " ").split(".")[0] + " UTC"
+      );
+    }
   }, []);
 
-  const allOperational = components.every(
+  useEffect(() => {
+    checkHealth();
+    const interval = setInterval(checkHealth, 30_000);
+    return () => clearInterval(interval);
+  }, [checkHealth]);
+
+  const overallStatus = error
+    ? "down"
+    : health?.status === "healthy" && health.checks.database === "ok"
+      ? "operational"
+      : health?.status === "healthy"
+        ? "degraded"
+        : "down";
+
+  const componentStatuses = componentDefs.map((c) => {
+    if (error) return { ...c, status: "down" as const, latency: "—" };
+    if (!health) return { ...c, status: "unknown" as const, latency: "—" };
+    if (c.name === "Database") {
+      return {
+        ...c,
+        status: health.checks.database === "ok" ? "operational" as const : "degraded" as const,
+        latency: `${health.responseTime}ms`,
+      };
+    }
+    return {
+      ...c,
+      status: overallStatus as "operational" | "degraded" | "down" | "unknown",
+      latency: `${health.responseTime}ms`,
+    };
+  });
+
+  const allOperational = componentStatuses.every(
     (c) => c.status === "operational"
   );
 
@@ -105,11 +117,35 @@ export default function StatusClient() {
                 </span>
               </div>
             )}
+            {!allOperational && !error && (
+              <div className="flex items-center justify-center gap-2 mb-4">
+                <span
+                  className={`${statusColor.degraded} w-2.5 h-2.5 rounded-full animate-pulse`}
+                  aria-hidden="true"
+                />
+                <span className="text-sm font-medium text-amber-400/90">
+                  Partial Degradation
+                </span>
+              </div>
+            )}
+            {error && (
+              <div className="flex items-center justify-center gap-2 mb-4">
+                <span
+                  className={`${statusColor.down} w-2.5 h-2.5 rounded-full`}
+                  aria-hidden="true"
+                />
+                <span className="text-sm font-medium text-red-400/90">
+                  Service Unreachable
+                </span>
+              </div>
+            )}
             <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-3">
               System Status
             </h1>
             <p className="text-white/40 text-xs">
-              Last checked: {time}
+              {lastCheck
+                ? `Last checked: ${lastCheck}`
+                : "Checking..."}
             </p>
           </div>
 
@@ -118,27 +154,31 @@ export default function StatusClient() {
             className={`rounded-xl border p-4 mb-12 flex items-center gap-3 ${
               allOperational
                 ? "border-emerald-400/10 bg-emerald-400/[0.03]"
-                : "border-amber-400/10 bg-amber-400/[0.03]"
+                : error
+                  ? "border-red-400/10 bg-red-400/[0.03]"
+                  : "border-amber-400/10 bg-amber-400/[0.03]"
             }`}
           >
             <span
-              className={`${statusColor[allOperational ? "operational" : "degraded"]} w-2 h-2 rounded-full flex-shrink-0`}
+              className={`${statusColor[overallStatus]} w-2 h-2 rounded-full flex-shrink-0`}
               aria-hidden="true"
             />
             <p className="text-sm text-white/70">
               {allOperational
                 ? "All systems are functioning normally. No incidents to report."
-                : "Some systems are experiencing issues. See below for details."}
+                : error
+                  ? "Unable to reach the health endpoint. The service may be down."
+                  : "Some systems are experiencing issues. See below for details."}
             </p>
           </div>
 
           {/* Component List */}
           <div className="rounded-xl border border-white/[0.06] overflow-hidden mb-12">
-            {components.map((component, i) => (
+            {componentStatuses.map((component, i) => (
               <div
                 key={component.name}
                 className={`flex items-center justify-between px-5 py-4 ${
-                  i < components.length - 1
+                  i < componentStatuses.length - 1
                     ? "border-b border-white/[0.04]"
                     : ""
                 }`}
@@ -163,36 +203,50 @@ export default function StatusClient() {
                   >
                     {statusLabel[component.status]}
                   </p>
-                  <p className="text-[11px] font-mono text-white/25">
-                    {component.latency} avg
-                  </p>
+                  {component.latency !== "—" && (
+                    <p className="text-[11px] font-mono text-white/25">
+                      {component.latency} avg
+                    </p>
+                  )}
                 </div>
               </div>
             ))}
           </div>
 
-          {/* Uptime Summary */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-12">
-            {components.map((c) => (
-              <div
-                key={c.name}
-                className="rounded-xl border border-white/[0.04] bg-white/[0.02] p-4 text-center"
-              >
-                <p className="text-xs text-white/30 mb-1">{c.name}</p>
+          {/* Version & Uptime */}
+          {health && (
+            <div className="grid grid-cols-3 gap-4 mb-12">
+              <div className="rounded-xl border border-white/[0.04] bg-white/[0.02] p-4 text-center">
+                <p className="text-xs text-white/30 mb-1">Version</p>
                 <p className="text-lg font-mono font-semibold text-white/80">
-                  {c.uptime}
+                  {health.version}
                 </p>
-                <p className="text-[10px] text-white/20">30-day uptime</p>
+                <p className="text-[10px] text-white/20">Current release</p>
               </div>
-            ))}
-          </div>
+              <div className="rounded-xl border border-white/[0.04] bg-white/[0.02] p-4 text-center">
+                <p className="text-xs text-white/30 mb-1">Uptime</p>
+                <p className="text-lg font-mono font-semibold text-white/80">
+                  {Math.floor(health.uptime / 3600)}h{" "}
+                  {Math.floor((health.uptime % 3600) / 60)}m
+                </p>
+                <p className="text-[10px] text-white/20">Since last deploy</p>
+              </div>
+              <div className="rounded-xl border border-white/[0.04] bg-white/[0.02] p-4 text-center">
+                <p className="text-xs text-white/30 mb-1">Response</p>
+                <p className="text-lg font-mono font-semibold text-white/80">
+                  {health.responseTime}ms
+                </p>
+                <p className="text-[10px] text-white/20">Health check</p>
+              </div>
+            </div>
+          )}
 
           {/* Note */}
           <div className="text-center">
             <p className="text-xs text-white/20 leading-relaxed max-w-md mx-auto">
-              This is a static status page. In production, status data would be
-              polled from a monitoring endpoint at regular intervals. The values
-              shown are representative defaults.
+              Status is determined by polling the{" "}
+              <code className="text-white/30">/api/health</code> endpoint every
+              30 seconds. Database connectivity is verified per check.
             </p>
           </div>
         </div>

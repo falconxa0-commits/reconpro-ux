@@ -34,8 +34,8 @@ const existing = [
   {
     name: "Webhook Notifications",
     description:
-      "Scan completion and alert events can be forwarded to external webhooks for integration with SIEM platforms, Slack, PagerDuty, or custom tooling.",
-    status: "available",
+      "Scan completion and alert events forwarded to external webhooks for integration with SIEM platforms, Slack, PagerDuty, or custom tooling.",
+    status: "planned",
   },
 ];
 
@@ -61,14 +61,14 @@ const inProgress = [
   {
     name: "SSO / SAML 2.0 Integration",
     description:
-      "SAML 2.0 and OpenID Connect single sign-on integration is in development. Currently, authentication is limited to email/password and API keys.",
-    status: "in-progress",
+      "SAML 2.0 and OpenID Connect single sign-on integration is planned. Currently, authentication is limited to API keys.",
+    status: "planned",
   },
   {
     name: "Dedicated Infrastructure",
     description:
-      "Isolated scanning infrastructure with dedicated IPs and custom rate limits is available for Enterprise customers but requires manual provisioning.",
-    status: "available",
+      "Isolated scanning infrastructure with dedicated IPs and custom rate limits requires manual provisioning.",
+    status: "planned",
   },
 ];
 

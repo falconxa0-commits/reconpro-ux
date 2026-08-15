@@ -60,7 +60,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "ReconPro — Attack Surface Intelligence Platform",
-    description: "Attack surface intelligence. 4 scanner modules. 35+ API endpoints. Open source under MIT license.",
+    description: "Attack surface intelligence. 5 scanner modules. 60 API endpoints. Open source under MIT license.",
     type: "website",
     siteName: "ReconPro",
     locale: "en_US",
@@ -77,7 +77,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "ReconPro — Attack Surface Intelligence Platform",
-    description: "Attack surface intelligence. 4 scanner modules. 35+ API endpoints. Open source.",
+    description: "Attack surface intelligence. 5 scanner modules. 60 API endpoints. Open source.",
     images: ["/og-image.png"],
     creator: "@reconpro",
     site: "@reconpro",

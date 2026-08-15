@@ -141,11 +141,11 @@ export default function AboutPage() {
               </div>
               <div>
                 <p className="text-xs text-white/30 mb-1">API Endpoints</p>
-                <p className="text-sm font-mono text-white">35</p>
+                <p className="text-sm font-mono text-white">60</p>
               </div>
               <div>
                 <p className="text-xs text-white/30 mb-1">Scanner Modules</p>
-                <p className="text-sm font-mono text-white">4</p>
+                <p className="text-sm font-mono text-white">5</p>
               </div>
               <div>
                 <p className="text-xs text-white/30 mb-1">License</p>

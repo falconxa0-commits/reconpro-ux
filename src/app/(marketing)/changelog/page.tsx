@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import {
   Rocket,
-  Zap,
   ShieldCheck,
 } from "lucide-react";
 

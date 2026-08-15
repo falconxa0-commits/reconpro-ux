@@ -60,9 +60,13 @@ const statusConfig: Record<
   ScannerModule["status"],
   { label: string; className: string }
 > = {
-  stable: {
-    label: "stable",
+  implemented: {
+    label: "implemented",
     className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+  },
+  planned: {
+    label: "planned",
+    className: "border-zinc-500/30 bg-zinc-500/10 text-zinc-400",
   },
   beta: {
     label: "beta",
@@ -100,7 +104,7 @@ export function ModulesSection() {
             Scanner Modules
           </h2>
           <p className="mx-auto mt-5 max-w-md text-sm text-white/60">
-            16 scanner modules documented. 4 implemented in v0.2.0.
+            16 scanner modules documented. 5 implemented in v0.2.0. 11 planned for future releases.
           </p>
         </div>
 
@@ -121,12 +125,13 @@ export function ModulesSection() {
           </span>
           <span className="text-white/10">·</span>
           <span>
-            <span className="text-emerald-400/60 font-medium">14</span>{" "}
-            Stable
+            <span className="text-emerald-400/60 font-medium">5</span>{" "}
+            Implemented
           </span>
           <span className="text-white/10">·</span>
           <span>
-            <span className="text-yellow-400/60 font-medium">2</span> Beta
+            <span className="text-zinc-400/60 font-medium">11</span>{" "}
+            Planned
           </span>
         </div>
 

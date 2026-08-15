@@ -211,7 +211,7 @@ export default function CareersPage() {
                   className="inline-flex items-center gap-2 text-sm font-medium text-white/60 hover:text-white transition-colors"
                 >
                   <Github className="h-4 w-4" />
-                  GitHub
+                  About Us
                 </a>
               </div>
             </div>

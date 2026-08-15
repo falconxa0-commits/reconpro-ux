@@ -22,7 +22,7 @@ const webApplicationSchema = {
   },
   featureList: [
     "DNS, SSL, port, and HTTP scanning",
-    "REST API with 35+ endpoints",
+    "REST API with 60 endpoints",
     "Compliance mapping (SOC2, ISO27001, HIPAA, PCI-DSS, NIST, GDPR)",
     "Dashboard with 8 dedicated routes",
     "Team management and audit logging",

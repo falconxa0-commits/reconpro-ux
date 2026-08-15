@@ -179,7 +179,7 @@ export default function ContactClient() {
                     href="/about"
                     className="text-sm text-white/70 hover:text-white transition-colors duration-300"
                   >
-                    github.com/reconpro
+                    About ReconPro
                   </a>
                 </div>
               </div>
