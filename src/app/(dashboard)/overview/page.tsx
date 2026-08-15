@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { BentoDashboard } from "@/components/reconpro/bento-dashboard";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function OverviewPage() {
+  const router = useRouter();
   const [stats, setStats] = useState<null | {
     totalScans: number;
     totalFindings: number;
@@ -90,7 +92,19 @@ export default function OverviewPage() {
     <BentoDashboard
       stats={stats}
       recentScans={recentScans as never}
-      onNavigate={() => {}}
+      onNavigate={(view: string) => {
+        const pathMap: Record<string, string> = {
+          surface: "/findings",
+          threats: "/findings",
+          scan: "/scans",
+          history: "/scans",
+          compliance: "/compliance",
+          "unified-cli": "/scans",
+          dashboard: "/overview",
+        };
+        const target = pathMap[view];
+        if (target) router.push(target);
+      }}
     />
   );
 }

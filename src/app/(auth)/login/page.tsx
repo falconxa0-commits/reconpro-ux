@@ -8,37 +8,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { KeyRound, Lock, Mail, Loader2 } from "lucide-react";
+import { KeyRound, Lock, Mail, Loader2, AlertCircle } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
-  const handleEmailLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      const res = await fetch("/api/v1/auth/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Invalid email or password.");
-      }
-      router.push("/overview");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Login failed. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleApiKeyLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,15 +24,31 @@ export default function LoginPage() {
       const res = await fetch("/api/v1/auth/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey }),
+        body: JSON.stringify({ api_key: apiKey }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Invalid API key.");
       }
-      router.push("/overview");
+      const data = await res.json();
+      if (!data.valid) {
+        throw new Error(data.error || "API key validation failed.");
+      }
+      // Store auth state in localStorage for dashboard components to read
+      localStorage.setItem("reconpro_auth", JSON.stringify({
+        org_id: data.org_id,
+        key_prefix: data.key_prefix,
+        key_name: data.key_name,
+        scopes: data.scopes,
+      }));
+      // Set a cookie so middleware can guard dashboard routes
+      document.cookie = "reconpro_auth=authenticated; path=/; max-age=86400; SameSite=Lax";
+      // Redirect to original destination or overview
+      const params = new URLSearchParams(window.location.search);
+      const redirect = params.get("redirect") || "/overview";
+      router.push(redirect);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Authentication failed. Please try again.");
+      setError(err instanceof Error ? err.message : "Authentication failed.");
     } finally {
       setLoading(false);
     }
@@ -72,121 +64,81 @@ export default function LoginPage() {
           Sign In
         </CardTitle>
         <CardDescription className="text-zinc-400">
-          Enter your credentials to access your account
+          Authenticate with your ReconPro API key
         </CardDescription>
       </CardHeader>
-
       <CardContent className="space-y-4">
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03] p-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+            <div className="text-sm text-amber-400/80">
+              <p className="font-medium">API key authentication only</p>
+              <p className="text-xs text-amber-400/60 mt-1">
+                Email/password login is not yet implemented. Generate an API key from
+                the dashboard settings once you have an account, or sign in with a key
+                provisioned by your organization administrator.
+              </p>
+            </div>
+          </div>
+        </div>
+
         {error && (
           <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
             {error}
           </div>
         )}
 
-        {/* Email + Password Form */}
-        <form onSubmit={handleEmailLogin} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="email" className="text-zinc-300">
-              Email
-            </Label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@company.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-                className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="password" className="text-zinc-300">
-                Password
-              </Label>
-              <Link
-                href="/forgot-password"
-                className="text-xs text-zinc-400 hover:text-white transition-colors"
-              >
-                Forgot password?
-              </Link>
-            </div>
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-              <Input
-                id="password"
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
-              />
-            </div>
-          </div>
-
-          <Button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
-          >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Sign In"}
-          </Button>
-        </form>
-
-        {/* Divider */}
-        <div className="relative my-6">
-          <div className="absolute inset-0 flex items-center">
-            <Separator className="bg-zinc-800" />
-          </div>
-          <div className="relative flex justify-center text-xs">
-            <span className="bg-zinc-950 px-3 text-zinc-500 uppercase tracking-wider">
-              or
-            </span>
-          </div>
-        </div>
-
-        {/* API Key Sign In */}
-        <form onSubmit={handleApiKeyLogin} className="space-y-3">
+        <form onSubmit={handleApiKeyLogin} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="api-key" className="text-zinc-300">
-              Sign in with API Key
+              API Key
             </Label>
             <Input
               id="api-key"
               type="password"
-              placeholder="x-api-key"
+              placeholder="rp_live_abc123..."
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               required
               className="border-zinc-800 bg-zinc-900 font-mono text-sm text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
             />
+            <p className="text-xs text-zinc-500">
+              Your API key is hashed with SHA-256 before storage. It is never stored
+              in plaintext.
+            </p>
           </div>
           <Button
             type="submit"
-            variant="outline"
             disabled={loading}
-            className="w-full border-zinc-700 bg-transparent text-white hover:bg-zinc-800 hover:text-white font-medium"
+            className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Authenticate with API Key"}
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              "Authenticate"
+            )}
           </Button>
         </form>
-      </CardContent>
 
-      <CardFooter className="justify-center">
-        <p className="text-sm text-zinc-400">
-          Don&apos;t have an account?{" "}
+        <div className="text-center space-y-2 pt-2">
+          <p className="text-xs text-zinc-500">
+            Don&apos;t have an API key?
+          </p>
           <Link
             href="/register"
-            className="text-white font-medium hover:underline"
+            className="text-xs text-white font-medium hover:underline"
           >
-            Create Account
+            Create an account to generate one
           </Link>
-        </p>
+        </div>
+      </CardContent>
+      <CardFooter className="flex-col gap-2 justify-center">
+        <Link
+          href="/forgot-password"
+          className="text-xs text-zinc-400 hover:text-white transition-colors"
+        >
+          Forgot your API key?
+        </Link>
       </CardFooter>
     </Card>
   );

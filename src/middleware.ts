@@ -1,10 +1,29 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+// Routes that require authentication
+const PROTECTED_PREFIXES = ["/overview", "/scans", "/findings", "/monitoring", "/compliance", "/teams", "/integrations", "/settings"];
+
 export function middleware(request: NextRequest) {
   const response = NextResponse.next();
   const { pathname } = request.nextUrl;
   const isApiRoute = pathname.startsWith('/api');
+
+  // ── Dashboard Auth Guard ──────────────────────────────────────────
+  // Dashboard routes require an API key in localStorage.
+  // Since middleware cannot read localStorage, we check for a cookie.
+  // If the user has authenticated via the login page, a cookie is set.
+  // Otherwise, redirect to login.
+  const isDashboardRoute = PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(prefix + '/'));
+  if (isDashboardRoute) {
+    // Check for auth cookie set by the login flow
+    const authCookie = request.cookies.get('reconpro_auth');
+    if (!authCookie) {
+      const loginUrl = new URL('/login', request.url);
+      loginUrl.searchParams.set('redirect', pathname);
+      return NextResponse.redirect(loginUrl);
+    }
+  }
 
   // ── Security Headers (applied to ALL routes including API) ──────────
   response.headers.set("X-Frame-Options", "DENY");
@@ -29,15 +48,14 @@ export function middleware(request: NextRequest) {
   response.headers.set("Cross-Origin-Embedder-Policy", "credentialless");
 
   // ── Content Security Policy (only for non-API, non-static routes) ────
-  // CSP does not apply to API routes or static assets
   if (!isApiRoute) {
     const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
 
     const csp = [
       "default-src 'self'",
-      `script-src 'self' 'nonce-${nonce}'`, // Removed unsafe-inline and unsafe-eval
-      `style-src 'self' 'unsafe-inline'`,    // Tailwind requires unsafe-inline for styles
-      "font-src 'self' data:",              // Allow data: for inline fonts
+      `script-src 'self' 'nonce-${nonce}'`,
+      `style-src 'self' 'unsafe-inline'`,
+      "font-src 'self' data:",
       "img-src 'self' data: blob:",
       "frame-ancestors 'none'",
       "base-uri 'self'",
@@ -56,10 +74,6 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Apply to ALL routes EXCEPT:
-    // - Next.js internals (_next/static, _next/image)
-    // - Static files (favicon, robots, sitemap)
-    // API routes are now INCLUDED — they get security headers but not CSP
-    { source: "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)", },
+    { source: "/((?!_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml).*)" },
   ],
 };

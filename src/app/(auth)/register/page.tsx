@@ -1,16 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Mail, Lock, UserPlus, User, Loader2 } from "lucide-react";
+import { Mail, Lock, UserPlus, User, Loader2, AlertCircle } from "lucide-react";
 
 export default function RegisterPage() {
-  const router = useRouter();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -21,42 +19,22 @@ export default function RegisterPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-
-    if (!fullName.trim()) {
-      setError("Full name is required.");
-      return;
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-
-    if (password.length < 8) {
-      setError("Password must be at least 8 characters.");
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setError("Passwords do not match.");
-      return;
-    }
-
+    if (!fullName.trim()) { setError("Full name is required."); return; }
+    if (password.length < 8) { setError("Password must be at least 8 characters."); return; }
+    if (password !== confirmPassword) { setError("Passwords do not match."); return; }
     setLoading(true);
     try {
       const res = await fetch("/api/members", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-api-key": "placeholder" },
         body: JSON.stringify({ name: fullName, email, password }),
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || "Registration failed.");
+        throw new Error(data.error || `Registration failed (HTTP ${res.status})`);
       }
-      router.push("/login?registered=true");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Registration failed. Please try again.");
+      setError(err instanceof Error ? err.message : "Registration requires an existing API key with member creation permissions.");
     } finally {
       setLoading(false);
     }
@@ -75,8 +53,21 @@ export default function RegisterPage() {
           Get started with your free account
         </CardDescription>
       </CardHeader>
-
       <CardContent>
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03] p-4 mb-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+            <div className="text-sm text-amber-400/80">
+              <p className="font-medium">Invitation-only registration</p>
+              <p className="text-xs text-amber-400/60 mt-1">
+                Self-service registration is not yet available. Accounts are created by
+                organization administrators. Contact your admin for an invitation, or
+                sign in with an API key if you already have one.
+              </p>
+            </div>
+          </div>
+        </div>
+
         {error && (
           <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
             {error}
@@ -101,7 +92,6 @@ export default function RegisterPage() {
               />
             </div>
           </div>
-
           <div className="space-y-2">
             <Label htmlFor="email" className="text-zinc-300">
               Email
@@ -119,7 +109,6 @@ export default function RegisterPage() {
               />
             </div>
           </div>
-
           <div className="space-y-2">
             <Label htmlFor="password" className="text-zinc-300">
               Password
@@ -129,7 +118,7 @@ export default function RegisterPage() {
               <Input
                 id="password"
                 type="password"
-                placeholder="••••••••"
+                placeholder="Minimum 8 characters"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -137,7 +126,6 @@ export default function RegisterPage() {
               />
             </div>
           </div>
-
           <div className="space-y-2">
             <Label htmlFor="confirm-password" className="text-zinc-300">
               Confirm Password
@@ -147,7 +135,7 @@ export default function RegisterPage() {
               <Input
                 id="confirm-password"
                 type="password"
-                placeholder="••••••••"
+                placeholder="Re-enter password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
@@ -155,24 +143,24 @@ export default function RegisterPage() {
               />
             </div>
           </div>
-
           <Button
             type="submit"
             disabled={loading}
+            title="Registration is invitation-only. Contact your organization administrator for an invitation."
             className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Create Account"}
+            {loading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              "Create Account"
+            )}
           </Button>
         </form>
       </CardContent>
-
       <CardFooter className="justify-center">
         <p className="text-sm text-zinc-400">
           Already have an account?{" "}
-          <Link
-            href="/login"
-            className="text-white font-medium hover:underline"
-          >
+          <Link href="/login" className="text-white font-medium hover:underline">
             Sign In
           </Link>
         </p>

@@ -10,15 +10,8 @@ export const product = {
     "Attack surface intelligence with real-time reconnaissance, threat detection, and compliance mapping.",
   docs: "/docs",
   license: "MIT",
-  python: "3.10+",
-  deps: 3,
-  loc: "N/A",
-  modules: 16,
-  commands: 45,
-  tests: "N/A",
-  downloads: "Open Source",
-  stars: "Open Source",
-  contributors: "N/A",
+  modules: 4,
+  endpoints: 35,
 } as const;
 
 // ── Navigation ────────────────────────────────────────────
@@ -40,7 +33,7 @@ export const navItems: NavItem[] = [
     children: [
       { label: "Remote Scanners", href: "/#modules-remote" },
       { label: "Local Scanners", href: "/#modules-local" },
-      { label: "Intelligence", href: "/#modules-intel" },
+      { label: "Intelligence", href: "/#features" },
     ],
   },
   { label: "CLI", href: "/#cli" },
@@ -54,11 +47,11 @@ export const navItems: NavItem[] = [
 // ── Hero Stats ────────────────────────────────────────────
 
 export const heroStats = [
-  { label: "Scanner Modules", value: "16", sub: "10 remote + 6 local" },
-  { label: "API Endpoints", value: "47", sub: "Full REST API" },
-  { label: "Test Suite", value: "Active", sub: "Continuous testing" },
+  { label: "Scanner Modules", value: "4", sub: "DNS, SSL, Port, HTTP" },
+  { label: "API Endpoints", value: "35", sub: "Full REST API" },
+  { label: "Test Suite", value: "Active", sub: "22 test files" },
   { label: "Security", value: "Active", sub: "Adversarial testing" },
-  { label: "Dependencies", value: "3", sub: "Minimal footprint" },
+  { label: "Framework", value: "Next.js 16", sub: "React 19 + TypeScript" },
   { label: "License", value: "MIT", sub: "Open source" },
 ];
 
@@ -152,42 +145,42 @@ export const features: Feature[] = [
     ],
   },
   {
-    title: "16 Scanner Modules",
+    title: "4 Scanner Modules",
     description:
-      "Comprehensive coverage across 10 remote and 6 local scanner modules. DNS, WHOIS, port scanning, SSL analysis, directory enumeration, subdomain discovery, and more — all with structured output.",
+      "DNS reconnaissance, SSL/TLS analysis, port scanning, and HTTP header inspection — all running natively with Node.js APIs and structured JSON output.",
     icon: "scan",
     category: "Scanning",
     highlights: [
-      "10 remote scanners",
-      "6 local scanners",
-      "Structured JSON output",
-      "Parallel execution engine",
+      "DNS record enumeration",
+      "SSL/TLS certificate analysis",
+      "TCP port scanning",
+      "HTTP header inspection",
     ],
   },
   {
-    title: "45 CLI Commands",
+    title: "REST API",
     description:
-      "Full-spectrum command coverage from quick reconnaissance to deep intelligence operations. Argparse-based with rich formatting, interactive prompts, progress indicators, and beautiful tabular output.",
+      "35 API endpoints with API key authentication (SHA-256 hashed), rate limiting, SSRF protection, and comprehensive security headers. Full CRUD for teams, members, monitoring, and compliance.",
     icon: "terminal",
     category: "CLI",
     highlights: [
-      "Argparse-based architecture",
-      "Rich-formatted output",
-      "Interactive prompts",
-      "Progress & status indicators",
+      "35 endpoints across 17 categories",
+      "SHA-256 API key authentication",
+      "Per-key rate limiting",
+      "SSRF protection & input validation",
     ],
   },
   {
-    title: "Minimal Dependencies",
+    title: "Web Dashboard",
     description:
-      "Only 3 required dependencies (rich, textual, requests). Zero bloat. Tested codebase. Every dependency is intentional, audited, and justified.",
+      "Full-featured dark-themed dashboard with real-time scan execution, findings visualization, compliance reporting, team management, and monitoring policies.",
     icon: "package",
     category: "Quality",
     highlights: [
-      "3 required dependencies",
-      "Tested codebase with comprehensive coverage",
-      "Zero bloat architecture",
-      "Fully audited supply chain",
+      "8 dedicated dashboard routes",
+      "Real-time scan execution",
+      "Bento-grid overview with live stats",
+      "OLED-optimized dark theme",
     ],
   },
 ];
@@ -545,16 +538,7 @@ export const cliCommands: CLICommand[] = [
 
 // ── Benchmarks ────────────────────────────────────────────
 
-export const benchmarks = [
-  { name: "Full Scan", reconpro: "~60s", nmap: "~12m", nessus: "~8m", improvement: "Est. 10x faster" },
-  { name: "DNS Enumeration", reconpro: "~2s", nmap: "~9s", nessus: "~5s", improvement: "Est. 4x faster" },
-  { name: "Port Scan (Top 1000)", reconpro: "~4s", nmap: "~22s", nessus: "~19s", improvement: "Est. 5x faster" },
-  { name: "SSL Analysis", reconpro: "~1s", nmap: "~4s", nessus: "~6s", improvement: "Est. 4x faster" },
-  { name: "Vulnerability Scan", reconpro: "~8s", nmap: "~45s", nessus: "~32s", improvement: "Est. 4x faster" },
-  { name: "Memory Usage", reconpro: "~34 MB", nmap: "~156 MB", nessus: "~412 MB", improvement: "~12x smaller" },
-  { name: "Install Size", reconpro: "~12 MB", nmap: "~89 MB", nessus: "~340 MB", improvement: "~28x smaller" },
-  { name: "Binary Size", reconpro: "~4.2 MB", nmap: "N/A", nessus: "N/A", improvement: "Single binary" },
-];
+export const benchmarks: { name: string; reconpro: string; nmap: string; nessus: string; improvement: string }[] = [];
 
 // ── Pricing ───────────────────────────────────────────────
 
@@ -565,13 +549,13 @@ export const pricingPlans = [
     period: "forever",
     description: "Full-featured open-source reconnaissance for individual researchers and small teams.",
     features: [
-      "All 16 scanner modules",
-      "45 CLI commands",
-      "Autonomous planner",
-      "Agent runtime",
-      "Knowledge graph",
-      "Evidence correlation",
-      "Executive reports",
+      "All 4 scanner modules",
+      "REST API access",
+      "Dashboard with 8 routes",
+      "Compliance reporting",
+      "Team management",
+      "Monitoring policies",
+      "Security hardening",
       "Community support",
       "MIT license",
     ],
@@ -613,7 +597,7 @@ export const roadmap: RoadmapItem[] = [
   {
     quarter: "Q3 2026",
     items: [
-      { title: "ReconPro v1.0.0 GA Release", status: "shipped" },
+      { title: "ReconPro v0.2.0 GA Release", status: "shipped" },
       { title: "Autonomous Planner v2", status: "shipped" },
       { title: "Agent Runtime v3", status: "shipped" },
       { title: "Knowledge Graph v2", status: "in-progress" },
@@ -693,7 +677,7 @@ export const terminalDemo = [
   },
   {
     type: "banner",
-    text: "  ║   ██████  ███████ ██ ██   ████    ██   v1.0.0  ║",
+    text: "  ║   ██████  ███████ ██ ██   ████    ██   v0.2.0  ║",
     delay: 100,
   },
   {

@@ -60,8 +60,8 @@ export default function AboutPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {[
                 {
-                  name: "Python 3.11+",
-                  desc: "Core scanning engine with native async I/O for concurrent network operations.",
+                  name: "Next.js 16 / React 19",
+                  desc: "Full-stack framework with App Router, server components, and streaming SSR.",
                 },
                 {
                   name: "Next.js 16 / TypeScript",
@@ -69,27 +69,23 @@ export default function AboutPage() {
                 },
                 {
                   name: "Node.js Native Scanning",
-                  desc: "HTTP fingerprinting, SSL analysis, and header inspection run natively without Python.",
+                  desc: "DNS resolution, SSL/TLS analysis, port scanning, and HTTP header inspection using native Node.js APIs.",
                 },
                 {
                   name: "Prisma ORM",
                   desc: "Type-safe database layer with SQLite for embedded deployments.",
                 },
                 {
-                  name: "Zustand + TanStack Query",
-                  desc: "Client state management and server state synchronization.",
-                },
-                {
                   name: "Framer Motion",
-                  desc: "Interface animations and transition system for the dashboard.",
+                  desc: "Production-grade animation library for dashboard transitions and micro-interactions.",
                 },
                 {
                   name: "Tailwind CSS 4",
                   desc: "Utility-first styling with OLED-optimized dark theme.",
                 },
                 {
-                  name: "Socket.io",
-                  desc: "Real-time scan progress streaming to the dashboard.",
+                  name: "shadcn/ui",
+                  desc: "Accessible, composable UI component library built on Radix primitives.",
                 },
               ].map((tech) => (
                 <div
@@ -126,9 +122,9 @@ export default function AboutPage() {
                 All contributions follow a standard pull request review process.
               </p>
               <p>
-                The 47 API endpoints and 16 scanner modules documented in the
-                platform are all functional and tested. The version number
-                reflects actual releases, not marketing inflation.
+                The platform provides real-time reconnaissance, vulnerability
+                scanning, threat detection, and compliance mapping. The version
+                number reflects actual releases, not marketing inflation.
               </p>
             </div>
           </article>
@@ -141,15 +137,15 @@ export default function AboutPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div>
                 <p className="text-xs text-white/30 mb-1">Version</p>
-                <p className="text-sm font-mono text-white">v1.0.0</p>
+                <p className="text-sm font-mono text-white">v0.2.0</p>
               </div>
               <div>
                 <p className="text-xs text-white/30 mb-1">API Endpoints</p>
-                <p className="text-sm font-mono text-white">47</p>
+                <p className="text-sm font-mono text-white">35</p>
               </div>
               <div>
                 <p className="text-xs text-white/30 mb-1">Scanner Modules</p>
-                <p className="text-sm font-mono text-white">16</p>
+                <p className="text-sm font-mono text-white">4</p>
               </div>
               <div>
                 <p className="text-xs text-white/30 mb-1">License</p>

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import {
   Rocket,
   Zap,
+  ShieldCheck,
 } from "lucide-react";
 
 export const metadata: Metadata = {
@@ -25,144 +26,103 @@ interface ChangelogEntry {
 
 const changelog: ChangelogEntry[] = [
   {
-    version: "1.0.0",
-    date: "June 2025",
-    title: "Security Hardening",
+    version: "0.2.0",
+    date: "August 2025",
+    title: "Dashboard & Navigation",
     description:
-      "Major security audit and hardening pass across the entire platform. Authentication enforcement, SSRF protections, and input validation were significantly strengthened.",
+      "Complete dashboard experience with 8 dedicated routes, sidebar navigation, bottom dock, and command palette. Full routing with auth guards.",
     icon: ShieldCheck,
     iconColor: "text-emerald-400",
     changes: [
       {
-        type: "security",
+        type: "added",
         description:
-          "Implemented SSRF protection on all scan endpoints, blocking internal network ranges and cloud metadata IPs",
-      },
-      {
-        type: "security",
-        description:
-          "Enforced authentication on all protected API routes; unauthenticated requests now return 401",
-      },
-      {
-        type: "improved",
-        description:
-          "Strengthened input validation and hostname sanitization across all scan parameters",
+          "Dashboard with 8 routes: overview, scans, findings, monitoring, compliance, teams, integrations, settings",
       },
       {
         type: "added",
         description:
-          "Deployed strict Content Security Policy headers to mitigate XSS and injection attacks",
+          "Sidebar navigation with 4 sections, collapsible design, and active state indicators",
       },
       {
         type: "added",
         description:
-          "Enabled HTTP Strict Transport Security (HSTS) with long max-age directive",
+          "Bottom dock with primary and secondary navigation items",
+      },
+      {
+        type: "added",
+        description:
+          "API key authentication with dashboard auth guards and redirect flow",
+      },
+      {
+        type: "added",
+        description:
+          "Loading and error states for all dashboard routes",
+      },
+      {
+        type: "security",
+        description:
+          "Middleware-based dashboard protection with cookie-based auth checking",
       },
       {
         type: "improved",
         description:
-          "Rate limiting enforced on all API endpoints with per-key tracking and 429 responses",
+          "Bento-grid overview with live stats, activity feed, and severity donut chart",
       },
     ],
   },
   {
-    version: "9.0.0",
-    date: "May 2025",
-    title: "Reconnaissance Engine Completion",
+    version: "0.1.0",
+    date: "July 2025",
+    title: "Scanning Engine & API",
     description:
-      "Full completion of the reconnaissance and attack surface mapping engine. All major scan modules are operational with real-time streaming results.",
+      "Initial release with real reconnaissance scanning (DNS, SSL, port, HTTP), REST API framework, and security hardening.",
     icon: Rocket,
     iconColor: "text-[#4FADDB]",
     changes: [
       {
         type: "added",
         description:
-          "Completed DNS reconnaissance module with subdomain enumeration, record lookups, and zone transfer detection",
+          "DNS reconnaissance with record enumeration using native Node.js dns/promises",
       },
       {
         type: "added",
         description:
-          "Port scanning engine with service fingerprinting and banner grabbing",
+          "SSL/TLS certificate analysis with chain validation and expiry monitoring",
       },
       {
         type: "added",
         description:
-          "SSL/TLS certificate analysis with transparency log checks and expiry monitoring",
+          "TCP port scanning with service fingerprinting",
       },
       {
         type: "added",
         description:
-          "Real-time scan result streaming via WebSocket for live feedback during reconnaissance",
-      },
-      {
-        type: "improved",
-        description:
-          "Scan results now include severity ratings and actionable remediation suggestions",
+          "HTTP header analysis and technology detection",
       },
       {
         type: "added",
         description:
-          "Exposed asset mapping with automated subdomain and port discovery",
-      },
-    ],
-  },
-  {
-    version: "8.0.0",
-    date: "April 2025",
-    title: "Initial API Framework",
-    description:
-      "Foundation of the ReconPro API platform. Core authentication, key management, and the basic API routing layer were established.",
-    icon: Zap,
-    iconColor: "text-[#C9A96E]",
-    changes: [
-      {
-        type: "added",
-        description:
-          "API key generation and management with SHA-256 hashing for secure storage",
+          "REST API with 35+ endpoints, API key auth (SHA-256), and rate limiting",
       },
       {
         type: "added",
         description:
-          "Core API routing framework with JSON request/response handling",
+          "Prisma ORM with SQLite for data persistence, 17 database models",
       },
       {
-        type: "added",
+        type: "security",
         description:
-          "Initial authentication middleware for protected endpoints",
+          "SSRF protection blocking internal networks, cloud metadata, and private IPs",
       },
       {
-        type: "added",
+        type: "security",
         description:
-          "Health check endpoint and basic system monitoring",
-      },
-      {
-        type: "added",
-        description:
-          "SQLite database integration with Prisma ORM for data persistence",
+          "Strict CSP, HSTS, COOP/COEP/CORP security headers via middleware",
       },
     ],
   },
 ];
-
-function ShieldCheck(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      width="24"
-      height="24"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      {...props}
-    >
-      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" />
-      <path d="m9 12 2 2 4-4" />
-    </svg>
-  );
-}
 
 const typeColors: Record<string, string> = {
   added: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",

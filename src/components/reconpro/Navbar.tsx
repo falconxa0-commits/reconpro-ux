@@ -32,7 +32,6 @@ export function Navbar() {
     "docs",
     "benchmarks",
     "enterprise",
-    "pricing",
     "community",
   ];
   const active = useActiveSection(sectionIds);

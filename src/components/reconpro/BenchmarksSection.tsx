@@ -1,7 +1,6 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { benchmarks } from "@/data/content";
 import { useInView } from "@/hooks/useInView";
 
 export default function BenchmarksSection() {
@@ -25,11 +24,11 @@ export default function BenchmarksSection() {
             <span className="text-gradient-void">Performance</span>
           </h2>
           <p className="text-white/60 text-sm max-w-lg mx-auto">
-            Faster. Lighter. More efficient. Measurably superior.
+            Built for speed and efficiency with modern tooling.
           </p>
         </motion.div>
 
-        {/* Key Metrics */}
+        {/* Key Metrics — real, verifiable facts */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
@@ -37,10 +36,10 @@ export default function BenchmarksSection() {
           className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-16"
         >
           {[
-            { value: "47s", label: "Full Scan (100 domains)", color: "#ffffff" },
-            { value: "34MB", label: "Memory Footprint", color: "#00ff88" },
-            { value: "12MB", label: "Install Size", color: "#44aaff" },
-            { value: "16×", label: "Faster than alternatives", color: "#ffaa00" },
+            { value: "Next.js 16", label: "Framework", color: "#ffffff" },
+            { value: "React 19", label: "UI Runtime", color: "#00ff88" },
+            { value: "TypeScript", label: "Type Safety", color: "#44aaff" },
+            { value: "SQLite", label: "Embedded DB", color: "#ffaa00" },
           ].map((metric) => (
             <div
               key={metric.label}
@@ -57,7 +56,7 @@ export default function BenchmarksSection() {
           ))}
         </motion.div>
 
-        {/* Comparison Table */}
+        {/* Capabilities Table — real scanner capabilities */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
@@ -69,24 +68,25 @@ export default function BenchmarksSection() {
               <thead>
                 <tr className="border-b border-white/[0.04]">
                   <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Benchmark
+                    Module
                   </th>
                   <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white uppercase tracking-wider">
-                    ReconPro
+                    Technology
                   </th>
                   <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Nmap
-                  </th>
-                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Nessus
-                  </th>
-                  <th scope="col" className="text-left px-6 py-4 text-xs font-medium text-white/60 uppercase tracking-wider">
-                    Edge
+                    Status
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {benchmarks.map((row, i) => (
+                {[
+                  { name: "DNS Reconnaissance", tech: "Node.js dns/promises", status: "Stable" },
+                  { name: "SSL/TLS Analysis", tech: "Node.js tls module", status: "Stable" },
+                  { name: "Port Scanning", tech: "Node.js net/tls", status: "Stable" },
+                  { name: "HTTP Header Inspection", tech: "Node.js fetch API", status: "Stable" },
+                  { name: "Vulnerability Scanning", tech: "Native TCP/DNS probes", status: "Stable" },
+                  { name: "Bot Detection", tech: "Native TCP/DNS banner grab", status: "Stable" },
+                ].map((row) => (
                   <tr
                     key={row.name}
                     className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors duration-300"
@@ -95,21 +95,13 @@ export default function BenchmarksSection() {
                       {row.name}
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-white font-semibold font-mono">
-                        {row.reconpro}
+                      <span className="text-white/60 font-mono text-xs">
+                        {row.tech}
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-white/60 font-mono">{row.nmap}</span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="text-white/60 font-mono">
-                        {row.nessus}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium badge-pass">
-                        {row.improvement}
+                      <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        {row.status}
                       </span>
                     </td>
                   </tr>
@@ -126,7 +118,7 @@ export default function BenchmarksSection() {
           transition={{ duration: 0.7, delay: 0.4, ease: [0.16, 1, 0.3, 1] as const }}
           className="text-center text-[11px] text-white/50 mt-6"
         >
-          Benchmarked on equivalent hardware. Results may vary. See our methodology for details.
+          All scanning runs natively using Node.js built-in modules. No Python runtime required.
         </motion.p>
       </div>
     </section>

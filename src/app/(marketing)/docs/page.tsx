@@ -4,7 +4,7 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Documentation | ReconPro",
   description:
-    "ReconPro documentation. Getting started guides, API reference for 47 endpoints, 16 scanner modules, and CLI command reference.",
+    "ReconPro documentation. API reference for 35+ endpoints, scanner modules, and getting started guides.",
 };
 
 const sections = [
@@ -23,7 +23,7 @@ const sections = [
   {
     title: "API Reference",
     description:
-      "Complete reference for all 47 REST API endpoints organized by category.",
+      "Complete reference for all REST API endpoints organized by category.",
     links: [
       {
         label: "Scanning Endpoints (12)",
@@ -52,7 +52,7 @@ const sections = [
   {
     title: "Scanner Modules",
     description:
-      "Documentation for the 16 built-in scanner modules. Each module page covers capabilities, parameters, and output formats.",
+      "Documentation for the scanner modules. Each module page covers capabilities, parameters, and output formats.",
     links: [
       { label: "DNS Recon", href: "/#modules" },
       { label: "SSL/TLS Analysis", href: "/#modules" },
@@ -115,13 +115,13 @@ export default function DocsPage() {
               <div>
                 <p className="text-xs text-white/30 mb-1">Install</p>
                 <code className="text-xs font-mono text-white/70 bg-white/[0.03] px-3 py-1.5 rounded-lg border border-white/[0.06]">
-                  pip install reconpro
+                  git clone &amp;&amp; npm install
                 </code>
               </div>
               <div>
                 <p className="text-xs text-white/30 mb-1">Scan a Domain</p>
                 <code className="text-xs font-mono text-white/70 bg-white/[0.03] px-3 py-1.5 rounded-lg border border-white/[0.06]">
-                  reconpro scan example.com
+                  POST /api/scan {'{'}&quot;domain&quot;: &quot;example.com&quot;{'}'}
                 </code>
               </div>
               <div>
@@ -179,9 +179,8 @@ export default function DocsPage() {
           <div className="mt-16 pt-8 border-t border-white/[0.04]">
             <p className="text-xs text-white/30 leading-relaxed">
               Documentation is versioned alongside releases. The current docs
-              correspond to v1.0.0. For older versions, see the release tags on
-              GitHub. Some linked pages above are placeholders for documentation
-              that is being written.
+              correspond to v0.2.0. Some linked pages above are placeholders for
+              documentation that is being written.
             </p>
           </div>
         </div>

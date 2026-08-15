@@ -10,7 +10,7 @@ const webApplicationSchema = {
   "@type": "WebApplication",
   name: "ReconPro",
   description:
-    "Attack surface intelligence with autonomous reconnaissance, real-time threat intelligence, and compliance mapping.",
+    "Attack surface intelligence with reconnaissance scanning, threat detection, and compliance mapping.",
   url: SITE_URL,
   applicationCategory: "SecurityApplication",
   operatingSystem: "Linux, macOS, Windows",
@@ -21,16 +21,15 @@ const webApplicationSchema = {
     description: "Open Source — MIT License",
   },
   featureList: [
-    "16 scanner modules",
-    "47 REST API endpoints",
-    "Real-time threat intelligence",
-    "Compliance mapping (SOC2, ISO27001, HIPAA, PCI-DSS)",
-    "AI-powered security advisor",
+    "DNS, SSL, port, and HTTP scanning",
+    "REST API with 35+ endpoints",
+    "Compliance mapping (SOC2, ISO27001, HIPAA, PCI-DSS, NIST, GDPR)",
+    "Dashboard with 8 dedicated routes",
     "Team management and audit logging",
     "SSRF-protected scanning engine",
   ],
   softwareVersion: "0.2.0",
-  programmingLanguage: "Python",
+  programmingLanguage: "TypeScript",
   license: "https://opensource.org/licenses/MIT",
   author: {
     "@type": "Organization",
@@ -54,10 +53,9 @@ const organizationSchema = {
   sameAs: [],
   foundingDate: "2024",
   license: "https://opensource.org/licenses/MIT",
-  programmingLanguage: "Python",
 };
 
-/** SoftwareSourceCode schema for the GitHub repo */
+/** SoftwareSourceCode schema */
 const softwareSourceSchema = {
   "@context": "https://schema.org",
   "@type": "SoftwareSourceCode",
@@ -66,8 +64,8 @@ const softwareSourceSchema = {
     "Attack surface intelligence platform.",
   url: SITE_URL,
   codeRepository: SITE_URL,
-  programmingLanguage: "Python",
-  runtimePlatform: "Python 3.10+",
+  programmingLanguage: "TypeScript",
+  runtimePlatform: "Node.js",
   license: "https://opensource.org/licenses/MIT",
   version: "0.2.0",
   author: {

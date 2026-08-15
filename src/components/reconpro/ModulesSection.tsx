@@ -100,7 +100,7 @@ export function ModulesSection() {
             Scanner Modules
           </h2>
           <p className="mx-auto mt-5 max-w-md text-sm text-white/60">
-            16 precision instruments. Complete coverage.
+            16 scanner modules documented. 4 implemented in v0.2.0.
           </p>
         </div>
 
