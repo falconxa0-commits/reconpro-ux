@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { RadarMap } from "@/components/reconpro/radar-map";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,7 @@ export default function FindingsPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const loadData = () => {
+  const loadData = useCallback(() => {
     setLoading(true);
     setError("");
     fetch("/api/scans", { headers: authHeaders })
@@ -38,11 +38,11 @@ export default function FindingsPage() {
         setError('Failed to load findings. Please try again.');
       })
       .finally(() => setLoading(false));
-  };
+  }, [authHeaders]);
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [loadData]);
 
   if (error) {
     return (

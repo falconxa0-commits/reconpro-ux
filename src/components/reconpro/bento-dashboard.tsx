@@ -219,15 +219,15 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
         <motion.div
           variants={fadeUp}
           className="col-span-3 row-span-2 bento-tile p-0 overflow-hidden cursor-pointer"
-          onClick={() => onNavigate('unified-cli')}
+          onClick={() => onNavigate('scan')}
         >
           <div className="flex items-center justify-between px-5 pt-4 pb-2">
             <div className="flex items-center gap-2">
               <Terminal className="w-3.5 h-3.5 text-[#ffffff] opacity-60" />
               <span className="text-[10px] font-mono text-[#333333] tracking-[0.15em] uppercase">ReconPro CLI</span>
             </div>
-            <button onClick={(e) => { e.stopPropagation(); onNavigate('unified-cli'); }} className="text-[10px] text-[#ffffff] hover:text-[#cccccc] transition-colors flex items-center gap-1">
-              Launch CLI <ArrowUpRight className="w-3 h-3" />
+            <button onClick={(e) => { e.stopPropagation(); onNavigate('scan'); }} className="text-[10px] text-[#ffffff] hover:text-[#cccccc] transition-colors flex items-center gap-1">
+              Launch Scan <ArrowUpRight className="w-3 h-3" />
             </button>
           </div>
           <div className="px-4 pb-4 h-full">

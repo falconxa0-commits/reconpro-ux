@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield,
@@ -380,6 +380,8 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
   const [selectedFramework, setSelectedFramework] = useState(framework === 'all' ? 'soc2' : framework);
   const [expandedControl, setExpandedControl] = useState<string | null>(null);
   const [controlStates, setControlStates] = useState<Record<string, boolean>>({});
+  const selectedFrameworkRef = useRef(selectedFramework);
+  selectedFrameworkRef.current = selectedFramework;
 
   const fetchCompliance = useCallback(async () => {
     try {
@@ -390,7 +392,8 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
       setFrameworks(mapped);
       setOverallScore(data.overallScore);
       // Auto-select the first framework if the selected one isn't available
-      if (mapped.length > 0 && !mapped.find((f) => f.id === selectedFramework)) {
+      const current = selectedFrameworkRef.current;
+      if (mapped.length > 0 && !mapped.find((f) => f.id === current)) {
         setSelectedFramework(mapped[0].id);
       }
     } catch (err) {
@@ -399,7 +402,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
       setLoading(false);
       setRegenerating(false);
     }
-  }, [selectedFramework, authHeaders]);
+  }, [authHeaders]);
 
   useEffect(() => {
     fetchCompliance();
