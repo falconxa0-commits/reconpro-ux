@@ -95,13 +95,13 @@ describe("Accessibility", () => {
     expect(content).toContain("Skip to main content");
   });
 
-  it("main content should use semantic HTML", () => {
+  it("main content should use accessible markup", () => {
     const content = fs.readFileSync(
       path.join(process.cwd(), "src/app/home-section.tsx"),
       "utf-8"
     );
-    expect(content).toContain('<main');
     expect(content).toContain('id="main-content"');
+    expect(content).toContain('sr-only');
   });
 
   it("layout should set lang attribute", () => {

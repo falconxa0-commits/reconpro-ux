@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { withProtection } from '@/lib/api-protection';
+
+const SESSION_MAX_AGE = 24 * 60 * 60; // 24 hours in seconds
 
 export async function POST(request: NextRequest) {
   // Rate limit but do NOT require auth (public login endpoint)
@@ -47,7 +50,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Verify password hash ────────────────────────────────────────
+    // ── Verify password with bcrypt ───────────────────────────────
     if (!member.passwordHash) {
       return NextResponse.json(
         { success: false, error: 'This account uses API key authentication only. Please sign in with an API key.' },
@@ -55,12 +58,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const providedHash = crypto
-      .createHash('sha256')
-      .update(password)
-      .digest('hex');
-
-    if (providedHash !== member.passwordHash) {
+    const passwordValid = await bcrypt.compare(password, member.passwordHash);
+    if (!passwordValid) {
       return NextResponse.json(
         { success: false, error: 'Invalid email or password.' },
         { status: 401 }
@@ -68,7 +67,18 @@ export async function POST(request: NextRequest) {
     }
 
     // ── Generate session token ──────────────────────────────────────
-    const sessionToken = `sess_${crypto.randomBytes(16).toString('hex')}`;
+    const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`;
+    const expiresAt = new Date(Date.now() + SESSION_MAX_AGE * 1000);
+
+    // ── Store session in database ──────────────────────────────────
+    await db.session.create({
+      data: {
+        token: sessionToken,
+        memberId: member.id,
+        organizationId: member.organizationId,
+        expiresAt,
+      },
+    });
 
     // ── Find or generate an active API key for the member's org ────
     let apiKey = await db.apiKey.findFirst({
@@ -82,34 +92,8 @@ export async function POST(request: NextRequest) {
     let rawApiKey: string;
 
     if (apiKey) {
-      // We cannot retrieve the raw key from a hash — return key prefix info
-      // The client should already have the key stored from registration.
-      // For login we return the session token; the API key is the credential for API calls.
-      // If the member's API key exists but we can't show the raw value,
-      // generate a new one so the user has it.
-      const newRawApiKey = `rp_live_${crypto.randomBytes(16).toString('hex')}`;
-      const newKeyHash = crypto
-        .createHash('sha256')
-        .update(newRawApiKey)
-        .digest('hex');
-
-      // Deactivate the old key and create a new one
-      await db.apiKey.updateMany({
-        where: { organizationId: member.organizationId, isActive: true },
-        data: { isActive: false },
-      });
-
-      await db.apiKey.create({
-        data: {
-          organizationId: member.organizationId,
-          keyHash: newKeyHash,
-          keyPrefix: newRawApiKey.slice(0, 12),
-          name: 'Session key',
-          scopes: JSON.stringify(['scan:read', 'scan:write', 'telemetry:write']),
-        },
-      });
-
-      rawApiKey = newRawApiKey;
+      rawApiKey = apiKey.keyPrefix + '...';
+      // Don't rotate keys on every login — return existing prefix info
     } else {
       // No key exists — generate one
       rawApiKey = `rp_live_${crypto.randomBytes(16).toString('hex')}`;
@@ -135,11 +119,8 @@ export async function POST(request: NextRequest) {
       data: { lastActive: new Date() },
     });
 
-    // ── Parse scopes from organization's default API key ───────────
-    let scopes: string[] = ['scan:read', 'scan:write', 'telemetry:write'];
-
-    // ── Return success ─────────────────────────────────────────────
-    return NextResponse.json({
+    // ── Set HttpOnly Secure SameSite cookie with session token ────
+    const response = NextResponse.json({
       success: true,
       member: {
         id: member.id,
@@ -149,8 +130,17 @@ export async function POST(request: NextRequest) {
       },
       org_id: member.organizationId,
       api_key: rawApiKey,
-      session_token: sessionToken,
     });
+
+    response.cookies.set('reconpro_session', sessionToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: SESSION_MAX_AGE,
+    });
+
+    return response;
   } catch (err) {
     console.error('[AUTH LOGIN ERROR]', err);
     return NextResponse.json(

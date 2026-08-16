@@ -18,7 +18,7 @@ import { analyzeGeolocation } from '@/lib/recon/geo-recon';
 
 type Finding = {
   title: string; severity: string; category: string;
-  description: string; evidence: string; asset: string;
+  description: string; evidence: string | null; asset: string;
 };
 
 
@@ -1173,7 +1173,7 @@ export async function POST(request: NextRequest) {
         enumerateCTLogs(cleanDomain),
         enumerateWayback(cleanDomain),
         reconReverseDNS([...dnsResult.mainIp ? [dnsResult.mainIp] : [], ...subFindings.map(f => {
-          const m = f.evidence.match(/\d+\.\d+\.\d+\.\d+/);
+          const m = f.evidence?.match(/\d+\.\d+\.\d+\.\d+/);
           return m ? m[0] : null;
         }).filter((v): v is string => Boolean(v))]),
         attemptZoneTransfer(cleanDomain),

@@ -185,7 +185,7 @@ export function TeamManagement() {
       console.error('Failed to fetch members:', err);
       setError('Failed to load team data. Please try again.');
     }
-  }, []);
+  }, [authHeaders]);
 
   const fetchTeams = useCallback(async () => {
     try {
@@ -197,7 +197,7 @@ export function TeamManagement() {
       console.error('Failed to fetch teams:', err);
       setError('Failed to load team data. Please try again.');
     }
-  }, []);
+  }, [authHeaders]);
 
   const fetchAllRef = useCallback(async () => {
     setError('');

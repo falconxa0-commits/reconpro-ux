@@ -150,7 +150,7 @@ export function IntegrationHub() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authHeaders]);
 
   useEffect(() => {
     fetchData();

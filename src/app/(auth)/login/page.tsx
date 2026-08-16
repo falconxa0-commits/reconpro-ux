@@ -53,8 +53,8 @@ export default function LoginPage() {
         member_name: data.member?.name,
         member_role: data.member?.role,
       }));
-      // Set cookie so middleware can guard dashboard routes
-      document.cookie = "reconpro_auth=authenticated; path=/; max-age=86400; SameSite=Lax";
+      // Session cookie is set by the server via Set-Cookie header (HttpOnly)
+      // No need to manually set document.cookie
 
       const params = new URLSearchParams(window.location.search);
       const redirect = params.get("redirect") || "/overview";
@@ -91,7 +91,10 @@ export default function LoginPage() {
         key_name: data.key_name,
         scopes: data.scopes,
       }));
-      document.cookie = "reconpro_auth=authenticated; path=/; max-age=86400; SameSite=Lax";
+      // For API key login, set a session marker cookie
+      // The server doesn't set a cookie for API key login, so we set one client-side
+      // This is acceptable because the API key itself provides the real auth
+      document.cookie = "reconpro_session=apikey-auth; path=/; max-age=86400; SameSite=Lax";
 
       const params = new URLSearchParams(window.location.search);
       const redirect = params.get("redirect") || "/overview";

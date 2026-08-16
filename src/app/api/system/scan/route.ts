@@ -4,6 +4,7 @@ import { analyzeNetworkInterfaces } from '@/lib/recon/network-recon';
 import { scanFileSystem } from '@/lib/recon/file-recon';
 import { analyzeLogs } from '@/lib/recon/log-recon';
 import { analyzeRegistry } from '@/lib/recon/registry-recon';
+import { withProtection } from '@/lib/api-protection';
 
 const SCANNER_MAP: Record<string, () => Promise<unknown>> = {
   process: analyzeProcesses,
@@ -14,6 +15,13 @@ const SCANNER_MAP: Record<string, () => Promise<unknown>> = {
 };
 
 export async function POST(request: NextRequest) {
+  // System scan requires authentication — reads server internals
+  const { error } = await withProtection(request, {
+    requireAuth: true,
+    rateLimit: { maxRequests: 5, windowMs: 60_000 },
+  });
+  if (error) return error;
+
   try {
     let scannersToRun: string[];
 

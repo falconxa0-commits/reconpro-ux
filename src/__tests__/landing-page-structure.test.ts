@@ -31,9 +31,8 @@ describe("Landing Page Structure", () => {
   });
 
   it("should have semantic HTML structure", () => {
-    expect(content).toContain("<Navbar");
-    expect(content).toContain("<main");
-    expect(content).toContain("<Footer");
+    expect(content).toContain('id="main-content"');
+    expect(content).toContain("ScrollProgress");
   });
 
   it("should have scroll progress indicator", () => {

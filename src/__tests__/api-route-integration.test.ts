@@ -327,7 +327,7 @@ describe('API Route Integration Tests', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('healthy');
-      expect(body.version).toBe('10.0.0');
+      expect(body.version).toBe('0.2.0');
     });
 
     it('withProtection with requireAuth=false does not check API key', async () => {

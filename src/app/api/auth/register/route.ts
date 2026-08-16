@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import { db } from '@/lib/db';
 import { withProtection } from '@/lib/api-protection';
+
+const BCRYPT_ROUNDS = 12;
 
 export async function POST(request: NextRequest) {
   // Rate limit but do NOT require auth (public registration endpoint)
@@ -78,11 +81,8 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // ── Hash password with SHA-256 ──────────────────────────────────
-    const passwordHash = crypto
-      .createHash('sha256')
-      .update(password)
-      .digest('hex');
+    // ── Hash password with bcrypt (salted, adaptive) ──────────────
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     // ── Generate API key: rp_live_<32 random hex chars> ────────────
     const rawApiKey = `rp_live_${crypto.randomBytes(16).toString('hex')}`;

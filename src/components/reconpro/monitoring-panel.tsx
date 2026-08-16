@@ -242,7 +242,7 @@ export function MonitoringPanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [authHeaders]);
 
   useEffect(() => {
     fetchData();

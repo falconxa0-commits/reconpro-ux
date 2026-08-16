@@ -399,7 +399,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
       setLoading(false);
       setRegenerating(false);
     }
-  }, [selectedFramework]);
+  }, [selectedFramework, authHeaders]);
 
   useEffect(() => {
     fetchCompliance();

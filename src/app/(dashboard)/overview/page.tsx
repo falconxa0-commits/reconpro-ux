@@ -60,7 +60,7 @@ export default function OverviewPage() {
           lowFindings: counts.lowFindings,
           infoFindings: counts.infoFindings,
           avgRiskScore: counts.riskScores.length > 0 ? counts.riskScores.reduce((a: number, b: number) => a + b, 0) / counts.riskScores.length : 0,
-          complianceScore: complianceScore ?? 0,
+          complianceScore: 0,
         });
         setRecentScans(scans);
       })
@@ -86,6 +86,10 @@ export default function OverviewPage() {
       })
       .catch(() => {});
   }, [authHeaders]);
+
+  useEffect(() => {
+    setStats(prev => prev ? { ...prev, complianceScore: complianceScore ?? 0 } : null);
+  }, [complianceScore]);
 
   if (error) {
     return (

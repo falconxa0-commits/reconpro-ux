@@ -4,25 +4,46 @@ import type { NextRequest } from "next/server";
 // Routes that require authentication
 const PROTECTED_PREFIXES = ["/overview", "/scans", "/findings", "/monitoring", "/compliance", "/teams", "/integrations", "/settings"];
 
-export function middleware(request: NextRequest) {
+// Routes that should be accessible without auth (public API + auth routes)
+const PUBLIC_API_PREFIXES = ["/api/health", "/api/auth/", "/api/v1/auth/"];
+const PUBLIC_PAGE_PREFIXES = ["/login", "/register", "/forgot-password"];
+
+export async function middleware(request: NextRequest) {
   const response = NextResponse.next();
   const { pathname } = request.nextUrl;
   const isApiRoute = pathname.startsWith('/api');
 
   // ── Dashboard Auth Guard ──────────────────────────────────────────
-  // Dashboard routes require an API key in localStorage.
-  // Since middleware cannot read localStorage, we check for a cookie.
-  // If the user has authenticated via the login page, a cookie is set.
-  // Otherwise, redirect to login.
+  // Dashboard routes require a valid session cookie.
   const isDashboardRoute = PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(prefix + '/'));
-  if (isDashboardRoute) {
-    // Check for auth cookie set by the login flow
-    const authCookie = request.cookies.get('reconpro_auth');
-    if (!authCookie) {
+  const isPublicPage = PUBLIC_PAGE_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+
+  if (isDashboardRoute && !isPublicPage) {
+    const sessionCookie = request.cookies.get('reconpro_session');
+
+    if (!sessionCookie || !sessionCookie.value) {
       const loginUrl = new URL('/login', request.url);
       loginUrl.searchParams.set('redirect', pathname);
       return NextResponse.redirect(loginUrl);
     }
+
+    // Validate the session token format (basic sanity check)
+    // Full DB validation happens in API routes via api-protection.ts
+    const token = sessionCookie.value;
+    if (!token.startsWith('sess_') || token.length < 20) {
+      const loginUrl = new URL('/login', request.url);
+      loginUrl.searchParams.set('redirect', pathname);
+      // Clear the invalid cookie
+      response.cookies.delete('reconpro_session');
+      response.cookies.delete('reconpro_auth'); // Clean up legacy cookie
+      return NextResponse.redirect(loginUrl);
+    }
+  }
+
+  // ── Clear legacy fake auth cookie if present ──────────────────
+  const legacyCookie = request.cookies.get('reconpro_auth');
+  if (legacyCookie) {
+    response.cookies.delete('reconpro_auth');
   }
 
   // ── Security Headers (applied to ALL routes including API) ──────────
