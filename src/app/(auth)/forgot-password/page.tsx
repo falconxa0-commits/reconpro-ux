@@ -25,11 +25,18 @@ export default function ForgotPasswordPage() {
 
     setLoading(true);
     try {
-      // No real email service exists yet — show placeholder message
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Something went wrong.");
+      }
       setSent(true);
-    } catch {
-      setError("Something went wrong. Please try again.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Something went wrong. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -52,8 +59,15 @@ export default function ForgotPasswordPage() {
       <CardContent>
         {sent ? (
           <div className="space-y-4">
-            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
-              Password reset functionality is not yet available. Please contact support.
+            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-400">
+              <p className="font-medium">If an account exists with this email, password reset instructions will be sent.</p>
+            </div>
+            <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03] p-4">
+              <p className="text-xs text-amber-400/80">
+                Full password reset via email is not yet implemented. Please contact
+                your organization administrator or use API key authentication in the
+                meantime.
+              </p>
             </div>
           </div>
         ) : (

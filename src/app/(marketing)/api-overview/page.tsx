@@ -12,8 +12,11 @@ export const metadata: Metadata = {
 const endpointGroups = [
   {
     category: "Authentication",
-    description: "API key validation.",
+    description: "User authentication and API key validation.",
     endpoints: [
+      { method: "POST", path: "/api/auth/register", desc: "Create a new account with API key generation" },
+      { method: "POST", path: "/api/auth/login", desc: "Email/password authentication" },
+      { method: "POST", path: "/api/auth/forgot-password", desc: "Password reset request" },
       { method: "POST", path: "/api/v1/auth/validate", desc: "Validate an API key and retrieve org context" },
     ],
   },
@@ -22,8 +25,9 @@ const endpointGroups = [
     description: "Initiate and manage reconnaissance scans. DNS, SSL, port, and HTTP scans use native Node.js APIs.",
     endpoints: [
       { method: "POST", path: "/api/scan", desc: "Execute a scan against a target domain (DNS/SSL/Port/HTTP)" },
-      { method: "GET", path: "/api/scan/stream", desc: "Stream scan progress via SSE (simulated phases)" },
+      { method: "GET", path: "/api/scan/stream", desc: "Stream real scan progress via SSE with per-module results" },
       { method: "GET", path: "/api/scans", desc: "List recent scan history and results" },
+      { method: "GET", path: "/api/scans/history", desc: "Paginated scan history with filters" },
       { method: "POST", path: "/api/vuln-scan", desc: "Run vulnerability assessment against a target" },
       { method: "POST", path: "/api/bot-hunter", desc: "Bot-hunting scan using TCP/DNS banner grabbing" },
     ],
@@ -58,6 +62,7 @@ const endpointGroups = [
     endpoints: [
       { method: "GET", path: "/api/monitoring", desc: "List monitoring policies" },
       { method: "POST", path: "/api/monitoring", desc: "Create a monitoring policy" },
+      { method: "POST", path: "/api/monitoring/execute", desc: "Execute due monitoring policies" },
       { method: "PATCH", path: "/api/monitoring", desc: "Update a monitoring policy" },
       { method: "DELETE", path: "/api/monitoring", desc: "Delete a monitoring policy" },
     ],
@@ -150,6 +155,21 @@ const endpointGroups = [
       { method: "POST", path: "/api/implosion", desc: "Run a breach impact simulation" },
       { method: "DELETE", path: "/api/implosion", desc: "Delete a simulation" },
       { method: "POST", path: "/api/sovereign", desc: "Sovereign control actions (simulated)" },
+    ],
+  },
+  {
+    category: "Reports",
+    description: "Generate scan reports in multiple formats.",
+    endpoints: [
+      { method: "GET", path: "/api/reports", desc: "Generate report (format: json/html/markdown)" },
+    ],
+  },
+  {
+    category: "System",
+    description: "Local system scanning and health checks.",
+    endpoints: [
+      { method: "GET", path: "/api/system/health", desc: "System health check (uptime, memory, OS info)" },
+      { method: "POST", path: "/api/system/scan", desc: "Run local system scanners (process, network, files, logs, registry)" },
     ],
   },
   {

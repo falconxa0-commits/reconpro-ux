@@ -5,10 +5,12 @@ import tls from 'tls';
 import net from 'net';
 import { sanitizeDomain, isBlockedDomain, isPrivateIP, safeErrorResponse, applySecurityHeaders } from '@/lib/api-security';
 import { safeFetch } from '@/lib/safe-fetch';
+import { db } from '@/lib/db';
 
 type Finding = {
   title: string; severity: string; category: string;
   description: string; evidence: string; asset: string;
+  cve?: string | null; cvss?: number | null; remediation?: string | null;
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -820,6 +822,8 @@ export async function POST(request: NextRequest) {
   const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 5, windowMs: 60_000 } });
   if (error) return error;
 
+  const scanStartTime = Date.now();
+
   try {
     const body = await request.json();
     const target = body.target?.toString().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
@@ -851,11 +855,30 @@ export async function POST(request: NextRequest) {
       scanDNSVulns(sanitized),
     ]);
 
-    // Build response
-    const allFindings = [...httpVulns, ...sslVulns, ...dnsVulns];
+    // Build findings list (include CVE matches as findings for DB persistence)
+    const allFindings: Finding[] = [
+      ...httpVulns,
+      ...sslVulns,
+      ...dnsVulns,
+      // Convert CVE matches into findings so they get persisted
+      ...bannerResult.cveMatches.map(v => ({
+        title: v.title,
+        severity: v.severity,
+        category: 'vulnerability',
+        description: `${v.id} — affects ${v.affected.join(', ')}${v.exploitAvailable === 'weaponized' ? ' (weaponized exploit available)' : ''}`,
+        evidence: `Version pattern match via banner grab on ${sanitized}`,
+        asset: sanitized,
+        cve: v.id,
+        cvss: v.cvss,
+        remediation: v.remediation,
+      })),
+    ];
     const c = allFindings.filter(f => f.severity === 'critical').length;
     const h = allFindings.filter(f => f.severity === 'high').length;
     const m = allFindings.filter(f => f.severity === 'medium').length;
+    const l = allFindings.filter(f => f.severity === 'low').length;
+    const i = allFindings.filter(f => f.severity === 'info').length;
+    const riskScore = Math.min(100, Math.round(c * 25 + h * 15 + m * 8 + l * 3 + i * 1));
     const exploitSummary = {
       totalCVEs: bannerResult.cveMatches.length,
       criticalCVEs: bannerResult.cveMatches.filter(v => v.severity === 'critical').length,
@@ -866,9 +889,62 @@ export async function POST(request: NextRequest) {
         : 0,
     };
 
+    // ── Persist results to database ──────────────────────────────────
+    let persistedScanId: string | null = null;
+    try {
+      const targetRecord = await db.scanTarget.upsert({
+        where: { id: sanitized },
+        create: {
+          id: sanitized,
+          domain: sanitized,
+          ip: mainIp || null,
+        },
+        update: { lastScanned: new Date(), ip: mainIp || undefined },
+      });
+
+      const scanRecord = await db.scan.create({
+        data: {
+          targetId: targetRecord.id,
+          scanType: 'vulnerability',
+          triggeredBy: 'manual',
+          status: 'completed',
+          riskScore,
+          totalVulns: allFindings.length,
+          criticalCount: c,
+          highCount: h,
+          mediumCount: m,
+          lowCount: l,
+          infoCount: i,
+          startedAt: new Date(scanStartTime),
+          completedAt: new Date(),
+          duration: Date.now() - scanStartTime,
+          findings: {
+            create: allFindings.map(f => ({
+              title: f.title,
+              severity: f.severity,
+              category: f.category,
+              description: f.description,
+              evidence: f.evidence || null,
+              asset: f.asset || sanitized,
+              remediation: f.remediation || null,
+              cve: f.cve || null,
+              cvss: f.cvss || null,
+            })),
+          },
+        },
+        include: { findings: true, target: true },
+      });
+
+      persistedScanId = scanRecord.id;
+    } catch (dbError) {
+      console.error('Failed to persist vuln-scan results to database:', dbError);
+      // Continue returning results even if DB persistence fails
+    }
+
     return applySecurityHeaders(NextResponse.json({
       success: true,
       scan: {
+        scanId: persistedScanId,
         target,
         ip: mainIp,
         cveFindings: bannerResult.cveMatches.map(v => ({
@@ -898,6 +974,28 @@ export async function POST(request: NextRequest) {
       },
     }));
   } catch (error) {
+    console.error('Vuln-scan error:', error);
+    // Attempt to create a failed scan record for auditing
+    try {
+      const targetRecord = await db.scanTarget.upsert({
+        where: { id: 'failed-vulnscan' },
+        create: { id: 'failed-vulnscan', domain: 'failed-vulnscan' },
+        update: { lastScanned: new Date() },
+      });
+      await db.scan.create({
+        data: {
+          targetId: targetRecord.id,
+          scanType: 'vulnerability',
+          triggeredBy: 'manual',
+          status: 'failed',
+          startedAt: new Date(scanStartTime),
+          completedAt: new Date(),
+          duration: Date.now() - scanStartTime,
+        },
+      });
+    } catch {
+      // Silently fail if we can't even record the failure
+    }
     return safeErrorResponse(error, 500, 'vuln-scan');
   }
 }

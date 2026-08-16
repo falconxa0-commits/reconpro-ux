@@ -4,6 +4,12 @@ import { digShort, digAnswer, resolveIP as nativeResolveIP, reverseDNS, analyzeS
 import { safeFetch } from '@/lib/safe-fetch';
 import { withProtection, safeError } from '@/lib/api-protection';
 import { isPrivateIP, applySecurityHeaders } from '@/lib/api-security';
+import { enumerateWHOIS } from '@/lib/recon/whois-recon';
+import { discoverSubdomains } from '@/lib/recon/subdomain-recon';
+import { enumerateDirectories } from '@/lib/recon/directory-recon';
+import { harvestEmails as reconEmails } from '@/lib/recon/email-recon';
+import { analyzeCertificates } from '@/lib/recon/cert-recon';
+import { analyzeGeolocation } from '@/lib/recon/geo-recon';
 
 // ═══════════════════════════════════════════════════════════════════════
 // REAL RECONNAISSANCE ENGINE — Fully async, non-blocking
@@ -1162,8 +1168,8 @@ export async function POST(request: NextRequest) {
 
     // ═══ NEW DEADLY MODULES (full scan only) ═══════════════════════
     if (!isQuick) {
-      // ── 6. Certificate Transparency Logs ──────────────────────────
-      const [ctFindings, waybackFindings, rdnsFindings, axfrFindings, robotsFindings, jsFindings, wafFindings, fpFindings, emailFindings] = await Promise.all([
+      // ── 6. Extended reconnaissance modules ────────────────────────
+      const [ctFindings, waybackFindings, rdnsFindings, axfrFindings, robotsFindings, jsFindings, wafFindings, fpFindings, emailFindings, whoisFindings, dirFindings, emailReconFindings, certFindings, geoFindings] = await Promise.all([
         enumerateCTLogs(cleanDomain),
         enumerateWayback(cleanDomain),
         reconReverseDNS([...dnsResult.mainIp ? [dnsResult.mainIp] : [], ...subFindings.map(f => {
@@ -1176,9 +1182,14 @@ export async function POST(request: NextRequest) {
         detectWAF(cleanDomain),
         deepFingerprint(cleanDomain, rawHeaders, pageContent),
         harvestEmails(cleanDomain, pageContent),
+        enumerateWHOIS(cleanDomain).then(r => r.findings).catch(() => []),
+        enumerateDirectories(cleanDomain).then(r => r.findings).catch(() => []),
+        reconEmails(cleanDomain).then(r => r.findings).catch(() => []),
+        analyzeCertificates(cleanDomain).then(r => r.findings).catch(() => []),
+        analyzeGeolocation(cleanDomain).then(r => r.findings).catch(() => []),
       ]);
 
-      allFindings.push(...ctFindings, ...waybackFindings, ...rdnsFindings, ...axfrFindings, ...robotsFindings, ...jsFindings, ...wafFindings, ...fpFindings, ...emailFindings);
+      allFindings.push(...ctFindings, ...waybackFindings, ...rdnsFindings, ...axfrFindings, ...robotsFindings, ...jsFindings, ...wafFindings, ...fpFindings, ...emailFindings, ...whoisFindings, ...dirFindings, ...emailReconFindings, ...certFindings, ...geoFindings);
     } else {
       // Quick scan: still run CT logs and basic fingerprinting (lightweight)
       const [ctFindings, fpFindings] = await Promise.all([

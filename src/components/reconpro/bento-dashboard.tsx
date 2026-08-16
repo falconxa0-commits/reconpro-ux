@@ -295,10 +295,36 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
             <span className="text-[10px] font-mono text-[#333333] tracking-[0.15em] uppercase">Activity</span>
           </div>
           <div className="space-y-0">
-            <ActivityItem text="Full scan completed for acme-corp.com — 34 assets" time="2m ago" dotColor="#00ff88" />
-            <ActivityItem text="Critical SQL injection detected on api.corp.io" time="18m ago" dotColor="#ff3355" />
-            <ActivityItem text="SOC 2 Type II compliance passed — no deviations" time="1h ago" dotColor="#44aaff" />
-            <ActivityItem text="Exposed S3 bucket discovered: s3://acme-legacy" time="3h ago" dotColor="#ffaa00" />
+            {(() => {
+              const activityItems = recentScans.slice(0, 5).map(scan => ({
+                id: scan.id,
+                type: 'scan' as const,
+                message: `Scan completed for ${scan.domain} — risk score ${scan.riskScore}/100`,
+                severity: scan.riskScore > 70 ? 'critical' as const : scan.riskScore > 40 ? 'high' as const : 'low' as const,
+                timestamp: scan.startedAt || new Date().toISOString(),
+              }));
+              if (activityItems.length === 0) {
+                return <div className="text-[12px] text-[#333333] py-4 text-center">No recent activity. Run your first scan to get started.</div>;
+              }
+              const severityColors: Record<string, string> = { critical: '#ff3355', high: '#ffaa00', low: '#00ff88' };
+              const timeAgo = (ts: string) => {
+                const diff = Date.now() - new Date(ts).getTime();
+                const mins = Math.floor(diff / 60000);
+                if (mins < 1) return 'just now';
+                if (mins < 60) return `${mins}m ago`;
+                const hrs = Math.floor(mins / 60);
+                if (hrs < 24) return `${hrs}h ago`;
+                return `${Math.floor(hrs / 24)}d ago`;
+              };
+              return activityItems.map(item => (
+                <ActivityItem
+                  key={item.id}
+                  text={item.message}
+                  time={timeAgo(item.timestamp)}
+                  dotColor={severityColors[item.severity] ?? '#444444'}
+                />
+              ));
+            })()}
           </div>
         </motion.div>
 

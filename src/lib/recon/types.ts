@@ -103,4 +103,5 @@ export interface ReconFinding {
   evidence: string | null;
   asset: string;
   source: string;       // 'dns', 'http', 'ssl', 'ct', 'port', 'simulated'
+  remediation?: string;
 }

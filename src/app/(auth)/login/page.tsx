@@ -7,34 +7,83 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
-import { KeyRound, Lock, Mail, Loader2, AlertCircle } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { KeyRound, Loader2, Mail, Lock } from "lucide-react";
+
+type LoginTab = "password" | "apikey";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [apiKey, setApiKey] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState<LoginTab>("password");
 
+  // ── Password login state ──────────────────────────────────────────
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [pwError, setPwError] = useState("");
+  const [pwLoading, setPwLoading] = useState(false);
+
+  // ── API key login state ──────────────────────────────────────────
+  const [apiKey, setApiKey] = useState("");
+  const [akError, setAkError] = useState("");
+  const [akLoading, setAkLoading] = useState(false);
+
+  // ── Password login handler ────────────────────────────────────────
+  const handlePasswordLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPwError("");
+    setPwLoading(true);
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Login failed.");
+      }
+
+      // Store API key for dashboard API calls
+      if (data.api_key) {
+        localStorage.setItem("reconpro_api_key", data.api_key);
+      }
+      localStorage.setItem("reconpro_auth", JSON.stringify({
+        org_id: data.org_id,
+        member_id: data.member?.id,
+        member_name: data.member?.name,
+        member_role: data.member?.role,
+      }));
+      // Set cookie so middleware can guard dashboard routes
+      document.cookie = "reconpro_auth=authenticated; path=/; max-age=86400; SameSite=Lax";
+
+      const params = new URLSearchParams(window.location.search);
+      const redirect = params.get("redirect") || "/overview";
+      router.push(redirect);
+    } catch (err: unknown) {
+      setPwError(err instanceof Error ? err.message : "Authentication failed.");
+    } finally {
+      setPwLoading(false);
+    }
+  };
+
+  // ── API key login handler ────────────────────────────────────────
   const handleApiKeyLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError("");
-    setLoading(true);
+    setAkError("");
+    setAkLoading(true);
     try {
       const res = await fetch("/api/v1/auth/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ api_key: apiKey }),
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(data.error || "Invalid API key.");
       }
-      const data = await res.json();
       if (!data.valid) {
         throw new Error(data.error || "API key validation failed.");
       }
-      // Store auth state in localStorage for dashboard components to read
       localStorage.setItem("reconpro_api_key", apiKey.trim());
       localStorage.setItem("reconpro_auth", JSON.stringify({
         org_id: data.org_id,
@@ -42,16 +91,15 @@ export default function LoginPage() {
         key_name: data.key_name,
         scopes: data.scopes,
       }));
-      // Set a cookie so middleware can guard dashboard routes
       document.cookie = "reconpro_auth=authenticated; path=/; max-age=86400; SameSite=Lax";
-      // Redirect to original destination or overview
+
       const params = new URLSearchParams(window.location.search);
       const redirect = params.get("redirect") || "/overview";
       router.push(redirect);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Authentication failed.");
+      setAkError(err instanceof Error ? err.message : "Authentication failed.");
     } finally {
-      setLoading(false);
+      setAkLoading(false);
     }
   };
 
@@ -65,80 +113,161 @@ export default function LoginPage() {
           Sign In
         </CardTitle>
         <CardDescription className="text-zinc-400">
-          Authenticate with your ReconPro API key
+          Authenticate to access your ReconPro dashboard
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03] p-4">
-          <div className="flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
-            <div className="text-sm text-amber-400/80">
-              <p className="font-medium">API key authentication only</p>
-              <p className="text-xs text-amber-400/60 mt-1">
-                Email/password login is not yet implemented. Generate an API key from
-                the dashboard settings once you have an account, or sign in with a key
-                provisioned by your organization administrator.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {error && (
-          <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
-            {error}
-          </div>
-        )}
-
-        <form onSubmit={handleApiKeyLogin} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="api-key" className="text-zinc-300">
+        <Tabs
+          value={tab}
+          onValueChange={(v) => setTab(v as LoginTab)}
+          className="w-full"
+        >
+          <TabsList className="w-full grid grid-cols-2 bg-zinc-900 border-zinc-800">
+            <TabsTrigger
+              value="password"
+              className="data-[state=active]:bg-white data-[state=active]:text-black data-[state=active]:font-medium text-zinc-400 text-sm"
+            >
+              <Lock className="h-3.5 w-3.5 mr-1.5" />
+              Password
+            </TabsTrigger>
+            <TabsTrigger
+              value="apikey"
+              className="data-[state=active]:bg-white data-[state=active]:text-black data-[state=active]:font-medium text-zinc-400 text-sm"
+            >
+              <KeyRound className="h-3.5 w-3.5 mr-1.5" />
               API Key
-            </Label>
-            <Input
-              id="api-key"
-              type="password"
-              placeholder="rp_live_abc123..."
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              required
-              className="border-zinc-800 bg-zinc-900 font-mono text-sm text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
-            />
-            <p className="text-xs text-zinc-500">
-              Your API key is hashed with SHA-256 before storage. It is never stored
-              in plaintext.
-            </p>
-          </div>
-          <Button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
-          >
-            {loading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              "Authenticate"
-            )}
-          </Button>
-        </form>
+            </TabsTrigger>
+          </TabsList>
 
-        <div className="text-center space-y-2 pt-2">
-          <p className="text-xs text-zinc-500">
-            Don&apos;t have an API key?
-          </p>
-          <Link
-            href="/register"
-            className="text-xs text-white font-medium hover:underline"
-          >
-            Create an account to generate one
-          </Link>
-        </div>
+          {/* ── Password Login Tab ─────────────────────────────────── */}
+          <TabsContent value="password" className="mt-4 space-y-4">
+            {pwError && (
+              <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+                {pwError}
+              </div>
+            )}
+
+            <form onSubmit={handlePasswordLogin} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="login-email" className="text-zinc-300">
+                  Email
+                </Label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                  <Input
+                    id="login-email"
+                    type="email"
+                    placeholder="you@company.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="login-password" className="text-zinc-300">
+                  Password
+                </Label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                  <Input
+                    id="login-password"
+                    type="password"
+                    placeholder="Enter your password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                  />
+                </div>
+              </div>
+              <Button
+                type="submit"
+                disabled={pwLoading}
+                className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
+              >
+                {pwLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  "Sign In"
+                )}
+              </Button>
+            </form>
+
+            <div className="text-center space-y-2 pt-1">
+              <p className="text-xs text-zinc-500">
+                Don&apos;t have an account?
+              </p>
+              <Link
+                href="/register"
+                className="text-xs text-white font-medium hover:underline"
+              >
+                Create an account
+              </Link>
+            </div>
+          </TabsContent>
+
+          {/* ── API Key Login Tab ──────────────────────────────────── */}
+          <TabsContent value="apikey" className="mt-4 space-y-4">
+            {akError && (
+              <div className="rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+                {akError}
+              </div>
+            )}
+
+            <form onSubmit={handleApiKeyLogin} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="api-key" className="text-zinc-300">
+                  API Key
+                </Label>
+                <Input
+                  id="api-key"
+                  type="password"
+                  placeholder="rp_live_abc123..."
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  required
+                  className="border-zinc-800 bg-zinc-900 font-mono text-sm text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                />
+                <p className="text-xs text-zinc-500">
+                  Your API key is hashed with SHA-256 before storage. It is never stored
+                  in plaintext.
+                </p>
+              </div>
+              <Button
+                type="submit"
+                disabled={akLoading}
+                className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
+              >
+                {akLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  "Authenticate"
+                )}
+              </Button>
+            </form>
+
+            <div className="text-center space-y-2 pt-1">
+              <p className="text-xs text-zinc-500">
+                Don&apos;t have an API key?
+              </p>
+              <Link
+                href="/register"
+                className="text-xs text-white font-medium hover:underline"
+              >
+                Create an account to generate one
+              </Link>
+            </div>
+          </TabsContent>
+        </Tabs>
       </CardContent>
       <CardFooter className="flex-col gap-2 justify-center">
         <Link
           href="/forgot-password"
           className="text-xs text-zinc-400 hover:text-white transition-colors"
         >
-          Forgot your API key?
+          Forgot your password?
         </Link>
       </CardFooter>
     </Card>

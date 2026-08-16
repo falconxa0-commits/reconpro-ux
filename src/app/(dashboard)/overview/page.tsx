@@ -22,6 +22,7 @@ export default function OverviewPage() {
     complianceScore?: number;
   }>(null);
   const [recentScans, setRecentScans] = useState<unknown[]>([]);
+  const [complianceScore, setComplianceScore] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -59,7 +60,7 @@ export default function OverviewPage() {
           lowFindings: counts.lowFindings,
           infoFindings: counts.infoFindings,
           avgRiskScore: counts.riskScores.length > 0 ? counts.riskScores.reduce((a: number, b: number) => a + b, 0) / counts.riskScores.length : 0,
-          complianceScore: 0,
+          complianceScore: complianceScore ?? 0,
         });
         setRecentScans(scans);
       })
@@ -72,7 +73,19 @@ export default function OverviewPage() {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [authHeaders]);
+
+  useEffect(() => {
+    fetch('/api/compliance', { headers: authHeaders })
+      .then(r => r.json())
+      .then(data => {
+        if (data.frameworks && data.frameworks.length > 0) {
+          const avg = Math.round(data.frameworks.reduce((s: number, f: { score: number }) => s + f.score, 0) / data.frameworks.length);
+          setComplianceScore(avg);
+        }
+      })
+      .catch(() => {});
+  }, [authHeaders]);
 
   if (error) {
     return (
