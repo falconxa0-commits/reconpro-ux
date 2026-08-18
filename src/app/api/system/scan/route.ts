@@ -18,9 +18,17 @@ export async function POST(request: NextRequest) {
   // System scan requires authentication — reads server internals
   const { error } = await withProtection(request, {
     requireAuth: true,
-    rateLimit: { maxRequests: 5, windowMs: 60_000 },
+    rateLimit: { maxRequests: 2, windowMs: 60_000 },
   });
   if (error) return error;
+
+  // System scan is restricted — only available in development
+  if (process.env.NODE_ENV === 'production') {
+    return NextResponse.json(
+      { error: 'System scan is not available in production' },
+      { status: 403 },
+    );
+  }
 
   try {
     let scannersToRun: string[];
@@ -38,7 +46,7 @@ export async function POST(request: NextRequest) {
 
     if (keys.length === 0) {
       return NextResponse.json(
-        { error: 'No valid scanners specified', available: Object.keys(SCANNER_MAP) },
+        { error: 'No valid scanners specified' },
         { status: 400 },
       );
     }

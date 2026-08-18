@@ -42,7 +42,11 @@ export default function LoginPage() {
         throw new Error(data.error || "Login failed.");
       }
 
-      if (data.api_key) {
+      // Only store the API key if it's a full key (not a truncated stub).
+      // The dashboard authenticates via session cookie; a truncated key
+      // would cause api-protection.ts to attempt key-auth (which fails)
+      // and skip the session-cookie fallback.
+      if (data.api_key && !data.api_key.endsWith("...")) {
         localStorage.setItem("reconpro_api_key", data.api_key);
       }
       localStorage.setItem("reconpro_auth", JSON.stringify({
@@ -87,7 +91,6 @@ export default function LoginPage() {
         key_name: data.key_name,
         scopes: data.scopes,
       }));
-      document.cookie = "reconpro_session=apikey-auth; path=/; max-age=86400; SameSite=Lax";
 
       const params = new URLSearchParams(window.location.search);
       const redirect = params.get("redirect") || "/overview";

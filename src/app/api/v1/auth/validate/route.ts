@@ -61,8 +61,26 @@ export async function POST(request: NextRequest) {
       scopes = []
     }
 
-    // ── Return validation result ───────────────────────────────────────
-    return NextResponse.json(
+    // ── Create a session so the browser dashboard works via cookie auth ──
+    const sessionToken = `sess_${crypto.randomBytes(32).toString('hex')}`;
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    // Look up a member in this org to associate with the session
+    const member = await db.member.findFirst({
+      where: { organizationId: apiKey.organizationId },
+    });
+
+    await db.session.create({
+      data: {
+        token: sessionToken,
+        memberId: member?.id ?? '',
+        organizationId: apiKey.organizationId,
+        expiresAt,
+      },
+    });
+
+    // ── Return validation result with session cookie ─────────────────
+    const response = NextResponse.json(
       {
         valid: true,
         org_id: apiKey.organizationId,
@@ -73,7 +91,17 @@ export async function POST(request: NextRequest) {
         created_at: apiKey.createdAt.toISOString(),
       },
       { status: 200 }
-    )
+    );
+
+    response.cookies.set('reconpro_session', sessionToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 24 * 60 * 60,
+    });
+
+    return response;
   } catch (error) {
     console.error('[AUTH VALIDATE ERROR]', error)
     return NextResponse.json(

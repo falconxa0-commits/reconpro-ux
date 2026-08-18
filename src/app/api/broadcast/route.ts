@@ -25,10 +25,11 @@ const VALID_PRIORITIES: BroadcastPriority[] = ['INFO', 'WARNING', 'CRITICAL', 'S
 const VALID_CHANNELS: BroadcastChannel[] = ['cli', 'web', 'email', 'slack', 'pagerduty', 'webhook'];
 const VALID_SCOPES: TargetScope[] = ['all', 'enterprise', 'government'];
 
-// ── GET /api/broadcast (public — read-only listing) ──────────────────
+// ── GET /api/broadcast (auth required) ────────────────────────────
 
 export async function GET(req: NextRequest) {
   const { error, clientIp } = await withProtection(req, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;

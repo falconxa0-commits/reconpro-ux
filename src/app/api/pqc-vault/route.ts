@@ -88,40 +88,13 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// ── GET /api/pqc-vault/algorithms ─────────────────────────────────────
-
+// ── GET /api/pqc-vault ─────────────────────────────────────────────
 export async function GET(request: NextRequest) {
   const { error } = await withProtection(request, {
     requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;
-
-  const { searchParams } = new URL(request.url);
-
-  // Route: /api/pqc-vault/algorithms
-  if (searchParams.toString() === '' && request.url.endsWith('/algorithms')) {
-    const pqcList = Object.entries(PQC_ALGORITHMS).map(([key, algo]) => ({
-      id: key,
-      ...algo,
-    }));
-
-    const classicalList = Object.entries(CLASSICAL_ALGORITHMS).map(([key, algo]) => ({
-      id: key,
-      ...algo,
-    }));
-
-    const protocols = Object.entries(PROTOCOL_ANALYSIS).map(([key, proto]) => ({
-      id: key,
-      ...proto,
-    }));
-
-    return NextResponse.json({
-      pqcAlgorithms: pqcList,
-      classicalAlgorithms: classicalList,
-      protocols,
-    });
-  }
 
   return NextResponse.json(
     { error: 'Not found. Use GET /api/pqc-vault/algorithms or POST /api/pqc-vault' },

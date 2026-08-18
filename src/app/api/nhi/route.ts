@@ -25,7 +25,8 @@ const SAMPLE_IDENTITIES = [
 
 // GET — list identities with revocation stats
 export async function GET(request: NextRequest) {
-  const { error } = await withProtection(request, {
+  const { error, auth } = await withProtection(request, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;
@@ -35,7 +36,8 @@ export async function GET(request: NextRequest) {
     const statusFilter = searchParams.get('status');
     const cloudFilter = searchParams.get('cloud');
 
-    const where: Record<string, unknown> = { organizationId: ORG_ID };
+    const effectiveOrgId = auth?.organizationId || ORG_ID;
+    const where: Record<string, unknown> = { organizationId: effectiveOrgId };
     if (statusFilter) where.status = statusFilter;
     if (cloudFilter) where.cloudProvider = cloudFilter;
 
@@ -55,18 +57,18 @@ export async function GET(request: NextRequest) {
     });
 
     const stats = {
-      total: await db.nHIIdentity.count({ where: { organizationId: ORG_ID } }),
-      active: await db.nHIIdentity.count({ where: { organizationId: ORG_ID, status: 'active' } }),
-      suspect: await db.nHIIdentity.count({ where: { organizationId: ORG_ID, status: 'suspect' } }),
-      revoked: await db.nHIIdentity.count({ where: { organizationId: ORG_ID, status: 'revoked' } }),
-      critical: await db.nHIIdentity.count({ where: { organizationId: ORG_ID, riskLevel: 'critical' } }),
+      total: await db.nHIIdentity.count({ where: { organizationId: effectiveOrgId } }),
+      active: await db.nHIIdentity.count({ where: { organizationId: effectiveOrgId, status: 'active' } }),
+      suspect: await db.nHIIdentity.count({ where: { organizationId: effectiveOrgId, status: 'suspect' } }),
+      revoked: await db.nHIIdentity.count({ where: { organizationId: effectiveOrgId, status: 'revoked' } }),
+      critical: await db.nHIIdentity.count({ where: { organizationId: effectiveOrgId, riskLevel: 'critical' } }),
       totalBlastRadius: await db.nHIIdentity.aggregate({
-        where: { organizationId: ORG_ID, status: { in: ['active', 'suspect'] } },
+        where: { organizationId: effectiveOrgId, status: { in: ['active', 'suspect'] } },
         _sum: { blastRadius: true },
       }),
       revoked24h: await db.nHIRevocation.count({
         where: {
-          organizationId: ORG_ID,
+          organizationId: effectiveOrgId,
           executedAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         },
       }),

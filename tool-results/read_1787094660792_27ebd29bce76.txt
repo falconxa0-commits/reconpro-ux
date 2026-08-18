@@ -1096,162 +1096,172 @@
   1096→// MAIN SCAN ENDPOINT
   1097→// ═══════════════════════════════════════════════════════════════════════
   1098→export async function POST(request: NextRequest) {
-  1099→  const { error: protErr, domain: protDomain } = await withProtection(request.clone() as unknown as NextRequest, { requireAuth: true, validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
-  1100→  if (protErr) return protErr;
-  1101→
-  1102→  try {
-  1103→    const body = await request.json();
-  1104→    const { scanType } = body;
-  1105→
-  1106→    if (!protDomain) {
-  1107→      return NextResponse.json({ error: 'Domain is required' }, { status: 400 });
-  1108→    }
-  1109→
-  1110→    const cleanDomain = protDomain;
-  1111→
-  1112→    // Pre-check: domain must resolve
-  1113→    const preCheckIp = await nativeResolveIP(cleanDomain);
-  1114→    if (!preCheckIp) {
-  1115→      return NextResponse.json({ error: `Domain "${cleanDomain}" does not resolve. Check the name and try again.` }, { status: 400 });
-  1116→    }
-  1117→
-  1118→    // SSRF protection: block scans that resolve to private IPs
-  1119→    if (isPrivateIP(preCheckIp)) {
-  1120→      return NextResponse.json({ error: 'Domain resolves to a private or reserved IP address. Scanning is not permitted.' }, { status: 403 });
-  1121→    }
-  1122→
-  1123→    // DB: target + scan record
-  1124→    let target = await db.scanTarget.findFirst({ where: { domain: cleanDomain } });
-  1125→    if (!target) {
-  1126→      target = await db.scanTarget.create({ data: { domain: cleanDomain, ip: preCheckIp } });
-  1127→    } else {
-  1128→      await db.scanTarget.update({ where: { id: target.id }, data: { ip: preCheckIp } });
-  1129→    }
-  1130→
-  1131→    const scan = await db.scan.create({
-  1132→      data: { targetId: target.id, status: 'running', scanType: scanType || 'full' },
-  1133→    });
-  1134→
-  1135→    const isQuick = scanType === 'quick';
-  1136→    const allFindings: Finding[] = [];
-  1137→    const allTech = new Set<string>();
-  1138→
-  1139→    // ── 1. DNS (always, all queries parallel) ──────────────────────
-  1140→    const dnsResult = await enumerateDNS(cleanDomain);
-  1141→    allFindings.push(...dnsResult.findings);
-  1142→
-  1143→    // ── 2. Subdomains (parallel DNS resolution) ────────────────────
-  1144→    const subFindings = await enumerateSubdomains(cleanDomain, isQuick);
-  1145→    allFindings.push(...subFindings);
-  1146→
-  1147→    // ── 3. HTTP headers + page content (async curl) ──────────────────
-  1148→    const httpResult = await analyzeHTTPHeaders(cleanDomain);
-  1149→    allFindings.push(...httpResult.findings);
-  1150→    httpResult.technologies.forEach(t => allTech.add(t));
-  1151→
-  1152→    // Fetch page content once for multiple modules
-  1153→    const pageResult = await safeFetch(`https://${cleanDomain}`, { timeout: 15000 }).catch(() => safeFetch(`http://${cleanDomain}`, { timeout: 15000 }));
-  1154→    const pageContent = pageResult?.text || '';
-  1155→    const rawHeadersResult = await safeFetch(`https://${cleanDomain}`, { timeout: 10000, method: 'HEAD' });
-  1156→    const rawHeaders = rawHeadersResult?.text || '';
-  1157→
-  1158→    // ── 4. SSL/TLS (async openssl) ─────────────────────────────────
-  1159→    const sslResult = await analyzeSSL(cleanDomain);
-  1160→    allFindings.push(...sslResult.findings);
-  1161→    sslResult.technologies.forEach(t => allTech.add(t));
-  1162→
-  1163→    // ── 5. Port probing (full only, async parallel) ────────────────
-  1164→    if (!isQuick) {
-  1165→      const portFindings = await probePorts(cleanDomain);
-  1166→      allFindings.push(...portFindings);
-  1167→    }
-  1168→
-  1169→    // ═══ NEW DEADLY MODULES (full scan only) ═══════════════════════
-  1170→    if (!isQuick) {
-  1171→      // ── 6. Extended reconnaissance modules ────────────────────────
-  1172→      const [ctFindings, waybackFindings, rdnsFindings, axfrFindings, robotsFindings, jsFindings, wafFindings, fpFindings, emailFindings, whoisFindings, dirFindings, emailReconFindings, certFindings, geoFindings] = await Promise.all([
-  1173→        enumerateCTLogs(cleanDomain),
-  1174→        enumerateWayback(cleanDomain),
-  1175→        reconReverseDNS([...dnsResult.mainIp ? [dnsResult.mainIp] : [], ...subFindings.map(f => {
-  1176→          const m = f.evidence?.match(/\d+\.\d+\.\d+\.\d+/);
-  1177→          return m ? m[0] : null;
-  1178→        }).filter((v): v is string => Boolean(v))]),
-  1179→        attemptZoneTransfer(cleanDomain),
-  1180→        analyzeRobotsAndSitemap(cleanDomain),
-  1181→        analyzeJSFiles(cleanDomain),
-  1182→        detectWAF(cleanDomain),
-  1183→        deepFingerprint(cleanDomain, rawHeaders, pageContent),
-  1184→        harvestEmails(cleanDomain, pageContent),
-  1185→        enumerateWHOIS(cleanDomain).then(r => r.findings).catch(() => []),
-  1186→        enumerateDirectories(cleanDomain).then(r => r.findings).catch(() => []),
-  1187→        reconEmails(cleanDomain).then(r => r.findings).catch(() => []),
-  1188→        analyzeCertificates(cleanDomain).then(r => r.findings).catch(() => []),
-  1189→        analyzeGeolocation(cleanDomain).then(r => r.findings).catch(() => []),
-  1190→      ]);
-  1191→
-  1192→      allFindings.push(...ctFindings, ...waybackFindings, ...rdnsFindings, ...axfrFindings, ...robotsFindings, ...jsFindings, ...wafFindings, ...fpFindings, ...emailFindings, ...whoisFindings, ...dirFindings, ...emailReconFindings, ...certFindings, ...geoFindings);
-  1193→    } else {
-  1194→      // Quick scan: still run CT logs and basic fingerprinting (lightweight)
-  1195→      const [ctFindings, fpFindings] = await Promise.all([
-  1196→        enumerateCTLogs(cleanDomain),
-  1197→        deepFingerprint(cleanDomain, rawHeaders, pageContent),
-  1198→      ]);
-  1199→      allFindings.push(...ctFindings, ...fpFindings);
-  1200→    }
+  1099→  // First pass: validate domain via protection layer (consumes body)
+  1100→  const { error: protErr, domain: protDomain } = await withProtection(request, { requireAuth: true, validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
+  1101→  if (protErr) return protErr;
+  1102→
+  1103→  try {
+  1104→    // Re-parse body (protection already consumed the original)
+  1105→    // We know the domain is valid from protDomain; extract scanType from a second clone
+  1106→    const body = await request.clone().json().catch(() => ({}));
+  1107→    const { scanType } = body as { scanType?: string };
+  1108→
+  1109→    // Validate scanType
+  1110→    const VALID_SCAN_TYPES = ['quick', 'full'];
+  1111→    const normalizedScanType = typeof scanType === 'string' ? scanType.toLowerCase().trim() : 'full';
+  1112→    if (!VALID_SCAN_TYPES.includes(normalizedScanType)) {
+  1113→      return NextResponse.json({ error: 'Invalid scanType. Must be "quick" or "full".' }, { status: 400 });
+  1114→    }
+  1115→
+  1116→    if (!protDomain) {
+  1117→      return NextResponse.json({ error: 'Domain is required' }, { status: 400 });
+  1118→    }
+  1119→
+  1120→    const cleanDomain = protDomain;
+  1121→
+  1122→    // Pre-check: domain must resolve
+  1123→    const preCheckIp = await nativeResolveIP(cleanDomain);
+  1124→    if (!preCheckIp) {
+  1125→      return NextResponse.json({ error: `Domain "${cleanDomain}" does not resolve. Check the name and try again.` }, { status: 400 });
+  1126→    }
+  1127→
+  1128→    // SSRF protection: block scans that resolve to private IPs
+  1129→    if (isPrivateIP(preCheckIp)) {
+  1130→      return NextResponse.json({ error: 'Domain resolves to a private or reserved IP address. Scanning is not permitted.' }, { status: 403 });
+  1131→    }
+  1132→
+  1133→    // DB: target + scan record
+  1134→    let target = await db.scanTarget.findFirst({ where: { domain: cleanDomain } });
+  1135→    if (!target) {
+  1136→      target = await db.scanTarget.create({ data: { domain: cleanDomain, ip: preCheckIp } });
+  1137→    } else {
+  1138→      await db.scanTarget.update({ where: { id: target.id }, data: { ip: preCheckIp } });
+  1139→    }
+  1140→
+  1141→    const scan = await db.scan.create({
+  1142→      data: { targetId: target.id, status: 'running', scanType: normalizedScanType },
+  1143→    });
+  1144→
+  1145→    const isQuick = normalizedScanType === 'quick';
+  1146→    const allFindings: Finding[] = [];
+  1147→    const allTech = new Set<string>();
+  1148→
+  1149→    // ── 1. DNS (always, all queries parallel) ──────────────────────
+  1150→    const dnsResult = await enumerateDNS(cleanDomain);
+  1151→    allFindings.push(...dnsResult.findings);
+  1152→
+  1153→    // ── 2. Subdomains (parallel DNS resolution) ────────────────────
+  1154→    const subFindings = await enumerateSubdomains(cleanDomain, isQuick);
+  1155→    allFindings.push(...subFindings);
+  1156→
+  1157→    // ── 3. HTTP headers + page content (async curl) ──────────────────
+  1158→    const httpResult = await analyzeHTTPHeaders(cleanDomain);
+  1159→    allFindings.push(...httpResult.findings);
+  1160→    httpResult.technologies.forEach(t => allTech.add(t));
+  1161→
+  1162→    // Fetch page content once for multiple modules
+  1163→    const pageResult = await safeFetch(`https://${cleanDomain}`, { timeout: 15000 }).catch(() => safeFetch(`http://${cleanDomain}`, { timeout: 15000 }));
+  1164→    const pageContent = pageResult?.text || '';
+  1165→    const rawHeadersResult = await safeFetch(`https://${cleanDomain}`, { timeout: 10000, method: 'HEAD' });
+  1166→    const rawHeaders = rawHeadersResult?.text || '';
+  1167→
+  1168→    // ── 4. SSL/TLS (async openssl) ─────────────────────────────────
+  1169→    const sslResult = await analyzeSSL(cleanDomain);
+  1170→    allFindings.push(...sslResult.findings);
+  1171→    sslResult.technologies.forEach(t => allTech.add(t));
+  1172→
+  1173→    // ── 5. Port probing (full only, async parallel) ────────────────
+  1174→    if (!isQuick) {
+  1175→      const portFindings = await probePorts(cleanDomain);
+  1176→      allFindings.push(...portFindings);
+  1177→    }
+  1178→
+  1179→    // ═══ NEW DEADLY MODULES (full scan only) ═══════════════════════
+  1180→    if (!isQuick) {
+  1181→      // ── 6. Extended reconnaissance modules ────────────────────────
+  1182→      const [ctFindings, waybackFindings, rdnsFindings, axfrFindings, robotsFindings, jsFindings, wafFindings, fpFindings, emailFindings, whoisFindings, dirFindings, emailReconFindings, certFindings, geoFindings] = await Promise.all([
+  1183→        enumerateCTLogs(cleanDomain),
+  1184→        enumerateWayback(cleanDomain),
+  1185→        reconReverseDNS([...dnsResult.mainIp ? [dnsResult.mainIp] : [], ...subFindings.map(f => {
+  1186→          const m = f.evidence?.match(/\d+\.\d+\.\d+\.\d+/);
+  1187→          return m ? m[0] : null;
+  1188→        }).filter((v): v is string => Boolean(v))]),
+  1189→        attemptZoneTransfer(cleanDomain),
+  1190→        analyzeRobotsAndSitemap(cleanDomain),
+  1191→        analyzeJSFiles(cleanDomain),
+  1192→        detectWAF(cleanDomain),
+  1193→        deepFingerprint(cleanDomain, rawHeaders, pageContent),
+  1194→        harvestEmails(cleanDomain, pageContent),
+  1195→        enumerateWHOIS(cleanDomain).then(r => r.findings).catch(() => []),
+  1196→        enumerateDirectories(cleanDomain).then(r => r.findings).catch(() => []),
+  1197→        reconEmails(cleanDomain).then(r => r.findings).catch(() => []),
+  1198→        analyzeCertificates(cleanDomain).then(r => r.findings).catch(() => []),
+  1199→        analyzeGeolocation(cleanDomain).then(r => r.findings).catch(() => []),
+  1200→      ]);
   1201→
-  1202→    // ── Technology findings ─────────────────────────────────────────
-  1203→    for (const tech of allTech) {
-  1204→      allFindings.push({
-  1205→        title: `Technology Detected: ${tech}`, severity: 'info', category: 'technology',
-  1206→        description: `${tech} identified on ${cleanDomain} via HTTP headers, SSL cert metadata, or response analysis.`,
-  1207→        evidence: 'Detected via HTTP/SSL/response fingerprinting', asset: tech,
-  1208→      });
-  1209→    }
-  1210→
-  1211→    // ── Wildcard DNS check ─────────────────────────────────────────
-  1212→    const wcIp = await nativeResolveIP(`nonexistent-wildcard-test-12345.${cleanDomain}`);
-  1213→    if (wcIp) {
+  1202→      allFindings.push(...ctFindings, ...waybackFindings, ...rdnsFindings, ...axfrFindings, ...robotsFindings, ...jsFindings, ...wafFindings, ...fpFindings, ...emailFindings, ...whoisFindings, ...dirFindings, ...emailReconFindings, ...certFindings, ...geoFindings);
+  1203→    } else {
+  1204→      // Quick scan: still run CT logs and basic fingerprinting (lightweight)
+  1205→      const [ctFindings, fpFindings] = await Promise.all([
+  1206→        enumerateCTLogs(cleanDomain),
+  1207→        deepFingerprint(cleanDomain, rawHeaders, pageContent),
+  1208→      ]);
+  1209→      allFindings.push(...ctFindings, ...fpFindings);
+  1210→    }
+  1211→
+  1212→    // ── Technology findings ─────────────────────────────────────────
+  1213→    for (const tech of allTech) {
   1214→      allFindings.push({
-  1215→        title: 'Wildcard DNS Record Detected', severity: 'medium', category: 'dns',
-  1216→        description: `Wildcard DNS active — even nonexistent subdomains resolve to ${wcIp}. Subdomain enumeration may have false positives.`,
-  1217→        evidence: `nonexistent-wildcard-test-12345.${cleanDomain} resolved to ${wcIp}`, asset: cleanDomain,
+  1215→        title: `Technology Detected: ${tech}`, severity: 'info', category: 'technology',
+  1216→        description: `${tech} identified on ${cleanDomain} via HTTP headers, SSL cert metadata, or response analysis.`,
+  1217→        evidence: 'Detected via HTTP/SSL/response fingerprinting', asset: tech,
   1218→      });
   1219→    }
   1220→
-  1221→    // ── Save to DB ─────────────────────────────────────────────────
-  1222→    for (const f of allFindings) {
-  1223→      // Destructure out any extra fields not in Prisma schema (e.g. technologies)
-  1224→      const { title: _t, severity: _s, category: _c, description: _d, evidence: _e, asset: _a, ...rest } = f;
-  1225→      const safeData = { scanId: scan.id, title: f.title, severity: f.severity, category: f.category, description: f.description, evidence: f.evidence, asset: f.asset };
-  1226→      await db.finding.create({ data: safeData });
-  1227→    }
-  1228→
-  1229→    // ── Risk score ─────────────────────────────────────────────────
-  1230→    const c = allFindings.filter(f => f.severity === 'critical').length;
-  1231→    const h = allFindings.filter(f => f.severity === 'high').length;
-  1232→    const m = allFindings.filter(f => f.severity === 'medium').length;
-  1233→    const l = allFindings.filter(f => f.severity === 'low').length;
-  1234→    const i = allFindings.filter(f => f.severity === 'info').length;
-  1235→    const riskScore = Math.min(100, Math.round(c*25 + h*15 + m*8 + l*3 + i*1));
-  1236→
-  1237→    await db.scan.update({
-  1238→      where: { id: scan.id },
-  1239→      data: { status: 'completed', completedAt: new Date(), riskScore, totalVulns: allFindings.length, criticalCount: c, highCount: h, mediumCount: m, lowCount: l, infoCount: i },
-  1240→    });
-  1241→
-  1242→    return applySecurityHeaders(NextResponse.json({
-  1243→      success: true,
-  1244→      scan: {
-  1245→        id: scan.id, domain: cleanDomain, status: 'completed', riskScore,
-  1246→        totalVulns: allFindings.length, critical: c, high: h, medium: m, low: l, info: i,
-  1247→        findings: allFindings.map(f => ({
-  1248→          id: f.title.toLowerCase().replace(/\s+/g, '-').substring(0, 20),
-  1249→          ...f,
-  1250→        })),
-  1251→      },
-  1252→    }));
-  1253→  } catch (error) {
-  1254→    console.error('Scan error:', error);
-  1255→    return safeError('Scan failed', 500);
-  1256→  }
-  1257→}
+  1221→    // ── Wildcard DNS check ─────────────────────────────────────────
+  1222→    const wcIp = await nativeResolveIP(`nonexistent-wildcard-test-12345.${cleanDomain}`);
+  1223→    if (wcIp) {
+  1224→      allFindings.push({
+  1225→        title: 'Wildcard DNS Record Detected', severity: 'medium', category: 'dns',
+  1226→        description: `Wildcard DNS active — even nonexistent subdomains resolve to ${wcIp}. Subdomain enumeration may have false positives.`,
+  1227→        evidence: `nonexistent-wildcard-test-12345.${cleanDomain} resolved to ${wcIp}`, asset: cleanDomain,
+  1228→      });
+  1229→    }
+  1230→
+  1231→    // ── Save to DB ─────────────────────────────────────────────────
+  1232→    for (const f of allFindings) {
+  1233→      // Destructure out any extra fields not in Prisma schema (e.g. technologies)
+  1234→      const { title: _t, severity: _s, category: _c, description: _d, evidence: _e, asset: _a, ...rest } = f;
+  1235→      const safeData = { scanId: scan.id, title: f.title, severity: f.severity, category: f.category, description: f.description, evidence: f.evidence, asset: f.asset };
+  1236→      await db.finding.create({ data: safeData });
+  1237→    }
+  1238→
+  1239→    // ── Risk score ─────────────────────────────────────────────────
+  1240→    const c = allFindings.filter(f => f.severity === 'critical').length;
+  1241→    const h = allFindings.filter(f => f.severity === 'high').length;
+  1242→    const m = allFindings.filter(f => f.severity === 'medium').length;
+  1243→    const l = allFindings.filter(f => f.severity === 'low').length;
+  1244→    const i = allFindings.filter(f => f.severity === 'info').length;
+  1245→    const riskScore = Math.min(100, Math.round(c*25 + h*15 + m*8 + l*3 + i*1));
+  1246→
+  1247→    await db.scan.update({
+  1248→      where: { id: scan.id },
+  1249→      data: { status: 'completed', completedAt: new Date(), riskScore, totalVulns: allFindings.length, criticalCount: c, highCount: h, mediumCount: m, lowCount: l, infoCount: i },
+  1250→    });
+  1251→
+  1252→    return applySecurityHeaders(NextResponse.json({
+  1253→      success: true,
+  1254→      scan: {
+  1255→        id: scan.id, domain: cleanDomain, status: 'completed', riskScore,
+  1256→        totalVulns: allFindings.length, critical: c, high: h, medium: m, low: l, info: i,
+  1257→        findings: allFindings.map(f => ({
+  1258→          id: f.title.toLowerCase().replace(/\s+/g, '-').substring(0, 20),
+  1259→          ...f,
+  1260→        })),
+  1261→      },
+  1262→    }));
+  1263→  } catch (error) {
+  1264→    console.error('Scan error:', error);
+  1265→    return safeError('Scan failed', 500);
+  1266→  }
+  1267→}

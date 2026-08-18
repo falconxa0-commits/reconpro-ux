@@ -131,7 +131,17 @@ function generateMarkdownReport(
 /**
  * Wrap markdown content in a basic HTML document structure.
  */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 function markdownToHtml(markdown: string, domain: string): string {
+  const safeDomain = escapeHtml(domain);
   // Convert markdown to simple HTML
   const htmlBody = markdown
     // Headers
@@ -192,7 +202,7 @@ function markdownToHtml(markdown: string, domain: string): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ReconPro Security Report — ${domain}</title>
+  <title>ReconPro Security Report — ${safeDomain}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; line-height: 1.6; }
     h1 { color: #0a0a0a; border-bottom: 2px solid #e5e7eb; padding-bottom: 0.5rem; }
@@ -227,7 +237,7 @@ ${withTable}
  * - format — json (default), html, markdown
  */
 export async function GET(request: NextRequest) {
-  const { error } = await withProtection(request, {
+  const { error, auth } = await withProtection(request, {
     requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
@@ -249,7 +259,7 @@ export async function GET(request: NextRequest) {
     // Fetch scan data
     let scan;
     if (scanId) {
-      scan = await db.scan.findUnique({
+      scan = await db.scan.findFirst({
         where: { id: scanId },
         include: {
           target: true,
@@ -266,7 +276,9 @@ export async function GET(request: NextRequest) {
         );
       }
     } else {
+      const orgFilter = auth?.organizationId ? { target: { organizationId: auth.organizationId } } : undefined;
       scan = await db.scan.findFirst({
+        where: orgFilter,
         orderBy: { startedAt: 'desc' },
         include: {
           target: true,

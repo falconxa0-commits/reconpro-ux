@@ -111,17 +111,14 @@ export function isPrivateIPv6(ip: string): boolean {
   // Link-local: fe80::/10
   if (lower.startsWith('fe80:') || lower.startsWith('fe80')) return true;
 
-  // Unique Local Addresses (ULA): fc00::/7 (fc and fd)
-  if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+  // Unique Local Addresses (ULA): fc00::/7 (fc and fd prefixes with colon)
+  if (lower.startsWith('fc:') || lower.startsWith('fd:')) return true;
 
   // Multicast: ff00::/8
-  if (lower.startsWith('ff')) return true;
+  if (lower.startsWith('ff:')) return true;
 
   // Documentation: 2001:db8::/32
   if (lower.startsWith('2001:db8:')) return true;
-
-  // Teredo: 2001::/32 (could expose internal NAT)
-  if (lower.startsWith('2001:0:')) return true;
 
   // Unspecified / all-zeros
   if (lower === '::' || lower === '0000:0000:0000:0000:0000:0000:0000:0000') return true;

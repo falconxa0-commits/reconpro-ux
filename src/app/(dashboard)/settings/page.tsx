@@ -123,10 +123,12 @@ export default function SettingsPage() {
     setSaved(false);
     setError("");
     try {
+      // Strip role from the update payload — role is managed server-side
+      const { role: _role, ...safeProfile } = profile;
       const res = await fetch("/api/members", {
         method: "PATCH",
         headers: { "Content-Type": "application/json", ...authHeaders },
-        body: JSON.stringify(profile),
+        body: JSON.stringify(safeProfile),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -223,11 +225,12 @@ export default function SettingsPage() {
             <Input
               id="settings-role"
               type="text"
-              placeholder="Security Engineer"
               value={profile.role}
-              onChange={(e) => setProfile({ ...profile, role: e.target.value })}
-              className="h-10 bg-white/[0.03] border-white/[0.06] text-white placeholder:text-[#444444] focus-visible:border-white/[0.15] focus-visible:ring-0 rounded-lg text-[13px] max-w-sm"
+              readOnly
+              disabled
+              className="h-10 bg-white/[0.02] border-white/[0.04] text-white/50 placeholder:text-[#444444] rounded-lg text-[13px] max-w-sm cursor-not-allowed"
             />
+            <p className="text-[11px] text-[#444444] mt-1">Role is assigned by your organization administrator.</p>
           </div>
           <Button
             type="submit"

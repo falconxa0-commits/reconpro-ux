@@ -84,7 +84,12 @@ export async function GET(request: NextRequest) {
 
   if (view === 'access-log') {
     logAccess('/api/sovereign/access-log', 'GET', clientIp, true);
-    return NextResponse.json({ entries: accessLog });
+    // Redact IPs in the response — only show last octet
+    const redactedLog = accessLog.map((entry) => ({
+      ...entry,
+      ip: entry.ip ? entry.ip.replace(/\d+\.\d+\.\d+\./, '***.***.***.') : undefined,
+    }));
+    return NextResponse.json({ entries: redactedLog });
   }
 
   logAccess('/api/sovereign', 'GET', clientIp, true);
