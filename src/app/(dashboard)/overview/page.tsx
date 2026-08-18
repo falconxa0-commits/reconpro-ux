@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BentoDashboard } from "@/components/reconpro/bento-dashboard";
-import { AlertCircle, RefreshCw } from "lucide-react";
+import { AlertCircle, RefreshCw, LayoutDashboard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthHeaders } from "@/hooks/use-auth-headers";
 
@@ -94,11 +94,19 @@ export default function OverviewPage() {
   if (error) {
     return (
       <div className="space-y-6">
-        <h1 className="text-2xl font-semibold text-white">Dashboard</h1>
-        <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-red-500/20 bg-red-500/5 px-6 py-16">
-          <AlertCircle className="h-10 w-10 text-red-400" />
-          <p className="text-sm text-red-400">{error}</p>
-          <Button variant="outline" size="sm" onClick={loadData} className="border-zinc-700 text-white hover:bg-zinc-800">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-white/[0.04] flex items-center justify-center">
+            <LayoutDashboard className="w-4 h-4 text-[#ff3355]" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold text-white tracking-tight">Dashboard</h1>
+            <p className="text-sm text-[#555555]">Security overview and recent reconnaissance activity.</p>
+          </div>
+        </div>
+        <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-[#ff3355]/20 bg-[#ff3355]/[0.04] px-6 py-16">
+          <AlertCircle className="h-8 w-8 text-[#ff3355]/60" />
+          <p className="text-sm text-[#ff3355]/80">{error}</p>
+          <Button variant="outline" size="sm" onClick={loadData} className="border-white/10 text-white hover:bg-white/[0.04]">
             <RefreshCw className="mr-2 h-3.5 w-3.5" />
             Retry
           </Button>

@@ -89,13 +89,13 @@ const item = {
 export function ScanResults({ result }: ScanResultsProps) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: 30 }}
+      initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5 }}
-      className="space-y-6"
+      transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] as const }}
+      className="space-y-4"
     >
       {/* Risk Overview Header */}
-      <div className="cyber-card rounded-2xl p-6">
+      <div className="bento-tile p-5">
         <div className="flex flex-col lg:flex-row items-center gap-8">
           {/* Risk Gauge */}
           <RiskGauge value={result.riskScore} size={200} label="Overall Risk" />
@@ -104,7 +104,7 @@ export function ScanResults({ result }: ScanResultsProps) {
           <div className="flex-1 w-full">
             <div className="flex items-center gap-3 mb-4">
               <Globe className="w-5 h-5 text-[#00ff88]" />
-              <h2 className="text-xl font-bold text-[#f0f0f0] font-mono">{result.domain}</h2>
+              <h2 className="text-lg font-medium text-white font-mono">{result.domain}</h2>
               <Badge variant="outline" className="border-[#00ff88]/30 text-[#00ff88] text-xs">
                 {result.status.toUpperCase()}
               </Badge>
@@ -119,9 +119,9 @@ export function ScanResults({ result }: ScanResultsProps) {
                 { label: 'Info', value: result.info, color: '#6b7280' },
                 { label: 'Total Findings', value: result.totalVulns, color: '#06b6d4' },
               ].map((stat) => (
-                <div key={stat.label} className="p-3 rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)]">
-                  <div className="text-xs text-muted-foreground mb-1">{stat.label}</div>
-                  <div className="text-2xl font-bold font-mono" style={{ color: stat.color }}>
+                <div key={stat.label} className="p-3 rounded-lg bg-white/[0.015]">
+                  <div className="text-[11px] text-[#555555] mb-1">{stat.label}</div>
+                  <div className="text-xl font-semibold font-mono" style={{ color: stat.color }}>
                     {stat.value}
                   </div>
                 </div>
@@ -137,7 +137,7 @@ export function ScanResults({ result }: ScanResultsProps) {
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3 }}
-          className="flex items-center gap-3 p-4 rounded-xl bg-[#ff3355]/10 border border-[#ff3355]/20 glow-red"
+          className="flex items-center gap-3 p-3.5 rounded-xl bg-[#ff3355]/[0.06] border border-[#ff3355]/15"
         >
           <AlertTriangle className="w-5 h-5 text-[#ff3355] flex-shrink-0" />
           <div>
@@ -153,7 +153,7 @@ export function ScanResults({ result }: ScanResultsProps) {
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ delay: 0.3 }}
-          className="flex items-center gap-3 p-4 rounded-xl bg-[#ff8844]/10 border border-[#ff8844]/20"
+          className="flex items-center gap-3 p-3.5 rounded-xl bg-[#ff8844]/[0.06] border border-[#ff8844]/15"
         >
           <Shield className="w-5 h-5 text-[#ff8844] flex-shrink-0" />
           <div>
@@ -166,9 +166,9 @@ export function ScanResults({ result }: ScanResultsProps) {
       )}
 
       {/* Findings List */}
-      <div className="cyber-card rounded-2xl p-6">
+      <div className="bento-tile p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-[#f0f0f0] flex items-center gap-2">
+          <h3 className="text-[15px] font-medium text-white flex items-center gap-2">
             <Bug className="w-5 h-5 text-[#06b6d4]" />
             Security Findings
           </h3>
@@ -181,7 +181,7 @@ export function ScanResults({ result }: ScanResultsProps) {
               <motion.div
                 key={finding.id}
                 variants={item}
-                className="group p-4 rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] hover:border-[rgba(52,211,153,0.15)] hover:bg-[rgba(52,211,153,0.02)] transition-all cursor-pointer"
+                className="group p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04] hover:border-white/[0.08] hover:bg-white/[0.02] transition-all cursor-pointer"
               >
                 <div className="flex items-start gap-3">
                   <div className="mt-0.5 p-2 rounded-lg bg-[rgba(255,255,255,0.04)] text-muted-foreground group-hover:text-[#00ff88] transition-colors">

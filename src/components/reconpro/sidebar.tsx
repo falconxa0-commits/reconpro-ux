@@ -49,7 +49,6 @@ export interface SidebarProps {
 }
 
 // ─── Navigation Data ─────────────────────────────────────────────────────────
-// Only items that map to actual dashboard routes.
 
 const NAV_SECTIONS: NavSection[] = [
   {
@@ -90,8 +89,8 @@ const NAV_SECTIONS: NavSection[] = [
 // ─── Animation Variants ──────────────────────────────────────────────────────
 
 const sidebarVariants = {
-  expanded: { width: 260 },
-  collapsed: { width: 68 },
+  expanded: { width: 256 },
+  collapsed: { width: 72 },
 };
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
@@ -114,35 +113,36 @@ function NavItemButton({
     <motion.button
       onClick={onClick}
       className={`
-        group relative flex w-full items-center gap-3 rounded-xl px-3 py-2
-        text-[12.5px] font-medium tracking-wide transition-all duration-300
+        group relative flex w-full items-center gap-3 rounded-lg px-3 py-2
+        text-[13px] font-medium transition-all duration-200
         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00ff88]/30
-        ${collapsed ? 'justify-center' : ''}
+        ${collapsed ? 'justify-center px-0' : ''}
         ${
           active
-            ? 'bg-[rgba(52,211,153,0.07)] text-[#00ff88]'
-            : 'text-[#64748b] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#cbd5e1]'
+            ? 'bg-white/[0.06] text-white'
+            : 'text-[#555555] hover:bg-white/[0.03] hover:text-[#999999]'
         }
       `}
-      whileHover={{ x: collapsed ? 0 : 2 }}
-      whileTap={{ scale: 0.97 }}
+      whileHover={{ x: collapsed ? 0 : 1 }}
+      whileTap={{ scale: 0.98 }}
     >
-      {/* Active left accent line */}
-      <motion.div
-        className="absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-r-full"
-        style={{ background: badgeColor }}
-        initial={false}
-        animate={{ scaleY: active ? 1 : 0, opacity: active ? 1 : 0 }}
-        transition={{ type: 'spring' as const, stiffness: 500, damping: 30 }}
-      />
+      {/* Active left accent bar */}
+      {active && (
+        <motion.div
+          className="absolute left-0 top-1/2 h-5 w-[2.5px] -translate-y-1/2 rounded-r-full"
+          style={{ background: badgeColor }}
+          layoutId="sidebar-active-indicator"
+          transition={{ type: 'spring' as const, stiffness: 500, damping: 35 }}
+        />
+      )}
 
       {/* Icon */}
       <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center">
         <Icon
-          className={`h-[16px] w-[16px] flex-shrink-0 transition-all duration-300 ${
+          className={`h-[16px] w-[16px] flex-shrink-0 transition-all duration-200 ${
             active
-              ? 'text-[#00ff88] drop-shadow-[0_0_6px_rgba(52,211,153,0.4)]'
-              : 'text-[#444444] group-hover:text-[#555555]'
+              ? 'text-[#00ff88]'
+              : 'text-[#555555] group-hover:text-[#777777]'
           }`}
           strokeWidth={active ? 2 : 1.5}
         />
@@ -153,10 +153,10 @@ function NavItemButton({
         {!collapsed && (
           <motion.span
             key="label"
-            initial={{ opacity: 0, x: -8 }}
+            initial={{ opacity: 0, x: -6 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.2, ease: 'easeOut' as const }}
+            exit={{ opacity: 0, x: -6 }}
+            transition={{ duration: 0.15, ease: 'easeOut' as const }}
             className="truncate flex-1"
           >
             {item.label}
@@ -167,11 +167,11 @@ function NavItemButton({
       {/* Badge */}
       {item.badge && !collapsed && (
         <span
-          className="px-1.5 py-0.5 rounded-md text-[8.5px] font-bold tracking-wider"
+          className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide"
           style={{
-            background: `${badgeColor}10`,
+            background: `${badgeColor}12`,
             color: badgeColor,
-            border: `1px solid ${badgeColor}20`,
+            border: `1px solid ${badgeColor}25`,
           }}
         >
           {item.badge}
@@ -187,7 +187,7 @@ function NavItemButton({
         <TooltipContent
           side="right"
           sideOffset={12}
-          className="border-[rgba(52,211,153,0.12)] bg-[#080b14] text-[#f0f0f0] font-medium"
+          className="border-white/[0.08] bg-[#0a0a0a] text-[#e0e0e0] font-medium text-xs"
         >
           {item.label}
         </TooltipContent>
@@ -200,8 +200,8 @@ function NavItemButton({
 
 function SectionSeparator() {
   return (
-    <div className="relative mx-3 my-2 flex items-center">
-      <div className="h-px w-full bg-gradient-to-r from-transparent via-[rgba(255,255,255,0.03)] to-transparent" />
+    <div className="relative mx-3 my-1.5 flex items-center">
+      <div className="h-px w-full bg-white/[0.03]" />
     </div>
   );
 }
@@ -215,10 +215,10 @@ function SectionHeader({ title, collapsed }: { title: string; collapsed: boolean
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={{ opacity: 0, height: 0 }}
-          transition={{ duration: 0.2, ease: 'easeOut' as const }}
+          transition={{ duration: 0.15, ease: 'easeOut' as const }}
           className="overflow-hidden"
         >
-          <h3 className="px-3 pb-1 pt-2.5 text-[9px] font-semibold uppercase tracking-[0.2em] text-[#333333]">
+          <h3 className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#444444]">
             {title}
           </h3>
         </motion.div>
@@ -231,19 +231,10 @@ function SectionHeader({ title, collapsed }: { title: string; collapsed: boolean
 
 function LogoSection({ collapsed }: { collapsed: boolean }) {
   return (
-    <div className={`flex items-center gap-3 px-4 py-5 ${collapsed ? 'justify-center' : ''}`}>
-      <div className="relative flex h-9 w-9 flex-shrink-0 items-center justify-center">
-        {/* Pulsing glow ring */}
-        <motion.div
-          className="absolute inset-[-3px] rounded-xl"
-          style={{
-            background: 'conic-gradient(from 0deg, transparent 0%, rgba(52,211,153,0.15) 25%, transparent 50%, rgba(34,211,238,0.1) 75%, transparent 100%)',
-          }}
-          animate={{ rotate: 360 }}
-          transition={{ duration: 12, repeat: Infinity, ease: 'linear' as const }}
-        />
-        <div className="relative flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#000000] to-[#080b14] ring-1 ring-[rgba(52,211,153,0.2)]">
-          <Shield className="h-[18px] w-[18px] text-[#00ff88]" strokeWidth={1.8} />
+    <div className={`flex items-center gap-3 px-4 py-5 ${collapsed ? 'justify-center px-0' : ''}`}>
+      <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.06] ring-1 ring-white/[0.08]">
+          <Shield className="h-4 w-4 text-[#00ff88]" strokeWidth={2} />
         </div>
       </div>
 
@@ -251,23 +242,20 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
         {!collapsed && (
           <motion.div
             key="logo-text"
-            initial={{ opacity: 0, x: -10 }}
+            initial={{ opacity: 0, x: -8 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -10 }}
-            transition={{ duration: 0.2, ease: 'easeOut' as const }}
-            className="flex flex-col gap-0.5 overflow-hidden"
+            exit={{ opacity: 0, x: -8 }}
+            transition={{ duration: 0.15, ease: 'easeOut' as const }}
+            className="flex flex-col gap-0 overflow-hidden"
           >
             <div className="flex items-center gap-1">
-              <span className="text-[15px] font-bold tracking-tight text-[#f0f0f0]">
+              <span className="text-[14px] font-semibold tracking-tight text-white">
                 Recon
               </span>
-              <span className="text-[15px] font-bold tracking-tight text-[#00ff88]">
+              <span className="text-[14px] font-semibold tracking-tight text-[#00ff88]">
                 Pro
               </span>
             </div>
-            <span className="text-[9px] font-medium uppercase tracking-[0.25em] text-[#333333]">
-              Dashboard
-            </span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -280,34 +268,33 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
 function UserSection({ collapsed }: { collapsed: boolean }) {
   return (
     <motion.div
-      className={`flex items-center gap-3 rounded-xl border border-[rgba(255,255,255,0.04)] bg-[rgba(255,255,255,0.02)] px-3 py-2.5 transition-all duration-300 hover:border-[rgba(255,255,255,0.07)] hover:bg-[rgba(255,255,255,0.03)] ${
-        collapsed ? 'justify-center' : ''
+      className={`flex items-center gap-3 rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2.5 transition-all duration-200 hover:border-white/[0.08] hover:bg-white/[0.03] ${
+        collapsed ? 'justify-center px-0' : ''
       }`}
-      whileHover={{ y: -1 }}
+      whileHover={{ y: -0.5 }}
       whileTap={{ scale: 0.98 }}
     >
-      <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center">
-        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[#00ff88]/30 to-[#00ff88]/5 ring-1 ring-[#00ff88]/20" />
-        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#000000] text-[10px] font-bold text-[#00ff88]">
-          {/* Initials will be dynamic once auth is connected */}
+      <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center">
+        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.06] text-[10px] font-semibold text-[#888888]">
+          RP
         </div>
-        <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#050710] bg-[#00ff88]" />
+        <div className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-[1.5px] border-[#0a0a0a] bg-[#00ff88]" />
       </div>
 
       <AnimatePresence initial={false}>
         {!collapsed && (
           <motion.div
             key="user-info"
-            initial={{ opacity: 0, x: -8 }}
+            initial={{ opacity: 0, x: -6 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.15, ease: 'easeOut' as const }}
+            exit={{ opacity: 0, x: -6 }}
+            transition={{ duration: 0.12, ease: 'easeOut' as const }}
             className="flex flex-col overflow-hidden"
           >
-            <span className="truncate text-[12.5px] font-semibold text-[#bbbbbb]">
+            <span className="truncate text-[12px] font-medium text-[#999999]">
               Signed In
             </span>
-            <span className="truncate text-[10.5px] text-[#444444]">
+            <span className="truncate text-[10px] text-[#444444]">
               Dashboard
             </span>
           </motion.div>
@@ -323,14 +310,14 @@ function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   return (
     <motion.button
       onClick={onToggle}
-      className="group flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-[rgba(255,255,255,0.05)] bg-[rgba(255,255,255,0.02)] text-[#444444] transition-all duration-300 hover:border-[rgba(52,211,153,0.15)] hover:bg-[rgba(52,211,153,0.04)] hover:text-[#00ff88] focus-visible:outline-none"
+      className="group flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-white/[0.06] bg-white/[0.02] text-[#555555] transition-all duration-200 hover:border-white/[0.1] hover:bg-white/[0.04] hover:text-[#999999] focus-visible:outline-none"
       whileHover={{ scale: 1.05 }}
       whileTap={{ scale: 0.92 }}
       aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
     >
       <motion.div
         animate={{ rotate: collapsed ? 0 : 180 }}
-        transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] as const }}
+        transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] as const }}
       >
         {collapsed ? (
           <ChevronRight className="h-3.5 w-3.5" />
@@ -355,27 +342,18 @@ export function EnterpriseSidebar({
       initial={false}
       animate={collapsed ? 'collapsed' : 'expanded'}
       variants={sidebarVariants}
-      transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] as const }}
-      className="relative flex h-screen flex-col bg-[#050710] overflow-hidden"
+      transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] as const }}
+      className="relative flex h-screen flex-col bg-[#060608] overflow-hidden"
       style={{
-        boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.03)',
+        boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.04)',
       }}
     >
-      {/* Ambient top glow */}
-      <div
-        className="pointer-events-none absolute inset-x-0 top-0 h-60"
-        style={{
-          background:
-            'radial-gradient(ellipse 70% 50% at 50% -10%, rgba(52,211,153,0.025) 0%, transparent 70%)',
-        }}
-      />
-
       {/* ── Logo ── */}
       <LogoSection collapsed={collapsed} />
 
       {/* Divider after logo */}
       <div className="mx-4 flex items-center">
-        <div className="h-px w-full bg-gradient-to-r from-[rgba(52,211,153,0.08)] via-[rgba(255,255,255,0.03)] to-transparent" />
+        <div className="h-px w-full bg-white/[0.04]" />
       </div>
 
       {/* ── Navigation Sections ── */}
@@ -400,15 +378,12 @@ export function EnterpriseSidebar({
       </nav>
 
       {/* ── Bottom Section ── */}
-      <div className="flex flex-col gap-2.5 border-t border-[rgba(255,255,255,0.03)] px-3 py-3.5">
+      <div className="flex flex-col gap-2.5 border-t border-white/[0.04] px-3 py-3">
         <UserSection collapsed={collapsed} />
         <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-end'}`}>
           <CollapseToggle collapsed={collapsed} onToggle={onToggle} />
         </div>
       </div>
-
-      {/* Right edge — ultra subtle gradient */}
-      <div className="pointer-events-none absolute inset-y-0 right-0 w-px bg-gradient-to-b from-[rgba(52,211,153,0.05)] via-transparent to-[rgba(52,211,153,0.02)]" />
     </motion.aside>
   );
 }

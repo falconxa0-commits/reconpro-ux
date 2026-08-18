@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { ScanInput } from "@/components/reconpro/scan-input";
 import { ScanResults } from "@/components/reconpro/scan-results";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Radar } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { useAuthHeaders } from "@/hooks/use-auth-headers";
 
 export default function ScansPage() {
@@ -72,27 +73,37 @@ export default function ScansPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-semibold text-white">Scans</h1>
-      <p className="text-white/40 text-sm">Run reconnaissance scans against targets.</p>
+    <div className="space-y-8">
+      {/* Page Header */}
+      <div>
+        <div className="flex items-center gap-3 mb-1">
+          <div className="w-8 h-8 rounded-lg bg-white/[0.04] flex items-center justify-center">
+            <Radar className="w-4 h-4 text-[#00ff88]" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold text-white tracking-tight">Reconnaissance</h1>
+            <p className="text-sm text-[#555555]">Run scans against targets to discover security findings.</p>
+          </div>
+        </div>
+      </div>
 
       <div className="max-w-2xl">
         <ScanInput onScan={handleScan} isScanning={isScanning} />
       </div>
 
       {scanError && (
-        <div className="max-w-2xl flex items-center gap-3 rounded-lg border border-red-500/20 bg-red-500/5 px-4 py-3 text-sm text-red-400">
+        <div className="max-w-2xl flex items-center gap-3 rounded-xl border border-[#ff3355]/20 bg-[#ff3355]/[0.04] px-4 py-3 text-sm text-[#ff3355]">
           <AlertCircle className="h-4 w-4 shrink-0" />
           {scanError}
         </div>
       )}
 
       {lastResult && (
-        <div className="mt-8">
+        <div className="mt-4">
           <div className="flex items-center gap-4 mb-4">
             <div>
-              <h2 className="text-lg font-semibold text-white">{lastResult.domain}</h2>
-              <p className="text-sm text-white/40">
+              <h2 className="text-lg font-medium text-white">{lastResult.domain}</h2>
+              <p className="text-sm text-[#555555]">
                 {lastResult.findings.length} findings across {lastResult.totalVulns} categories
               </p>
             </div>

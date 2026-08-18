@@ -68,8 +68,10 @@ export default function DashboardLayout({
       />
 
       <div className="flex-1 flex flex-col min-w-0">
-        <main className="flex-1 overflow-auto p-6 pb-20">
-          {children}
+        <main className="flex-1 overflow-auto">
+          <div className="px-6 py-6 pb-24 max-w-[1440px] mx-auto w-full">
+            {children}
+          </div>
         </main>
 
         <BottomDock
