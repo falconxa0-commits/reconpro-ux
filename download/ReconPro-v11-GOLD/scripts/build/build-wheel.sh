@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-echo "Building ReconPro v11.0.0 wheel..."
-cd reconpro-work
-rm -rf build/ dist/ *.egg-info
-pip install --upgrade build
-python -m build --wheel --sdist
-echo "Built:"
-ls -lh dist/
+echo 'Building wheel...'
+cd backend && pip install --upgrade build && pip install reconpro-11.0.0-py3-none-any.whl --force-reinstall --no-deps
