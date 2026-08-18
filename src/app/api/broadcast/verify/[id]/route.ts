@@ -14,6 +14,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { error } = await withProtection(_req, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;

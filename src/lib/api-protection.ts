@@ -142,66 +142,106 @@ export async function withProtection(
   if (requireAuth) {
     const apiKey = request.headers.get(API_KEY_HEADER);
 
-    if (!apiKey) {
-      return {
-        error: NextResponse.json(
-          { error: 'Authentication required. Provide X-API-Key header.' },
-          { status: 401 }
-        ),
-        clientIp,
-      };
-    }
+    // Try API key auth first, then fall back to session cookie auth
+    if (apiKey) {
+      // ── API Key Authentication ────────────────────────────────────
+      try {
+        const { db } = await import('@/lib/db');
 
-    // Verify the full API key by comparing its SHA-256 hash against the stored keyHash.
-    // The keyPrefix field is used ONLY for display/identification, never for auth.
-    // CRITICAL: Bearer tokens are NOT supported. Only x-api-key header authenticates.
-    try {
-      const { db } = await import('@/lib/db');
+        const sha256 = createHash('sha256');
+        sha256.update(apiKey);
+        const hashHex = sha256.digest('hex');
 
-      // Hash the provided key with SHA-256
-      const sha256 = createHash('sha256');
-      sha256.update(apiKey);
-      const hashHex = sha256.digest('hex');
+        const keyRecord = await db.apiKey.findUnique({
+          where: { keyHash: hashHex },
+        });
 
-      // Look up by exact hash (keyHash is @unique in the schema)
-      const keyRecord = await db.apiKey.findUnique({
-        where: { keyHash: hashHex },
-      });
+        if (!keyRecord || !keyRecord.isActive) {
+          return {
+            error: NextResponse.json({ error: 'Invalid or inactive API key' }, { status: 401 }),
+            clientIp,
+          };
+        }
 
-      if (!keyRecord || !keyRecord.isActive) {
+        if (keyRecord.expiresAt && keyRecord.expiresAt < new Date()) {
+          return {
+            error: NextResponse.json({ error: 'API key has expired' }, { status: 401 }),
+            clientIp,
+          };
+        }
+
+        await db.apiKey.update({
+          where: { id: keyRecord.id },
+          data: { lastUsedAt: new Date(), requestCount: { increment: 1 } },
+        });
+
+        authenticatedKeyRecord = {
+          id: keyRecord.id,
+          organizationId: keyRecord.organizationId,
+          scopes: keyRecord.scopes,
+        };
+      } catch {
+        if (process.env.NODE_ENV === 'production') {
+          return {
+            error: NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 }),
+            clientIp,
+          };
+        }
+      }
+    } else {
+      // ── Session Cookie Authentication (browser dashboard) ──────────
+      const sessionCookie = request.cookies.get('reconpro_session');
+      if (!sessionCookie?.value) {
         return {
-          error: NextResponse.json({ error: 'Invalid or inactive API key' }, { status: 401 }),
+          error: NextResponse.json(
+            { error: 'Authentication required.' },
+            { status: 401 }
+          ),
           clientIp,
         };
       }
 
-      // Check expiry
-      if (keyRecord.expiresAt && keyRecord.expiresAt < new Date()) {
+      const token = sessionCookie.value;
+      if (!token.startsWith('sess_') || token.length < 20) {
         return {
-          error: NextResponse.json({ error: 'API key has expired' }, { status: 401 }),
+          error: NextResponse.json({ error: 'Invalid session.' }, { status: 401 }),
           clientIp,
         };
       }
 
-      // Update usage
-      await db.apiKey.update({
-        where: { id: keyRecord.id },
-        data: { lastUsedAt: new Date(), requestCount: { increment: 1 } },
-      });
+      try {
+        const { db } = await import('@/lib/db');
 
-      // Store for downstream authorization checks
-      authenticatedKeyRecord = {
-        id: keyRecord.id,
-        organizationId: keyRecord.organizationId,
-        scopes: keyRecord.scopes,
-      };
-    } catch {
-      // DB error — allow in development, block in production
-      if (process.env.NODE_ENV === 'production') {
-        return {
-          error: NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 }),
-          clientIp,
+        const session = await db.session.findUnique({
+          where: { token },
+          include: { member: { include: { organization: true } } },
+        });
+
+        if (!session || session.expiresAt < new Date()) {
+          return {
+            error: NextResponse.json({ error: 'Session expired. Please sign in again.' }, { status: 401 }),
+            clientIp,
+          };
+        }
+
+        // Find an active API key for the org to build auth context
+        const activeKey = await db.apiKey.findFirst({
+          where: { organizationId: session.organizationId, isActive: true },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        authenticatedKeyRecord = {
+          id: activeKey?.id || 'session',
+          organizationId: session.organizationId,
+          scopes: activeKey?.scopes || '',
         };
+      } catch {
+        if (process.env.NODE_ENV === 'production') {
+          return {
+            error: NextResponse.json({ error: 'Authentication service unavailable' }, { status: 503 }),
+            clientIp,
+          };
+        }
       }
     }
   }

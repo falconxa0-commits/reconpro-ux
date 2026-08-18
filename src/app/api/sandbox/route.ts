@@ -600,6 +600,7 @@ function isBlockedByDefense(rule: PatternRule, session: SandboxSession): boolean
 
 export async function POST(req: NextRequest) {
   const { error } = await withProtection(req, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;
@@ -619,6 +620,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   const { error } = await withProtection(req, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;

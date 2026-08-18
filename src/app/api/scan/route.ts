@@ -1096,12 +1096,22 @@ async function harvestEmails(domain: string, pageContent: string): Promise<Findi
 // MAIN SCAN ENDPOINT
 // ═══════════════════════════════════════════════════════════════════════
 export async function POST(request: NextRequest) {
-  const { error: protErr, domain: protDomain } = await withProtection(request.clone() as unknown as NextRequest, { requireAuth: true, validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
+  // First pass: validate domain via protection layer (consumes body)
+  const { error: protErr, domain: protDomain } = await withProtection(request, { requireAuth: true, validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
   if (protErr) return protErr;
 
   try {
-    const body = await request.json();
-    const { scanType } = body;
+    // Re-parse body (protection already consumed the original)
+    // We know the domain is valid from protDomain; extract scanType from a second clone
+    const body = await request.clone().json().catch(() => ({}));
+    const { scanType } = body as { scanType?: string };
+
+    // Validate scanType
+    const VALID_SCAN_TYPES = ['quick', 'full'];
+    const normalizedScanType = typeof scanType === 'string' ? scanType.toLowerCase().trim() : 'full';
+    if (!VALID_SCAN_TYPES.includes(normalizedScanType)) {
+      return NextResponse.json({ error: 'Invalid scanType. Must be "quick" or "full".' }, { status: 400 });
+    }
 
     if (!protDomain) {
       return NextResponse.json({ error: 'Domain is required' }, { status: 400 });
@@ -1129,10 +1139,10 @@ export async function POST(request: NextRequest) {
     }
 
     const scan = await db.scan.create({
-      data: { targetId: target.id, status: 'running', scanType: scanType || 'full' },
+      data: { targetId: target.id, status: 'running', scanType: normalizedScanType },
     });
 
-    const isQuick = scanType === 'quick';
+    const isQuick = normalizedScanType === 'quick';
     const allFindings: Finding[] = [];
     const allTech = new Set<string>();
 

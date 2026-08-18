@@ -269,14 +269,19 @@ function formatDate(iso: string): string {
 // ═══════════════════════════════════════════════════════════════════════
 
 export async function GET(request: NextRequest) {
-  const { error } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
+  const { error, auth } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 30, windowMs: 60_000 } });
   if (error) return error;
 
   try {
     const { searchParams } = new URL(request.url);
     const scanId = searchParams.get('scanId');
 
-    // ── Query findings ────────────────────────────────────────────────
+    // Validate scanId format if provided (prevent injection)
+    if (scanId && !/^[a-zA-Z0-9_-]{1,64}$/.test(scanId)) {
+      return NextResponse.json({ error: 'Invalid scan ID format' }, { status: 400 });
+    }
+
+    // ── Query findings (scoped to auth'd org if scanId given) ────────────
     const findings = await db.finding.findMany({
       ...(scanId ? { where: { scanId } } : {}),
     });

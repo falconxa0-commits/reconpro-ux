@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { RadarMap } from "@/components/reconpro/radar-map";
-import { AlertCircle, RefreshCw, ShieldSearch, Map } from "lucide-react";
+import { AlertCircle, RefreshCw, ShieldCheck, Map } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
 import { useAuthHeaders } from "@/hooks/use-auth-headers";
@@ -104,7 +104,7 @@ export default function FindingsPage() {
         </div>
         <div className="flex flex-col items-center justify-center py-20">
           <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-6">
-            <ShieldSearch className="w-7 h-7 text-[#555555]" />
+            <ShieldCheck className="w-7 h-7 text-[#555555]" />
           </div>
           <h2 className="text-lg font-medium text-white mb-2">No findings yet</h2>
           <p className="text-sm text-[#555555] max-w-sm text-center leading-relaxed mb-6">

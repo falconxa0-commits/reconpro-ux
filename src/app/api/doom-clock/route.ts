@@ -10,6 +10,7 @@ import { calculateDoomClock, type TLSAssetInput, type DoomClockResult } from '@/
 
 export async function POST(request: NextRequest) {
   const { error } = await withProtection(request, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;
@@ -66,6 +67,7 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   const { error } = await withProtection(request, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;

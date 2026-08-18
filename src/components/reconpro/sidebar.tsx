@@ -16,8 +16,9 @@ import {
   Puzzle,
   Activity,
   Settings,
-  ChevronLeft,
-  ChevronRight,
+  PanelLeftClose,
+  PanelLeftOpen,
+  LogOut,
   type LucideIcon,
 } from 'lucide-react';
 import {
@@ -26,14 +27,11 @@ import {
   TooltipContent,
 } from '@/components/ui/tooltip';
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
 interface NavItem {
   id: string;
   label: string;
   icon: LucideIcon;
   badge?: string;
-  accentColor?: string;
 }
 
 interface NavSection {
@@ -48,36 +46,32 @@ export interface SidebarProps {
   onToggle: () => void;
 }
 
-// ─── Navigation Data ─────────────────────────────────────────────────────────
-
 const NAV_SECTIONS: NavSection[] = [
   {
-    title: 'Overview',
-    items: [
-      { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    ],
+    title: 'Main',
+    items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }],
   },
   {
-    title: 'Reconnaissance',
+    title: 'Recon',
     items: [
       { id: 'scan', label: 'New Scan', icon: Radar },
-      { id: 'history', label: 'Scan History', icon: History },
-      { id: 'surface', label: 'Attack Surface', icon: Globe },
+      { id: 'history', label: 'History', icon: History },
+      { id: 'surface', label: 'Surface', icon: Globe },
       { id: 'radar', label: 'Findings', icon: Map },
     ],
   },
   {
-    title: 'Intelligence',
+    title: 'Intel',
     items: [
       { id: 'advisor', label: 'AI Advisor', icon: Brain },
-      { id: 'threats', label: 'Threat Intel', icon: AlertTriangle },
-      { id: 'trends', label: 'Risk Trends', icon: TrendingUp },
+      { id: 'threats', label: 'Threats', icon: AlertTriangle },
+      { id: 'trends', label: 'Trends', icon: TrendingUp },
     ],
   },
   {
-    title: 'Enterprise',
+    title: 'Org',
     items: [
-      { id: 'team', label: 'Team Management', icon: Users },
+      { id: 'team', label: 'Team', icon: Users },
       { id: 'compliance', label: 'Compliance', icon: ShieldCheck },
       { id: 'integrations', label: 'Integrations', icon: Puzzle },
       { id: 'monitoring', label: 'Monitoring', icon: Activity },
@@ -86,77 +80,55 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
-// ─── Animation Variants ──────────────────────────────────────────────────────
-
 const sidebarVariants = {
-  expanded: { width: 256 },
-  collapsed: { width: 72 },
+  expanded: { width: 260 },
+  collapsed: { width: 68 },
 };
 
-// ─── Sub-components ─────────────────────────────────────────────────────────
+function getNavButtonClass(active: boolean, collapsed: boolean): string {
+  const base = 'group relative flex w-full items-center gap-3 rounded-[10px] px-3 py-[9px] text-[13px] font-medium transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/10';
+  const state = active
+    ? 'bg-white/[0.08] text-white'
+    : 'text-white/40 hover:bg-white/[0.04] hover:text-white/70';
+  const collapsedClass = collapsed ? 'justify-center px-0' : '';
+  return `${base} ${state} ${collapsedClass}`;
+}
 
-function NavItemButton({
-  item,
-  active,
-  collapsed,
-  onClick,
-}: {
+function NavItemButton({ item, active, collapsed, onClick }: {
   item: NavItem;
   active: boolean;
   collapsed: boolean;
   onClick: () => void;
 }) {
   const Icon = item.icon;
-  const badgeColor = item.accentColor || '#00ff88';
+  const iconClass = `h-[17px] w-[17px] flex-shrink-0 transition-colors duration-150 ${
+    active ? 'text-white' : 'text-white/30 group-hover:text-white/50'
+  }`;
 
   const buttonContent = (
     <motion.button
       onClick={onClick}
-      className={`
-        group relative flex w-full items-center gap-3 rounded-lg px-3 py-2
-        text-[13px] font-medium transition-all duration-200
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00ff88]/30
-        ${collapsed ? 'justify-center px-0' : ''}
-        ${
-          active
-            ? 'bg-white/[0.06] text-white'
-            : 'text-[#555555] hover:bg-white/[0.03] hover:text-[#999999]'
-        }
-      `}
-      whileHover={{ x: collapsed ? 0 : 1 }}
-      whileTap={{ scale: 0.98 }}
+      className={getNavButtonClass(active, collapsed)}
+      whileTap={{ scale: 0.97 }}
     >
-      {/* Active left accent bar */}
       {active && (
         <motion.div
-          className="absolute left-0 top-1/2 h-5 w-[2.5px] -translate-y-1/2 rounded-r-full"
-          style={{ background: badgeColor }}
+          className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-r-full bg-white"
           layoutId="sidebar-active-indicator"
-          transition={{ type: 'spring' as const, stiffness: 500, damping: 35 }}
+          transition={{ type: 'spring' as const, stiffness: 500, damping: 30 }}
         />
       )}
 
-      {/* Icon */}
-      <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center">
-        <Icon
-          className={`h-[16px] w-[16px] flex-shrink-0 transition-all duration-200 ${
-            active
-              ? 'text-[#00ff88]'
-              : 'text-[#555555] group-hover:text-[#777777]'
-          }`}
-          strokeWidth={active ? 2 : 1.5}
-        />
-      </div>
+      <Icon className={iconClass} strokeWidth={active ? 2 : 1.5} />
 
-      {/* Label */}
       <AnimatePresence initial={false}>
         {!collapsed && (
           <motion.span
             key="label"
-            initial={{ opacity: 0, x: -6 }}
+            initial={{ opacity: 0, x: -4 }}
             animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -6 }}
-            transition={{ duration: 0.15, ease: 'easeOut' as const }}
+            exit={{ opacity: 0, x: -4 }}
+            transition={{ duration: 0.12, ease: 'easeOut' as const }}
             className="truncate flex-1"
           >
             {item.label}
@@ -164,16 +136,8 @@ function NavItemButton({
         )}
       </AnimatePresence>
 
-      {/* Badge */}
       {item.badge && !collapsed && (
-        <span
-          className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold tracking-wide"
-          style={{
-            background: `${badgeColor}12`,
-            color: badgeColor,
-            border: `1px solid ${badgeColor}25`,
-          }}
-        >
+        <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-white/10 text-white/70">
           {item.badge}
         </span>
       )}
@@ -187,7 +151,7 @@ function NavItemButton({
         <TooltipContent
           side="right"
           sideOffset={12}
-          className="border-white/[0.08] bg-[#0a0a0a] text-[#e0e0e0] font-medium text-xs"
+          className="border-white/[0.08] bg-[#111] text-white/80 font-medium text-xs"
         >
           {item.label}
         </TooltipContent>
@@ -198,166 +162,104 @@ function NavItemButton({
   return buttonContent;
 }
 
-function SectionSeparator() {
-  return (
-    <div className="relative mx-3 my-1.5 flex items-center">
-      <div className="h-px w-full bg-white/[0.03]" />
-    </div>
-  );
-}
-
 function SectionHeader({ title, collapsed }: { title: string; collapsed: boolean }) {
+  if (collapsed) return null;
   return (
-    <AnimatePresence initial={false}>
-      {!collapsed && (
-        <motion.div
-          key={title}
-          initial={{ opacity: 0, height: 0 }}
-          animate={{ opacity: 1, height: 'auto' }}
-          exit={{ opacity: 0, height: 0 }}
-          transition={{ duration: 0.15, ease: 'easeOut' as const }}
-          className="overflow-hidden"
-        >
-          <h3 className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#444444]">
-            {title}
-          </h3>
-        </motion.div>
-      )}
-    </AnimatePresence>
+    <h3 className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-[0.08em] text-white/20">
+      {title}
+    </h3>
   );
 }
-
-// ─── Logo Section ────────────────────────────────────────────────────────────
 
 function LogoSection({ collapsed }: { collapsed: boolean }) {
-  return (
-    <div className={`flex items-center gap-3 px-4 py-5 ${collapsed ? 'justify-center px-0' : ''}`}>
-      <div className="relative flex h-8 w-8 flex-shrink-0 items-center justify-center">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.06] ring-1 ring-white/[0.08]">
-          <Shield className="h-4 w-4 text-[#00ff88]" strokeWidth={2} />
-        </div>
-      </div>
+  const logoText = collapsed ? null : (
+    <div className="flex items-baseline gap-0.5 overflow-hidden">
+      <span className="text-[14px] font-semibold tracking-tight text-white">Recon</span>
+      <span className="text-[14px] font-semibold tracking-tight text-white/50">Pro</span>
+    </div>
+  );
 
-      <AnimatePresence initial={false}>
-        {!collapsed && (
-          <motion.div
-            key="logo-text"
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -8 }}
-            transition={{ duration: 0.15, ease: 'easeOut' as const }}
-            className="flex flex-col gap-0 overflow-hidden"
-          >
-            <div className="flex items-center gap-1">
-              <span className="text-[14px] font-semibold tracking-tight text-white">
-                Recon
-              </span>
-              <span className="text-[14px] font-semibold tracking-tight text-[#00ff88]">
-                Pro
-              </span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+  return (
+    <div className={`flex items-center gap-3 px-4 pt-5 pb-4 ${collapsed ? 'justify-center px-0' : ''}`}>
+      <div className="flex h-8 w-8 items-center justify-center rounded-[10px] bg-white/[0.08] ring-1 ring-white/[0.06]">
+        <Shield className="h-4 w-4 text-white" strokeWidth={2} />
+      </div>
+      {logoText}
     </div>
   );
 }
 
-// ─── User Section ──────────────────────────────────────────────────────────
-
 function UserSection({ collapsed }: { collapsed: boolean }) {
+  const userInfo = collapsed ? null : (
+    <div className="flex flex-col overflow-hidden">
+      <span className="truncate text-[12px] font-medium text-white/70">Signed In</span>
+      <span className="truncate text-[10px] text-white/25">Dashboard</span>
+    </div>
+  );
+
   return (
-    <motion.div
-      className={`flex items-center gap-3 rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2.5 transition-all duration-200 hover:border-white/[0.08] hover:bg-white/[0.03] ${
-        collapsed ? 'justify-center px-0' : ''
-      }`}
-      whileHover={{ y: -0.5 }}
-      whileTap={{ scale: 0.98 }}
-    >
+    <div className={`flex items-center gap-3 rounded-[10px] bg-white/[0.03] px-3 py-2.5 transition-colors duration-150 hover:bg-white/[0.05] ${collapsed ? 'justify-center px-0' : ''}`}>
       <div className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.06] text-[10px] font-semibold text-[#888888]">
+        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.08] text-[10px] font-semibold text-white/60">
           RP
         </div>
-        <div className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-[1.5px] border-[#0a0a0a] bg-[#00ff88]" />
+        <div className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-[1.5px] border-[#0a0a0a] bg-emerald-400" />
       </div>
-
-      <AnimatePresence initial={false}>
-        {!collapsed && (
-          <motion.div
-            key="user-info"
-            initial={{ opacity: 0, x: -6 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -6 }}
-            transition={{ duration: 0.12, ease: 'easeOut' as const }}
-            className="flex flex-col overflow-hidden"
-          >
-            <span className="truncate text-[12px] font-medium text-[#999999]">
-              Signed In
-            </span>
-            <span className="truncate text-[10px] text-[#444444]">
-              Dashboard
-            </span>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+      {userInfo}
+    </div>
   );
 }
-
-// ─── Collapse Toggle ────────────────────────────────────────────────────────
 
 function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   return (
     <motion.button
       onClick={onToggle}
-      className="group flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-white/[0.06] bg-white/[0.02] text-[#555555] transition-all duration-200 hover:border-white/[0.1] hover:bg-white/[0.04] hover:text-[#999999] focus-visible:outline-none"
-      whileHover={{ scale: 1.05 }}
-      whileTap={{ scale: 0.92 }}
+      className="group flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-[8px] text-white/25 transition-colors duration-150 hover:bg-white/[0.06] hover:text-white/60 focus-visible:outline-none"
+      whileTap={{ scale: 0.9 }}
       aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
     >
-      <motion.div
-        animate={{ rotate: collapsed ? 0 : 180 }}
-        transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] as const }}
-      >
-        {collapsed ? (
-          <ChevronRight className="h-3.5 w-3.5" />
-        ) : (
-          <ChevronLeft className="h-3.5 w-3.5" />
-        )}
-      </motion.div>
+      {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
     </motion.button>
   );
 }
 
-// ─── Main Sidebar Component ──────────────────────────────────────────────────
+function SignOutButton() {
+  return (
+    <button
+      onClick={() => {
+        localStorage.removeItem('reconpro_api_key');
+        localStorage.removeItem('reconpro_auth');
+        document.cookie = 'reconpro_session=; path=/; max-age=0';
+        window.location.href = '/login';
+      }}
+      className="flex items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-[12px] text-white/25 transition-colors duration-150 hover:bg-white/[0.04] hover:text-white/50"
+    >
+      <LogOut className="h-3.5 w-3.5" />
+      <span>Sign out</span>
+    </button>
+  );
+}
 
-export function EnterpriseSidebar({
-  activeView,
-  onViewChange,
-  collapsed,
-  onToggle,
-}: SidebarProps) {
+export function EnterpriseSidebar({ activeView, onViewChange, collapsed, onToggle }: SidebarProps) {
   return (
     <motion.aside
       initial={false}
       animate={collapsed ? 'collapsed' : 'expanded'}
       variants={sidebarVariants}
-      transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] as const }}
-      className="relative flex h-screen flex-col bg-[#060608] overflow-hidden"
+      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] as const }}
+      className="relative flex h-screen flex-col overflow-hidden"
       style={{
-        boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.04)',
+        background: 'rgba(255,255,255,0.02)',
+        boxShadow: 'inset -1px 0 0 rgba(255,255,255,0.05)',
       }}
     >
-      {/* ── Logo ── */}
       <LogoSection collapsed={collapsed} />
 
-      {/* Divider after logo */}
-      <div className="mx-4 flex items-center">
-        <div className="h-px w-full bg-white/[0.04]" />
+      <div className="mx-3 flex items-center">
+        <div className="h-px w-full bg-white/[0.05]" />
       </div>
 
-      {/* ── Navigation Sections ── */}
-      <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2 pt-1 pb-4 scrollbar-none">
+      <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2 pt-2 pb-4 scrollbar-none">
         {NAV_SECTIONS.map((section, sectionIndex) => (
           <div key={section.title}>
             <SectionHeader title={section.title} collapsed={collapsed} />
@@ -372,15 +274,19 @@ export function EnterpriseSidebar({
                 />
               ))}
             </div>
-            {sectionIndex < NAV_SECTIONS.length - 1 && <SectionSeparator />}
+            {sectionIndex < NAV_SECTIONS.length - 1 && (
+              <div className="mx-3 my-2 flex items-center">
+                <div className="h-px w-full bg-white/[0.03]" />
+              </div>
+            )}
           </div>
         ))}
       </nav>
 
-      {/* ── Bottom Section ── */}
-      <div className="flex flex-col gap-2.5 border-t border-white/[0.04] px-3 py-3">
+      <div className="flex flex-col gap-3 border-t border-white/[0.05] px-3 py-3">
         <UserSection collapsed={collapsed} />
-        <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-end'}`}>
+        <div className={`flex items-center justify-between ${collapsed ? 'justify-center' : ''}`}>
+          {collapsed ? null : <SignOutButton />}
           <CollapseToggle collapsed={collapsed} onToggle={onToggle} />
         </div>
       </div>

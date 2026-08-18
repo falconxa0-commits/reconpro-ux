@@ -12,6 +12,7 @@ export async function GET(
   { params }: { params: Promise<{ stampId: string }> }
 ) {
   const { error } = await withProtection(request, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;

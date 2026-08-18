@@ -662,6 +662,7 @@ function answerQuestion(question: string, findings: Finding[], domain: string): 
 
 export async function POST(req: NextRequest) {
   const { error } = await withProtection(req, {
+    requireAuth: true,
     rateLimit: { maxRequests: 30, windowMs: 60_000 },
   });
   if (error) return error;

@@ -1,8 +1,15 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import os from 'os';
 import { db } from '@/lib/db';
+import { withProtection } from '@/lib/api-protection';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const { error } = await withProtection(request, {
+    requireAuth: true,
+    rateLimit: { maxRequests: 30, windowMs: 60_000 },
+  });
+  if (error) return error;
+
   try {
     // Database connectivity check
     let dbStatus: 'connected' | 'error' = 'error';
