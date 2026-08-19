@@ -59,7 +59,7 @@ export default function DashboardLayout({
   );
 
   return (
-    <div className="min-h-screen flex bg-black text-white">
+    <div className="min-h-screen flex bg-[#0a0a0a] text-white">
       <EnterpriseSidebar
         activeView={activeView}
         onViewChange={handleViewChange}
@@ -69,7 +69,7 @@ export default function DashboardLayout({
 
       <div className="flex-1 flex flex-col min-w-0">
         <main className="flex-1 overflow-auto">
-          <div className="px-6 py-6 pb-24 max-w-[1440px] mx-auto w-full">
+          <div className="px-8 py-8 pb-28 max-w-[1400px] mx-auto w-full">
             {children}
           </div>
         </main>

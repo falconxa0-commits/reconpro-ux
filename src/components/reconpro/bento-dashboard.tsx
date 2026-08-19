@@ -3,12 +3,10 @@
 import { motion } from 'framer-motion';
 import {
   ShieldAlert, Zap, TrendingUp, Activity, Globe,
-  ArrowUpRight, ShieldCheck, Terminal, ScanSearch, Shield, BarChart3,
+  ArrowUpRight, ShieldCheck, Terminal, ScanSearch, Shield, BarChart3, Clock, ChevronRight,
 } from 'lucide-react';
 import { AnimatedCounter } from './animated-counter';
 import { CLIPreview } from './cli-showcase';
-
-// ─── Types ───────────────────────────────────────────────────────────
 
 interface DashboardStats {
   totalScans: number;
@@ -34,6 +32,7 @@ interface RecentScan {
   infoCount: number;
   status: string;
   startedAt: string;
+  scanType?: string;
   target: { domain: string };
 }
 
@@ -43,138 +42,96 @@ interface BentoDashboardProps {
   onNavigate: (view: string) => void;
 }
 
-// ─── Animation ────────────────────────────────────────────────────────
-
-const stagger = {
-  hidden: { opacity: 0 },
-  show: { opacity: 1, transition: { staggerChildren: 0.06 } },
-};
+const stagger = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.05 } } };
 const fadeUp = {
-  hidden: { opacity: 0, y: 16, scale: 0.99 },
-  show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring' as const, stiffness: 200, damping: 24 } },
+  hidden: { opacity: 0, y: 12, scale: 0.99 },
+  show: { opacity: 1, y: 0, scale: 1, transition: { type: 'spring' as const, stiffness: 180, damping: 22 } },
 };
-
-// ─── Severity Donut (SVG) ────────────────────────────────────────────
 
 function SeverityDonut({ data }: { data: { name: string; value: number; color: string }[] }) {
   const total = data.reduce((s, d) => s + d.value, 0);
   if (total === 0) return (
     <div className="flex flex-col items-center justify-center h-full text-center py-6">
       <div className="w-10 h-10 rounded-full bg-white/[0.03] flex items-center justify-center mb-3">
-        <ShieldCheck className="w-5 h-5 text-[#444444]" />
+        <ShieldCheck className="w-5 h-5 text-neutral-700" />
       </div>
-      <p className="text-xs text-[#555555]">No findings yet</p>
+      <p className="text-xs text-neutral-600">No findings yet</p>
     </div>
   );
-
   const segments = data.map((d, i) => {
     const pct = d.value / total;
     const off = data.slice(0, i).reduce((s, prev) => s + prev.value / total, 0);
     return { ...d, dasharray: `${pct * 283} ${283}`, offset: -off * 283 };
   });
-
   return (
     <svg viewBox="0 0 120 120" className="w-full h-full">
       {segments.map((d) => (
         <circle key={d.name} cx="60" cy="60" r="45" fill="none"
-          stroke={d.color} strokeWidth="14" strokeDasharray={d.dasharray}
-          strokeDashoffset={d.offset} strokeLinecap="round" opacity={0.75} />
+          stroke={d.color} strokeWidth="12" strokeDasharray={d.dasharray}
+          strokeDashoffset={d.offset} strokeLinecap="round" opacity={0.7} />
       ))}
-      <text x="60" y="55" textAnchor="middle" fill="#f0f0f0" fontSize="22" fontWeight="bold" fontFamily="var(--font-heading)">{total}</text>
-      <text x="60" y="70" textAnchor="middle" fill="#555555" fontSize="8" fontFamily="var(--font-body)" letterSpacing="0.12em">FINDINGS</text>
+      <text x="60" y="55" textAnchor="middle" fill="#f0f0f0" fontSize="20" fontWeight="bold" fontFamily="var(--font-heading)">{total}</text>
+      <text x="60" y="70" textAnchor="middle" fill="#555555" fontSize="7" fontFamily="var(--font-body)" letterSpacing="0.12em">FINDINGS</text>
     </svg>
   );
 }
-
-// ─── Mini stat sparkline (decorative) ───────────────────────────────
-
-function MiniSparkline({ color }: { color: string }) {
-  const points = 'M0,20 L8,14 L16,18 L24,8 L32,12 L40,4 L48,10 L56,2 L64,6';
-  return (
-    <svg viewBox="0 0 64 24" className="w-14 h-5 opacity-25">
-      <path d={points} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-// ─── Stat Card ──────────────────────────────────────────────────────
-
-function StatCard({ icon: Icon, label, value, color, onClick }: {
-  icon: React.ElementType;
-  label: string;
-  value: number | string;
-  color: string;
-  onClick?: () => void;
-}) {
-  return (
-    <motion.div
-      variants={fadeUp}
-      className="bento-tile p-4 flex flex-col justify-between group cursor-pointer"
-      onClick={onClick}
-    >
-      <Icon className="w-4 h-4 opacity-30 group-hover:opacity-50 transition-opacity" style={{ color }} />
-      <div className="mt-auto">
-        <div className="text-xl font-semibold font-mono text-white tracking-tight" style={color !== '#ffffff' ? { color } : undefined}>
-          {value}
-        </div>
-        <div className="text-[10px] text-[#555555] uppercase tracking-widest mt-0.5 font-medium">{label}</div>
-      </div>
-    </motion.div>
-  );
-}
-
-// ─── Live activity feed item ────────────────────────────────────────
 
 function ActivityItem({ text, time, dotColor }: { text: string; time: string; dotColor: string }) {
   return (
     <div className="flex items-start gap-3 py-2 group">
-      <div className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0 transition-opacity group-hover:opacity-100 opacity-60" style={{ background: dotColor }} />
+      <div className="mt-1.5 w-1.5 h-1.5 rounded-full flex-shrink-0 opacity-50 group-hover:opacity-100 transition-opacity" style={{ background: dotColor }} />
       <div className="flex-1 min-w-0">
-        <p className="text-[12px] text-[#777777] leading-relaxed truncate group-hover:text-[#999999] transition-colors">{text}</p>
-        <p className="text-[10px] text-[#444444] mt-0.5 font-mono">{time}</p>
+        <p className="text-[12px] text-neutral-600 leading-relaxed truncate group-hover:text-neutral-400 transition-colors">{text}</p>
+        <p className="text-[10px] text-neutral-700 mt-0.5 font-mono">{time}</p>
       </div>
     </div>
   );
 }
 
-// ─── Empty Dashboard State ─────────────────────────────────────────
-
 function EmptyDashboard({ onNavigate }: { onNavigate: (view: string) => void }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] as const }}
-      className="flex flex-col items-center justify-center py-20"
+      className="flex flex-col items-center justify-center py-24"
     >
       <div className="w-16 h-16 rounded-2xl bg-white/[0.03] border border-white/[0.06] flex items-center justify-center mb-6">
-        <ScanSearch className="w-7 h-7 text-[#555555]" />
+        <ScanSearch className="w-7 h-7 text-neutral-600" />
       </div>
       <h2 className="text-lg font-medium text-white mb-2">No scan data yet</h2>
-      <p className="text-sm text-[#555555] max-w-sm text-center leading-relaxed mb-8">
-        Run your first reconnaissance scan to see security insights, risk scores, and threat intelligence here.
+      <p className="text-sm text-neutral-600 max-w-sm text-center leading-relaxed mb-8">
+        Run your first reconnaissance scan to populate this command center with security insights, risk scores, and threat intelligence.
       </p>
-      <button
-        onClick={() => onNavigate('scan')}
-        className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-white/90 transition-all"
-      >
+      <button onClick={() => onNavigate('scan')} className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-white/90 transition-all">
         <Zap className="w-4 h-4" />
         Launch Your First Scan
       </button>
     </motion.div>
   );
 }
-
-// ─── BENTO DASHBOARD ────────────────────────────────────────────────
+function StatCard({ icon: Icon, label, value, color, subValue, onClick }: {
+  icon: React.ElementType;
+  label: string;  value: number | string;  color: string;  subValue?: string;  onClick?: () => void;
+}) {
+  return (
+    <motion.div variants={fadeUp} className="panel p-4 flex flex-col justify-between group cursor-pointer" onClick={onClick}>
+      <div className="flex items-center justify-between">
+        <Icon className="w-4 h-4 opacity-30 group-hover:opacity-50 transition-opacity" style={{ color }} />
+        {subValue && <span className="text-[10px] font-mono text-neutral-600">{subValue}</span>}
+      </div>
+      <div className="mt-auto pt-3">
+        <div className="text-2xl font-semibold font-mono text-white tracking-tight" style={color !== '#ffffff' ? { color } : undefined}>{value}</div>
+        <div className="text-[10px] text-neutral-600 uppercase tracking-[0.12em] mt-1 font-medium">{label}</div>
+      </div>
+    </motion.div>
+  );
+}
 
 export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboardProps) {
   const score = stats?.avgRiskScore ?? 0;
-  const scoreColor = score >= 70 ? '#ff3355' : score >= 40 ? '#ffaa00' : '#00ff88';
+  const scoreColor = score >= 70 ? '#ef4444' : score >= 40 ? '#eab308' : '#22c55e';
   const hasData = stats && stats.totalScans > 0;
 
-  if (!hasData) {
-    return <EmptyDashboard onNavigate={onNavigate} />;
-  }
+  if (!hasData) return <EmptyDashboard onNavigate={onNavigate} />;
 
   const timeAgo = (ts: string) => {
     const diff = Date.now() - new Date(ts).getTime();
@@ -187,192 +144,182 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
   };
 
   return (
-    <motion.div
-      variants={stagger}
-      initial="hidden"
-      animate="show"
-    >
+    <motion.div variants={stagger} initial="hidden" animate="show">
       {/* Page Header */}
       <motion.div variants={fadeUp} className="mb-8">
         <h1 className="text-2xl font-semibold text-white tracking-tight">Dashboard</h1>
-        <p className="text-sm text-[#555555] mt-1">Security overview and recent reconnaissance activity.</p>
+        <p className="text-[13px] text-neutral-600 mt-1">Security overview and recent reconnaissance activity.</p>
       </motion.div>
 
-      {/* ── BENTO GRID ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 auto-rows-[minmax(120px,auto)]">
-
-        {/* Risk Score — Large hero tile (2x2) */}
-        <motion.div
-          variants={fadeUp}
-          className="col-span-2 row-span-2 bento-tile p-6 flex flex-col justify-between cursor-pointer"
-          onClick={() => onNavigate('surface')}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-medium text-[#555555] tracking-[0.12em] uppercase">Risk Score</span>
-            <MiniSparkline color={scoreColor} />
-          </div>
-          <div>
-            <div className="flex items-baseline gap-2">
-              <AnimatedCounter target={score} color={scoreColor} size="xl" />
-              <span className="text-[#444444] text-lg font-mono">/100</span>
+      {/* Risk Score + Stats Row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-3">
+        {/* Risk Score Hero */}
+        <motion.div variants={fadeUp} className="col-span-2 row-span-1 panel p-5 flex items-center gap-5 cursor-pointer" onClick={() => onNavigate('surface')}>
+          <div className="flex-shrink-0">
+            <div className="relative w-20 h-20">
+              <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+                <circle cx="60" cy="60" r="50" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="8" />
+                <circle cx="60" cy="60" r="50" fill="none" stroke={scoreColor} strokeWidth="8" strokeLinecap="round"
+                  strokeDasharray={`${score * 3.14} ${314}`} opacity={0.8} />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-xl font-bold font-mono text-white" style={{ fontFamily: 'var(--font-heading)' }}>{score}</span>
+                <span className="text-[8px] text-neutral-600 uppercase tracking-widest">/ 100</span>
+              </div>
             </div>
-            <p className="text-[12px] text-[#666666] mt-1.5">
-              {score >= 70 ? 'Elevated threat posture' : score >= 40 ? 'Moderate exposure detected' : 'Surface within acceptable bounds'}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] font-medium text-neutral-600 uppercase tracking-[0.12em] mb-1">Threat Posture</div>
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <div className="w-1.5 h-1.5 rounded-full" style={{ background: scoreColor }} />
+              <span className="text-sm font-medium" style={{ color: scoreColor }}>
+                {score >= 70 ? 'High Risk' : score >= 40 ? 'Moderate' : 'Low Risk'}
+              </span>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-white/[0.05] overflow-hidden">
+              <motion.div className="h-full rounded-full" style={{ background: scoreColor }}
+                initial={{ width: 0 }} animate={{ width: `${score}%` }}
+                transition={{ duration: 1.2, ease: [0.16, 1, 0.3, 1] as const, delay: 0.3 }} />
+            </div>
+            <p className="text-[11px] text-neutral-600 mt-1.5">
+              {score >= 70 ? 'Elevated exposure across attack surface' : score >= 40 ? 'Moderate risk indicators detected' : 'Surface within acceptable parameters'}
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="h-[2px] flex-1 rounded-full bg-white/[0.04] overflow-hidden">
-              <motion.div
-                className="h-full rounded-full"
-                style={{ background: `linear-gradient(90deg, ${scoreColor}80, ${scoreColor})` }}
-                initial={{ width: 0 }}
-                animate={{ width: `${score}%` }}
-                transition={{ duration: 1.5, ease: [0.16, 1, 0.3, 1] as const, delay: 0.3 }}
-              />
-            </div>
-            <span className="text-[10px] font-mono font-semibold" style={{ color: scoreColor }}>{score >= 70 ? 'HIGH RISK' : score >= 40 ? 'MODERATE' : 'LOW'}</span>
-          </div>
         </motion.div>
 
-        {/* Stat cards */}
-        <StatCard icon={ShieldCheck} label="Scans" value={stats?.totalScans ?? 0} color="#44aaff" />
-        <StatCard icon={ShieldAlert} label="Critical" value={stats?.criticalFindings ?? 0} color="#ff3355" onClick={() => onNavigate('threats')} />
-        <StatCard icon={Zap} label="Findings" value={stats?.totalFindings ?? 0} color="#ffaa00" />
-        <StatCard icon={TrendingUp} label="High" value={stats?.highFindings ?? 0} color="#ff8844" />
+        <StatCard icon={BarChart3} label="Total Scans" value={stats?.totalScans ?? 0} color="#a3a3a3" subValue="all time" onClick={() => onNavigate('history')} />
+        <StatCard icon={ShieldAlert} label="Critical" value={stats?.criticalFindings ?? 0} color="#ef4444" onClick={() => onNavigate('threats')} />
+        <StatCard icon={Zap} label="Findings" value={stats?.totalFindings ?? 0} color="#eab308" onClick={() => onNavigate('radar')} />
+        <StatCard icon={TrendingUp} label="High" value={stats?.highFindings ?? 0} color="#f97316" onClick={() => onNavigate('threats')} />
+      </div>
 
-        {/* Severity Donut */}
-        <motion.div variants={fadeUp} className="col-span-1 bento-tile p-4 flex items-center justify-center">
-          <div className="w-full max-w-[100px]">
-            <SeverityDonut data={[
-              { name: 'Critical', value: stats?.criticalFindings ?? 0, color: '#ff3355' },
-              { name: 'High', value: stats?.highFindings ?? 0, color: '#ff8844' },
-              { name: 'Medium', value: stats?.mediumFindings ?? 0, color: '#ffaa00' },
-              { name: 'Low', value: stats?.lowFindings ?? 0, color: '#00ff88' },
-              { name: 'Info', value: stats?.infoFindings ?? 0, color: '#444444' },
-            ]} />
-          </div>
-        </motion.div>
-
-        {/* ── CLI SHOWCASE — Wide tile (3x2) ── */}
-        <motion.div
-          variants={fadeUp}
-          className="col-span-2 md:col-span-3 row-span-2 bento-tile p-0 overflow-hidden cursor-pointer"
-          onClick={() => onNavigate('scan')}
-        >
-          <div className="flex items-center justify-between px-4 pt-3 pb-1">
+      {/* Main Content: CLI + Findings + Activity */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
+        {/* CLI Showcase */}
+        <motion.div variants={fadeUp} className="lg:col-span-2 panel p-0 overflow-hidden cursor-pointer" onClick={() => onNavigate('scan')}>
+          <div className="flex items-center justify-between px-4 pt-3.5 pb-1">
             <div className="flex items-center gap-2">
-              <Terminal className="w-3.5 h-3.5 text-[#888888]" />
-              <span className="text-[10px] font-medium text-[#555555] tracking-[0.1em] uppercase">ReconPro CLI</span>
+              <Terminal className="w-3.5 h-3.5 text-neutral-600" />
+              <span className="text-[10px] font-medium text-neutral-600 tracking-[0.1em] uppercase">ReconPro CLI</span>
             </div>
-            <button onClick={(e) => { e.stopPropagation(); onNavigate('scan'); }} className="text-[10px] text-[#888888] hover:text-white transition-colors flex items-center gap-1">
+            <span className="text-[10px] text-neutral-700 hover:text-white transition-colors flex items-center gap-1">
               Launch Scan <ArrowUpRight className="w-3 h-3" />
-            </button>
+            </span>
           </div>
-          <div className="px-3 pb-3 h-full">
+          <div className="px-3 pb-3 h-[220px]">
             <CLIPreview className="h-full" />
           </div>
         </motion.div>
 
-        {/* Recent Scans — wide tile (2x1) */}
-        <motion.div variants={fadeUp} className="col-span-2 bento-tile p-4 overflow-hidden">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-[10px] font-medium text-[#555555] tracking-[0.1em] uppercase">Recent Scans</span>
-            <button onClick={() => onNavigate('history')} className="text-[10px] text-[#666666] hover:text-white transition-colors flex items-center gap-1">
-              View all <ArrowUpRight className="w-3 h-3" />
-            </button>
-          </div>
-          <div className="space-y-1 max-h-[120px] overflow-y-auto scrollbar-none">
-            {recentScans.length === 0 ? (
-              <div className="text-[12px] text-[#444444] py-4 text-center">No scans yet</div>
-            ) : (
-              recentScans.slice(0, 4).map((scan, i) => (
-                <motion.div
-                  key={scan.id}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: 0.1 + i * 0.03 }}
-                  className="flex items-center justify-between px-3 py-2 rounded-lg bg-white/[0.015] hover:bg-white/[0.03] transition-colors cursor-pointer group"
-                  onClick={() => onNavigate('surface')}
-                >
-                  <span className="text-[12px] font-mono text-[#666666] group-hover:text-[#999999] transition-colors">{scan.target.domain}</span>
-                  <span
-                    className="text-[12px] font-mono font-semibold"
-                    style={{ color: scan.riskScore > 70 ? '#ff3355' : scan.riskScore > 40 ? '#ffaa00' : '#00ff88' }}
-                  >
-                    {scan.riskScore}
-                  </span>
-                </motion.div>
-              ))
-            )}
-          </div>
-        </motion.div>
-
-        {/* Quick Actions */}
-        <motion.div variants={fadeUp} className="col-span-1 bento-tile p-4 flex flex-col gap-1.5 justify-center">
-          <span className="text-[10px] font-medium text-[#555555] tracking-[0.1em] uppercase mb-1">Quick</span>
-          {[
-            { label: 'New Scan', icon: Zap, color: '#ffffff', view: 'scan' },
-            { label: 'Compliance', icon: Shield, color: '#44aaff', view: 'compliance' },
-            { label: 'Threats', icon: ShieldAlert, color: '#ff3355', view: 'threats' },
-          ].map((action) => {
-            const ActionIcon = action.icon;
-            return (
-              <button
-                key={action.view}
-                onClick={() => onNavigate(action.view)}
-                className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-[11px] text-[#555555] hover:bg-white/[0.03] hover:text-[#bbbbbb] transition-all duration-200 group"
-              >
-                <ActionIcon className="w-3.5 h-3.5" style={{ color: action.color }} />
-                {action.label}
-              </button>
-            );
-          })}
-        </motion.div>
-
-        {/* Activity Feed */}
-        <motion.div variants={fadeUp} className="col-span-2 bento-tile p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Activity className="w-3.5 h-3.5 text-[#888888]" />
-            <span className="text-[10px] font-medium text-[#555555] tracking-[0.1em] uppercase">Activity</span>
-          </div>
-          <div className="space-y-0">
-            {(() => {
-              const activityItems = recentScans.slice(0, 5).map(scan => ({
-                id: scan.id,
-                type: 'scan' as const,
-                message: `Scan completed for ${scan.domain} — risk score ${scan.riskScore}/100`,
-                severity: scan.riskScore > 70 ? 'critical' as const : scan.riskScore > 40 ? 'high' as const : 'low' as const,
-                timestamp: scan.startedAt || new Date().toISOString(),
-              }));
-              if (activityItems.length === 0) {
-                return <div className="text-[12px] text-[#444444] py-4 text-center">No recent activity</div>;
-              }
-              const severityColors: Record<string, string> = { critical: '#ff3355', high: '#ffaa00', low: '#00ff88' };
-              return activityItems.map(item => (
-                <ActivityItem
-                  key={item.id}
-                  text={item.message}
-                  time={timeAgo(item.timestamp)}
-                  dotColor={severityColors[item.severity] ?? '#444444'}
-                />
-              ));
-            })()}
-          </div>
-        </motion.div>
-
-        {/* System Status */}
-        <motion.div variants={fadeUp} className="col-span-1 bento-tile p-4 flex flex-col justify-between">
-          <Globe className="w-4 h-4 text-[#00ff88] opacity-30" />
-          <div>
-            <div className="flex items-center gap-1.5 mb-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-pulse" />
-              <span className="text-[12px] text-[#00ff88] font-medium">Online</span>
+        {/* Severity + Activity */}
+        <motion.div variants={fadeUp} className="flex flex-col gap-3">
+          <div className="panel p-4 flex-1 flex items-center justify-center">
+            <div className="w-full max-w-[110px]">
+              <SeverityDonut data={[
+                { name: 'Critical', value: stats?.criticalFindings ?? 0, color: '#ef4444' },
+                { name: 'High', value: stats?.highFindings ?? 0, color: '#f97316' },
+                { name: 'Medium', value: stats?.mediumFindings ?? 0, color: '#eab308' },
+                { name: 'Low', value: stats?.lowFindings ?? 0, color: '#22c55e' },
+                { name: 'Info', value: stats?.infoFindings ?? 0, color: '#525252' },
+              ]} />
             </div>
-            <div className="text-[10px] text-[#444444]">All systems nominal</div>
+          </div>
+          <div className="panel p-4 flex-1">
+            <div className="flex items-center gap-2 mb-2">
+              <Activity className="w-3.5 h-3.5 text-neutral-600" />
+              <span className="text-[10px] font-medium text-neutral-600 tracking-[0.1em] uppercase">Activity</span>
+            </div>
+            <div className="space-y-0 max-h-[140px] overflow-y-auto scrollbar-none">
+              {recentScans.slice(0, 4).map((scan) => {
+                const severityColors: Record<string, string> = { critical: '#ef4444', high: '#eab308', low: '#22c55e' };
+                return (
+                  <ActivityItem
+                    key={scan.id}
+                    text={`Scan completed for ${scan.target.domain} — risk ${scan.riskScore}/100`}
+                    time={timeAgo(scan.startedAt)}
+                    dotColor={severityColors[scan.riskScore > 70 ? 'critical' : scan.riskScore > 40 ? 'high' : 'low'] ?? '#525252'}
+                  />
+                );
+              })}
+            </div>
           </div>
         </motion.div>
-
       </div>
+
+      {/* Recent Scans Table */}
+      <motion.div variants={fadeUp} className="panel p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Clock className="w-3.5 h-3.5 text-neutral-600" />
+            <span className="text-[10px] font-medium text-neutral-600 tracking-[0.1em] uppercase">Recent Scans</span>
+          </div>
+          <button onClick={() => onNavigate('history')} className="text-[11px] text-neutral-700 hover:text-white transition-colors flex items-center gap-1">
+            View all <ChevronRight className="w-3 h-3" />
+          </button>
+        </div>
+        {recentScans.length === 0 ? (
+          <div className="text-[12px] text-neutral-700 py-8 text-center">No scans recorded</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-white/[0.05]">
+                  <th className="text-[10px] font-medium text-neutral-600 uppercase tracking-[0.1em] pb-3 pr-4">Domain</th>
+                  <th className="text-[10px] font-medium text-neutral-600 uppercase tracking-[0.1em] pb-3 pr-4">Risk</th>
+                  <th className="text-[10px] font-medium text-neutral-600 uppercase tracking-[0.1em] pb-3 pr-4">Findings</th>
+                  <th className="text-[10px] font-medium text-neutral-600 uppercase tracking-[0.1em] pb-3">Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentScans.slice(0, 5).map((scan) => (
+                  <tr key={scan.id} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors cursor-pointer group" onClick={() => onNavigate('surface')}>
+                    <td className="py-3 pr-4 text-[12px] font-mono text-neutral-500 group-hover:text-neutral-300 transition-colors">{scan.target.domain}</td>
+                    <td className="py-3 pr-4">
+                      <span className="inline-flex items-center gap-1.5 text-[12px] font-mono font-semibold" style={{ color: scan.riskScore > 70 ? '#ef4444' : scan.riskScore > 40 ? '#eab308' : '#22c55e' }}>{scan.riskScore}</span>
+                    </td>
+                    <td className="py-3 pr-4 text-[12px] text-neutral-600">{scan.totalVulns}</td>
+                    <td className="py-3 text-[11px] text-neutral-700 font-mono">{timeAgo(scan.startedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </motion.div>
+
+      {/* Quick Actions */
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+        {[
+          { label: 'New Scan', icon: Zap, color: '#ffffff', view: 'scan' },
+          { label: 'Compliance', icon: Shield, color: '#a3a3a3', view: 'compliance' },
+          { label: 'Threat Intel', icon: ShieldAlert, color: '#ef4444', view: 'threats' },
+          { label: 'Monitoring', icon: Activity, color: '#22c55e', view: 'monitoring' },
+        ].map((action) => {
+          const ActionIcon = action.icon;
+          return (
+            <motion.button key={action.view} variants={fadeUp}
+              onClick={() => onNavigate(action.view)}
+              className="panel px-4 py-3.5 flex items-center gap-3 text-left group hover:border-white/[0.1] transition-all"
+            >
+              <ActionIcon className="w-4 h-4 flex-shrink-0" style={{ color: action.color }} />
+              <span className="text-[12px] font-medium text-neutral-500 group-hover:text-neutral-300 transition-colors">{action.label}</span>
+              <ArrowUpRight className="w-3 h-3 ml-auto opacity-0 group-hover:opacity-50 transition-opacity text-neutral-600" />
+            </motion.button>
+          );
+        })}
+      </div>
+
+      {/* System Status */
+      <motion.div variants={fadeUp} className="mt-3 flex items-center justify-between panel px-4 py-3">
+        <div className="flex items-center gap-2">
+          <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-[11px] text-emerald-500 font-medium">All systems operational</span>
+        </div>
+        <div className="flex items-center gap-4 text-[10px] text-neutral-700 font-mono">
+          <span className="flex items-center gap-1.5"><Globe className="w-3 h-3" /> Scanning Engine Online</span>
+          <span className="flex items-center gap-1.5"><Shield className="w-3 h-3" /> Threat Intel Active</span>
+        </div>
+      </motion.div>
     </motion.div>
   );
 }

@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { digShort, digAnswer, resolveIP as nativeResolveIP, reverseDNS, analyzeSSLNative } from '@/lib/native-dns';
 import { safeFetch } from '@/lib/safe-fetch';
 import { withProtection, safeError } from '@/lib/api-protection';
-import { isPrivateIP, applySecurityHeaders } from '@/lib/api-security';
+import { isPrivateIP, applySecurityHeaders, sanitizeDomain } from '@/lib/api-security';
 import { enumerateWHOIS } from '@/lib/recon/whois-recon';
 import { discoverSubdomains } from '@/lib/recon/subdomain-recon';
 import { enumerateDirectories } from '@/lib/recon/directory-recon';
@@ -1096,28 +1096,30 @@ async function harvestEmails(domain: string, pageContent: string): Promise<Findi
 // MAIN SCAN ENDPOINT
 // ═══════════════════════════════════════════════════════════════════════
 export async function POST(request: NextRequest) {
-  // First pass: validate domain via protection layer (consumes body)
-  const { error: protErr, domain: protDomain } = await withProtection(request, { requireAuth: true, validateDomainFromBody: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
+  // Auth + rate-limit check (does NOT consume body)
+  const { error: protErr } = await withProtection(request, { requireAuth: true, rateLimit: { maxRequests: 3, windowMs: 60000 } });
   if (protErr) return protErr;
 
   try {
-    // Re-parse body (protection already consumed the original)
-    // We know the domain is valid from protDomain; extract scanType from a second clone
-    const body = await request.clone().json().catch(() => ({}));
-    const { scanType } = body as { scanType?: string };
+    const body = await request.json();
+    const { domain: rawDomain, scanType } = body as { domain?: string; scanType?: string };
 
-    // Validate scanType
+    // Validate domain
+    const domain = typeof rawDomain === 'string' ? sanitizeDomain(rawDomain) : null;
+    if (!domain) {
+      return NextResponse.json({ error: 'Invalid domain format. Must be a public FQDN.' }, { status: 400 });
+    }
     const VALID_SCAN_TYPES = ['quick', 'full'];
     const normalizedScanType = typeof scanType === 'string' ? scanType.toLowerCase().trim() : 'full';
     if (!VALID_SCAN_TYPES.includes(normalizedScanType)) {
       return NextResponse.json({ error: 'Invalid scanType. Must be "quick" or "full".' }, { status: 400 });
     }
 
-    if (!protDomain) {
+    if (!domain) {
       return NextResponse.json({ error: 'Domain is required' }, { status: 400 });
     }
 
-    const cleanDomain = protDomain;
+    const cleanDomain = domain;
 
     // Pre-check: domain must resolve
     const preCheckIp = await nativeResolveIP(cleanDomain);

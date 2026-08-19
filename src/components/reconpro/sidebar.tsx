@@ -22,11 +22,8 @@ import {
   ChevronRight,
   type LucideIcon,
 } from 'lucide-react';
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from '@/components/ui/tooltip';
+import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
+import { useCurrentUser, clearUserCache } from '@/hooks/use-current-user';
 
 interface NavItem {
   id: string;
@@ -83,8 +80,8 @@ const NAV_SECTIONS: NavSection[] = [
 ];
 
 const sidebarVariants = {
-  expanded: { width: 256 },
-  collapsed: { width: 64 },
+  expanded: { width: 240 },
+  collapsed: { width: 56 },
 };
 
 function NavItemButton({ item, active, collapsed, onClick }: {
@@ -94,106 +91,86 @@ function NavItemButton({ item, active, collapsed, onClick }: {
   onClick: () => void;
 }) {
   const Icon = item.icon;
-
-  const buttonContent = (
-    <motion.button
-      onClick={onClick}
-      className={
-        'group relative flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/10 ' +
-        (active
-          ? 'bg-white text-black shadow-[0_1px_3px_rgba(0,0,0,0.4)]'
-          : 'text-neutral-400 hover:bg-white/[0.06] hover:text-neutral-200')
-      }
-      whileTap={{ scale: 0.98 }}
-    >
-      <Icon
-        className={
-          'h-4 w-4 flex-shrink-0 transition-colors ' +
-          (active ? 'text-black' : 'text-neutral-500 group-hover:text-neutral-300')
-        }
-        strokeWidth={active ? 2.2 : 1.8}
-      />
-
-      <AnimatePresence initial={false}>
-        {!collapsed && (
-          <motion.span
-            key="label"
-            initial={{ opacity: 0, x: -6 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -6 }}
-            transition={{ duration: 0.15, ease: 'easeOut' }}
-            className="flex-1 truncate text-left"
-          >
-            {item.label}
-          </motion.span>
-        )}
-      </AnimatePresence>
-
-      {!collapsed && item.beta && (
-        <span className="rounded-md bg-[#00ff88]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[#00ff88]/80">
-          Beta
-        </span>
-      )}
-
-      {!collapsed && item.badge && (
-        <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-400">
-          {item.badge}
-        </span>
-      )}
-    </motion.button>
-  );
-
-  if (collapsed) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>{buttonContent}</TooltipTrigger>
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <motion.button
+          onClick={onClick}
+          className={
+            'group relative flex w-full items-center gap-3 rounded-lg px-3 py-2 text-[13px] font-medium transition-all duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/10 ' +
+            (active
+              ? 'bg-white text-black shadow-[0_1px_4px_rgba(255,255,255,0.25)]'
+              : 'text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300')
+          }
+          whileTap={{ scale: 0.97 }}
+        >
+          <Icon
+            className={
+              'h-[18px] w-[18px] flex-shrink-0 transition-colors ' +
+              (active ? 'text-black' : 'text-neutral-600 group-hover:text-neutral-400')
+            }
+            strokeWidth={active ? 2.2 : 1.7}
+          />
+          <AnimatePresence initial={false} mode="wait">
+            {!collapsed && (
+              <motion.span
+                key="label"
+                initial={{ opacity: 0, x: -4 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -4 }}
+                transition={{ duration: 0.12, ease: 'easeOut' }}
+                className="flex-1 truncate text-left"
+              >
+                {item.label}
+                {item.beta && (
+                  <span className="ml-2 rounded-md bg-neutral-200 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-black">
+                    Beta
+                  </span>
+                )}
+              </motion.span>
+            )}
+          </AnimatePresence>
+        </motion.button>
+      </TooltipTrigger>
+      {collapsed && (
         <TooltipContent
           side="right"
-          sideOffset={10}
+          sideOffset={12}
           className="border-neutral-800 bg-neutral-900 text-neutral-200 text-xs font-medium shadow-xl"
         >
           {item.label}
         </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  return buttonContent;
+      )}
+    </Tooltip>
+  );
 }
 
 function SectionHeader({ title, collapsed }: { title: string; collapsed: boolean }) {
   if (collapsed) return null;
   return (
-    <div className="flex items-center gap-2 px-2.5 pt-5 pb-1.5">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-neutral-600">
+    <div className="flex items-center gap-2 px-3 pt-6 pb-2">
+      <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-neutral-700 select-none">
         {title}
       </span>
-      <div className="h-px flex-1 bg-neutral-800/60" />
+      <div className="h-px flex-1 bg-white/[0.04]" />
     </div>
   );
 }
 
 function LogoSection({ collapsed }: { collapsed: boolean }) {
   return (
-    <div
-      className={
-        'flex items-center gap-2.5 px-3 pt-4 pb-3 ' +
-        (collapsed ? 'justify-center px-0' : '')
-      }
-    >
-      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white shadow-[0_1px_4px_rgba(255,255,255,0.2)]">
+    <div className={"flex items-center gap-2.5 px-3 pt-5 pb-4 " + (collapsed ? 'justify-center px-0' : '')}>
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white shadow-[0_1px_6px_rgba(255,255,255,0.25)]">
         <Shield className="h-4 w-4 text-black" strokeWidth={2.5} />
       </div>
-
       {!collapsed && (
         <div className="flex items-baseline gap-1 overflow-hidden">
-          <span className="text-[14px] font-bold tracking-tight text-white">
+          <span className="text-[14px] font-bold tracking-tight text-white" style={{ fontFamily: 'var(--font-heading)' }}>
             Recon
           </span>
-          <span className="text-[14px] font-bold tracking-tight text-neutral-500">
+          <span className="text-[14px] font-bold tracking-tight text-neutral-600" style={{ fontFamily: 'var(--font-heading)' }}>
             Pro
           </span>
-          <ChevronRight className="ml-1 h-3 w-3 text-neutral-700" />
         </div>
       )}
     </div>
@@ -201,27 +178,26 @@ function LogoSection({ collapsed }: { collapsed: boolean }) {
 }
 
 function UserSection({ collapsed }: { collapsed: boolean }) {
-  return (
-    <div
-      className={
-        'flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors duration-150 hover:bg-white/[0.04] ' +
-        (collapsed ? 'justify-center px-0' : '')
-      }
-    >
-      <div className="relative flex-shrink-0">
-        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-neutral-800 text-[10px] font-semibold text-neutral-300 ring-1 ring-neutral-700">
-          RP
-        </div>
-        <div className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-[1.5px] border-[#09090b] bg-emerald-400" />
-      </div>
+  const user = useCurrentUser();
+  const displayName = user.name || user.email?.split('@')[0] || 'User';
+  const displayRole = user.role ? user.role.charAt(0).toUpperCase() + user.role.slice(1) : 'Member';
+  const initials = user.initials || displayName.slice(0, 2).toUpperCase();
 
+  return (
+    <div className={"flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 hover:bg-white/[0.03] " + (collapsed ? 'justify-center px-0' : '')}>
+      <div className="relative flex-shrink-0">
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-neutral-800 text-[11px] font-semibold text-neutral-300 ring-1 ring-white/[0.06]" style={{ fontFamily: 'var(--font-heading)' }}>
+          {initials}
+        </div>
+        <div className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-[1.5px] border-[#0a0a0a] bg-emerald-500" />
+      </div>
       {!collapsed && (
         <div className="flex flex-col overflow-hidden">
-          <span className="truncate text-[12px] font-medium text-neutral-300">
-            Signed In
+          <span className="truncate text-[13px] font-medium text-neutral-200 leading-tight">
+            {displayName}
           </span>
-          <span className="truncate text-[10px] text-neutral-600">
-            Dashboard Active
+          <span className="truncate text-[11px] text-neutral-600 leading-tight">
+            {displayRole}
           </span>
         </div>
       )}
@@ -233,8 +209,8 @@ function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   return (
     <motion.button
       onClick={onToggle}
-      className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-neutral-600 transition-colors duration-150 hover:bg-white/[0.06] hover:text-neutral-400 focus-visible:outline-none"
-      whileTap={{ scale: 0.92 }}
+      className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-neutral-700 transition-colors duration-150 hover:bg-white/[0.05] hover:text-neutral-400 focus-visible:outline-none"
+      whileTap={{ scale: 0.9 }}
       aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
     >
       {collapsed ? (
@@ -249,13 +225,12 @@ function CollapseToggle({ collapsed, onToggle }: { collapsed: boolean; onToggle:
 function SignOutButton() {
   return (
     <button
-      onClick={() => {
-        localStorage.removeItem('reconpro_api_key');
-        localStorage.removeItem('reconpro_auth');
-        document.cookie = 'reconpro_session=; path=/; max-age=0';
+      onClick={async () => {
+        try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
+        clearUserCache();
         window.location.href = '/login';
       }}
-      className="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-neutral-600 transition-colors duration-150 hover:bg-white/[0.04] hover:text-neutral-400"
+      className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[11px] text-neutral-600 transition-colors duration-150 hover:bg-white/[0.05] hover:text-neutral-400"
     >
       <LogOut className="h-3 w-3" />
       <span>Sign out</span>
@@ -270,13 +245,13 @@ export function EnterpriseSidebar({ activeView, onViewChange, collapsed, onToggl
       animate={collapsed ? 'collapsed' : 'expanded'}
       variants={sidebarVariants}
       transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-      className="relative flex h-screen flex-col overflow-hidden border-r border-neutral-800/50"
-      style={{ background: '#09090b' }}
+      className="relative flex h-screen flex-col overflow-hidden border-r border-white/[0.06]"
+      style={{ background: '#0a0a0a' }}
     >
       <LogoSection collapsed={collapsed} />
 
       <div className="mx-3">
-        <div className="h-px bg-neutral-800/40" />
+        <div className="h-px bg-white/[0.04]" />
       </div>
 
       <nav className="flex-1 overflow-y-auto overflow-x-hidden px-2 pt-1 pb-4 scrollbar-none">
@@ -298,7 +273,7 @@ export function EnterpriseSidebar({ activeView, onViewChange, collapsed, onToggl
         ))}
       </nav>
 
-      <div className="flex flex-col gap-2 border-t border-neutral-800/50 px-2.5 py-3">
+      <div className="flex flex-col gap-2 border-t border-white/[0.06] px-2.5 py-3">
         <UserSection collapsed={collapsed} />
         <div className={"flex items-center " + (collapsed ? 'justify-center' : 'justify-between')}>
           {!collapsed && <SignOutButton />}
