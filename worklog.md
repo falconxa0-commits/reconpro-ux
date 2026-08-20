@@ -103,3 +103,25 @@ Stage Summary:
 - Zero GitHub-Dark tokens remain in active code
 - Build: 0 errors, 0 warnings
 - E2E testing limited by environment OOM (standalone server killed at ~1.2GB RSS)
+
+---
+Task ID: 4
+Agent: Super Z (Main)
+Task: Deploy ReconPro to Vercel & GitHub for live preview
+
+Work Log:
+- Installed Vercel CLI v59.1.4
+- Created private GitHub repo: github.com/falconxa0-commits/reconpro-ux
+- Pushed full codebase to GitHub (main branch)
+- Created Vercel project: prj_0xawfMihYUt8oNzLpyV8jlsNEC2N (team_bXtSZsevpddWYLYL1syv5uXb)
+- Created .vercelignore to exclude 400MB+ of non-essential files (venvs, tool-results, downloads, etc.)
+- Built locally: 0 errors, 84 pages generated successfully
+- Deployed to Vercel production via CLI
+- Vercel build completed in ~2m on iad1 (2 cores, 8GB) — 0 build errors
+- All 84 static pages + 51 dynamic API routes deployed
+
+Stage Summary:
+- Production URL: https://reconpro-ux.vercel.app
+- GitHub repo: https://github.com/falconxa0-commits/reconpro-ux
+- Note: SQLite DB is non-persistent on Vercel serverless; visual preview of landing/login/pages works; dashboard requires session auth
+- Tokens used from user input (recommend rotation after session)
