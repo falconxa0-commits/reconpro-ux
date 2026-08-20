@@ -9,24 +9,21 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { KeyRound, Loader2, Mail, Lock, Shield } from "lucide-react";
 
-// Check if user is already authenticated (redirect to dashboard)
-function useAlreadyAuth() {
+// Redirect to dashboard if user already has a valid session
+function useRedirectIfAuth() {
   const router = useRouter();
-  const [checked, setChecked] = useState(false);
   useEffect(() => {
     fetch('/api/dashboard', { credentials: 'include' }).then(r => {
       if (r.ok) { router.replace('/overview'); }
-      setChecked(true);
-    }).catch(() => setChecked(true));
+    }).catch(() => {});
   }, [router]);
-  return checked;
 }
 
 type LoginTab = "password" | "apikey";
 
 export default function LoginPage() {
   const router = useRouter();
-  const alreadyAuth = useAlreadyAuth();
+  useRedirectIfAuth();
   const [tab, setTab] = useState<LoginTab>("password");
 
   // ── Password login state ──────────────────────────────────────────
@@ -115,14 +112,6 @@ export default function LoginPage() {
       setAkLoading(false);
     }
   };
-
-  if (alreadyAuth) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="w-5 h-5 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
-      </div>
-    );
-  }
 
   return (
     <div className="w-full max-w-sm">
