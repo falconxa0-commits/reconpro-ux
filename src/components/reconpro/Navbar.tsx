@@ -6,18 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { navItems } from "@/data/content";
 import { useActiveSection, useSmoothScroll } from "@/hooks/useInView";
 
-// Platform-adaptive keyboard shortcut label
-const useShortcutLabel = () => {
-  const [label, setLabel] = useState("Ctrl+K");
-  useEffect(() => {
-    const isMac = navigator.platform?.toUpperCase().includes("MAC") ?? false;
-    setLabel(isMac ? "\u2318K" : "Ctrl+K");  
-  }, []);
-  return label;
-};
-
 export function Navbar() {
-  const shortcutLabel = useShortcutLabel();
   const router = useRouter();
   const pathname = usePathname();
   const [scrolled, setScrolled] = useState(false);
@@ -83,8 +72,8 @@ export function Navbar() {
           <div className="flex items-center justify-between h-16">
             {/* Logo */}
             <button
-              onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-              aria-label="ReconPro — scroll to top"
+              onClick={() => router.push("/")}
+              aria-label="ReconPro — go to home"
               className="flex items-center gap-3 group"
             >
               <div className="w-8 h-8 rounded-lg bg-white/[0.06] border border-white/[0.08] flex items-center justify-center group-hover:bg-white/[0.1] transition-all duration-300">
@@ -134,7 +123,7 @@ export function Navbar() {
                   <path d="m21 21-4.3-4.3" />
                 </svg>
                 <kbd className="hidden sm:inline-flex text-[9px] font-mono text-white/40 bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/[0.04]" aria-hidden="true">
-                  {shortcutLabel}
+                  Ctrl+K
                 </kbd>
               </button>
 
@@ -186,6 +175,7 @@ export function Navbar() {
         </div>
 
         {/* Search Overlay */}
+        {/* TODO: Wire up search when backend search API is available */}
         <AnimatePresence>
         {searchOpen && (
           <motion.div

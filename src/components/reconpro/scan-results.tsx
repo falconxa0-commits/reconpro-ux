@@ -1,7 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, Server, Shield, AlertTriangle, Lock, Wifi, FileText, Bug, ChevronRight, Search } from 'lucide-react';
+import { Globe, Server, Shield, AlertTriangle, Lock, Wifi, FileText, Bug, ChevronRight, Search, X, ShieldCheck } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { RiskGauge } from './risk-gauge';
 
@@ -87,6 +88,8 @@ const item = {
 };
 
 export function ScanResults({ result }: ScanResultsProps) {
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -132,7 +135,7 @@ export function ScanResults({ result }: ScanResultsProps) {
       </div>
 
       {/* Risk Assessment Banner */}
-      {result.riskScore > 70 && (
+      {!bannerDismissed && result.riskScore > 70 && (
         <motion.div
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
@@ -140,15 +143,18 @@ export function ScanResults({ result }: ScanResultsProps) {
           className="flex items-center gap-3 p-3.5 rounded-xl bg-[#ff3355]/[0.06] border border-[#ff3355]/15"
         >
           <AlertTriangle className="w-5 h-5 text-[#ff3355] flex-shrink-0" />
-          <div>
+          <div className="flex-1">
             <div className="text-sm font-semibold text-[#ff3355]">Critical Risk Level Detected</div>
             <div className="text-xs text-[#ff3355]/70 mt-0.5">
               This target has a high risk score ({result.riskScore}/100) with {result.critical} critical and {result.high} high severity findings. Immediate remediation is recommended.
             </div>
           </div>
+          <button onClick={() => setBannerDismissed(true)} className="p-1 rounded-md hover:bg-[#ff3355]/10 transition-colors flex-shrink-0" aria-label="Dismiss">
+            <X className="w-4 h-4 text-[#ff3355]/60" />
+          </button>
         </motion.div>
       )}
-      {result.riskScore > 40 && result.riskScore <= 70 && (
+      {!bannerDismissed && result.riskScore > 40 && result.riskScore <= 70 && (
         <motion.div
           initial={{ opacity: 0, x: -20 }}
           animate={{ opacity: 1, x: 0 }}
@@ -156,12 +162,34 @@ export function ScanResults({ result }: ScanResultsProps) {
           className="flex items-center gap-3 p-3.5 rounded-xl bg-[#ff8844]/[0.06] border border-[#ff8844]/15"
         >
           <Shield className="w-5 h-5 text-[#ff8844] flex-shrink-0" />
-          <div>
+          <div className="flex-1">
             <div className="text-sm font-semibold text-[#ff8844]">Moderate Risk Level</div>
             <div className="text-xs text-[#ff8844]/70 mt-0.5">
               Several security findings require attention. Review the findings below and prioritize remediation.
             </div>
           </div>
+          <button onClick={() => setBannerDismissed(true)} className="p-1 rounded-md hover:bg-[#ff8844]/10 transition-colors flex-shrink-0" aria-label="Dismiss">
+            <X className="w-4 h-4 text-[#ff8844]/60" />
+          </button>
+        </motion.div>
+      )}
+      {!bannerDismissed && result.riskScore <= 40 && (
+        <motion.div
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.3 }}
+          className="flex items-center gap-3 p-3.5 rounded-xl bg-[#00ff88]/[0.04] border border-[#00ff88]/20"
+        >
+          <ShieldCheck className="w-5 h-5 text-[#00ff88]/80 flex-shrink-0" />
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-[#00ff88]/80">Low Risk</div>
+            <div className="text-xs text-[#00ff88]/60 mt-0.5">
+              Low Risk — No critical threats detected.
+            </div>
+          </div>
+          <button onClick={() => setBannerDismissed(true)} className="p-1 rounded-md hover:bg-[#00ff88]/10 transition-colors flex-shrink-0" aria-label="Dismiss">
+            <X className="w-4 h-4 text-[#00ff88]/60" />
+          </button>
         </motion.div>
       )}
 
@@ -181,15 +209,15 @@ export function ScanResults({ result }: ScanResultsProps) {
               <motion.div
                 key={finding.id}
                 variants={item}
-                className="group p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04] hover:border-white/[0.08] hover:bg-white/[0.02] transition-all cursor-pointer"
+                className="p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04] hover:border-white/[0.08] hover:bg-white/[0.02] transition-all"
               >
                 <div className="flex items-start gap-3">
-                  <div className="mt-0.5 p-2 rounded-lg bg-[rgba(255,255,255,0.04)] text-muted-foreground group-hover:text-[#00ff88] transition-colors">
+                  <div className="mt-0.5 p-2 rounded-lg bg-[rgba(255,255,255,0.04)] text-muted-foreground">
                     {categoryIcons[finding.category] || <Bug className="w-4 h-4" />}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <span className="text-sm font-medium text-[#f0f0f0] group-hover:text-[#00ff88] transition-colors">
+                      <span className="text-sm font-medium text-[#f0f0f0]">
                         {finding.title}
                       </span>
                       <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[finding.severity]}`}>
@@ -206,7 +234,7 @@ export function ScanResults({ result }: ScanResultsProps) {
                       </div>
                     )}
                   </div>
-                  <ChevronRight className="w-4 h-4 text-muted-foreground/30 group-hover:text-[#00ff88] transition-colors mt-1 flex-shrink-0" />
+                  <ChevronRight className="w-4 h-4 text-muted-foreground/30 mt-1 flex-shrink-0" />
                 </div>
               </motion.div>
             ))}

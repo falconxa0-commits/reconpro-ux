@@ -104,8 +104,6 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [hoveredItem, setHoveredItem] = useState<string | null>(null);
 
-  const isPrimaryView = PRIMARY_DOCK.some(d => d.id === activeView);
-
   return (
     <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center">
       {/* Expanded secondary menu */}
@@ -137,7 +135,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
       </AnimatePresence>
 
       {/* Dock bar */}
-      <div className="dock-container flex items-center gap-1">
+      <div className="dock-container flex items-center gap-1" role='navigation' aria-label='Quick navigation'>
         {/* Primary items */}
         {PRIMARY_DOCK.map((item) => {
           const Icon = item.icon;
@@ -154,6 +152,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
               transition={{ type: 'spring' as const, stiffness: 450, damping: 25 }}
               className={`dock-item ${isActive ? 'active' : ''}`}
               style={isActive ? { background: `${color}12`, color } : undefined}
+              aria-label={item.label}
             >
               <Icon className="w-[18px] h-[18px]" strokeWidth={isActive ? 2 : 1.5} />
             </motion.button>
@@ -171,7 +170,8 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
           whileHover={{ y: -4, scale: 1.12 }}
           whileTap={{ scale: 0.9 }}
           transition={{ type: 'spring' as const, stiffness: 450, damping: 25 }}
-          className={`dock-item ${menuOpen || (!isPrimaryView && !SECONDARY_DOCK.some(d => d.id === activeView)) ? 'active' : ''}`}
+          className={`dock-item ${menuOpen ? 'active' : ''}`}
+          aria-label='More'
         >
           <div className="flex flex-col gap-[2.5px]">
             <div className="w-[12px] h-[1.5px] rounded-full bg-current" />
@@ -192,6 +192,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
               background: 'rgba(255,255,255,0.85)',
               boxShadow: '0 0 20px rgba(255,255,255,0.04)',
             }}
+            aria-label='Scan'
           >
             <Zap className="w-[18px] h-[18px] text-black" strokeWidth={2} />
           </motion.button>

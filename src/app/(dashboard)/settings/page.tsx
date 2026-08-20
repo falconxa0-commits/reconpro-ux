@@ -77,7 +77,7 @@ export default function SettingsPage() {
 
   const loadProfile = useCallback(() => {
     fetch("/api/members", { headers: authHeaders })
-      .then((r) => r.json())
+      .then(r => { if (!r.ok) throw new Error('Failed to load profile'); return r.json(); })
       .then((data) => {
         const members = data.members || [];
         if (members.length > 0) {
@@ -96,6 +96,7 @@ export default function SettingsPage() {
     setSaving(true); setSaved(false); setError("");
     try {
       const { role: _role, ...safeProfile } = profile;
+      // TODO: use /api/members/${user.id} once user.id is available from auth context
       const res = await fetch("/api/members", {
         method: "PATCH",
         headers: { "Content-Type": "application/json", ...authHeaders },

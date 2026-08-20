@@ -59,8 +59,10 @@ export function CommandPalette() {
         scrollTo(item.section);
       } else if (item.type === "action" && item.action === "about") {
         window.open("/about", "_self");
+      } else if (item.type === "action" && item.action === "install") {
+        window.open("/docs", "_self");
       } else if (item.type === "action" && item.action === "copy") {
-        navigator.clipboard.writeText(window.location.origin + "/docs");
+        navigator.clipboard.writeText("pip install reconpro");
       }
       handleOpen(false);
     },

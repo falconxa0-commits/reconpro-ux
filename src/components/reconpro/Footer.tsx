@@ -46,7 +46,7 @@ export function Footer() {
         { label: "Privacy Policy", href: "/privacy" },
         { label: "Terms of Service", href: "/terms" },
         { label: "Cookie Policy", href: "/cookies" },
-        { label: "License (MIT)", href: "/about" },
+        { label: "License (MIT)", href: "https://opensource.org/licenses/MIT", external: true },
       ],
     },
   ];
@@ -64,12 +64,12 @@ export function Footer() {
             Real-time results, no external dependencies.
           </p>
           <div className="flex items-center justify-center gap-3">
-            <a
-              href="/login"
+            <Link
+              href="/register"
               className="text-sm text-white bg-white/[0.9] font-medium px-5 py-3 rounded-xl hover:bg-white transition-all duration-300"
             >
-              Sign In
-            </a>
+              Get Started
+            </Link>
           </div>
         </div>
       </div>
@@ -107,10 +107,14 @@ export function Footer() {
               <ul className="space-y-2.5">
                 {col.links.map((link) => (
                   <li key={link.label}>
-                    {link.href.startsWith("/") && !link.href.startsWith("/#") ? (
+                    {link.href.startsWith("/") && !link.href.startsWith("/#") && !(link as any).external ? (
                       <Link href={link.href} className="text-xs text-white/50 hover:text-white/80 transition-colors duration-300" aria-label={`Navigate to ${link.label}`}>
                         {link.label}
                       </Link>
+                    ) : (link as any).external ? (
+                      <a href={link.href} target="_blank" rel="noopener noreferrer" className="text-xs text-white/50 hover:text-white/80 transition-colors duration-300" aria-label={`Open ${link.label} in new tab`}>
+                        {link.label}
+                      </a>
                     ) : (
                       <button
                         onClick={() => {

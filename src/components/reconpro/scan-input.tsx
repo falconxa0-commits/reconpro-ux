@@ -113,7 +113,7 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
 
       {/* Quick suggestion chips */}
       <div className="flex flex-wrap gap-2 mt-4 justify-center">
-        {['github.com', 'google.com', 'stripe.com', 'netflix.com', 'shopify.com'].map((d) => (
+        {['example.com', 'testsite.io', 'sample.org', 'demo.dev', 'yourdomain.com'].map((d) => (
           <button
             key={d}
             type="button"

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { RadarMap } from "@/components/reconpro/radar-map";
-import { AlertCircle, RefreshCw, ShieldCheck, Map } from "lucide-react";
+import { AlertCircle, RefreshCw, ShieldCheck, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
 import { useAuthHeaders } from "@/hooks/use-auth-headers";
@@ -49,7 +49,7 @@ export default function FindingsPage() {
       <div>
         <div className="page-header">
           <div className="page-header-icon text-[#ff3355]">
-            <Map />
+            <ShieldAlert />
           </div>
           <div>
             <h1>Findings</h1>
@@ -71,14 +71,10 @@ export default function FindingsPage() {
     return (
       <div>
         <div className="page-header">
-          <div className="page-header-icon"><Map /></div>
+          <div className="page-header-icon"><ShieldAlert /></div>
           <div><h1>Findings</h1><p>Security findings from your reconnaissance scans.</p></div>
         </div>
-        <div className="grid grid-cols-3 gap-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="skeleton-pulse h-24 rounded-xl" />
-          ))}
-        </div>
+        <div className="skeleton-pulse h-[500px] rounded-xl" />
       </div>
     );
   }
@@ -87,7 +83,7 @@ export default function FindingsPage() {
     return (
       <div>
         <div className="page-header">
-          <div className="page-header-icon"><Map /></div>
+          <div className="page-header-icon"><ShieldAlert /></div>
           <div><h1>Findings</h1><p>Security findings from your reconnaissance scans.</p></div>
         </div>
         <div className="flex flex-col items-center justify-center py-24">
@@ -109,7 +105,7 @@ export default function FindingsPage() {
   return (
     <div>
       <div className="page-header">
-        <div className="page-header-icon text-neutral-500"><Map /></div>
+        <div className="page-header-icon text-neutral-500"><ShieldAlert /></div>
         <div><h1>Findings</h1><p>Security findings from your reconnaissance scans.</p></div>
       </div>
       <RadarMap findings={findings} domain="dashboard" />

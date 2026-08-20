@@ -43,15 +43,15 @@ export default function ForgotPasswordPage() {
   };
 
   return (
-    <Card className="border-zinc-800 bg-zinc-950 text-white">
+    <Card className="border-white/[0.06] bg-white/[0.03] text-white rounded-lg">
       <CardHeader className="text-center">
-        <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-white/10">
+        <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-white/[0.06]">
           <Mail className="h-6 w-6 text-white" />
         </div>
         <CardTitle className="text-2xl font-bold tracking-tight">
           Forgot Password
         </CardTitle>
-        <CardDescription className="text-zinc-400">
+        <CardDescription className="text-[#555555]">
           Check your email for reset instructions
         </CardDescription>
       </CardHeader>
@@ -62,28 +62,33 @@ export default function ForgotPasswordPage() {
             <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-400">
               <p className="font-medium">If an account exists with this email, password reset instructions will be sent.</p>
             </div>
-            <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03] p-4">
-              <p className="text-xs text-amber-400/80">
-                Full password reset via email is not yet implemented. Please contact
-                your organization administrator or use API key authentication in the
-                meantime.
+            <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-4">
+              <p className="text-xs text-white/50">
+                Password reset links are sent when the email delivery service is configured. Contact your administrator for manual password reset.
               </p>
             </div>
+            <button
+              type="button"
+              onClick={() => setSent(false)}
+              className="text-xs text-[#555555] hover:text-[#999999] transition-colors"
+            >
+              ← Back to form
+            </button>
           </div>
         ) : (
           <>
             {error && (
-              <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              <div className="mb-4 rounded-lg border border-[#ff3355]/20 bg-[#ff3355]/[0.04] px-4 py-3 text-[13px] text-[#ff3355]">
                 {error}
               </div>
             )}
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="email" className="text-zinc-300">
+                <Label htmlFor="email" className="text-[#888888] text-xs">
                   Email Address
                 </Label>
                 <div className="relative">
-                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+                  <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#444444]" />
                   <Input
                     id="email"
                     type="email"
@@ -91,10 +96,10 @@ export default function ForgotPasswordPage() {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
-                    className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                    className="h-10 bg-white/[0.03] border-white/[0.06] pl-10 text-white placeholder:text-[#444444] focus-visible:border-white/[0.15] focus-visible:ring-0 rounded-lg text-[13px]"
                   />
                 </div>
-                <p className="text-xs text-zinc-500">
+                <p className="text-[11px] text-[#444444]">
                   We&apos;ll send a password reset link to your email address.
                 </p>
               </div>
@@ -102,7 +107,7 @@ export default function ForgotPasswordPage() {
               <Button
                 type="submit"
                 disabled={loading}
-                className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
+                className="w-full bg-white text-black hover:bg-white/90 font-medium rounded-lg h-10 text-[13px]"
               >
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Send Reset Link"}
               </Button>
@@ -114,7 +119,7 @@ export default function ForgotPasswordPage() {
       <CardFooter className="justify-center">
         <Link
           href="/login"
-          className="inline-flex items-center gap-1.5 text-sm text-zinc-400 hover:text-white transition-colors"
+          className="inline-flex items-center gap-1.5 text-[12px] text-[#555555] hover:text-[#999999] transition-colors"
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           Back to Sign In

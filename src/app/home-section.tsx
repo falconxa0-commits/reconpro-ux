@@ -1,7 +1,6 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { MotionConfig } from "framer-motion";
 // Navbar and Footer are provided by the (marketing)/layout.tsx route group layout.
 import { ScrollProgress } from "@/components/reconpro/ScrollProgress";
 import { BackToTop } from "@/components/reconpro/BackToTop";
@@ -64,7 +63,6 @@ const CommunitySection = dynamic(
 
 export function HomeSection() {
   return (
-    <MotionConfig reducedMotion="user">
     <div className="min-h-screen bg-black">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:rounded-md focus:bg-white/10 focus:px-4 focus:py-2 focus:text-sm focus:text-white focus:outline-none focus:ring-2 focus:ring-white/50">
         Skip to main content
@@ -113,6 +111,5 @@ export function HomeSection() {
         <CommunitySection />
       </div>
     </div>
-    </MotionConfig>
   );
 }

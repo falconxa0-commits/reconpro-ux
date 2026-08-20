@@ -40,6 +40,7 @@ interface BentoDashboardProps {
   stats: DashboardStats | null;
   recentScans: RecentScan[];
   onNavigate: (view: string) => void;
+  systemsHealthy?: boolean;
 }
 
 const stagger = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.05 } } };
@@ -70,8 +71,8 @@ function SeverityDonut({ data }: { data: { name: string; value: number; color: s
           stroke={d.color} strokeWidth="12" strokeDasharray={d.dasharray}
           strokeDashoffset={d.offset} strokeLinecap="round" opacity={0.7} />
       ))}
-      <text x="60" y="55" textAnchor="middle" fill="#f0f0f0" fontSize="20" fontWeight="bold" fontFamily="var(--font-heading)">{total}</text>
-      <text x="60" y="70" textAnchor="middle" fill="#444444" fontSize="7" fontFamily="var(--font-body)" letterSpacing="0.12em">FINDINGS</text>
+      <text x="60" y="55" textAnchor="middle" fill="#f0f0f0" fontSize="20" fontWeight="bold" fontFamily="Space Grotesk, sans-serif">{total}</text>
+      <text x="60" y="70" textAnchor="middle" fill="#444444" fontSize="7" fontFamily="Inter, sans-serif" letterSpacing="0.12em">FINDINGS</text>
     </svg>
   );
 }
@@ -101,9 +102,9 @@ function EmptyDashboard({ onNavigate }: { onNavigate: (view: string) => void }) 
       <p className="text-sm text-neutral-600 max-w-sm text-center leading-relaxed mb-8">
         Run your first reconnaissance scan to populate this command center with security insights, risk scores, and threat intelligence.
       </p>
-      <button onClick={() => onNavigate('scan')} className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-white/90 transition-all">
+      <button onClick={() => onNavigate('scan')} className="flex items-center gap-2 px-6 h-10 bg-white text-black hover:bg-white/90 font-medium rounded-lg text-[13px] transition-all">
         <Zap className="w-4 h-4" />
-        Launch Your First Scan
+        Launch Scan
       </button>
     </motion.div>
   );
@@ -126,7 +127,7 @@ function StatCard({ icon: Icon, label, value, color, subValue, onClick }: {
   );
 }
 
-export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboardProps) {
+export function BentoDashboard({ stats, recentScans, onNavigate, systemsHealthy = true }: BentoDashboardProps) {
   const score = stats?.avgRiskScore ?? 0;
   const scoreColor = score >= 70 ? '#ff3355' : score >= 40 ? '#d29922' : '#00ff88';
   const hasData = stats && stats.totalScans > 0;
@@ -163,7 +164,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
                   strokeDasharray={`${score * 3.14} ${314}`} opacity={0.8} />
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-xl font-bold font-mono text-white" style={{ fontFamily: 'var(--font-heading)' }}>{score}</span>
+                <span className="text-xl font-bold font-mono text-white" style={{ fontFamily: 'Space Grotesk, sans-serif' }}>{score}</span>
                 <span className="text-[8px] text-neutral-600 uppercase tracking-widest">/ 100</span>
               </div>
             </div>
@@ -196,6 +197,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
       {/* Main Content: CLI + Findings + Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
         {/* CLI Showcase */}
+        {recentScans.length > 0 && (
         <motion.div variants={fadeUp} className="lg:col-span-2 panel p-0 overflow-hidden cursor-pointer" onClick={() => onNavigate('scan')}>
           <div className="flex items-center justify-between px-4 pt-3.5 pb-1">
             <div className="flex items-center gap-2">
@@ -210,6 +212,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
             <CLIPreview className="h-full" />
           </div>
         </motion.div>
+        )}
 
         {/* Severity + Activity */}
         <motion.div variants={fadeUp} className="flex flex-col gap-3">
@@ -290,15 +293,16 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
       {/* Quick Actions */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
         {[
-          { label: 'New Scan', icon: Zap, color: '#ffffff', view: 'scan' },
-          { label: 'Compliance', icon: Shield, color: '#a3a3a3', view: 'compliance' },
-          { label: 'Threat Intel', icon: ShieldAlert, color: '#ff3355', view: 'threats' },
-          { label: 'Monitoring', icon: Activity, color: '#00ff88', view: 'monitoring' },
+          { label: 'New Scan', icon: Zap, color: '#ffffff', view: 'scan', ariaLabel: 'Start new scan' },
+          { label: 'Compliance', icon: Shield, color: '#a3a3a3', view: 'compliance', ariaLabel: 'View compliance report' },
+          { label: 'Threat Intel', icon: ShieldAlert, color: '#ff3355', view: 'threats', ariaLabel: 'View threat intelligence' },
+          { label: 'Monitoring', icon: Activity, color: '#00ff88', view: 'monitoring', ariaLabel: 'Open monitoring dashboard' },
         ].map((action) => {
           const ActionIcon = action.icon;
           return (
             <motion.button key={action.view} variants={fadeUp}
               onClick={() => onNavigate(action.view)}
+              aria-label={action.ariaLabel}
               className="panel px-4 py-3.5 flex items-center gap-3 text-left group hover:border-white/[0.1] transition-all"
             >
               <ActionIcon className="w-4 h-4 flex-shrink-0" style={{ color: action.color }} />
@@ -312,8 +316,8 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
       {/* System Status */}
       <motion.div variants={fadeUp} className="mt-3 flex items-center justify-between panel px-4 py-3">
         <div className="flex items-center gap-2">
-          <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-[11px] text-emerald-500 font-medium">All systems operational</span>
+          <div className="w-1.5 h-1.5 rounded-full bg-[#00ff88] animate-pulse" />
+          <span className={`text-[11px] font-medium ${systemsHealthy ? 'text-[#00ff88]' : 'text-[#d29922]'}`}>{systemsHealthy ? 'All systems operational' : 'Degraded performance detected'}</span>
         </div>
         <div className="flex items-center gap-4 text-[10px] text-neutral-700 font-mono">
           <span className="flex items-center gap-1.5"><Globe className="w-3 h-3" /> Scanning Engine Online</span>

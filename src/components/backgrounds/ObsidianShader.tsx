@@ -276,6 +276,7 @@ export const ObsidianShader = React.memo(function ObsidianShader({
   }, [prefersReducedMotion]);
 
   // Initialize
+  // TODO: Handle WebGL context loss for production resilience
   useEffect(() => {
     if (!active || prefersReducedMotion) return;
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 /**
  * Returns the x-api-key header value stored during login.
@@ -9,18 +9,33 @@ import { useMemo } from "react";
  * would cause API key auth to fail and block the session-cookie fallback.
  */
 export function useApiKey(): string | null {
-  return useMemo(() => {
+  const [apiKey, setApiKey] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     try {
       const raw = localStorage.getItem("reconpro_api_key");
-      // Reject truncated stubs — they cause api-protection.ts to attempt
-      // API-key auth (which fails) instead of falling through to session-cookie auth
       if (!raw || raw.endsWith("...")) return null;
       return raw;
     } catch {
       return null;
     }
+  });
+
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "reconpro_api_key") {
+        const raw = e.newValue;
+        if (!raw || raw.endsWith("...")) {
+          setApiKey(null);
+        } else {
+          setApiKey(raw);
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
   }, []);
+
+  return apiKey;
 }
 
 /**

@@ -68,7 +68,7 @@ export default function RegisterPage() {
   // ── Success state: show API key once ─────────────────────────────
   if (successData) {
     return (
-      <Card className="border-zinc-800 bg-zinc-950 text-white">
+      <Card className="border-white/[0.06] bg-white/[0.03] text-white rounded-lg">
         <CardHeader className="text-center">
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-emerald-500/20">
             <CheckCircle2 className="h-6 w-6 text-emerald-400" />
@@ -76,17 +76,17 @@ export default function RegisterPage() {
           <CardTitle className="text-2xl font-bold tracking-tight">
             Account Created
           </CardTitle>
-          <CardDescription className="text-zinc-400">
+          <CardDescription className="text-[#555555]">
             Save your API key — it will not be shown again
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03] p-4">
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-4">
             <div className="flex items-start gap-3">
-              <AlertCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
-              <div className="text-sm text-amber-400/80">
+              <AlertCircle className="h-5 w-5 text-white/50 shrink-0 mt-0.5" />
+              <div className="text-sm text-white/50">
                 <p className="font-medium">Store this API key securely</p>
-                <p className="text-xs text-amber-400/60 mt-1">
+                <p className="text-xs text-white/30 mt-1">
                   This is the only time your API key will be displayed. If you lose it,
                   you will need to generate a new one from the dashboard settings.
                 </p>
@@ -94,8 +94,8 @@ export default function RegisterPage() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-3">
-            <Label className="text-xs text-zinc-400 mb-1 block">API Key</Label>
+          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-3">
+            <Label className="text-xs text-[#888888] mb-1 block">API Key</Label>
             <code className="block text-xs font-mono text-emerald-400 break-all select-all">
               {successData.api_key}
             </code>
@@ -103,13 +103,13 @@ export default function RegisterPage() {
 
           <Button
             onClick={() => router.push("/login")}
-            className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
+            className="w-full bg-white text-black hover:bg-white/90 font-medium rounded-lg h-10 text-[13px]"
           >
             Continue to Sign In
           </Button>
         </CardContent>
         <CardFooter className="justify-center">
-          <p className="text-sm text-zinc-400">
+          <p className="text-[12px] text-[#555555]">
             Already have an account?{" "}
             <Link href="/login" className="text-white font-medium hover:underline">
               Sign In
@@ -122,25 +122,25 @@ export default function RegisterPage() {
 
   // ── Registration form ─────────────────────────────────────────────
   return (
-    <Card className="border-zinc-800 bg-zinc-950 text-white">
+    <Card className="border-white/[0.06] bg-white/[0.03] text-white rounded-lg">
       <CardHeader className="text-center">
-        <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-white/10">
+        <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-white/[0.06]">
           <UserPlus className="h-6 w-6 text-white" />
         </div>
         <CardTitle className="text-2xl font-bold tracking-tight">
           Create Account
         </CardTitle>
-        <CardDescription className="text-zinc-400">
+        <CardDescription className="text-[#555555]">
           Get started with your free account
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.03] p-4 mb-4">
+        <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-4 mb-4">
           <div className="flex items-start gap-3">
-            <AlertCircle className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
-            <div className="text-sm text-amber-400/80">
+            <AlertCircle className="h-5 w-5 text-white/50 shrink-0 mt-0.5" />
+            <div className="text-sm text-white/50">
               <p className="font-medium">Invitation-only registration</p>
-              <p className="text-xs text-amber-400/60 mt-1">
+              <p className="text-xs text-white/30 mt-1">
                 Self-service registration creates a new organization. If your team already
                 uses ReconPro, contact your administrator for an invitation instead.
               </p>
@@ -149,18 +149,18 @@ export default function RegisterPage() {
         </div>
 
         {error && (
-          <div className="mb-4 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          <div className="mb-4 rounded-lg border border-[#ff3355]/20 bg-[#ff3355]/[0.04] px-4 py-3 text-[13px] text-[#ff3355]">
             {error}
           </div>
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="name" className="text-zinc-300">
+            <Label htmlFor="name" className="text-[#888888] text-xs">
               Full Name
             </Label>
             <div className="relative">
-              <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#444444]" />
               <Input
                 id="name"
                 type="text"
@@ -168,16 +168,16 @@ export default function RegisterPage() {
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 required
-                className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                className="h-10 bg-white/[0.03] border-white/[0.06] pl-10 text-white placeholder:text-[#444444] focus-visible:border-white/[0.15] focus-visible:ring-0 rounded-lg text-[13px]"
               />
             </div>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="email" className="text-zinc-300">
+            <Label htmlFor="email" className="text-[#888888] text-xs">
               Email
             </Label>
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#444444]" />
               <Input
                 id="email"
                 type="email"
@@ -185,16 +185,16 @@ export default function RegisterPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                className="h-10 bg-white/[0.03] border-white/[0.06] pl-10 text-white placeholder:text-[#444444] focus-visible:border-white/[0.15] focus-visible:ring-0 rounded-lg text-[13px]"
               />
             </div>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="password" className="text-zinc-300">
+            <Label htmlFor="password" className="text-[#888888] text-xs">
               Password
             </Label>
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#444444]" />
               <Input
                 id="password"
                 type="password"
@@ -202,16 +202,16 @@ export default function RegisterPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                className="h-10 bg-white/[0.03] border-white/[0.06] pl-10 text-white placeholder:text-[#444444] focus-visible:border-white/[0.15] focus-visible:ring-0 rounded-lg text-[13px]"
               />
             </div>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="confirm-password" className="text-zinc-300">
+            <Label htmlFor="confirm-password" className="text-[#888888] text-xs">
               Confirm Password
             </Label>
             <div className="relative">
-              <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#444444]" />
               <Input
                 id="confirm-password"
                 type="password"
@@ -219,14 +219,14 @@ export default function RegisterPage() {
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
-                className="border-zinc-800 bg-zinc-900 pl-10 text-white placeholder:text-zinc-600 focus-visible:ring-zinc-600"
+                className="h-10 bg-white/[0.03] border-white/[0.06] pl-10 text-white placeholder:text-[#444444] focus-visible:border-white/[0.15] focus-visible:ring-0 rounded-lg text-[13px]"
               />
             </div>
           </div>
           <Button
             type="submit"
             disabled={loading}
-            className="w-full bg-white text-black hover:bg-zinc-200 font-medium"
+            className="w-full bg-white text-black hover:bg-white/90 font-medium rounded-lg h-10 text-[13px]"
           >
             {loading ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -237,7 +237,7 @@ export default function RegisterPage() {
         </form>
       </CardContent>
       <CardFooter className="justify-center">
-        <p className="text-sm text-zinc-400">
+        <p className="text-[12px] text-[#555555]">
           Already have an account?{" "}
           <Link href="/login" className="text-white font-medium hover:underline">
             Sign In

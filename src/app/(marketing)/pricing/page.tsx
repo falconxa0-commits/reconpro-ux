@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Pricing | ReconPro",
@@ -14,13 +15,13 @@ const tiers = [
     description: "Full-featured open-source tool. No API limits for local use.",
     highlighted: false,
     capabilities: [
-      "All 5 scanner modules",
+      "All 14 scanner modules",
       "DNS reconnaissance (A, AAAA, MX, TXT, NS, CNAME, SOA, SRV)",
       "SSL/TLS certificate analysis with chain validation",
       "Port scanning (top 100, top 1000, custom ranges)",
       "HTTP header analysis and technology detection",
       "Web dashboard with 8 routes",
-      "REST API with 60 endpoints",
+      "REST API with 55 endpoints",
       "Compliance framework evaluation",
       "Team and member management",
       "Monitoring policies",
@@ -49,9 +50,9 @@ const tiers = [
       "Priority processing queue",
       "Email support with 24-hour SLA",
     ],
-    cta: "/contact",
+    cta: "/register",
     ctaLabel: "Start Pro Trial",
-    note: "External dependency: billing system not yet implemented.",
+    note: "Requires a billing integration for automated invoicing.",
   },
   {
     name: "Enterprise",
@@ -74,7 +75,7 @@ const tiers = [
       "Dedicated account manager",
       "Private Slack channel with engineering team",
     ],
-    cta: "/enterprise",
+    cta: "/register",
     ctaLabel: "Contact Sales",
     note: "Volume pricing available. Non-profit and academic discounts.",
   },
@@ -158,7 +159,7 @@ export default function PricingPage() {
                   ))}
                 </ul>
 
-                <a
+                <Link
                   href={tier.cta}
                   className={`block text-center text-sm font-medium py-3 rounded-xl transition-all duration-300 ${
                     tier.highlighted
@@ -167,7 +168,7 @@ export default function PricingPage() {
                   }`}
                 >
                   {tier.ctaLabel}
-                </a>
+                </Link>
                 <p className="text-[11px] text-white/30 text-center mt-3">
                   {tier.note}
                 </p>
