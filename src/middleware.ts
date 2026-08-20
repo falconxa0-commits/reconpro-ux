@@ -69,25 +69,24 @@ export async function middleware(request: NextRequest) {
   response.headers.set("Cross-Origin-Embedder-Policy", "credentialless");
 
   // ── Content Security Policy (only for non-API, non-static routes) ────
+  // Note: 'unsafe-inline' is required because Next.js 16 App Router delivers
+  // its RSC payload via inline <script> tags that cannot carry nonce attributes.
   if (!isApiRoute) {
-    const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
-
     const csp = [
       "default-src 'self'",
-      `script-src 'self' 'unsafe-inline' 'nonce-${nonce}'`,
-      `style-src 'self' 'unsafe-inline'`,
+      "script-src 'self' 'unsafe-inline'",
+      "style-src 'self' 'unsafe-inline'",
       "font-src 'self' data:",
-      "img-src 'self' data: blob:",
+      "img-src 'self' data: blob: https:",
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",
-      "connect-src 'self'",
+      "connect-src 'self' wss:",
       "object-src 'none'",
       "upgrade-insecure-requests",
     ].join("; ");
 
     response.headers.set("Content-Security-Policy", csp);
-    response.headers.set("X-Content-Security-Policy-Nonce", nonce);
   }
 
   return response;
