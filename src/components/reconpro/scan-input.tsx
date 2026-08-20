@@ -51,7 +51,7 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
                   animate={{ opacity: 1, y: 0, scale: 1 }}
                   exit={{ opacity: 0, y: -8, scale: 0.97 }}
                   transition={{ duration: 0.12 }}
-                  className="absolute top-full mt-2 left-0 z-50 w-64 p-1.5 rounded-xl bg-[#111111] border border-white/[0.07] shadow-2xl"
+                  className="absolute top-full mt-2 left-0 z-50 w-64 p-1.5 rounded-xl bg-white/[0.03] border border-white/[0.07] shadow-2xl"
                 >
                   {scanTypes.map((type) => (
                     <button

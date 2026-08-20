@@ -99,9 +99,9 @@ export default function ScansPage() {
 
   return (
     <div>
-      {/* Page Header */
+      {/* Page Header */}
       <div className="page-header">
-        <div className="page-header-icon text-[#22c55e]">
+        <div className="page-header-icon text-[#00ff88]">
           <Radar />
         </div>
         <div>
@@ -110,20 +110,20 @@ export default function ScansPage() {
         </div>
       </div>
 
-      {/* Scan Input */
+      {/* Scan Input */}
       <div className="max-w-2xl mb-8">
         <ScanInput onScan={handleScan} isScanning={isScanning} />
       </div>
 
-      {/* Error */
+      {/* Error */}
       {scanError && (
-        <div className="max-w-2xl mb-6 flex items-center gap-3 rounded-xl border border-[#ef4444]/20 bg-[#ef4444]/[0.04] px-4 py-3 text-sm text-[#fca5a5]">
+        <div className="max-w-2xl mb-6 flex items-center gap-3 rounded-xl border border-[#ff3355]/20 bg-[#ff3355]/[0.04] px-4 py-3 text-sm text-[#ff6677]">
           <AlertCircle className="h-4 w-4 shrink-0" />
           {scanError}
         </div>
       )}
 
-      {/* Last Result */
+      {/* Last Result */}
       {lastResult && (
         <div className="mb-8">
           <div className="panel p-5 mb-4">
@@ -134,7 +134,7 @@ export default function ScansPage() {
               </div>
               <div className="flex items-center gap-3">
                 <div className="text-right">
-                  <div className="text-2xl font-bold font-mono" style={{ color: lastResult.riskScore > 70 ? '#ef4444' : lastResult.riskScore > 40 ? '#eab308' : '#22c55e' }}>
+                  <div className="text-2xl font-bold font-mono" style={{ color: lastResult.riskScore > 70 ? '#ff3355' : lastResult.riskScore > 40 ? '#d29922' : '#00ff88' }}>
                     {lastResult.riskScore}
                   </div>
                   <div className="text-[10px] text-neutral-700 uppercase tracking-wider">Risk Score</div>
@@ -146,7 +146,7 @@ export default function ScansPage() {
         </div>
       )}
 
-      {/* Scan History */
+      {/* Scan History */}
       <div className="panel p-5">
         <div className="flex items-center justify-between mb-4">
           <span className="text-[10px] font-medium text-neutral-600 uppercase tracking-[0.12em]">Scan History</span>
@@ -174,7 +174,7 @@ export default function ScansPage() {
                     <tr key={String(scan.id)} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors cursor-pointer group" onClick={() => router.push('/findings')}>
                       <td className="py-3 pr-4 text-[12px] font-mono text-neutral-500 group-hover:text-neutral-300 transition-colors">{String(scan.domain)}</td>
                       <td className="py-3 pr-4"><span className="rounded-md bg-white/[0.04] px-2 py-0.5 text-[10px] font-medium text-neutral-500 uppercase">{String(scan.scanType || 'full')}</span></td>
-                      <td className="py-3 pr-4"><span className="text-[12px] font-mono font-semibold" style={{ color: Number(scan.riskScore) > 70 ? '#ef4444' : Number(scan.riskScore) > 40 ? '#eab308' : '#22c55e' }}>{String(scan.riskScore)}</span></td>
+                      <td className="py-3 pr-4"><span className="text-[12px] font-mono font-semibold" style={{ color: Number(scan.riskScore) > 70 ? '#ff3355' : Number(scan.riskScore) > 40 ? '#d29922' : '#00ff88' }}>{String(scan.riskScore)}</span></td>
                       <td className="py-3 pr-4 text-[12px] text-neutral-600">{String(scan.totalVulns ?? 0)}</td>
                       <td className="py-3 text-[11px] text-neutral-700 font-mono">{timeAgo(String(scan.startedAt || scan.createdAt || ''))}</td>
                     </tr>

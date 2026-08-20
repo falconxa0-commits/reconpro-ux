@@ -157,11 +157,11 @@ function getScoreGradient(score: number): string {
 function getStatusConfig(status: string) {
   switch (status) {
     case 'Compliant':
-      return { color: '#00ff88', bg: 'rgba(52,211,153,0.15)', border: 'rgba(52,211,153,0.3)', icon: ShieldCheck };
+      return { color: '#00ff88', bg: 'rgba(0,255,136,0.15)', border: 'rgba(0,255,136,0.3)', icon: ShieldCheck };
     case 'Needs Attention':
       return { color: '#d29922', bg: 'rgba(210,153,34,0.15)', border: 'rgba(210,153,34,0.3)', icon: ShieldAlert };
     case 'Non-Compliant':
-      return { color: '#ff3355', bg: 'rgba(244,63,94,0.15)', border: 'rgba(244,63,94,0.3)', icon: ShieldX };
+      return { color: '#ff3355', bg: 'rgba(255,51,85,0.15)', border: 'rgba(255,51,85,0.3)', icon: ShieldX };
     default:
       return { color: '#444444', bg: 'rgba(139,148,158,0.15)', border: 'rgba(139,148,158,0.3)', icon: Shield };
   }
@@ -179,7 +179,7 @@ function ComplianceGauge({ score }: { score: number }) {
     <div className="relative inline-flex items-center justify-center">
       <svg width="180" height="180" viewBox="0 0 180 180" className="transform -rotate-90">
         {/* Background circle */}
-        <circle cx="90" cy="90" r={radius} fill="none" stroke="#161b22" strokeWidth="10" />
+        <circle cx="90" cy="90" r={radius} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="10" />
         {/* Progress arc */}
         <motion.circle
           cx="90"
@@ -200,7 +200,7 @@ function ComplianceGauge({ score }: { score: number }) {
       </svg>
       <div className="absolute flex flex-col items-center justify-center">
         <motion.span
-          className="text-3xl font-black text-[#f0f0f0]"
+          className="text-3xl font-black text-white"
           initial={{ opacity: 0, scale: 0.5 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.5, duration: 0.5 }}
@@ -276,27 +276,27 @@ function LoadingSkeleton() {
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-[#000000]" />
           <div className="space-y-2">
-            <div className="h-5 w-48 bg-[#000000] rounded" />
-            <div className="h-3 w-64 bg-[#000000] rounded" />
+            <div className="h-5 w-48 skeleton-pulse rounded" />
+            <div className="h-3 w-64 skeleton-pulse rounded" />
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <div className="h-9 w-[180px] bg-[#000000] rounded" />
-          <div className="h-9 w-24 bg-[#000000] rounded" />
+          <div className="h-9 w-[180px] skeleton-pulse rounded" />
+          <div className="h-9 w-24 skeleton-pulse rounded" />
         </div>
       </div>
 
       {/* Gauge area skeleton */}
-      <div className="rounded-xl border border-[#21262d] bg-[#080b14] p-6">
+      <div className="rounded-xl border border-white/[0.06] bg-black p-6">
         <div className="flex flex-col lg:flex-row items-center gap-8">
           <div className="w-[180px] h-[180px] rounded-full bg-[#000000]" />
           <div className="flex-1 w-full space-y-4">
-            <div className="h-4 w-40 bg-[#000000] rounded" />
-            <div className="h-10 w-full bg-[#000000] rounded" />
+            <div className="h-4 w-40 skeleton-pulse rounded" />
+            <div className="h-10 w-full skeleton-pulse rounded" />
             <div className="grid grid-cols-3 gap-3 mt-4">
-              <div className="h-16 bg-[#000000] rounded-lg" />
-              <div className="h-16 bg-[#000000] rounded-lg" />
-              <div className="h-16 bg-[#000000] rounded-lg" />
+              <div className="h-16 skeleton-pulse rounded-lg" />
+              <div className="h-16 skeleton-pulse rounded-lg" />
+              <div className="h-16 skeleton-pulse rounded-lg" />
             </div>
           </div>
         </div>
@@ -304,47 +304,47 @@ function LoadingSkeleton() {
 
       {/* Framework cards skeleton */}
       <div>
-        <div className="h-4 w-36 bg-[#000000] rounded mb-3" />
+        <div className="h-4 w-36 skeleton-pulse rounded mb-3" />
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {[1, 2, 3, 4, 5, 6].map((i) => (
-            <div key={i} className="rounded-xl border border-[#21262d] bg-[#080b14] p-4 space-y-3">
+            <div key={i} className="rounded-xl border border-white/[0.06] bg-black p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 bg-[#000000] rounded" />
+                  <div className="w-7 h-7 skeleton-pulse rounded" />
                   <div className="space-y-1.5">
-                    <div className="h-3.5 w-24 bg-[#000000] rounded" />
-                    <div className="h-2.5 w-16 bg-[#000000] rounded" />
+                    <div className="h-3.5 w-24 skeleton-pulse rounded" />
+                    <div className="h-2.5 w-16 skeleton-pulse rounded" />
                   </div>
                 </div>
-                <div className="h-5 w-20 bg-[#000000] rounded-full" />
+                <div className="h-5 w-20 skeleton-pulse rounded-full" />
               </div>
-              <div className="h-2 w-full bg-[#000000] rounded-full" />
+              <div className="h-2 w-full skeleton-pulse rounded-full" />
             </div>
           ))}
         </div>
       </div>
 
       {/* Controls skeleton */}
-      <div className="rounded-xl border border-[#21262d] bg-[#080b14] p-4 space-y-3">
+      <div className="rounded-xl border border-white/[0.06] bg-black p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-7 h-7 bg-[#000000] rounded-md" />
+            <div className="w-7 h-7 skeleton-pulse rounded-md" />
             <div className="space-y-1.5">
-              <div className="h-3.5 w-40 bg-[#000000] rounded" />
-              <div className="h-3 w-56 bg-[#000000] rounded" />
+              <div className="h-3.5 w-40 skeleton-pulse rounded" />
+              <div className="h-3 w-56 skeleton-pulse rounded" />
             </div>
           </div>
-          <div className="h-10 w-10 bg-[#000000] rounded-full" />
+          <div className="h-10 w-10 skeleton-pulse rounded-full" />
         </div>
         {[1, 2, 3, 4, 5].map((i) => (
-          <div key={i} className="flex items-center gap-3 px-4 py-3 border-b border-[#161b22]">
-            <div className="w-4 h-4 bg-[#000000] rounded" />
+          <div key={i} className="flex items-center gap-3 px-4 py-3 border-b border-white/[0.06]">
+            <div className="w-4 h-4 skeleton-pulse rounded" />
             <div className="flex-1 space-y-1.5">
-              <div className="h-3 w-12 bg-[#000000] rounded" />
-              <div className="h-3 w-64 bg-[#000000] rounded" />
+              <div className="h-3 w-12 skeleton-pulse rounded" />
+              <div className="h-3 w-64 skeleton-pulse rounded" />
             </div>
-            <div className="h-5 w-12 bg-[#000000] rounded" />
-            <div className="h-5 w-14 bg-[#000000] rounded" />
+            <div className="h-5 w-12 skeleton-pulse rounded" />
+            <div className="h-5 w-14 skeleton-pulse rounded" />
           </div>
         ))}
       </div>
@@ -421,9 +421,9 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
     return (
       <div className="w-full flex flex-col items-center justify-center py-20 text-center">
         <Shield className="w-12 h-12 text-[#333333] mb-4" />
-        <h3 className="text-lg font-semibold text-[#f0f0f0] mb-2">No Compliance Data</h3>
+        <h3 className="text-lg font-semibold text-white mb-2">No Compliance Data</h3>
         <p className="text-sm text-[#444444] mb-4">Run a scan first to generate compliance assessments.</p>
-        <Button variant="outline" size="sm" onClick={handleRegenerate} className="border-[#21262d] text-[#444444] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#00ff88] gap-1.5">
+        <Button variant="outline" size="sm" onClick={handleRegenerate} className="border-white/[0.06] text-[#444444] hover:bg-[rgba(0,255,136,0.1)] hover:text-[#00ff88] gap-1.5">
           <RefreshCw className={`w-3.5 h-3.5 ${regenerating ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
@@ -453,22 +453,22 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]">
+          <div className="p-2 rounded-lg bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)]">
             <Shield className="w-5 h-5 text-[#00ff88]" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-[#f0f0f0]">Compliance Framework</h2>
+            <h2 className="text-xl font-bold text-white">Compliance Framework</h2>
             <p className="text-sm text-[#444444]">Monitor and manage regulatory compliance posture</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <Select value={selectedFramework} onValueChange={setSelectedFramework}>
-            <SelectTrigger className="bg-[#080b14] border-[#21262d] text-[#f0f0f0] w-[180px]">
+            <SelectTrigger className="bg-black border-white/[0.06] text-white w-[180px]">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent className="bg-[#000000] border-[#21262d] text-[#f0f0f0]">
+            <SelectContent className="bg-[#000000] border-white/[0.06] text-white">
               {frameworks.map((f) => (
-                <SelectItem key={f.id} value={f.id} className="text-[#f0f0f0] focus:bg-[rgba(52,211,153,0.1)] focus:text-[#00ff88]">
+                <SelectItem key={f.id} value={f.id} className="text-white focus:bg-[rgba(0,255,136,0.1)] focus:text-[#00ff88]">
                   <span className="mr-2">{f.icon}</span>
                   {f.name}
                 </SelectItem>
@@ -480,7 +480,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
             size="sm"
             onClick={handleRegenerate}
             disabled={regenerating}
-            className="border-[#21262d] text-[#444444] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#00ff88] gap-1.5"
+            className="border-white/[0.06] text-[#444444] hover:bg-[rgba(0,255,136,0.1)] hover:text-[#00ff88] gap-1.5"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${regenerating ? 'animate-spin' : ''}`} />
             Regenerate
@@ -489,7 +489,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
       </motion.div>
 
       {/* ── Overall Score + Trend ────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#080b14] p-6">
+      <motion.div variants={itemVariants} className="rounded-xl border border-white/[0.06] bg-black p-6">
         <div className="flex flex-col lg:flex-row items-center gap-8">
           <div className="flex flex-col items-center gap-2">
             <ComplianceGauge score={overallScore} />
@@ -500,7 +500,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
 
           <div className="flex-1 w-full space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-[#f0f0f0]">Compliance Trend</h3>
+              <h3 className="text-sm font-semibold text-white">Compliance Trend</h3>
               <div className="flex items-center gap-1.5 text-[#00ff88]">
                 <TrendingUp className="w-3.5 h-3.5" />
                 <span className="text-xs font-medium">+4.2% from last month</span>
@@ -514,7 +514,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
             </div>
 
             <div className="grid grid-cols-3 gap-3 mt-4">
-              <div className="rounded-lg bg-[rgba(52,211,153,0.08)] border border-[rgba(52,211,153,0.15)] p-3 text-center">
+              <div className="rounded-lg bg-[rgba(0,255,136,0.08)] border border-[rgba(0,255,136,0.15)] p-3 text-center">
                 <p className="text-lg font-bold text-[#00ff88]">
                   {frameworks.filter((f) => f.status === 'Compliant').length}
                 </p>
@@ -526,7 +526,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                 </p>
                 <p className="text-[10px] uppercase tracking-wider text-[#444444]">Attention</p>
               </div>
-              <div className="rounded-lg bg-[rgba(244,63,94,0.08)] border border-[rgba(244,63,94,0.15)] p-3 text-center">
+              <div className="rounded-lg bg-[rgba(255,51,85,0.08)] border border-[rgba(255,51,85,0.15)] p-3 text-center">
                 <p className="text-lg font-bold text-[#ff3355]">
                   {frameworks.filter((f) => f.status === 'Non-Compliant').length}
                 </p>
@@ -539,7 +539,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
 
       {/* ── Framework Grid ────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
-        <h3 className="text-sm font-semibold text-[#f0f0f0] mb-3">Frameworks Overview</h3>
+        <h3 className="text-sm font-semibold text-white mb-3">Frameworks Overview</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {frameworks.map((fw, idx) => {
             const statusCfg = getStatusConfig(fw.status);
@@ -553,17 +553,17 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                 onClick={() => setSelectedFramework(fw.id)}
                 className={`rounded-xl border cursor-pointer transition-all overflow-hidden ${
                   isSelected
-                    ? 'border-[rgba(52,211,153,0.4)] shadow-[0_0_20px_rgba(52,211,153,0.1)]'
-                    : 'border-[#21262d] hover:border-[#30363d]'
+                    ? 'border-[rgba(0,255,136,0.4)] shadow-[0_0_20px_rgba(0,255,136,0.1)]'
+                    : 'border-white/[0.06] hover:border-white/[0.08]'
                 }`}
-                style={{ backgroundColor: '#0d1117' }}
+                style={{ backgroundColor: '#000000' }}
               >
                 <div className="p-4">
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <span className="text-xl">{fw.icon}</span>
                       <div>
-                        <h4 className="text-sm font-bold text-[#f0f0f0]">{fw.name}</h4>
+                        <h4 className="text-sm font-bold text-white">{fw.name}</h4>
                         <p className="text-[10px] text-[#333333]">{fw.controlsPassed}/{fw.controlsTotal} controls</p>
                       </div>
                     </div>
@@ -588,7 +588,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                         {fw.score}%
                       </span>
                     </div>
-                    <div className="h-2 bg-[#000000] rounded-full overflow-hidden">
+                    <div className="h-2 skeleton-pulse rounded-full overflow-hidden">
                       <motion.div
                         className="h-full rounded-full"
                         style={{ backgroundColor: getScoreColor(fw.score) }}
@@ -617,14 +617,14 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
       </motion.div>
 
       {/* ── Controls Checklist ───────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden">
-        <div className="p-4 border-b border-[#21262d] flex items-center justify-between">
+      <motion.div variants={itemVariants} className="rounded-xl border border-white/[0.06] bg-black overflow-hidden">
+        <div className="p-4 border-b border-white/[0.06] flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-1.5 rounded-md bg-[rgba(52,211,153,0.1)]">
+            <div className="p-1.5 rounded-md bg-[rgba(0,255,136,0.1)]">
               <FileText className="w-4 h-4 text-[#00ff88]" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-[#f0f0f0]">
+              <h3 className="text-sm font-semibold text-white">
                 {selected.icon} {selected.name} Controls
               </h3>
               <p className="text-xs text-[#444444]">
@@ -634,12 +634,12 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
           </div>
           <div className="flex items-center gap-3">
             <div className="text-right">
-              <p className="text-lg font-bold text-[#f0f0f0]">{controlPassRate}%</p>
+              <p className="text-lg font-bold text-white">{controlPassRate}%</p>
               <p className="text-[10px] text-[#444444] uppercase tracking-wider">Pass Rate</p>
             </div>
             <div className="w-12 h-12 relative">
               <svg width="48" height="48" viewBox="0 0 48 48" className="transform -rotate-90">
-                <circle cx="24" cy="24" r="20" fill="none" stroke="#161b22" strokeWidth="4" />
+                <circle cx="24" cy="24" r="20" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="4" />
                 <motion.circle
                   cx="24"
                   cy="24"
@@ -675,10 +675,10 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: idx * 0.04 }}
-                  className="border-b border-[#161b22] last:border-b-0"
+                  className="border-b border-white/[0.06] last:border-b-0"
                 >
                   <div
-                    className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[rgba(52,211,153,0.02)] transition-colors"
+                    className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[rgba(0,255,136,0.02)] transition-colors"
                     onClick={() => setExpandedControl(isExpanded ? null : control.id)}
                   >
                     <Checkbox
@@ -694,19 +694,19 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] font-mono text-[#333333]">{control.id}</span>
-                        <span className="text-xs text-[#f0f0f0] truncate">{control.description}</span>
+                        <span className="text-xs text-white truncate">{control.description}</span>
                       </div>
                     </div>
                     <span
                       className={`px-2 py-0.5 rounded text-[10px] font-medium ${
                         toggleValue
-                          ? 'bg-[rgba(52,211,153,0.1)] text-[#00ff88]'
-                          : 'bg-[rgba(244,63,94,0.1)] text-[#ff3355]'
+                          ? 'bg-[rgba(0,255,136,0.1)] text-[#00ff88]'
+                          : 'bg-[rgba(255,51,85,0.1)] text-[#ff3355]'
                       }`}
                     >
                       {toggleValue ? 'PASS' : 'FAIL'}
                     </span>
-                    <span className="text-[10px] text-[#333333] border border-[#21262d] rounded px-1.5 py-0.5">
+                    <span className="text-[10px] text-[#333333] border border-white/[0.06] rounded px-1.5 py-0.5">
                       {control.category}
                     </span>
                     {isExpanded ? (
@@ -732,7 +732,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                           </p>
                           <div className="flex items-center gap-2">
                             {control.evidenceLink ? (
-                              <button className="flex items-center gap-1.5 text-[10px] font-medium text-[#44aaff] hover:text-[#79c0ff] transition-colors">
+                              <button className="flex items-center gap-1.5 text-[10px] font-medium text-[#44aaff] hover:text-[#44aaff] transition-colors">
                                 <Link2 className="w-3 h-3" />
                                 View Evidence
                               </button>
@@ -741,7 +741,7 @@ export function CompliancePanel({ framework = 'all' }: CompliancePanelProps) {
                             <span className="text-[10px] text-[#333333]">Last verified: {selected.lastAssessed}</span>
                           </div>
                           {control.evidenceLink && (
-                            <p className="text-xs text-[#44aaff]/80 bg-[#000000] rounded p-2 leading-relaxed">
+                            <p className="text-xs text-[#44aaff]/80 skeleton-pulse rounded p-2 leading-relaxed">
                               {control.evidenceLink}
                             </p>
                           )}

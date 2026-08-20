@@ -91,17 +91,37 @@ export default function OverviewPage() {
     setStats(prev => prev ? { ...prev, complianceScore: complianceScore ?? 0 } : null);
   }, [complianceScore]);
 
+  if (loading) {
+    return (
+      <div>
+        <div className="page-header">
+          <div className="page-header-icon text-neutral-500"><LayoutDashboard /></div>
+          <div><h1>Dashboard</h1><p>Security overview and recent reconnaissance activity.</p></div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-3">
+          <div className="col-span-2 panel p-5"><div className="skeleton-pulse h-20 w-20 rounded-full mx-auto" /></div>
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="panel p-4"><div className="skeleton-pulse h-8 w-16 rounded mb-2" /><div className="skeleton-pulse h-3 w-20 rounded" /></div>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mb-3">
+          <div className="lg:col-span-2 panel p-5"><div className="skeleton-pulse h-[220px] rounded-lg" /></div>
+          <div className="flex flex-col gap-3">
+            <div className="panel p-4 flex-1"><div className="skeleton-pulse h-full w-full rounded-full" /></div>
+            <div className="panel p-4 flex-1"><div className="skeleton-pulse h-4 w-20 rounded mb-3" />{Array.from({ length: 3 }).map((_, i) => <div key={i} className="skeleton-pulse h-3 w-full rounded mb-2" />)}</div>
+          </div>
+        </div>
+        <div className="panel p-5"><div className="skeleton-pulse h-4 w-24 rounded mb-4" /><div className="skeleton-pulse h-10 w-full rounded mb-2" /><div className="skeleton-pulse h-10 w-full rounded" /></div>
+      </div>
+    );
+  }
+
   if (error) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-white/[0.04] flex items-center justify-center">
-            <LayoutDashboard className="w-4 h-4 text-[#ff3355]" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold text-white tracking-tight">Dashboard</h1>
-            <p className="text-sm text-[#555555]">Security overview and recent reconnaissance activity.</p>
-          </div>
+      <div>
+        <div className="page-header">
+          <div className="page-header-icon text-[#ff3355]"><LayoutDashboard /></div>
+          <div><h1>Dashboard</h1><p>Security overview and recent reconnaissance activity.</p></div>
         </div>
         <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-[#ff3355]/20 bg-[#ff3355]/[0.04] px-6 py-16">
           <AlertCircle className="h-8 w-8 text-[#ff3355]/60" />

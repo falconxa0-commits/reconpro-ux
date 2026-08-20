@@ -209,9 +209,9 @@ export function IntegrationHub() {
   if (error) {
     return (
       <div className="w-full flex flex-col items-center justify-center gap-3 py-20">
-        <AlertCircle className="h-8 w-8 text-red-400" />
-        <p className="text-sm text-red-400">{error}</p>
-        <Button variant="outline" size="sm" onClick={fetchData} className="border-zinc-700 text-white hover:bg-zinc-800">
+        <AlertCircle className="h-8 w-8 text-[#ff3355]" />
+        <p className="text-sm text-[#ff3355]">{error}</p>
+        <Button variant="outline" size="sm" onClick={fetchData} className="border-white/[0.08] text-white hover:bg-white/[0.05]">
           <RefreshCw className="mr-2 h-3.5 w-3.5" />
           Retry
         </Button>
@@ -229,11 +229,11 @@ export function IntegrationHub() {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]">
+          <div className="p-2 rounded-lg bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)]">
             <Plug className="w-5 h-5 text-[#00ff88]" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-[#f0f0f0]">Integration Hub</h2>
+            <h2 className="text-xl font-bold text-white">Integration Hub</h2>
             <p className="text-sm text-[#444444]">
               {connectedCount} of {integrations.length} integrations connected
             </p>
@@ -241,21 +241,21 @@ export function IntegrationHub() {
         </div>
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
           <DialogTrigger asChild>
-            <Button className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
+            <Button className="bg-white hover:bg-white/90 text-black font-semibold gap-2">
               <Plus className="w-4 h-4" />
               Add Integration
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-[#080b14] border-[#21262d] text-[#f0f0f0]">
+          <DialogContent className="bg-black border-white/[0.06] text-white">
             <DialogHeader>
-              <DialogTitle className="text-[#f0f0f0]">Add Integration</DialogTitle>
+              <DialogTitle className="text-white">Add Integration</DialogTitle>
               <DialogDescription className="text-[#444444]">
                 Connect a new service to your security pipeline.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Integration Type</label>
+                <label className="text-sm font-medium text-white">Integration Type</label>
                 <div className="grid grid-cols-2 gap-2">
                   {INTEGRATION_TYPES.map((t) => (
                     <button
@@ -263,8 +263,8 @@ export function IntegrationHub() {
                       onClick={() => setAddType(t.type)}
                       className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all text-left ${
                         addType === t.type
-                          ? 'bg-[rgba(52,211,153,0.15)] border-[rgba(52,211,153,0.4)] text-[#00ff88]'
-                          : 'bg-[#050710] border-[#21262d] text-[#444444] hover:border-[#30363d]'
+                          ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
+                          : 'bg-[#0a0a0a] border-white/[0.06] text-[#444444] hover:border-white/[0.08]'
                       }`}
                     >
                       {t.label}
@@ -273,29 +273,29 @@ export function IntegrationHub() {
                 </div>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Name</label>
+                <label className="text-sm font-medium text-white">Name</label>
                 <Input
                   placeholder={INTEGRATION_TYPES.find((t) => t.type === addType)?.label || 'Integration name'}
                   value={addName}
                   onChange={(e) => setAddName(e.target.value)}
-                  className="bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88]"
+                  className="bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15]"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Webhook URL</label>
+                <label className="text-sm font-medium text-white">Webhook URL</label>
                 <Input
                   placeholder={INTEGRATION_TYPES.find((t) => t.type === addType)?.defaultUrl || 'https://...'}
                   value={addWebhookUrl}
                   onChange={(e) => setAddWebhookUrl(e.target.value)}
-                  className="bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88]"
+                  className="bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15]"
                 />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setAddOpen(false)} className="border-[#21262d] text-[#444444] hover:bg-[#050710]">
+              <Button variant="outline" onClick={() => setAddOpen(false)} className="border-white/[0.06] text-[#444444] hover:bg-[#0a0a0a]">
                 Cancel
               </Button>
-              <Button onClick={handleAddIntegration} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+              <Button onClick={handleAddIntegration} className="bg-white hover:bg-white/90 text-black font-semibold">
                 Connect
               </Button>
             </DialogFooter>
@@ -306,7 +306,7 @@ export function IntegrationHub() {
       {/* ── Integration Cards Grid ──────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {integrations.length === 0 ? (
-          <div className="col-span-full rounded-xl border border-[#21262d] bg-[#080b14] p-8 text-center">
+          <div className="col-span-full rounded-xl border border-white/[0.06] bg-black p-8 text-center">
             <Plug className="w-8 h-8 text-[#333333] mx-auto mb-3" />
             <p className="text-sm text-[#444444]">No integrations configured yet. Click &quot;Add Integration&quot; to get started.</p>
           </div>
@@ -318,7 +318,7 @@ export function IntegrationHub() {
                 key={integration.id}
                 variants={itemVariants}
                 whileHover={cardHover}
-                className="rounded-xl border border-[#21262d] overflow-hidden transition-shadow relative"
+                className="rounded-xl border border-white/[0.06] overflow-hidden transition-shadow relative"
                 style={{
                   backgroundColor: 'rgba(13,17,23,0.8)',
                   backdropFilter: 'blur(12px)',
@@ -354,12 +354,12 @@ export function IntegrationHub() {
                             className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center"
                             style={{ backgroundColor: '#00ff88' }}
                           >
-                            <CheckCircle2 className="w-3 h-3 text-[#0a0d14]" />
+                            <CheckCircle2 className="w-3 h-3 text-[#000000]" />
                           </div>
                         )}
                       </div>
                       <div>
-                        <h3 className="text-sm font-bold text-[#f0f0f0]">{integration.name}</h3>
+                        <h3 className="text-sm font-bold text-white">{integration.name}</h3>
                         <p className="text-[10px] text-[#444444] leading-relaxed max-w-[200px] truncate">
                           {integration.description}
                         </p>
@@ -377,7 +377,7 @@ export function IntegrationHub() {
                     {integration.connected ? (
                       <div className="flex items-center gap-2">
                         <Activity className="w-3.5 h-3.5 text-[#444444]" />
-                        <span className="text-lg font-bold text-[#f0f0f0]">{integration.eventCount}</span>
+                        <span className="text-lg font-bold text-white">{integration.eventCount}</span>
                         <span className="text-xs text-[#444444]">{integration.eventType}</span>
                       </div>
                     ) : (
@@ -398,8 +398,8 @@ export function IntegrationHub() {
                     onClick={() => handleConfigure(integration.id)}
                     className={`w-full gap-1.5 text-xs font-medium transition-all ${
                       integration.connected
-                        ? 'border-[#21262d] text-[#444444] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#00ff88] hover:border-[rgba(52,211,153,0.3)]'
-                        : 'border-[#30363d] text-[#333333] hover:bg-[rgba(52,211,153,0.1)] hover:text-[#00ff88]'
+                        ? 'border-white/[0.06] text-[#444444] hover:bg-[rgba(0,255,136,0.1)] hover:text-[#00ff88] hover:border-[rgba(0,255,136,0.3)]'
+                        : 'border-white/[0.08] text-[#333333] hover:bg-[rgba(0,255,136,0.1)] hover:text-[#00ff88]'
                     }`}
                   >
                     <Settings className="w-3.5 h-3.5" />
@@ -424,23 +424,23 @@ export function IntegrationHub() {
       </motion.div>
 
       {/* ── Activity Log ─────────────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden">
-        <div className="p-4 border-b border-[#21262d] flex items-center justify-between">
+      <motion.div variants={itemVariants} className="rounded-xl border border-white/[0.06] bg-black overflow-hidden">
+        <div className="p-4 border-b border-white/[0.06] flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-1.5 rounded-md bg-[rgba(52,211,153,0.1)]">
+            <div className="p-1.5 rounded-md bg-[rgba(0,255,136,0.1)]">
               <Activity className="w-4 h-4 text-[#00ff88]" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-[#f0f0f0]">Integration Activity</h3>
+              <h3 className="text-sm font-semibold text-white">Integration Activity</h3>
               <p className="text-xs text-[#444444]">Recent events across all integrations</p>
             </div>
           </div>
-          <Badge variant="outline" className="text-[10px] border-[#21262d] text-[#444444]">
+          <Badge variant="outline" className="text-[10px] border-white/[0.06] text-[#444444]">
             Live
           </Badge>
         </div>
 
-        <div className="divide-y divide-[#161b22]">
+        <div className="divide-y divide-white/[0.05]">
           {activity.length === 0 ? (
             <div className="px-4 py-8 text-center">
               <p className="text-xs text-[#333333]">No activity yet. Events will appear here when integrations are used.</p>
@@ -453,7 +453,7 @@ export function IntegrationHub() {
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: idx * 0.06, duration: 0.3 }}
-                  className="flex items-center gap-3 px-4 py-3 hover:bg-[rgba(52,211,153,0.02)] transition-colors"
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-[rgba(0,255,136,0.02)] transition-colors"
                 >
                   {/* Status icon */}
                   <div className="shrink-0">{getStatusIcon(event.status)}</div>
@@ -469,7 +469,7 @@ export function IntegrationHub() {
                   {/* Content */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-[#f0f0f0]">{event.integration}</span>
+                      <span className="text-xs font-semibold text-white">{event.integration}</span>
                       <span className="text-[10px] text-[#333333]">•</span>
                       <span className="text-[10px] font-medium text-[#444444]">{event.action}</span>
                     </div>
@@ -483,7 +483,7 @@ export function IntegrationHub() {
                   </div>
 
                   {/* Action */}
-                  <button className="shrink-0 p-1 rounded-md text-[#333333] hover:text-[#f0f0f0] hover:bg-[rgba(52,211,153,0.1)] transition-all">
+                  <button className="shrink-0 p-1 rounded-md text-[#333333] hover:text-white hover:bg-[rgba(0,255,136,0.1)] transition-all">
                     <ExternalLink className="w-3.5 h-3.5" />
                   </button>
                 </motion.div>

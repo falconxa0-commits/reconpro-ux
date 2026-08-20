@@ -7,7 +7,7 @@ export default function MonitoringPage() {
   return (
     <div>
       <div className="page-header">
-        <div className="page-header-icon text-[#22c55e]"><Activity /></div>
+        <div className="page-header-icon text-neutral-500"><Activity /></div>
         <div>
           <h1>Monitoring</h1>
           <p>Continuous security monitoring and scheduled scan policies.</p>

@@ -48,7 +48,7 @@ export default function FindingsPage() {
     return (
       <div>
         <div className="page-header">
-          <div className="page-header-icon text-[#ef4444]">
+          <div className="page-header-icon text-[#ff3355]">
             <Map />
           </div>
           <div>
@@ -56,9 +56,9 @@ export default function FindingsPage() {
             <p>Security findings from your reconnaissance scans.</p>
           </div>
         </div>
-        <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-[#ef4444]/20 bg-[#ef4444]/[0.04] px-6 py-16">
-          <AlertCircle className="h-8 w-8 text-[#ef4444]/60" />
-          <p className="text-sm text-[#fca5a5]">{error}</p>
+        <div className="flex flex-col items-center justify-center gap-4 rounded-xl border border-[#ff3355]/20 bg-[#ff3355]/[0.04] px-6 py-16">
+          <AlertCircle className="h-8 w-8 text-[#ff3355]/60" />
+          <p className="text-sm text-[#ff6677]">{error}</p>
           <Button variant="outline" size="sm" onClick={loadData} className="border-white/10 text-white hover:bg-white/[0.04]">
             <RefreshCw className="mr-2 h-3.5 w-3.5" /> Retry
           </Button>

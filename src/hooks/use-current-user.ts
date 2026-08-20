@@ -32,7 +32,7 @@ export function useCurrentUser(): CurrentUser {
         if (m) {
           const initials = (m.name || m.email || 'U')
             .split(/\s+/)
-            .map(w => w[0])
+            .map((w: string) => w[0])
             .join('')
             .toUpperCase()
             .slice(0, 2);

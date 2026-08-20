@@ -84,9 +84,9 @@ function getInitials(name: string): string {
 function getRoleColor(role: string): string {
   switch (role) {
     case 'Admin':
-      return 'bg-[rgba(168,85,247,0.15)] text-[#888888] border-[rgba(168,85,247,0.3)]';
+      return 'bg-[rgba(168,85,247,0.15)] text-[#666666] border-[rgba(168,85,247,0.3)]';
     case 'Security Lead':
-      return 'bg-[rgba(52,211,153,0.15)] text-[#00ff88] border-[rgba(52,211,153,0.3)]';
+      return 'bg-[rgba(0,255,136,0.15)] text-[#00ff88] border-[rgba(0,255,136,0.3)]';
     case 'Analyst':
       return 'bg-[rgba(88,166,255,0.15)] text-[#44aaff] border-[rgba(88,166,255,0.3)]';
     case 'Viewer':
@@ -103,18 +103,18 @@ function getStatusColor(status: string): string {
     case 'away':
       return 'bg-[#d29922]';
     case 'offline':
-      return 'bg-[#333333]';
+      return 'bg-neutral-800';
     default:
-      return 'bg-[#333333]';
+      return 'bg-neutral-800';
   }
 }
 
 function getAvatarBg(name: string): string {
   const colors = [
-    'rgba(52,211,153,0.15)',
+    'rgba(0,255,136,0.15)',
     'rgba(88,166,255,0.15)',
     'rgba(168,85,247,0.15)',
-    'rgba(244,63,94,0.15)',
+    'rgba(255,51,85,0.15)',
     'rgba(210,153,34,0.15)',
     'rgba(121,192,255,0.15)',
     'rgba(255,123,114,0.15)',
@@ -125,7 +125,7 @@ function getAvatarBg(name: string): string {
 }
 
 function getAvatarTextColor(name: string): string {
-  const colors = ['#00ff88', '#44aaff', '#888888', '#ff3355', '#d29922', '#79c0ff', '#ff7b72', '#bb80d4'];
+  const colors = ['#00ff88', '#44aaff', '#666666', '#ff3355', '#d29922', '#44aaff', '#ff6677', '#6b7280'];
   const idx = name.charCodeAt(0) % colors.length;
   return colors[idx];
 }
@@ -317,9 +317,9 @@ export function TeamManagement() {
   if (error) {
     return (
       <div className="w-full flex flex-col items-center justify-center gap-3 py-20">
-        <AlertCircle className="h-8 w-8 text-red-400" />
-        <p className="text-sm text-red-400">{error}</p>
-        <Button variant="outline" size="sm" onClick={fetchAllRef} className="border-zinc-700 text-white hover:bg-zinc-800">
+        <AlertCircle className="h-8 w-8 text-[#ff3355]" />
+        <p className="text-sm text-[#ff3355]">{error}</p>
+        <Button variant="outline" size="sm" onClick={fetchAllRef} className="border-white/[0.08] text-white hover:bg-white/[0.05]">
           <RefreshCw className="mr-2 h-3.5 w-3.5" />
           Retry
         </Button>
@@ -337,49 +337,49 @@ export function TeamManagement() {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]">
+          <div className="p-2 rounded-lg bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)]">
             <Users className="w-5 h-5 text-[#00ff88]" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-[#f0f0f0]">Team Management</h2>
+            <h2 className="text-xl font-bold text-white">Team Management</h2>
             <p className="text-sm text-[#444444]">Manage members, roles, and team assignments</p>
           </div>
         </div>
         <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
           <DialogTrigger asChild>
-            <Button className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
+            <Button className="bg-white hover:bg-white/90 text-black font-semibold gap-2">
               <UserPlus className="w-4 h-4" />
               Invite Member
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-[#080b14] border-[#21262d] text-[#f0f0f0]">
+          <DialogContent className="bg-black border-white/[0.06] text-white">
             <DialogHeader>
-              <DialogTitle className="text-[#f0f0f0]">Invite New Member</DialogTitle>
+              <DialogTitle className="text-white">Invite New Member</DialogTitle>
               <DialogDescription className="text-[#444444]">
                 Send an invitation to add a new team member.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Name</label>
+                <label className="text-sm font-medium text-white">Name</label>
                 <Input
                   placeholder="John Doe"
                   value={inviteName}
                   onChange={(e) => setInviteName(e.target.value)}
-                  className="bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88]"
+                  className="bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15]"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Email Address</label>
+                <label className="text-sm font-medium text-white">Email Address</label>
                 <Input
                   placeholder="colleague@company.com"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
-                  className="bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88]"
+                  className="bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15]"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Role</label>
+                <label className="text-sm font-medium text-white">Role</label>
                 <div className="grid grid-cols-2 gap-2">
                   {['Admin', 'Security Lead', 'Analyst', 'Viewer'].map((r) => (
                     <button
@@ -387,8 +387,8 @@ export function TeamManagement() {
                       onClick={() => setInviteRole(r)}
                       className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
                         inviteRole === r
-                          ? 'bg-[rgba(52,211,153,0.15)] border-[rgba(52,211,153,0.4)] text-[#00ff88]'
-                          : 'bg-[#050710] border-[#21262d] text-[#444444] hover:border-[#30363d]'
+                          ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
+                          : 'bg-[#0a0a0a] border-white/[0.06] text-[#444444] hover:border-white/[0.08]'
                       }`}
                     >
                       {r}
@@ -398,10 +398,10 @@ export function TeamManagement() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setInviteOpen(false)} className="border-[#21262d] text-[#444444] hover:bg-[#050710]">
+              <Button variant="outline" onClick={() => setInviteOpen(false)} className="border-white/[0.06] text-[#444444] hover:bg-[#0a0a0a]">
                 Cancel
               </Button>
-              <Button onClick={handleInvite} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+              <Button onClick={handleInvite} className="bg-white hover:bg-white/90 text-black font-semibold">
                 Send Invitation
               </Button>
             </DialogFooter>
@@ -415,19 +415,19 @@ export function TeamManagement() {
           { label: 'Total Members', value: members.length, icon: Users, color: '#00ff88' },
           { label: 'Active Teams', value: teams.length, icon: Shield, color: '#44aaff' },
           { label: 'Pending Invites', value: 0, icon: AlertCircle, color: '#d29922' },
-          { label: 'Admins', value: adminCount, icon: Crown, color: '#888888' },
+          { label: 'Admins', value: adminCount, icon: Crown, color: '#666666' },
         ].map((stat) => (
           <motion.div
             key={stat.label}
             whileHover={cardHover}
-            className="rounded-xl border border-[#21262d] bg-[#080b14] p-4 transition-shadow hover:shadow-lg"
+            className="rounded-xl border border-white/[0.06] bg-black p-4 transition-shadow hover:shadow-lg"
             style={{ boxShadow: '0 0 0px transparent' }}
           >
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs font-medium text-[#444444] uppercase tracking-wider">{stat.label}</span>
               <stat.icon className="w-4 h-4" style={{ color: stat.color }} />
             </div>
-            <p className="text-2xl font-bold text-[#f0f0f0]">{stat.value}</p>
+            <p className="text-2xl font-bold text-white">{stat.value}</p>
           </motion.div>
         ))}
       </motion.div>
@@ -435,17 +435,17 @@ export function TeamManagement() {
       {/* ── Tabs ────────────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
         <Tabs defaultValue="members" className="w-full">
-          <TabsList className="bg-[#080b14] border border-[#21262d]">
+          <TabsList className="bg-black border border-white/[0.06]">
             <TabsTrigger
               value="members"
-              className="data-[state=active]:bg-[rgba(52,211,153,0.1)] data-[state=active]:text-[#00ff88] text-[#444444]"
+              className="data-[state=active]:bg-[rgba(0,255,136,0.1)] data-[state=active]:text-[#00ff88] text-[#444444]"
             >
               <Users className="w-4 h-4 mr-1.5" />
               Members
             </TabsTrigger>
             <TabsTrigger
               value="teams"
-              className="data-[state=active]:bg-[rgba(52,211,153,0.1)] data-[state=active]:text-[#00ff88] text-[#444444]"
+              className="data-[state=active]:bg-[rgba(0,255,136,0.1)] data-[state=active]:text-[#00ff88] text-[#444444]"
             >
               <Shield className="w-4 h-4 mr-1.5" />
               Teams
@@ -455,17 +455,17 @@ export function TeamManagement() {
           {/* ── Members Tab ─────────────────────────────────────────────── */}
           <TabsContent value="members" className="mt-4">
             <motion.div
-              className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden"
+              className="rounded-xl border border-white/[0.06] bg-black overflow-hidden"
             >
               {/* Search bar */}
-              <div className="p-4 border-b border-[#21262d]">
+              <div className="p-4 border-b border-white/[0.06]">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#333333]" />
                   <Input
                     placeholder="Search members by name, email, or role..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9 bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88] h-9"
+                    className="pl-9 bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15] h-9"
                   />
                 </div>
               </div>
@@ -480,7 +480,7 @@ export function TeamManagement() {
                 ) : (
                 <Table>
                   <TableHeader>
-                    <TableRow className="border-b border-[#21262d] hover:bg-transparent">
+                    <TableRow className="border-b border-white/[0.06] hover:bg-transparent">
                       <TableHead className="text-[#444444] font-medium text-xs uppercase tracking-wider">Member</TableHead>
                       <TableHead className="text-[#444444] font-medium text-xs uppercase tracking-wider">Role</TableHead>
                       <TableHead className="text-[#444444] font-medium text-xs uppercase tracking-wider hidden md:table-cell">Last Active</TableHead>
@@ -496,7 +496,7 @@ export function TeamManagement() {
                           initial={{ opacity: 0, x: -10 }}
                           animate={{ opacity: 1, x: 0 }}
                           transition={{ delay: idx * 0.04, duration: 0.3 }}
-                          className="border-b border-[#161b22] hover:bg-[rgba(52,211,153,0.03)] transition-colors"
+                          className="border-b border-white/[0.06] hover:bg-[rgba(0,255,136,0.03)] transition-colors"
                         >
                           <TableCell className="py-3">
                             <div className="flex items-center gap-3">
@@ -511,11 +511,11 @@ export function TeamManagement() {
                                   {getInitials(member.name)}
                                 </div>
                                 <div
-                                  className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#0d1117] ${getStatusColor(member.status)}`}
+                                  className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-black ${getStatusColor(member.status)}`}
                                 />
                               </div>
                               <div className="min-w-0">
-                                <p className="text-sm font-semibold text-[#f0f0f0] truncate">{member.name}</p>
+                                <p className="text-sm font-semibold text-white truncate">{member.name}</p>
                                 <p className="text-xs text-[#444444] truncate">{member.email}</p>
                               </div>
                             </div>
@@ -546,32 +546,32 @@ export function TeamManagement() {
                           <TableCell className="py-3 text-right">
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-8 w-8 text-[#444444] hover:text-[#f0f0f0] hover:bg-[rgba(52,211,153,0.1)]">
+                                <Button variant="ghost" size="icon" className="h-8 w-8 text-[#444444] hover:text-white hover:bg-[rgba(0,255,136,0.1)]">
                                   <MoreHorizontal className="w-4 h-4" />
                                 </Button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent className="bg-[#000000] border-[#21262d] text-[#f0f0f0] min-w-[160px]" align="end">
+                              <DropdownMenuContent className="bg-[#000000] border-white/[0.06] text-white min-w-[160px]" align="end">
                                 <DropdownMenuItem
-                                  className="text-[#444444] hover:text-[#f0f0f0] hover:bg-[rgba(52,211,153,0.1)] cursor-pointer gap-2"
+                                  className="text-[#444444] hover:text-white hover:bg-[rgba(0,255,136,0.1)] cursor-pointer gap-2"
                                   onClick={() => openRoleEdit(member)}
                                 >
                                   <Edit3 className="w-4 h-4" />
                                   Edit Role
                                 </DropdownMenuItem>
-                                <DropdownMenuItem className="text-[#444444] hover:text-[#f0f0f0] hover:bg-[rgba(52,211,153,0.1)] cursor-pointer gap-2">
+                                <DropdownMenuItem className="text-[#444444] hover:text-white hover:bg-[rgba(0,255,136,0.1)] cursor-pointer gap-2">
                                   <Mail className="w-4 h-4" />
                                   Send Message
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
-                                  className="text-[#444444] hover:text-[#f0f0f0] hover:bg-[rgba(52,211,153,0.1)] cursor-pointer gap-2"
+                                  className="text-[#444444] hover:text-white hover:bg-[rgba(0,255,136,0.1)] cursor-pointer gap-2"
                                   onClick={() => handleCopyId(member.id)}
                                 >
                                   {copiedId === member.id ? <Check className="w-4 h-4 text-[#00ff88]" /> : <Copy className="w-4 h-4" />}
                                   {copiedId === member.id ? 'Copied!' : 'Copy ID'}
                                 </DropdownMenuItem>
-                                <DropdownMenuSeparator className="bg-[#21262d]" />
+                                <DropdownMenuSeparator className="bg-white/[0.06]" />
                                 <DropdownMenuItem
-                                  className="text-[#ff3355] hover:text-[#ff3355] hover:bg-[rgba(244,63,94,0.1)] cursor-pointer gap-2"
+                                  className="text-[#ff3355] hover:text-[#ff3355] hover:bg-[rgba(255,51,85,0.1)] cursor-pointer gap-2"
                                   onClick={() => handleDeleteMember(member.id)}
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -589,7 +589,7 @@ export function TeamManagement() {
               </div>
 
               {/* Table footer */}
-              <div className="p-3 border-t border-[#21262d] flex items-center justify-between text-xs text-[#444444]">
+              <div className="p-3 border-t border-white/[0.06] flex items-center justify-between text-xs text-[#444444]">
                 <span>{filteredMembers.length} of {members.length} members</span>
                 <span>{onlineCount} currently online</span>
               </div>
@@ -601,43 +601,43 @@ export function TeamManagement() {
             <div className="flex justify-end mb-4">
               <Dialog open={teamOpen} onOpenChange={setTeamOpen}>
                 <DialogTrigger asChild>
-                  <Button className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
+                  <Button className="bg-white hover:bg-white/90 text-black font-semibold gap-2">
                     <Plus className="w-4 h-4" />
                     Add Team
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="bg-[#080b14] border-[#21262d] text-[#f0f0f0]">
+                <DialogContent className="bg-black border-white/[0.06] text-white">
                   <DialogHeader>
-                    <DialogTitle className="text-[#f0f0f0]">Create New Team</DialogTitle>
+                    <DialogTitle className="text-white">Create New Team</DialogTitle>
                     <DialogDescription className="text-[#444444]">
                       Add a new team to your organization.
                     </DialogDescription>
                   </DialogHeader>
                   <div className="space-y-4 py-4">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-[#f0f0f0]">Team Name</label>
+                      <label className="text-sm font-medium text-white">Team Name</label>
                       <Input
                         placeholder="e.g. Red Team"
                         value={teamName}
                         onChange={(e) => setTeamName(e.target.value)}
-                        className="bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88]"
+                        className="bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15]"
                       />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-[#f0f0f0]">Description</label>
+                      <label className="text-sm font-medium text-white">Description</label>
                       <Input
                         placeholder="e.g. Offensive security operations"
                         value={teamDesc}
                         onChange={(e) => setTeamDesc(e.target.value)}
-                        className="bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88]"
+                        className="bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15]"
                       />
                     </div>
                   </div>
                   <DialogFooter>
-                    <Button variant="outline" onClick={() => setTeamOpen(false)} className="border-[#21262d] text-[#444444] hover:bg-[#050710]">
+                    <Button variant="outline" onClick={() => setTeamOpen(false)} className="border-white/[0.06] text-[#444444] hover:bg-[#0a0a0a]">
                       Cancel
                     </Button>
-                    <Button onClick={handleAddTeam} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+                    <Button onClick={handleAddTeam} className="bg-white hover:bg-white/90 text-black font-semibold">
                       Create Team
                     </Button>
                   </DialogFooter>
@@ -645,7 +645,7 @@ export function TeamManagement() {
               </Dialog>
             </div>
             {teams.length === 0 ? (
-              <div className="rounded-xl border border-[#21262d] bg-[#080b14] p-8 text-center">
+              <div className="rounded-xl border border-white/[0.06] bg-black p-8 text-center">
                 <Shield className="w-8 h-8 text-[#333333] mx-auto mb-3" />
                 <p className="text-sm text-[#444444]">No teams yet. Click &quot;Add Team&quot; to create your first team.</p>
               </div>
@@ -659,7 +659,7 @@ export function TeamManagement() {
                     className="rounded-xl border overflow-hidden transition-shadow relative"
                     style={{
                       borderColor: team.color + '30',
-                      backgroundColor: '#0d1117',
+                      backgroundColor: '#000000',
                     }}
                   >
                     {/* Color accent top border */}
@@ -675,20 +675,20 @@ export function TeamManagement() {
                             <Shield className="w-5 h-5" style={{ color: team.color }} />
                           </div>
                           <div>
-                            <h3 className="text-sm font-bold text-[#f0f0f0]">{team.name}</h3>
+                            <h3 className="text-sm font-bold text-white">{team.name}</h3>
                             <p className="text-xs text-[#444444]">{team.memberCount} members</p>
                           </div>
                         </div>
                         <div className="flex items-center gap-1">
                           <Badge
                             variant="outline"
-                            className="text-[10px] border-[#21262d] text-[#444444]"
+                            className="text-[10px] border-white/[0.06] text-[#444444]"
                           >
                             Active
                           </Badge>
                           <button
                             onClick={() => handleDeleteTeam(team.id)}
-                            className="p-1.5 rounded-md border border-[#21262d] text-[#444444] hover:text-[#ff3355] hover:border-[rgba(244,63,94,0.3)] hover:bg-[rgba(244,63,94,0.1)] transition-all"
+                            className="p-1.5 rounded-md border border-white/[0.06] text-[#444444] hover:text-[#ff3355] hover:border-white/[0.1] hover:bg-white/[0.03] transition-all"
                             title="Delete team"
                           >
                             <Trash2 className="w-3 h-3" />
@@ -707,7 +707,7 @@ export function TeamManagement() {
                             .map((member) => (
                               <div
                                 key={member.id}
-                                className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold border-2 border-[#0d1117] shrink-0"
+                                className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold border-2 border-black shrink-0"
                                 style={{
                                   backgroundColor: getAvatarBg(member.name),
                                   color: getAvatarTextColor(member.name),
@@ -719,7 +719,7 @@ export function TeamManagement() {
                             ))}
                         </div>
                         {members.filter((m) => m.teamMemberships.includes(team.name)).length > 5 && (
-                          <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-medium border-2 border-[#0d1117] bg-[#000000] text-[#444444] -ml-2 shrink-0">
+                          <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-medium border-2 border-black bg-[#000000] text-[#444444] -ml-2 shrink-0">
                             +{members.filter((m) => m.teamMemberships.includes(team.name)).length - 5}
                           </div>
                         )}
@@ -740,16 +740,16 @@ export function TeamManagement() {
 
       {/* ── Role Edit Dialog ──────────────────────────────────────────── */}
       <Dialog open={roleEditOpen} onOpenChange={setRoleEditOpen}>
-        <DialogContent className="bg-[#080b14] border-[#21262d] text-[#f0f0f0]">
+        <DialogContent className="bg-black border-white/[0.06] text-white">
           <DialogHeader>
-            <DialogTitle className="text-[#f0f0f0]">Edit Member Role</DialogTitle>
+            <DialogTitle className="text-white">Edit Member Role</DialogTitle>
             <DialogDescription className="text-[#444444]">
               Change the role for this team member.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium text-[#f0f0f0]">Role</label>
+              <label className="text-sm font-medium text-white">Role</label>
               <div className="grid grid-cols-2 gap-2">
                 {['Admin', 'Security Lead', 'Analyst', 'Viewer'].map((r) => (
                   <button
@@ -757,8 +757,8 @@ export function TeamManagement() {
                     onClick={() => setRoleEditValue(r)}
                     className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all ${
                       roleEditValue === r
-                        ? 'bg-[rgba(52,211,153,0.15)] border-[rgba(52,211,153,0.4)] text-[#00ff88]'
-                        : 'bg-[#050710] border-[#21262d] text-[#444444] hover:border-[#30363d]'
+                        ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
+                        : 'bg-[#0a0a0a] border-white/[0.06] text-[#444444] hover:border-white/[0.08]'
                     }`}
                   >
                     {r}
@@ -768,10 +768,10 @@ export function TeamManagement() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRoleEditOpen(false)} className="border-[#21262d] text-[#444444] hover:bg-[#050710]">
+            <Button variant="outline" onClick={() => setRoleEditOpen(false)} className="border-white/[0.06] text-[#444444] hover:bg-[#0a0a0a]">
               Cancel
             </Button>
-            <Button onClick={handleRoleChange} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+            <Button onClick={handleRoleChange} className="bg-white hover:bg-white/90 text-black font-semibold">
               Save
             </Button>
           </DialogFooter>

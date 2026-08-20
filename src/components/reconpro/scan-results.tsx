@@ -37,7 +37,7 @@ const severityColors: Record<string, string> = {
   critical: 'bg-[#ff3355]/15 text-[#ff3355] border-[#ff3355]/30',
   high: 'bg-[#ff8844]/15 text-[#ff8844] border-[#ff8844]/30',
   medium: 'bg-[#ffaa00]/15 text-[#ffaa00] border-[#ffaa00]/30',
-  low: 'bg-[#22c55e]/15 text-[#22c55e] border-[#22c55e]/30',
+  low: 'bg-[#00ff88]/15 text-[#00ff88] border-[#00ff88]/30',
   info: 'bg-[#6b7280]/15 text-[#6b7280] border-[#6b7280]/30',
 };
 
@@ -45,7 +45,7 @@ const severityGlow: Record<string, string> = {
   critical: 'text-glow-red text-[#ff3355]',
   high: 'text-[#ff8844]',
   medium: 'text-[#ffaa00]',
-  low: 'text-[#22c55e]',
+  low: 'text-[#00ff88]',
   info: 'text-[#6b7280]',
 };
 
@@ -115,12 +115,12 @@ export function ScanResults({ result }: ScanResultsProps) {
                 { label: 'Critical', value: result.critical, color: '#ff3355' },
                 { label: 'High', value: result.high, color: '#ff8844' },
                 { label: 'Medium', value: result.medium, color: '#ffaa00' },
-                { label: 'Low', value: result.low, color: '#22c55e' },
+                { label: 'Low', value: result.low, color: '#00ff88' },
                 { label: 'Info', value: result.info, color: '#6b7280' },
-                { label: 'Total Findings', value: result.totalVulns, color: '#06b6d4' },
+                { label: 'Total Findings', value: result.totalVulns, color: '#44aaff' },
               ].map((stat) => (
                 <div key={stat.label} className="p-3 rounded-lg bg-white/[0.015]">
-                  <div className="text-[11px] text-[#555555] mb-1">{stat.label}</div>
+                  <div className="text-[11px] text-[#444444] mb-1">{stat.label}</div>
                   <div className="text-xl font-semibold font-mono" style={{ color: stat.color }}>
                     {stat.value}
                   </div>
@@ -169,7 +169,7 @@ export function ScanResults({ result }: ScanResultsProps) {
       <div className="bento-tile p-5">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-[15px] font-medium text-white flex items-center gap-2">
-            <Bug className="w-5 h-5 text-[#06b6d4]" />
+            <Bug className="w-5 h-5 text-[#44aaff]" />
             Security Findings
           </h3>
           <span className="text-xs text-muted-foreground font-mono">{result.findings.length} items</span>

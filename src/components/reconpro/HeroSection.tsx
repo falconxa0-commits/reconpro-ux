@@ -121,7 +121,7 @@ export default function HeroSection() {
             <code className="font-mono text-sm">Get Started</code>
             <button
               onClick={copyUrl}
-              className={`ml-1 p-1 rounded-md transition-all duration-300 hover:bg-black/10 ${copied ? "text-green-500" : "text-black/30"}`}
+              className={`ml-1 p-1 rounded-md transition-all duration-300 hover:bg-black/10 ${copied ? "text-[#00ff88]" : "text-black/30"}`}
               aria-label="Copy documentation URL"
             >
               {copied ? (

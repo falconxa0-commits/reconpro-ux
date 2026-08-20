@@ -71,7 +71,7 @@ function SeverityDonut({ data }: { data: { name: string; value: number; color: s
           strokeDashoffset={d.offset} strokeLinecap="round" opacity={0.7} />
       ))}
       <text x="60" y="55" textAnchor="middle" fill="#f0f0f0" fontSize="20" fontWeight="bold" fontFamily="var(--font-heading)">{total}</text>
-      <text x="60" y="70" textAnchor="middle" fill="#555555" fontSize="7" fontFamily="var(--font-body)" letterSpacing="0.12em">FINDINGS</text>
+      <text x="60" y="70" textAnchor="middle" fill="#444444" fontSize="7" fontFamily="var(--font-body)" letterSpacing="0.12em">FINDINGS</text>
     </svg>
   );
 }
@@ -128,7 +128,7 @@ function StatCard({ icon: Icon, label, value, color, subValue, onClick }: {
 
 export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboardProps) {
   const score = stats?.avgRiskScore ?? 0;
-  const scoreColor = score >= 70 ? '#ef4444' : score >= 40 ? '#eab308' : '#22c55e';
+  const scoreColor = score >= 70 ? '#ff3355' : score >= 40 ? '#d29922' : '#00ff88';
   const hasData = stats && stats.totalScans > 0;
 
   if (!hasData) return <EmptyDashboard onNavigate={onNavigate} />;
@@ -188,8 +188,8 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
         </motion.div>
 
         <StatCard icon={BarChart3} label="Total Scans" value={stats?.totalScans ?? 0} color="#a3a3a3" subValue="all time" onClick={() => onNavigate('history')} />
-        <StatCard icon={ShieldAlert} label="Critical" value={stats?.criticalFindings ?? 0} color="#ef4444" onClick={() => onNavigate('threats')} />
-        <StatCard icon={Zap} label="Findings" value={stats?.totalFindings ?? 0} color="#eab308" onClick={() => onNavigate('radar')} />
+        <StatCard icon={ShieldAlert} label="Critical" value={stats?.criticalFindings ?? 0} color="#ff3355" onClick={() => onNavigate('threats')} />
+        <StatCard icon={Zap} label="Findings" value={stats?.totalFindings ?? 0} color="#d29922" onClick={() => onNavigate('radar')} />
         <StatCard icon={TrendingUp} label="High" value={stats?.highFindings ?? 0} color="#f97316" onClick={() => onNavigate('threats')} />
       </div>
 
@@ -216,10 +216,10 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
           <div className="panel p-4 flex-1 flex items-center justify-center">
             <div className="w-full max-w-[110px]">
               <SeverityDonut data={[
-                { name: 'Critical', value: stats?.criticalFindings ?? 0, color: '#ef4444' },
+                { name: 'Critical', value: stats?.criticalFindings ?? 0, color: '#ff3355' },
                 { name: 'High', value: stats?.highFindings ?? 0, color: '#f97316' },
-                { name: 'Medium', value: stats?.mediumFindings ?? 0, color: '#eab308' },
-                { name: 'Low', value: stats?.lowFindings ?? 0, color: '#22c55e' },
+                { name: 'Medium', value: stats?.mediumFindings ?? 0, color: '#d29922' },
+                { name: 'Low', value: stats?.lowFindings ?? 0, color: '#00ff88' },
                 { name: 'Info', value: stats?.infoFindings ?? 0, color: '#525252' },
               ]} />
             </div>
@@ -231,7 +231,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
             </div>
             <div className="space-y-0 max-h-[140px] overflow-y-auto scrollbar-none">
               {recentScans.slice(0, 4).map((scan) => {
-                const severityColors: Record<string, string> = { critical: '#ef4444', high: '#eab308', low: '#22c55e' };
+                const severityColors: Record<string, string> = { critical: '#ff3355', high: '#d29922', low: '#00ff88' };
                 return (
                   <ActivityItem
                     key={scan.id}
@@ -275,7 +275,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
                   <tr key={scan.id} className="border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors cursor-pointer group" onClick={() => onNavigate('surface')}>
                     <td className="py-3 pr-4 text-[12px] font-mono text-neutral-500 group-hover:text-neutral-300 transition-colors">{scan.target.domain}</td>
                     <td className="py-3 pr-4">
-                      <span className="inline-flex items-center gap-1.5 text-[12px] font-mono font-semibold" style={{ color: scan.riskScore > 70 ? '#ef4444' : scan.riskScore > 40 ? '#eab308' : '#22c55e' }}>{scan.riskScore}</span>
+                      <span className="inline-flex items-center gap-1.5 text-[12px] font-mono font-semibold" style={{ color: scan.riskScore > 70 ? '#ff3355' : scan.riskScore > 40 ? '#d29922' : '#00ff88' }}>{scan.riskScore}</span>
                     </td>
                     <td className="py-3 pr-4 text-[12px] text-neutral-600">{scan.totalVulns}</td>
                     <td className="py-3 text-[11px] text-neutral-700 font-mono">{timeAgo(scan.startedAt)}</td>
@@ -287,13 +287,13 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
         )}
       </motion.div>
 
-      {/* Quick Actions */
+      {/* Quick Actions */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
         {[
           { label: 'New Scan', icon: Zap, color: '#ffffff', view: 'scan' },
           { label: 'Compliance', icon: Shield, color: '#a3a3a3', view: 'compliance' },
-          { label: 'Threat Intel', icon: ShieldAlert, color: '#ef4444', view: 'threats' },
-          { label: 'Monitoring', icon: Activity, color: '#22c55e', view: 'monitoring' },
+          { label: 'Threat Intel', icon: ShieldAlert, color: '#ff3355', view: 'threats' },
+          { label: 'Monitoring', icon: Activity, color: '#00ff88', view: 'monitoring' },
         ].map((action) => {
           const ActionIcon = action.icon;
           return (
@@ -309,7 +309,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate }: BentoDashboar
         })}
       </div>
 
-      {/* System Status */
+      {/* System Status */}
       <motion.div variants={fadeUp} className="mt-3 flex items-center justify-between panel px-4 py-3">
         <div className="flex items-center gap-2">
           <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />

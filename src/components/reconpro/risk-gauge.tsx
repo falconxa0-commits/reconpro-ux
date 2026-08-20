@@ -39,7 +39,7 @@ export function RiskGauge({ value, size = 180, label }: RiskGaugeProps) {
 
     // Gradient arc
     const gradient = ctx.createLinearGradient(cx - radius, cy, cx + radius, cy);
-    gradient.addColorStop(0, '#22c55e');
+    gradient.addColorStop(0, '#00ff88');
     gradient.addColorStop(0.3, '#ffaa00');
     gradient.addColorStop(0.6, '#ff8844');
     gradient.addColorStop(1, '#ff3355');

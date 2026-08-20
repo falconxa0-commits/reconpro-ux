@@ -92,8 +92,8 @@ function getSeverityConfig(severity: string) {
     case 'critical':
       return {
         color: '#ff3355',
-        bg: 'rgba(244,63,94,0.15)',
-        border: 'rgba(244,63,94,0.3)',
+        bg: 'rgba(255,51,85,0.15)',
+        border: 'rgba(255,51,85,0.3)',
         icon: XCircle,
         label: 'CRITICAL',
       };
@@ -135,13 +135,13 @@ function getSeverityConfig(severity: string) {
 function getScheduleColor(schedule: string): string {
   switch (schedule) {
     case 'hourly':
-      return 'bg-[rgba(52,211,153,0.15)] text-[#00ff88] border-[rgba(52,211,153,0.3)]';
+      return 'bg-[rgba(0,255,136,0.15)] text-[#00ff88] border-[rgba(0,255,136,0.3)]';
     case 'daily':
       return 'bg-[rgba(88,166,255,0.15)] text-[#44aaff] border-[rgba(88,166,255,0.3)]';
     case 'weekly':
       return 'bg-[rgba(210,153,34,0.15)] text-[#d29922] border-[rgba(210,153,34,0.3)]';
     case 'monthly':
-      return 'bg-[rgba(168,85,247,0.15)] text-[#888888] border-[rgba(168,85,247,0.3)]';
+      return 'bg-[rgba(168,85,247,0.15)] text-[#666666] border-[rgba(168,85,247,0.3)]';
     default:
       return 'bg-[rgba(139,148,158,0.15)] text-[#444444] border-[rgba(139,148,158,0.3)]';
   }
@@ -184,11 +184,11 @@ function getScanTypeIcon(type: string) {
 function getAlertStatusConfig(status: string) {
   switch (status) {
     case 'new':
-      return { color: '#ff3355', bg: 'rgba(244,63,94,0.15)', label: 'NEW' };
+      return { color: '#ff3355', bg: 'rgba(255,51,85,0.15)', label: 'NEW' };
     case 'acknowledged':
       return { color: '#d29922', bg: 'rgba(210,153,34,0.15)', label: 'ACK' };
     case 'resolved':
-      return { color: '#00ff88', bg: 'rgba(52,211,153,0.15)', label: 'FIXED' };
+      return { color: '#00ff88', bg: 'rgba(0,255,136,0.15)', label: 'FIXED' };
     default:
       return { color: '#333333', bg: 'rgba(72,79,88,0.15)', label: 'N/A' };
   }
@@ -318,9 +318,9 @@ export function MonitoringPanel() {
   if (error) {
     return (
       <div className="w-full flex flex-col items-center justify-center gap-3 py-20">
-        <AlertCircle className="h-8 w-8 text-red-400" />
-        <p className="text-sm text-red-400">{error}</p>
-        <Button variant="outline" size="sm" onClick={fetchData} className="border-zinc-700 text-white hover:bg-zinc-800">
+        <AlertCircle className="h-8 w-8 text-[#ff3355]" />
+        <p className="text-sm text-[#ff3355]">{error}</p>
+        <Button variant="outline" size="sm" onClick={fetchData} className="border-white/[0.08] text-white hover:bg-white/[0.05]">
           <RefreshCw className="mr-2 h-3.5 w-3.5" />
           Retry
         </Button>
@@ -338,49 +338,49 @@ export function MonitoringPanel() {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-[rgba(52,211,153,0.1)] border border-[rgba(52,211,153,0.2)]">
+          <div className="p-2 rounded-lg bg-[rgba(0,255,136,0.1)] border border-[rgba(0,255,136,0.2)]">
             <Activity className="w-5 h-5 text-[#00ff88]" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-[#f0f0f0]">Continuous Monitoring</h2>
+            <h2 className="text-xl font-bold text-white">Continuous Monitoring</h2>
             <p className="text-sm text-[#444444]">Automated attack surface surveillance and policy management</p>
           </div>
         </div>
         <Dialog open={addOpen} onOpenChange={setAddOpen}>
           <DialogTrigger asChild>
-            <Button className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold gap-2">
+            <Button className="bg-white hover:bg-white/90 text-black font-semibold gap-2">
               <Plus className="w-4 h-4" />
               New Policy
             </Button>
           </DialogTrigger>
-          <DialogContent className="bg-[#080b14] border-[#21262d] text-[#f0f0f0]">
+          <DialogContent className="bg-black border-white/[0.06] text-white">
             <DialogHeader>
-              <DialogTitle className="text-[#f0f0f0]">Create Monitoring Policy</DialogTitle>
+              <DialogTitle className="text-white">Create Monitoring Policy</DialogTitle>
               <DialogDescription className="text-[#444444]">
                 Set up automated monitoring for a target domain.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Policy Name</label>
+                <label className="text-sm font-medium text-white">Policy Name</label>
                 <Input
                   placeholder="e.g. Production Infrastructure"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  className="bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88]"
+                  className="bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15]"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Target Domain</label>
+                <label className="text-sm font-medium text-white">Target Domain</label>
                 <Input
                   placeholder="e.g. example.com"
                   value={newDomain}
                   onChange={(e) => setNewDomain(e.target.value)}
-                  className="bg-[#050710] border-[#21262d] text-[#f0f0f0] placeholder:text-[#333333] focus:border-[#00ff88]"
+                  className="bg-[#0a0a0a] border-white/[0.06] text-white placeholder:text-[#333333] focus:border-white/[0.15]"
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Schedule</label>
+                <label className="text-sm font-medium text-white">Schedule</label>
                 <div className="grid grid-cols-4 gap-2">
                   {(['hourly', 'daily', 'weekly', 'monthly'] as const).map((s) => (
                     <button
@@ -388,8 +388,8 @@ export function MonitoringPanel() {
                       onClick={() => setNewSchedule(s)}
                       className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all capitalize ${
                         newSchedule === s
-                          ? 'bg-[rgba(52,211,153,0.15)] border-[rgba(52,211,153,0.4)] text-[#00ff88]'
-                          : 'bg-[#050710] border-[#21262d] text-[#444444] hover:border-[#30363d]'
+                          ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
+                          : 'bg-[#0a0a0a] border-white/[0.06] text-[#444444] hover:border-white/[0.08]'
                       }`}
                     >
                       {s}
@@ -398,7 +398,7 @@ export function MonitoringPanel() {
                 </div>
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#f0f0f0]">Scan Type</label>
+                <label className="text-sm font-medium text-white">Scan Type</label>
                 <div className="grid grid-cols-2 gap-2">
                   {['full', 'quick', 'stealth'].map((t) => (
                     <button
@@ -406,8 +406,8 @@ export function MonitoringPanel() {
                       onClick={() => setNewScanType(t)}
                       className={`px-3 py-2 rounded-lg text-sm font-medium border transition-all capitalize ${
                         newScanType === t
-                          ? 'bg-[rgba(52,211,153,0.15)] border-[rgba(52,211,153,0.4)] text-[#00ff88]'
-                          : 'bg-[#050710] border-[#21262d] text-[#444444] hover:border-[#30363d]'
+                          ? 'bg-[rgba(0,255,136,0.15)] border-[rgba(0,255,136,0.4)] text-[#00ff88]'
+                          : 'bg-[#0a0a0a] border-white/[0.06] text-[#444444] hover:border-white/[0.08]'
                       }`}
                     >
                       {t}
@@ -417,10 +417,10 @@ export function MonitoringPanel() {
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setAddOpen(false)} className="border-[#21262d] text-[#444444] hover:bg-[#050710]">
+              <Button variant="outline" onClick={() => setAddOpen(false)} className="border-white/[0.06] text-[#444444] hover:bg-[#0a0a0a]">
                 Cancel
               </Button>
-              <Button onClick={handleNewPolicy} className="bg-[#00ff88] hover:bg-[#00cc6a] text-[#0a0d14] font-semibold">
+              <Button onClick={handleNewPolicy} className="bg-white hover:bg-white/90 text-black font-semibold">
                 Create Policy
               </Button>
             </DialogFooter>
@@ -439,13 +439,13 @@ export function MonitoringPanel() {
           <motion.div
             key={stat.label}
             whileHover={cardHover}
-            className="rounded-xl border border-[#21262d] bg-[#080b14] p-4"
+            className="rounded-xl border border-white/[0.06] bg-black p-4"
           >
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs font-medium text-[#444444] uppercase tracking-wider">{stat.label}</span>
               <stat.icon className="w-4 h-4" style={{ color: stat.color }} />
             </div>
-            <p className="text-2xl font-bold text-[#f0f0f0]">{stat.value}</p>
+            <p className="text-2xl font-bold text-white">{stat.value}</p>
             <p className="text-[10px] text-[#333333] mt-1">{stat.subtitle}</p>
           </motion.div>
         ))}
@@ -454,11 +454,11 @@ export function MonitoringPanel() {
       {/* ── Policy Cards ────────────────────────────────────────────────── */}
       <motion.div variants={itemVariants}>
         <div className="flex items-center justify-between mb-3">
-          <h3 className="text-sm font-semibold text-[#f0f0f0]">Monitoring Policies</h3>
+          <h3 className="text-sm font-semibold text-white">Monitoring Policies</h3>
           <span className="text-[10px] text-[#333333] uppercase tracking-wider">{policies.length} policies</span>
         </div>
         {policies.length === 0 ? (
-          <div className="rounded-xl border border-[#21262d] bg-[#080b14] p-8 text-center">
+          <div className="rounded-xl border border-white/[0.06] bg-black p-8 text-center">
             <Shield className="w-8 h-8 text-[#333333] mx-auto mb-3" />
             <p className="text-sm text-[#444444]">No policies yet. Create one to start monitoring.</p>
           </div>
@@ -472,7 +472,7 @@ export function MonitoringPanel() {
                   key={policy.id}
                   variants={itemVariants}
                   whileHover={cardHover}
-                  className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden relative"
+                  className="rounded-xl border border-white/[0.06] bg-black overflow-hidden relative"
                 >
                   {/* Status indicator bar */}
                   <div className="absolute top-0 left-0 right-0 h-0.5 opacity-60" style={{ backgroundColor: statusCfg.color }} />
@@ -488,7 +488,7 @@ export function MonitoringPanel() {
                           <ScanIcon className="w-5 h-5" style={{ color: statusCfg.color }} />
                         </div>
                         <div>
-                          <h4 className="text-sm font-bold text-[#f0f0f0]">{policy.name}</h4>
+                          <h4 className="text-sm font-bold text-white">{policy.name}</h4>
                           <div className="flex items-center gap-2 mt-0.5">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${getScheduleColor(policy.schedule)}`}>
                               <Timer className="w-2.5 h-2.5 mr-1" />
@@ -505,14 +505,14 @@ export function MonitoringPanel() {
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => handleRunNow(policy.id)}
-                          className="p-1.5 rounded-md border border-[#21262d] text-[#444444] hover:text-[#00ff88] hover:border-[rgba(52,211,153,0.3)] hover:bg-[rgba(52,211,153,0.1)] transition-all"
+                          className="p-1.5 rounded-md border border-white/[0.06] text-[#444444] hover:text-[#00ff88] hover:border-white/[0.1] hover:bg-white/[0.03] transition-all"
                           title="Run now"
                         >
                           <Play className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => deletePolicy(policy.id)}
-                          className="p-1.5 rounded-md border border-[#21262d] text-[#444444] hover:text-[#ff3355] hover:border-[rgba(244,63,94,0.3)] hover:bg-[rgba(244,63,94,0.1)] transition-all"
+                          className="p-1.5 rounded-md border border-white/[0.06] text-[#444444] hover:text-[#ff3355] hover:border-white/[0.1] hover:bg-white/[0.03] transition-all"
                           title="Delete"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -529,14 +529,14 @@ export function MonitoringPanel() {
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       <div className="space-y-1">
                         <p className="text-[10px] text-[#333333] uppercase tracking-wider">Target</p>
-                        <div className="flex items-center gap-1.5 text-xs text-[#f0f0f0]">
+                        <div className="flex items-center gap-1.5 text-xs text-white">
                           <Globe className="w-3 h-3 text-[#444444]" />
                           <span className="font-mono text-[11px]">{policy.targetDomain}</span>
                         </div>
                       </div>
                       <div className="space-y-1">
                         <p className="text-[10px] text-[#333333] uppercase tracking-wider">Scan Type</p>
-                        <p className="text-xs text-[#f0f0f0] capitalize">{policy.scanType}</p>
+                        <p className="text-xs text-white capitalize">{policy.scanType}</p>
                       </div>
                     </div>
 
@@ -559,15 +559,15 @@ export function MonitoringPanel() {
                     </div>
 
                     {/* Bottom stats */}
-                    <div className="flex items-center justify-between pt-3 border-t border-[#161b22]">
+                    <div className="flex items-center justify-between pt-3 border-t border-white/[0.06]">
                       <div className="flex items-center gap-3">
                         <div className="text-center">
-                          <p className="text-sm font-bold text-[#f0f0f0]">{policy.runCount.toLocaleString()}</p>
+                          <p className="text-sm font-bold text-white">{policy.runCount.toLocaleString()}</p>
                           <p className="text-[10px] text-[#333333]">Runs</p>
                         </div>
-                        <div className="w-px h-6 bg-[#21262d]" />
+                        <div className="w-px h-6 bg-white/[0.06]" />
                         <div className="text-center">
-                          <p className="text-sm font-bold text-[#f0f0f0]">{policy.findings}</p>
+                          <p className="text-sm font-bold text-white">{policy.findings}</p>
                           <p className="text-[10px] text-[#333333]">Findings</p>
                         </div>
                       </div>
@@ -585,18 +585,18 @@ export function MonitoringPanel() {
       </motion.div>
 
       {/* ── Schedule Timeline ─────────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden">
-        <div className="p-4 border-b border-[#21262d] flex items-center gap-3">
+      <motion.div variants={itemVariants} className="rounded-xl border border-white/[0.06] bg-black overflow-hidden">
+        <div className="p-4 border-b border-white/[0.06] flex items-center gap-3">
           <div className="p-1.5 rounded-md bg-[rgba(88,166,255,0.1)]">
             <Calendar className="w-4 h-4 text-[#44aaff]" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-[#f0f0f0]">Upcoming Schedule</h3>
+            <h3 className="text-sm font-semibold text-white">Upcoming Schedule</h3>
             <p className="text-xs text-[#444444]">Next scheduled monitoring runs</p>
           </div>
         </div>
 
-        <div className="divide-y divide-[#161b22]">
+        <div className="divide-y divide-white/[0.05]">
           {scheduledRuns.length === 0 ? (
             <div className="px-4 py-8 text-center">
               <p className="text-xs text-[#333333]">No upcoming scheduled runs</p>
@@ -609,16 +609,16 @@ export function MonitoringPanel() {
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: idx * 0.06, duration: 0.3 }}
-                  className="flex items-center gap-3 px-4 py-3 hover:bg-[rgba(52,211,153,0.02)] transition-colors"
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-[rgba(0,255,136,0.02)] transition-colors"
                 >
                   <div className="flex flex-col items-center shrink-0">
                     <div className="w-2 h-2 rounded-full bg-[#44aaff] animate-pulse" />
                     {idx < scheduledRuns.length - 1 && (
-                      <div className="w-px h-6 bg-[#21262d] mt-1" />
+                      <div className="w-px h-6 bg-white/[0.06] mt-1" />
                     )}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-[#f0f0f0]">{run.policyName}</p>
+                    <p className="text-xs font-semibold text-white">{run.policyName}</p>
                     <p className="text-[10px] text-[#333333] capitalize">{run.type}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -645,14 +645,14 @@ export function MonitoringPanel() {
       </motion.div>
 
       {/* ── Alert History Table ──────────────────────────────────────────── */}
-      <motion.div variants={itemVariants} className="rounded-xl border border-[#21262d] bg-[#080b14] overflow-hidden">
-        <div className="p-4 border-b border-[#21262d] flex items-center justify-between">
+      <motion.div variants={itemVariants} className="rounded-xl border border-white/[0.06] bg-black overflow-hidden">
+        <div className="p-4 border-b border-white/[0.06] flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-1.5 rounded-md bg-[rgba(251,191,36,0.1)]">
               <AlertTriangle className="w-4 h-4 text-[#ff8844]" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-[#f0f0f0]">Alert History</h3>
+              <h3 className="text-sm font-semibold text-white">Alert History</h3>
               <p className="text-xs text-[#444444]">Alerts from monitoring policies (last 7 days)</p>
             </div>
           </div>
@@ -669,7 +669,7 @@ export function MonitoringPanel() {
           ) : (
             <Table>
               <TableHeader>
-                <TableRow className="border-b border-[#21262d] hover:bg-transparent">
+                <TableRow className="border-b border-white/[0.06] hover:bg-transparent">
                   <TableHead className="text-[#444444] font-medium text-xs uppercase tracking-wider">Severity</TableHead>
                   <TableHead className="text-[#444444] font-medium text-xs uppercase tracking-wider hidden sm:table-cell">Time</TableHead>
                   <TableHead className="text-[#444444] font-medium text-xs uppercase tracking-wider">Policy</TableHead>
@@ -690,7 +690,7 @@ export function MonitoringPanel() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ delay: idx * 0.05 }}
-                        className="border-b border-[#161b22] hover:bg-[rgba(52,211,153,0.02)] transition-colors"
+                        className="border-b border-white/[0.06] hover:bg-[rgba(0,255,136,0.02)] transition-colors"
                       >
                         <TableCell className="py-3">
                           <div
@@ -712,7 +712,7 @@ export function MonitoringPanel() {
                           </div>
                         </TableCell>
                         <TableCell className="py-3">
-                          <span className="text-xs text-[#f0f0f0]">{alert.policy}</span>
+                          <span className="text-xs text-white">{alert.policy}</span>
                         </TableCell>
                         <TableCell className="py-3">
                           <p className="text-xs text-[#444444] max-w-[300px] truncate">{alert.description}</p>

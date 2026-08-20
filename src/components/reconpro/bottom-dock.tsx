@@ -25,11 +25,11 @@ interface BottomDockProps {
 
 const PRIMARY_DOCK: DockItem[] = [
   { id: 'dashboard', icon: LayoutDashboard, label: 'Overview', color: '#ffffff' },
-  { id: 'scan', icon: Radar, label: 'Scan', color: '#5ba8d4' },
-  { id: 'surface', icon: Globe, label: 'Attack Surface', color: '#e8b33d' },
-  { id: 'threats', icon: AlertTriangle, label: 'Threats', color: '#e84057' },
-  { id: 'advisor', icon: Brain, label: 'AI Advisor', color: '#3dd68c' },
-  { id: 'compliance', icon: Shield, label: 'Compliance', color: '#5ba8d4' },
+  { id: 'scan', icon: Radar, label: 'Scan', color: '#44aaff' },
+  { id: 'surface', icon: Globe, label: 'Attack Surface', color: '#d29922' },
+  { id: 'threats', icon: AlertTriangle, label: 'Threats', color: '#ff3355' },
+  { id: 'advisor', icon: Brain, label: 'AI Advisor', color: '#00ff88' },
+  { id: 'compliance', icon: Shield, label: 'Compliance', color: '#44aaff' },
 ];
 
 const SECONDARY_DOCK: DockItem[] = [
@@ -85,7 +85,7 @@ function ExpandedMenu({
               className={`flex items-center gap-3 px-3 py-2 rounded-lg text-[12px] font-medium transition-all duration-150 text-left
                 ${isActive
                   ? 'bg-white/[0.06] text-white'
-                  : 'text-[#666666] hover:bg-white/[0.03] hover:text-[#aaaaaa]'
+                  : 'text-[#666666] hover:bg-white/[0.03] hover:text-[#a3a3a3]'
                 }`}
             >
               <Icon className="w-3.5 h-3.5 flex-shrink-0" style={item.color ? { color: isActive ? item.color : undefined } : undefined} />
@@ -128,7 +128,7 @@ export function BottomDock({ activeView, onViewChange }: BottomDockProps) {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 4 }}
             transition={{ duration: 0.15 }}
-            className="absolute bottom-full mb-2 px-2.5 py-1 rounded-md bg-[#111] border border-white/[0.08] text-[11px] text-[#888888] font-medium whitespace-nowrap"
+            className="absolute bottom-full mb-2 px-2.5 py-1 rounded-md bg-[#0a0a0a] border border-white/[0.08] text-[11px] text-[#666666] font-medium whitespace-nowrap"
             style={{ pointerEvents: 'none' }}
           >
             {PRIMARY_DOCK.find(d => d.id === hoveredItem)?.label || SECONDARY_DOCK.find(d => d.id === hoveredItem)?.label}

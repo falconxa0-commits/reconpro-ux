@@ -116,7 +116,7 @@ export default function SettingsPage() {
     return (
       <div>
         <div className="page-header">
-          <div className="page-header-icon"><div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" /></div></div>
+          <div className="page-header-icon"><div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" /></div>
           <div><h1>Settings</h1><p>Manage your account and preferences.</p></div>
         </div>
         <div className="grid grid-cols-1 gap-3 max-w-2xl">
@@ -140,10 +140,10 @@ export default function SettingsPage() {
         <SettingsSection icon={User} title="Profile" description="Manage your account information">
           <form onSubmit={handleSave} className="space-y-4">
             {error && (
-              <div className="rounded-lg border border-[#ef4444]/20 bg-[#ef4444]/[0.04] px-4 py-3 text-[13px] text-[#fca5a5]">{error}</div>
+              <div className="rounded-lg border border-[#ff3355]/20 bg-[#ff3355]/[0.04] px-4 py-3 text-[13px] text-[#ff6677]">{error}</div>
             )}
             {saved && (
-              <div className="rounded-lg border border-[#22c55e]/20 bg-[#22c55e]/[0.04] px-4 py-3 text-[13px] text-[#86efac] flex items-center gap-2">
+              <div className="rounded-lg border border-[#00ff88]/20 bg-[#00ff88]/[0.04] px-4 py-3 text-[13px] text-[#00ff88] flex items-center gap-2">
                 <Check className="h-3.5 w-3.5" />Changes saved successfully.</div>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -188,7 +188,7 @@ export default function SettingsPage() {
                     <p className="text-[13px] font-medium text-neutral-300">{key.name}</p>
                     <p className="text-[11px] text-neutral-600 font-mono mt-1">{key.prefix}</p>
                   </div>
-                  <span className="text-[11px] font-medium text-[#22c55e]">{key.status}</span>
+                  <span className="text-[11px] font-medium text-[#00ff88]">{key.status}</span>
                 </div>
               ))}
             </div>

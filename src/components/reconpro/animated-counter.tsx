@@ -99,7 +99,7 @@ export function RiskScoreGauge({ score, size = 120 }: { score: number; size?: nu
         <circle
           cx={size/2} cy={size/2} r={radius}
           fill="none"
-          stroke="#21262d"
+          stroke="rgba(255,255,255,0.06)"
           strokeWidth="8"
         />
         {/* Score arc */}

@@ -42,7 +42,7 @@ const SEV_COLORS: Record<string, string> = {
   critical: '#ff3355',
   high: '#ff8844',
   medium: '#ffaa00',
-  low: '#22c55e',
+  low: '#00ff88',
   info: '#6b7280',
 };
 
@@ -781,14 +781,14 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
                 hoveredBlip.severity === 'critical' ? 'bg-[#ff3355]/15 text-[#ff3355] border-[#ff3355]/30' :
                 hoveredBlip.severity === 'high' ? 'bg-[#ff8844]/15 text-[#ff8844] border-[#ff8844]/30' :
                 hoveredBlip.severity === 'medium' ? 'bg-[#ffaa00]/15 text-[#ffaa00] border-[#ffaa00]/30' :
-                hoveredBlip.severity === 'low' ? 'bg-[#22c55e]/15 text-[#22c55e] border-[#22c55e]/30' :
+                hoveredBlip.severity === 'low' ? 'bg-[#00ff88]/15 text-[#00ff88] border-[#00ff88]/30' :
                 'bg-[#6b7280]/15 text-[#6b7280] border-[#6b7280]/30'
               }`}>
                 {hoveredBlip.severity.toUpperCase()}
               </Badge>
               <span className="text-[10px] text-muted-foreground">{hoveredBlip.category}</span>
-              <span className="text-[10px] text-[#06b6d4] font-mono">BRG {Math.floor(hoveredBlip.angle)}\u00B0</span>
-              <span className="text-[10px] text-[#06b6d4] font-mono">RNG {(hoveredBlip.distance * 100).toFixed(0)}%</span>
+              <span className="text-[10px] text-[#44aaff] font-mono">BRG {Math.floor(hoveredBlip.angle)}\u00B0</span>
+              <span className="text-[10px] text-[#44aaff] font-mono">RNG {(hoveredBlip.distance * 100).toFixed(0)}%</span>
             </div>
             <div className="flex items-center gap-2 mt-1.5">
               <span className="text-[10px] text-muted-foreground">Signal:</span>
@@ -828,7 +828,7 @@ export function RadarMap({ findings, domain, isScanning = false, height = 560 }:
             { label: 'Vulns', c: '#ff3355' },
             { label: 'Headers', c: '#ff8844' },
             { label: 'Ports', c: '#ffaa00' },
-            { label: 'SSL', c: '#22c55e' },
+            { label: 'SSL', c: '#00ff88' },
             { label: 'DNS', c: '#a78bfa' },
             { label: 'Subs', c: '#ffaa00' },
             { label: 'Tech', c: '#6b7280' },
