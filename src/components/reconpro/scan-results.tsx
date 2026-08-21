@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Globe, Server, Shield, AlertTriangle, Lock, Wifi, FileText, Bug, ChevronRight, Search, X, ShieldCheck } from 'lucide-react';
+import { Globe, Server, Shield, AlertTriangle, Lock, Wifi, FileText, Bug, ChevronRight, Search, X, ShieldCheck, Globe2, FileCode, Network } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { RiskGauge } from './risk-gauge';
 
@@ -28,6 +28,9 @@ interface ScanResult {
   low: number;
   info: number;
   findings: Finding[];
+  dns?: Record<string, string>[];
+  ssl?: Record<string, string>;
+  headers?: Record<string, string>;
 }
 
 interface ScanResultsProps {
@@ -42,21 +45,13 @@ const severityColors: Record<string, string> = {
   info: 'bg-[#6b7280]/15 text-[#6b7280] border-[#6b7280]/30',
 };
 
-const severityGlow: Record<string, string> = {
-  critical: 'text-glow-red text-[#ff3355]',
-  high: 'text-[#ff8844]',
-  medium: 'text-[#ffaa00]',
-  low: 'text-[#00ff88]',
-  info: 'text-[#6b7280]',
-};
-
 const categoryIcons: Record<string, React.ReactNode> = {
   subdomain: <Globe className="w-4 h-4" />,
   port: <Wifi className="w-4 h-4" />,
   technology: <Server className="w-4 h-4" />,
   ssl: <Lock className="w-4 h-4" />,
-  dns: <Server className="w-4 h-4" />,
-  header: <FileText className="w-4 h-4" />,
+  dns: <Network className="w-4 h-4" />,
+  header: <FileCode className="w-4 h-4" />,
   vulnerability: <Bug className="w-4 h-4" />,
   osint: <Search className="w-4 h-4" />,
   security: <Shield className="w-4 h-4" />,
@@ -87,8 +82,26 @@ const item = {
   show: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 };
 
+type ResultTab = 'summary' | 'findings' | 'dns' | 'ssl' | 'headers';
+
+const TABS: { id: ResultTab; label: string; icon: React.ElementType }[] = [
+  { id: 'summary', label: 'Summary', icon: Shield },
+  { id: 'findings', label: 'Findings', icon: Bug },
+  { id: 'dns', label: 'DNS', icon: Network },
+  { id: 'ssl', label: 'SSL', icon: Lock },
+  { id: 'headers', label: 'Headers', icon: FileCode },
+];
+
 export function ScanResults({ result }: ScanResultsProps) {
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [activeTab, setActiveTab] = useState<ResultTab>('summary');
+
+  // Group findings by category for DNS/SSL/Header tabs
+  const dnsFindings = result.findings.filter(f => f.category === 'dns' || f.category === 'subdomain');
+  const sslFindings = result.findings.filter(f => f.category === 'ssl');
+  const headerFindings = result.findings.filter(f => f.category === 'header');
+  const vulnFindings = result.findings.filter(f => f.category === 'vulnerability' || f.category === 'security');
+  const otherFindings = result.findings.filter(f => !['dns', 'subdomain', 'ssl', 'header', 'vulnerability', 'security'].includes(f.category));
 
   return (
     <motion.div
@@ -100,10 +113,7 @@ export function ScanResults({ result }: ScanResultsProps) {
       {/* Risk Overview Header */}
       <div className="bento-tile p-5">
         <div className="flex flex-col lg:flex-row items-center gap-8">
-          {/* Risk Gauge */}
           <RiskGauge value={result.riskScore} size={200} label="Overall Risk" />
-
-          {/* Stats Grid */}
           <div className="flex-1 w-full">
             <div className="flex items-center gap-3 mb-4">
               <Globe className="w-5 h-5 text-[#00ff88]" />
@@ -112,7 +122,6 @@ export function ScanResults({ result }: ScanResultsProps) {
                 {result.status.toUpperCase()}
               </Badge>
             </div>
-
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
               {[
                 { label: 'Critical', value: result.critical, color: '#ff3355' },
@@ -193,52 +202,215 @@ export function ScanResults({ result }: ScanResultsProps) {
         </motion.div>
       )}
 
-      {/* Findings List */}
-      <div className="bento-tile p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-[15px] font-medium text-white flex items-center gap-2">
-            <Bug className="w-5 h-5 text-[#44aaff]" />
-            Security Findings
-          </h3>
-          <span className="text-xs text-muted-foreground font-mono">{result.findings.length} items</span>
+      {/* Tabbed View */}
+      <div className="bento-tile overflow-hidden">
+        {/* Tab Bar */}
+        <div className="flex border-b border-white/[0.05] overflow-x-auto scrollbar-none">
+          {TABS.map((tab) => {
+            const TabIcon = tab.icon;
+            const isActive = activeTab === tab.id;
+            const count = tab.id === 'findings' ? result.findings.length
+              : tab.id === 'dns' ? dnsFindings.length
+              : tab.id === 'ssl' ? sslFindings.length
+              : tab.id === 'headers' ? headerFindings.length
+              : null;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex items-center gap-2 px-5 py-3 text-[13px] font-medium whitespace-nowrap transition-all border-b-2 -mb-px ${
+                  isActive
+                    ? 'text-white border-white bg-white/[0.03]'
+                    : 'text-neutral-600 border-transparent hover:text-neutral-400'
+                }`}
+              >
+                <TabIcon className="w-3.5 h-3.5" />
+                {tab.label}
+                {count !== null && (
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${isActive ? 'bg-white/[0.1] text-white' : 'bg-white/[0.03] text-neutral-600'}`}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
 
-        <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-          <motion.div variants={container} initial="hidden" animate="show">
-            {result.findings.map((finding) => (
-              <motion.div
-                key={finding.id}
-                variants={item}
-                className="p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04] hover:border-white/[0.08] hover:bg-white/[0.02] transition-all"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 p-2 rounded-lg bg-[rgba(255,255,255,0.04)] text-muted-foreground">
-                    {categoryIcons[finding.category] || <Bug className="w-4 h-4" />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap mb-1">
-                      <span className="text-sm font-medium text-[#f0f0f0]">
-                        {finding.title}
-                      </span>
-                      <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[finding.severity]}`}>
-                        {finding.severity.toUpperCase()}
-                      </Badge>
-                      <Badge variant="outline" className="text-[10px] px-2 py-0 border-[rgba(255,255,255,0.08)] text-muted-foreground">
-                        {categoryLabels[finding.category] || finding.category}
-                      </Badge>
+        {/* Tab Content */}
+        <div className="p-5">
+          {/* SUMMARY TAB */}
+          {activeTab === 'summary' && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {dnsFindings.length > 0 && (
+                  <button onClick={() => setActiveTab('dns')} className="panel p-4 text-left hover:border-white/[0.1] transition-all group">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Network className="w-4 h-4 text-neutral-600" />
+                      <span className="text-[11px] text-neutral-600 uppercase tracking-wider">DNS Records</span>
                     </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed mb-2">{finding.description}</p>
-                    {finding.evidence && (
-                      <div className="text-[11px] font-mono text-muted-foreground/70 bg-[rgba(0,0,0,0.3)] px-3 py-1.5 rounded-lg inline-block">
-                        {finding.evidence}
-                      </div>
-                    )}
+                    <p className="text-lg font-semibold font-mono text-white group-hover:text-neutral-200">{dnsFindings.length}</p>
+                    <p className="text-[10px] text-neutral-700 mt-1">View details →</p>
+                  </button>
+                )}
+                {sslFindings.length > 0 && (
+                  <button onClick={() => setActiveTab('ssl')} className="panel p-4 text-left hover:border-white/[0.1] transition-all group">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Lock className="w-4 h-4 text-neutral-600" />
+                      <span className="text-[11px] text-neutral-600 uppercase tracking-wider">SSL/TLS</span>
+                    </div>
+                    <p className="text-lg font-semibold font-mono text-white group-hover:text-neutral-200">{sslFindings.length}</p>
+                    <p className="text-[10px] text-neutral-700 mt-1">View details →</p>
+                  </button>
+                )}
+                {headerFindings.length > 0 && (
+                  <button onClick={() => setActiveTab('headers')} className="panel p-4 text-left hover:border-white/[0.1] transition-all group">
+                    <div className="flex items-center gap-2 mb-2">
+                      <FileCode className="w-4 h-4 text-neutral-600" />
+                      <span className="text-[11px] text-neutral-600 uppercase tracking-wider">HTTP Headers</span>
+                    </div>
+                    <p className="text-lg font-semibold font-mono text-white group-hover:text-neutral-200">{headerFindings.length}</p>
+                    <p className="text-[10px] text-neutral-700 mt-1">View details →</p>
+                  </button>
+                )}
+                {vulnFindings.length > 0 && (
+                  <button onClick={() => setActiveTab('findings')} className="panel p-4 text-left hover:border-white/[0.1] transition-all group">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Bug className="w-4 h-4 text-neutral-600" />
+                      <span className="text-[11px] text-neutral-600 uppercase tracking-wider">Vulnerabilities</span>
+                    </div>
+                    <p className="text-lg font-semibold font-mono text-[#ff3355] group-hover:text-[#ff6677]">{vulnFindings.length}</p>
+                    <p className="text-[10px] text-neutral-700 mt-1">View details →</p>
+                  </button>
+                )}
+              </div>
+              {/* Top critical findings in summary */}
+              {result.findings.filter(f => f.severity === 'critical' || f.severity === 'high').slice(0, 5).map(f => (
+                <div key={f.id} className="p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04]">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[f.severity]}`}>
+                      {f.severity.toUpperCase()}
+                    </Badge>
+                    <span className="text-[13px] font-medium text-neutral-300">{f.title}</span>
                   </div>
-                  <ChevronRight className="w-4 h-4 text-muted-foreground/30 mt-1 flex-shrink-0" />
+                  {f.description && <p className="text-[11px] text-neutral-600 leading-relaxed">{f.description}</p>}
                 </div>
+              ))}
+            </div>
+          )}
+
+          {/* FINDINGS TAB */}
+          {activeTab === 'findings' && (
+            <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1 scrollbar-none">
+              <motion.div variants={container} initial="hidden" animate="show">
+                {result.findings.map((finding) => (
+                  <motion.div
+                    key={finding.id}
+                    variants={item}
+                    className="p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04] hover:border-white/[0.08] hover:bg-white/[0.02] transition-all"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 p-2 rounded-lg bg-[rgba(255,255,255,0.04)] text-neutral-600">
+                        {categoryIcons[finding.category] || <Bug className="w-4 h-4" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          <span className="text-sm font-medium text-[#f0f0f0]">{finding.title}</span>
+                          <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[finding.severity]}`}>
+                            {finding.severity.toUpperCase()}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px] px-2 py-0 border-[rgba(255,255,255,0.08)] text-neutral-600">
+                            {categoryLabels[finding.category] || finding.category}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-neutral-600 leading-relaxed mb-2">{finding.description}</p>
+                        {finding.evidence && (
+                          <div className="text-[11px] font-mono text-neutral-700 bg-[rgba(0,0,0,0.3)] px-3 py-1.5 rounded-lg inline-block truncate max-w-full">
+                            {finding.evidence}
+                          </div>
+                        )}
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-neutral-700 mt-1 flex-shrink-0" />
+                    </div>
+                  </motion.div>
+                ))}
               </motion.div>
-            ))}
-          </motion.div>
+            </div>
+          )}
+
+          {/* DNS TAB */}
+          {activeTab === 'dns' && (
+            <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1 scrollbar-none">
+              {dnsFindings.length === 0 ? (
+                <div className="text-center py-12">
+                  <Network className="w-8 h-8 text-neutral-700 mx-auto mb-3" />
+                  <p className="text-[13px] text-neutral-600">No DNS findings</p>
+                </div>
+              ) : dnsFindings.map((finding) => (
+                <div key={finding.id} className="p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04]">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[finding.severity]}`}>
+                      {finding.severity.toUpperCase()}
+                    </Badge>
+                    <span className="text-[13px] font-medium text-neutral-300">{finding.title}</span>
+                  </div>
+                  <p className="text-[11px] text-neutral-600 leading-relaxed">{finding.description}</p>
+                  {finding.evidence && (
+                    <div className="text-[11px] font-mono text-neutral-700 bg-[rgba(0,0,0,0.3)] px-3 py-1.5 rounded-lg inline-block mt-2">{finding.evidence}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* SSL TAB */}
+          {activeTab === 'ssl' && (
+            <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1 scrollbar-none">
+              {sslFindings.length === 0 ? (
+                <div className="text-center py-12">
+                  <Lock className="w-8 h-8 text-neutral-700 mx-auto mb-3" />
+                  <p className="text-[13px] text-neutral-600">No SSL/TLS findings</p>
+                </div>
+              ) : sslFindings.map((finding) => (
+                <div key={finding.id} className="p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04]">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[finding.severity]}`}>
+                      {finding.severity.toUpperCase()}
+                    </Badge>
+                    <span className="text-[13px] font-medium text-neutral-300">{finding.title}</span>
+                  </div>
+                  <p className="text-[11px] text-neutral-600 leading-relaxed">{finding.description}</p>
+                  {finding.evidence && (
+                    <div className="text-[11px] font-mono text-neutral-700 bg-[rgba(0,0,0,0.3)] px-3 py-1.5 rounded-lg inline-block mt-2">{finding.evidence}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* HEADERS TAB */}
+          {activeTab === 'headers' && (
+            <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1 scrollbar-none">
+              {headerFindings.length === 0 ? (
+                <div className="text-center py-12">
+                  <FileCode className="w-8 h-8 text-neutral-700 mx-auto mb-3" />
+                  <p className="text-[13px] text-neutral-600">No HTTP Header findings</p>
+                </div>
+              ) : headerFindings.map((finding) => (
+                <div key={finding.id} className="p-3.5 rounded-lg bg-white/[0.015] border border-white/[0.04]">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Badge variant="outline" className={`text-[10px] px-2 py-0 ${severityColors[finding.severity]}`}>
+                      {finding.severity.toUpperCase()}
+                    </Badge>
+                    <span className="text-[13px] font-medium text-neutral-300">{finding.title}</span>
+                  </div>
+                  <p className="text-[11px] text-neutral-600 leading-relaxed">{finding.description}</p>
+                  {finding.evidence && (
+                    <div className="text-[11px] font-mono text-neutral-700 bg-[rgba(0,0,0,0.3)] px-3 py-1.5 rounded-lg inline-block mt-2">{finding.evidence}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </motion.div>

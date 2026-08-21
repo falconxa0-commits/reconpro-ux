@@ -1,15 +1,13 @@
 "use client";
 
 import dynamic from "next/dynamic";
-// Navbar and Footer are provided by the (marketing)/layout.tsx route group layout.
 import { ScrollProgress } from "@/components/reconpro/ScrollProgress";
 import { BackToTop } from "@/components/reconpro/BackToTop";
 import { ObsidianShader } from "@/components/backgrounds/ObsidianShader";
 import HeroSection from "@/components/reconpro/HeroSection";
 import { FeaturesSection } from "@/components/reconpro/FeaturesSection";
 
-// ── Dynamic imports: below-fold sections & heavy ambient overlays ──
-// These are loaded on the client after hydration, reducing initial JS payload.
+// ── Dynamic imports: ambient overlays ──
 const OLEDParticles = dynamic(
   () => import("@/components/reconpro/OLEDParticles").then((m) => m.OLEDParticles),
   { ssr: false }
@@ -31,7 +29,7 @@ const CommandPalette = dynamic(
   { ssr: false }
 );
 
-// Below-fold sections — deferred until interaction / viewport
+// Below-fold sections
 const ArchitectureSection = dynamic(
   () => import("@/components/reconpro/ArchitectureSection"),
   { ssr: false }
@@ -52,8 +50,16 @@ const BenchmarksSection = dynamic(
   () => import("@/components/reconpro/BenchmarksSection"),
   { ssr: false }
 );
+const PricingSection = dynamic(
+  () => import("@/components/reconpro/PricingSection").then((m) => m.PricingSection),
+  { ssr: false }
+);
 const EnterpriseSection = dynamic(
-  () => import("@/components/reconpro/EnterpriseSection"),
+  () => import("@/components/reconpro/EnterpriseSection").then((m) => m.EnterpriseSection),
+  { ssr: false }
+);
+const FAQSection = dynamic(
+  () => import("@/components/reconpro/FAQSection").then((m) => m.FAQSection),
   { ssr: false }
 );
 const CommunitySection = dynamic(
@@ -78,11 +84,6 @@ export function HomeSection() {
         zIndex={-1}
       />
 
-      {/* Premium ambient overlays */}
-      <div className="bloom-overlay" aria-hidden="true" />
-      <div className="scroll-light" aria-hidden="true" />
-      <div className="ambient-aurora" aria-hidden="true" />
-
       {/* Global ambient overlays */}
       <AuroraBackground />
       <NeuralNetwork />
@@ -106,7 +107,11 @@ export function HomeSection() {
         <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
         <BenchmarksSection />
         <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
+        <PricingSection />
+        <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
         <EnterpriseSection />
+        <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
+        <FAQSection />
         <div className="h-px bg-gradient-to-r from-transparent via-white/[0.03] to-transparent" />
         <CommunitySection />
       </div>

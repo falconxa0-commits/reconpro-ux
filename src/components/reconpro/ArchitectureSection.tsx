@@ -4,6 +4,8 @@ import { motion } from "framer-motion";
 import { archLayers } from "@/data/content";
 import { useInView } from "@/hooks/useInView";
 
+// ── Flow Nodes ──────────────────────────────────────────
+
 const flowNodes = [
   { label: "Target Input", color: "#ffffff" },
   { label: "Scanner", color: "#44aaff" },
@@ -13,11 +15,22 @@ const flowNodes = [
   { label: "Report", color: "#00ff88" },
 ];
 
+// ── Architecture Stats ─────────────────────────────────
+
+const archStats = [
+  { label: "Architecture Layers", value: "6" },
+  { label: "Scanner Modules", value: "14" },
+  { label: "Database Models", value: "17" },
+  { label: "API Endpoints", value: "55" },
+];
+
+// ── Animation Variants ──────────────────────────────────
+
 const containerVariants = {
   hidden: { opacity: 0 },
   visible: {
     opacity: 1,
-    transition: { staggerChildren: 0.08 },
+    transition: { staggerChildren: 0.07 },
   },
 };
 
@@ -30,6 +43,8 @@ const itemVariants = {
   },
 };
 
+// ── Component ───────────────────────────────────────────
+
 export default function ArchitectureSection() {
   const { ref, isInView } = useInView(0.05);
 
@@ -37,10 +52,13 @@ export default function ArchitectureSection() {
     <section
       id="architecture"
       ref={ref}
-      className="relative w-full bg-black px-4 py-32 sm:px-6 lg:px-8 overflow-hidden"
+      className="relative w-full bg-black px-4 py-24 sm:py-32 lg:px-8 overflow-hidden"
     >
       {/* ── Ambient Background ── */}
-      <div className="pointer-events-none absolute inset-0" aria-hidden="true">
+      <div
+        className="pointer-events-none absolute inset-0"
+        aria-hidden="true"
+      >
         <div
           className="absolute top-0 left-1/2 -translate-x-1/2 h-[600px] w-[800px] rounded-full opacity-[0.03]"
           style={{
@@ -57,20 +75,44 @@ export default function ArchitectureSection() {
         />
       </div>
 
-      <div className="relative mx-auto max-w-7xl px-6 lg:px-8">
+      <div className="relative mx-auto max-w-7xl">
         {/* ── Header ── */}
         <motion.div
-          initial={{ opacity: 0, y: 30 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] as const }}
-          className="mb-20 text-center"
+          className="mb-16 text-center sm:mb-20"
         >
-          <h2 className="text-4xl font-semibold tracking-tight text-white sm:text-5xl">
+          <span className="mb-4 inline-flex items-center rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1 text-[11px] font-medium uppercase tracking-[0.15em] text-white/60">
+            Architecture
+          </span>
+          <h2 className="text-gradient-void text-3xl font-semibold tracking-tight sm:text-4xl lg:text-5xl">
             System Architecture
           </h2>
-          <p className="mt-5 text-sm text-white/60">
-            Eight precision-engineered layers. Zero compromises.
+          <p className="mx-auto mt-4 max-w-2xl text-sm leading-relaxed text-neutral-500 sm:text-base">
+            Six precision-engineered layers working in concert. Zero compromises
+            on security, performance, or developer experience.
           </p>
+        </motion.div>
+
+        {/* ── Architecture Stats ── */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.6, delay: 0.1, ease: [0.16, 1, 0.3, 1] as const }}
+          className="mb-16 grid grid-cols-2 gap-3 sm:grid-cols-4"
+        >
+          {archStats.map((stat) => (
+            <div
+              key={stat.label}
+              className="panel rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-4 text-center"
+            >
+              <div className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+                {stat.value}
+              </div>
+              <div className="mt-1 text-[11px] text-white/40">{stat.label}</div>
+            </div>
+          ))}
         </motion.div>
 
         {/* ── Two-Column Layout ── */}
@@ -94,7 +136,6 @@ export default function ArchitectureSection() {
                           background: `linear-gradient(to bottom, ${archLayers[i - 1].color}40, ${layer.color}40)`,
                         }}
                       />
-                      {/* Animated pulse dot */}
                       <div
                         className="absolute top-0 left-1/2 -translate-x-1/2 h-1.5 w-1.5 rounded-full arch-pulse-flow"
                         style={{
@@ -173,13 +214,16 @@ export default function ArchitectureSection() {
             className="hidden lg:col-span-5 lg:block"
           >
             <div className="sticky top-32">
-              <h3 className="mb-6 text-xs font-mono uppercase tracking-[0.2em] text-white/60">
+              <h3 className="mb-6 text-xs font-mono uppercase tracking-[0.2em] text-white/40">
                 Data Flow
               </h3>
 
               <div className="relative flex flex-col items-center gap-0">
                 {flowNodes.map((node, i) => (
-                  <div key={node.label} className="relative flex w-full flex-col items-center">
+                  <div
+                    key={node.label}
+                    className="relative flex w-full flex-col items-center"
+                  >
                     {/* Connector arrow */}
                     {i > 0 && (
                       <div className="relative flex h-10 w-full items-center justify-center">
@@ -228,12 +272,18 @@ export default function ArchitectureSection() {
                 ))}
 
                 {/* Decorative side labels */}
-                <div className="pointer-events-none absolute -left-8 top-0 bottom-0 flex flex-col justify-between text-[9px] font-mono uppercase tracking-widest text-white/[0.08]" aria-hidden="true">
+                <div
+                  className="pointer-events-none absolute -left-8 top-0 bottom-0 flex flex-col justify-between text-[9px] font-mono uppercase tracking-widest text-white/[0.08]"
+                  aria-hidden="true"
+                >
                   <span>Input</span>
                   <span>Process</span>
                   <span>Output</span>
                 </div>
-                <div className="pointer-events-none absolute -right-8 top-0 bottom-0 flex flex-col justify-between text-[9px] font-mono uppercase tracking-widest text-white/[0.08]" aria-hidden="true">
+                <div
+                  className="pointer-events-none absolute -right-8 top-0 bottom-0 flex flex-col justify-between text-[9px] font-mono uppercase tracking-widest text-white/[0.08]"
+                  aria-hidden="true"
+                >
                   <span>Ingest</span>
                   <span>Enrich</span>
                   <span>Deliver</span>
@@ -243,7 +293,6 @@ export default function ArchitectureSection() {
           </motion.div>
         </div>
       </div>
-
     </section>
   );
 }

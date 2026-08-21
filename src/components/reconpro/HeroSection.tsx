@@ -3,8 +3,20 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { heroStats, terminalDemo } from "@/data/content";
+import { ArrowRight, Play } from "lucide-react";
+import { terminalDemo } from "@/data/content";
 import { useInView, useCountUp } from "@/hooks/useInView";
+
+const trustLogos = ["Cloudflare", "Stripe", "Vercel", "GitHub", "Fortinet"];
+
+const heroStats = [
+  { value: "10M+", sub: "Targets Scanned", num: 10, suffix: "M+" },
+  { value: "500K+", sub: "Findings", num: 500, suffix: "K+" },
+  { value: "99.9%", sub: "Uptime", num: 999, suffix: "" },
+  { value: "150+", sub: "Modules", num: 150, suffix: "+" },
+  { value: "< 5s", sub: "Avg Scan", num: 5, suffix: "s" },
+  { value: "24/7", sub: "Monitoring", num: 24, suffix: "/7" },
+];
 
 export default function HeroSection() {
   const { ref, isInView } = useInView(0.05);
@@ -65,6 +77,9 @@ export default function HeroSection() {
       {/* Radial ambient glow */}
       <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[600px] bg-white/[0.015] rounded-full blur-[120px] pointer-events-none" aria-hidden="true" />
 
+      {/* Green tint glow behind heading */}
+      <div className="absolute top-[20%] left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-[#00ff88]/[0.02] rounded-full blur-[150px] pointer-events-none" aria-hidden="true" />
+
       <div className="relative z-10 max-w-6xl mx-auto px-6 py-20">
         {/* Badge */}
         <motion.div
@@ -75,11 +90,11 @@ export default function HeroSection() {
         >
           <div className="flex items-center gap-2 px-4 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.06]">
             <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white/40 opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-white/60" />
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00ff88]/40 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00ff88]/80" />
             </span>
             <span className="text-xs text-white/60 font-medium">
-              Open Source — v0.2.0
+              Enterprise Attack Surface Intelligence
             </span>
           </div>
         </motion.div>
@@ -89,12 +104,26 @@ export default function HeroSection() {
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.8, delay: 0.1, ease: [0.16, 1, 0.3, 1] as const }}
-          className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-center leading-[1.1] mb-6"
+          className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-semibold tracking-tight text-center leading-[1.1] mb-2"
+          style={{ fontFamily: "var(--font-heading)" }}
         >
-          <span className="text-gradient-void">Attack Surface</span>
-          <br />
-          <span className="text-gradient-void">Intelligence Platform</span>
+          <span className="whitespace-nowrap">Attack Surface </span>
+          <span
+            className="whitespace-nowrap bg-gradient-to-r from-white via-white to-[#00ff88] bg-clip-text text-transparent"
+          >
+            Intelligence
+          </span>
         </motion.h1>
+
+        <motion.p
+          initial={{ opacity: 0, y: 20 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.8, delay: 0.15, ease: [0.16, 1, 0.3, 1] as const }}
+          className="text-2xl sm:text-3xl md:text-4xl font-light tracking-tight text-center text-white/30 mb-8"
+          style={{ fontFamily: "var(--font-heading)" }}
+        >
+          Platform
+        </motion.p>
 
         {/* Subtitle */}
         <motion.p
@@ -102,9 +131,12 @@ export default function HeroSection() {
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.8, delay: 0.2, ease: [0.16, 1, 0.3, 1] as const }}
           className="text-center text-base md:text-lg text-white/60 max-w-2xl mx-auto mb-10 leading-relaxed"
+          style={{ fontFamily: "var(--font-body)" }}
         >
-          Autonomous attack surface intelligence. Enterprise-grade security
-          reconnaissance, now open source.
+          Enterprise-grade security reconnaissance. Discover vulnerabilities before attackers do.{" "}
+          <span className="text-white/80">Autonomous.</span>{" "}
+          <span className="text-white/80">Real-time.</span>{" "}
+          <span className="text-white/80">Comprehensive.</span>
         </motion.p>
 
         {/* CTAs */}
@@ -112,43 +144,66 @@ export default function HeroSection() {
           initial={{ opacity: 0, y: 20 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 0.8, delay: 0.3, ease: [0.16, 1, 0.3, 1] as const }}
-          className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-16"
+          className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-12"
         >
           <Link
             href="/register"
-            className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/[0.9] text-black font-medium text-sm hover:bg-white transition-all duration-300 hover:shadow-[0_0_30px_rgba(255,255,255,0.08)] metallic-sheen"
+            className="group flex items-center gap-2 px-6 py-3 rounded-lg bg-white text-black font-semibold text-sm hover:bg-white/90 transition-all duration-300 hover:shadow-[0_0_40px_rgba(255,255,255,0.12)]"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" className="text-black/60">
-              <path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.13.35.2.36.27.36.35.35.45.32.56.28.69.21.82.14.97.05 1.11-.06 1.1-.16.97-.24.8-.32.65-.36.51-.4.39-.42.29-.42.21-.4.14-.36.09-.32.04-.24.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/>
-            </svg>
-            <code className="font-mono text-sm">Get Started</code>
+            Start Free Scan
+            <ArrowRight width={16} height={16} className="group-hover:translate-x-0.5 transition-transform" />
           </Link>
-          <a
-            href="/about"
-            className="flex items-center gap-2 px-5 py-3 rounded-xl bg-white/[0.03] border border-white/[0.06] text-white/50 text-sm font-medium hover:bg-white/[0.06] hover:text-white/80 transition-all duration-300"
+          <Link
+            href="/#features"
+            className="group flex items-center gap-2 px-6 py-3 rounded-lg bg-white/[0.03] border border-white/[0.08] text-white/70 text-sm font-medium hover:bg-white/[0.06] hover:text-white/90 hover:border-white/[0.12] transition-all duration-300"
           >
-            Learn More
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M7 17L17 7" />
-              <path d="M7 7h10v10" />
-            </svg>
-          </a>
+            <Play width={14} height={14} className="text-[#00ff88]" />
+            View Demo
+          </Link>
+        </motion.div>
+
+        {/* Trust Logos */}
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.8, delay: 0.4, ease: [0.16, 1, 0.3, 1] as const }}
+          className="mb-16"
+        >
+          <p className="text-center text-xs text-white/30 mb-5 tracking-wider uppercase">
+            Trusted by security teams at
+          </p>
+          <div className="relative overflow-hidden max-w-2xl mx-auto">
+            <div className="absolute left-0 top-0 bottom-0 w-16 bg-gradient-to-r from-black to-transparent z-10 pointer-events-none" />
+            <div className="absolute right-0 top-0 bottom-0 w-16 bg-gradient-to-l from-black to-transparent z-10 pointer-events-none" />
+            <div className="animate-marquee flex items-center gap-10 whitespace-nowrap">
+              {[...trustLogos, ...trustLogos].map((name, i) => (
+                <span
+                  key={`${name}-${i}`}
+                  className="text-sm font-medium text-white/20 tracking-wide"
+                  style={{ fontFamily: "var(--font-heading)" }}
+                >
+                  {name}
+                </span>
+              ))}
+            </div>
+          </div>
         </motion.div>
 
         {/* Stats */}
-        <div ref={statsRef} className="grid grid-cols-3 md:grid-cols-6 gap-4 mb-16">
+        <div ref={statsRef} className="grid grid-cols-3 md:grid-cols-6 gap-3 mb-16">
           {heroStats.map((stat, i) => (
             <div
-              key={stat.label}
-              className="text-center p-4 rounded-2xl bg-white/[0.02] border border-white/[0.04] hover:border-white/[0.08] transition-all duration-500 metallic-sheen hover-glow"
+              key={stat.sub}
+              className="text-center p-3 rounded-2xl bg-white/[0.02] border border-white/[0.04] hover:border-[#00ff88]/[0.15] transition-all duration-500 hover-glow"
               style={{ animationDelay: `${i * 50}ms` }}
             >
               <StatCounter
-                value={parseInt(stat.value.replace(/[^0-9]/g, ""))}
-                suffix={stat.value.replace(/[0-9]/g, "")}
+                value={stat.num}
+                suffix={stat.suffix}
                 active={statsVisible}
+                isSmall={stat.sub === "Uptime" || stat.sub === "Avg Scan"}
               />
-              <div className="text-[11px] text-white/60 mt-1 tracking-wide">{stat.sub}</div>
+              <div className="text-[11px] text-white/50 mt-1 tracking-wide">{stat.sub}</div>
             </div>
           ))}
         </div>
@@ -158,39 +213,56 @@ export default function HeroSection() {
           initial={{ opacity: 0, y: 30 }}
           animate={isInView ? { opacity: 1, y: 0 } : {}}
           transition={{ duration: 1, delay: 0.6, ease: [0.16, 1, 0.3, 1] as const }}
-          className="max-w-3xl mx-auto"
+          className="max-w-2xl mx-auto"
         >
-          <div className="cli-showcase glass-premium">
-            <div className="cli-titlebar">
-              <div className="cli-dot cli-dot-red" />
-              <div className="cli-dot cli-dot-yellow" />
-              <div className="cli-dot cli-dot-green" />
-              <span className="ml-3 text-[11px] text-white/50 font-mono">
-                reconpro — bash
-              </span>
-              <div className="ml-auto flex items-center gap-2">
-                <button
-                  onClick={copyUrl}
-                  className={`copy-btn ${copied ? "copied" : ""}`}
-                  aria-label="Copy URL"
-                >
-                  {copied ? (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                  ) : (
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-                      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-                    </svg>
-                  )}
-                </button>
+          <div
+            className="relative rounded-2xl overflow-hidden"
+            style={{
+              boxShadow: "0 0 60px rgba(0, 255, 136, 0.06), 0 0 120px rgba(0, 255, 136, 0.03)",
+            }}
+          >
+            {/* Animated gradient border */}
+            <div
+              className="absolute inset-0 rounded-2xl animate-shimmer"
+              style={{
+                background: "linear-gradient(90deg, rgba(255,255,255,0.05), rgba(0,255,136,0.15), rgba(255,255,255,0.05))",
+                backgroundSize: "200% 100%",
+                padding: "1px",
+              }}
+              aria-hidden="true"
+            />
+            <div className="cli-showcase glass-premium relative">
+              <div className="cli-titlebar">
+                <div className="cli-dot cli-dot-red" />
+                <div className="cli-dot cli-dot-yellow" />
+                <div className="cli-dot cli-dot-green" />
+                <span className="ml-3 text-[11px] text-white/50 font-mono">
+                  reconpro — bash
+                </span>
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    onClick={copyUrl}
+                    className={`copy-btn ${copied ? "copied" : ""}`}
+                    aria-label="Copy URL"
+                  >
+                    {copied ? (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    ) : (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+                        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </div>
-            </div>
-            <div className="cli-body max-h-[320px] overflow-hidden">
-              {terminalDemo.slice(0, visibleLines).map((line, i) => (
-                <TerminalLine key={i} line={line} />
-              ))}
+              <div className="cli-body max-h-[280px] overflow-hidden">
+                {terminalDemo.slice(0, visibleLines).map((line, i) => (
+                  <TerminalLine key={i} line={line} />
+                ))}
+              </div>
             </div>
           </div>
         </motion.div>
@@ -203,17 +275,27 @@ function StatCounter({
   value,
   suffix,
   active,
+  isSmall = false,
 }: {
   value: number;
   suffix: string;
   active: boolean;
+  isSmall?: boolean;
 }) {
   const count = useCountUp(value, 2000, active);
   const formatted = count.toLocaleString();
   return (
-    <div className="text-xl md:text-2xl font-semibold text-white font-mono tracking-tight">
-      {formatted}
-      {suffix}
+    <div className="text-lg md:text-xl font-semibold text-white font-mono tracking-tight">
+      {isSmall ? (
+        <span>
+          {suffix === "/7" ? "24/7" : `< ${formatted}s`}
+        </span>
+      ) : (
+        <>
+          {formatted}
+          {suffix}
+        </>
+      )}
     </div>
   );
 }

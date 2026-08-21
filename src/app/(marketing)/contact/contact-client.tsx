@@ -1,11 +1,54 @@
 "use client";
 
 import { useState } from "react";
+import { motion } from "framer-motion";
+import { useInView } from "@/hooks/useInView";
+import {
+  Mail,
+  MapPin,
+  Clock,
+  Send,
+  CheckCircle2,
+  Building2,
+  MessageSquare,
+} from "lucide-react";
+
+const fadeUp = {
+  hidden: { opacity: 0, y: 20 },
+  visible: (i: number) => ({
+    opacity: 1,
+    y: 0,
+    transition: { duration: 0.6, delay: i * 0.08, ease: [0.16, 1, 0.3, 1] as const },
+  }),
+};
+
+const subjectOptions = [
+  "General Inquiry",
+  "Enterprise Sales",
+  "Technical Support",
+  "Security Vulnerability Report",
+  "Partnership",
+  "Feature Request",
+  "Billing",
+];
+
+function SectionBadge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/[0.03] border border-white/[0.06] text-xs text-white/50 font-medium">
+      {children}
+    </span>
+  );
+}
 
 export default function ContactClient() {
+  const { ref: formRef, isInView: formInView } = useInView(0.05);
+  const { ref: infoRef, isInView: infoInView } = useInView(0.05);
+
   const [formData, setFormData] = useState({
     name: "",
     email: "",
+    company: "",
+    subject: "",
     message: "",
   });
   const [submitted, setSubmitted] = useState(false);
@@ -15,201 +58,313 @@ export default function ContactClient() {
     setSubmitted(true);
   };
 
+  const updateField = (field: string, value: string) => {
+    setFormData((d) => ({ ...d, [field]: value }));
+  };
+
   return (
-    <div className="pt-16">
+    <div className="pt-16 bg-black">
+      {/* Header */}
       <section className="relative py-24 sm:py-32">
-        <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8">
-          {/* Header */}
-          <div className="mb-12">
-            <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.7, ease: [0.16, 1, 0.3, 1] as const }}
+            className="text-center"
+          >
+            <SectionBadge>
+              <MessageSquare width={12} height={12} className="text-[#00ff88]" />
               Contact
+            </SectionBadge>
+            <h1
+              className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mt-6 mb-4"
+              style={{ fontFamily: "var(--font-heading)" }}
+            >
+              Get in touch
             </h1>
-            <p className="text-white/50 text-sm sm:text-base leading-relaxed">
-              Questions about ReconPro, enterprise inquiries, or security
-              vulnerabilities to report. We read every message.
+            <p
+              className="text-base text-white/50 max-w-xl mx-auto"
+              style={{ fontFamily: "var(--font-body)" }}
+            >
+              Questions, enterprise inquiries, or security vulnerability reports.
+              We read every message and respond within 24 hours.
             </p>
-          </div>
+          </motion.div>
+        </div>
+      </section>
 
-          {submitted ? (
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-8 text-center">
-              <svg
-                width="40"
-                height="40"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                className="text-white/40 mx-auto mb-4"
-                aria-hidden="true"
-              >
-                <path
-                  d="M20 6 9 17l-5-5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-              <h2 className="text-lg font-semibold text-white mb-2">
-                Message Sent
-              </h2>
-              <p className="text-sm text-white/50">
-                This is a UI demo. In production, this form would send data to
-                security@reconpro.dev.
-              </p>
-            </div>
-          ) : (
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <div>
-                <label
-                  htmlFor="contact-name"
-                  className="block text-xs font-medium text-white/50 mb-2"
+      {/* Form + Info */}
+      <section ref={formRef} className="relative pb-32">
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+            {/* Contact Form */}
+            <motion.div
+              initial="hidden"
+              animate={formInView ? "visible" : "hidden"}
+              variants={fadeUp}
+              custom={0}
+              className="lg:col-span-3"
+            >
+              <div className="panel p-6 sm:p-8">
+                <h2
+                  className="text-lg font-semibold text-white mb-6"
+                  style={{ fontFamily: "var(--font-heading)" }}
                 >
-                  Name
-                </label>
-                <input
-                  type="text"
-                  id="contact-name"
-                  required
-                  value={formData.name}
-                  onChange={(e) =>
-                    setFormData((d) => ({ ...d, name: e.target.value }))
-                  }
-                  className="w-full px-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.08] text-sm text-white placeholder:text-white/30 outline-none focus:border-white/20 transition-colors duration-300"
-                  placeholder="Your name"
-                />
-              </div>
+                  Send us a message
+                </h2>
 
-              <div>
-                <label
-                  htmlFor="contact-email"
-                  className="block text-xs font-medium text-white/50 mb-2"
+                {submitted ? (
+                  <div className="py-12 text-center">
+                    <CheckCircle2 className="w-10 h-10 text-[#00ff88] mx-auto mb-4" />
+                    <h3
+                      className="text-lg font-semibold text-white mb-2"
+                      style={{ fontFamily: "var(--font-heading)" }}
+                    >
+                      Message Sent
+                    </h3>
+                    <p
+                      className="text-sm text-white/50 max-w-sm mx-auto leading-relaxed"
+                      style={{ fontFamily: "var(--font-body)" }}
+                    >
+                      Thank you for reaching out. We will get back to you within
+                      24 hours at the email address you provided.
+                    </p>
+                  </div>
+                ) : (
+                  <form onSubmit={handleSubmit} className="space-y-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                      <div>
+                        <label
+                          htmlFor="contact-name"
+                          className="block text-xs font-medium text-white/50 mb-2"
+                          style={{ fontFamily: "var(--font-body)" }}
+                        >
+                          Name <span className="text-[#ff3355]">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          id="contact-name"
+                          required
+                          value={formData.name}
+                          onChange={(e) => updateField("name", e.target.value)}
+                          className="input-void w-full"
+                          placeholder="Your name"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="contact-email"
+                          className="block text-xs font-medium text-white/50 mb-2"
+                          style={{ fontFamily: "var(--font-body)" }}
+                        >
+                          Email <span className="text-[#ff3355]">*</span>
+                        </label>
+                        <input
+                          type="email"
+                          id="contact-email"
+                          required
+                          value={formData.email}
+                          onChange={(e) => updateField("email", e.target.value)}
+                          className="input-void w-full"
+                          placeholder="you@company.com"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                      <div>
+                        <label
+                          htmlFor="contact-company"
+                          className="block text-xs font-medium text-white/50 mb-2"
+                          style={{ fontFamily: "var(--font-body)" }}
+                        >
+                          Company
+                        </label>
+                        <input
+                          type="text"
+                          id="contact-company"
+                          value={formData.company}
+                          onChange={(e) => updateField("company", e.target.value)}
+                          className="input-void w-full"
+                          placeholder="Your company (optional)"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="contact-subject"
+                          className="block text-xs font-medium text-white/50 mb-2"
+                          style={{ fontFamily: "var(--font-body)" }}
+                        >
+                          Subject <span className="text-[#ff3355]">*</span>
+                        </label>
+                        <select
+                          id="contact-subject"
+                          required
+                          value={formData.subject}
+                          onChange={(e) => updateField("subject", e.target.value)}
+                          className="input-void w-full appearance-none cursor-pointer"
+                          style={{
+                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23555' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`,
+                            backgroundRepeat: "no-repeat",
+                            backgroundPosition: "right 14px center",
+                          }}
+                        >
+                          <option value="" disabled>
+                            Select a subject
+                          </option>
+                          {subjectOptions.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="contact-message"
+                        className="block text-xs font-medium text-white/50 mb-2"
+                        style={{ fontFamily: "var(--font-body)" }}
+                      >
+                        Message <span className="text-[#ff3355]">*</span>
+                      </label>
+                      <textarea
+                        id="contact-message"
+                        required
+                        rows={5}
+                        value={formData.message}
+                        onChange={(e) => updateField("message", e.target.value)}
+                        className="input-void w-full resize-none"
+                        placeholder="Describe your question, issue, or inquiry..."
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-white text-black text-sm font-medium hover:bg-white/90 transition-all duration-300"
+                      style={{ fontFamily: "var(--font-body)" }}
+                    >
+                      <Send className="w-4 h-4" />
+                      Send Message
+                    </button>
+                  </form>
+                )}
+              </div>
+            </motion.div>
+
+            {/* Office Card + Info */}
+            <motion.div
+              ref={infoRef}
+              initial="hidden"
+              animate={infoInView ? "visible" : "hidden"}
+              variants={fadeUp}
+              custom={1}
+              className="lg:col-span-2 space-y-5"
+            >
+              {/* Office Card */}
+              <div className="panel p-6">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-9 h-9 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
+                    <Building2 className="w-4 h-4 text-white/60" />
+                  </div>
+                  <h3
+                    className="text-sm font-semibold text-white"
+                    style={{ fontFamily: "var(--font-heading)" }}
+                  >
+                    Office
+                  </h3>
+                </div>
+                <p
+                  className="text-sm text-white/60 leading-relaxed"
+                  style={{ fontFamily: "var(--font-body)" }}
                 >
-                  Email
-                </label>
-                <input
-                  type="email"
-                  id="contact-email"
-                  required
-                  value={formData.email}
-                  onChange={(e) =>
-                    setFormData((d) => ({ ...d, email: e.target.value }))
-                  }
-                  className="w-full px-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.08] text-sm text-white placeholder:text-white/30 outline-none focus:border-white/20 transition-colors duration-300"
-                  placeholder="you@company.com"
-                />
+                  <MapPin className="w-3 h-3 inline mr-1 text-white/30" />
+                  548 Market St, Suite 36879
+                  <br />
+                  San Francisco, CA 94104
+                </p>
               </div>
 
-              <div>
-                <label
-                  htmlFor="contact-message"
-                  className="block text-xs font-medium text-white/50 mb-2"
+              {/* Support Email */}
+              <div className="panel p-6">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-9 h-9 rounded-xl bg-[#00ff88]/[0.06] border border-[#00ff88]/[0.12] flex items-center justify-center">
+                    <Mail className="w-4 h-4 text-[#00ff88]" />
+                  </div>
+                  <h3
+                    className="text-sm font-semibold text-white"
+                    style={{ fontFamily: "var(--font-heading)" }}
+                  >
+                    Support Email
+                  </h3>
+                </div>
+                <a
+                  href="mailto:support@reconpro.dev"
+                  className="text-sm text-[#00ff88]/80 hover:text-[#00ff88] transition-colors font-mono"
                 >
-                  Message
-                </label>
-                <textarea
-                  id="contact-message"
-                  required
-                  rows={6}
-                  value={formData.message}
-                  onChange={(e) =>
-                    setFormData((d) => ({ ...d, message: e.target.value }))
-                  }
-                  className="w-full px-4 py-3 rounded-xl bg-white/[0.03] border border-white/[0.08] text-sm text-white placeholder:text-white/30 outline-none focus:border-white/20 transition-colors duration-300 resize-none"
-                  placeholder="Describe your question, issue, or inquiry..."
-                />
+                  support@reconpro.dev
+                </a>
+                <p
+                  className="text-xs text-white/30 mt-1"
+                  style={{ fontFamily: "var(--font-body)" }}
+                >
+                  General inquiries and enterprise sales
+                </p>
               </div>
 
-              <button
-                type="submit"
-                className="w-full py-3 rounded-xl bg-white text-black text-sm font-medium hover:bg-white/90 transition-all duration-300"
-              >
-                Send Message
-              </button>
-            </form>
-          )}
-
-          {/* Direct Contact */}
-          <div className="mt-16 pt-12 border-t border-white/[0.04]">
-            <h2 className="text-lg font-semibold text-white mb-6">
-              Direct Contact
-            </h2>
-            <div className="space-y-4">
-              <div className="flex items-start gap-4">
-                <div className="w-9 h-9 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center flex-shrink-0">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    className="text-white/40"
-                    aria-hidden="true"
+              {/* Response Time */}
+              <div className="panel p-6">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-9 h-9 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
+                    <Clock className="w-4 h-4 text-white/60" />
+                  </div>
+                  <h3
+                    className="text-sm font-semibold text-white"
+                    style={{ fontFamily: "var(--font-heading)" }}
                   >
-                    <rect width="20" height="16" x="2" y="4" rx="2" />
-                    <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
-                  </svg>
+                    Response Time
+                  </h3>
                 </div>
-                <div>
-                  <p className="text-xs text-white/30 mb-1">Email</p>
-                  <a
-                    href="mailto:security@reconpro.dev"
-                    className="text-sm text-white/70 hover:text-white transition-colors duration-300"
-                  >
-                    security@reconpro.dev
-                  </a>
-                </div>
+                <p
+                  className="text-sm text-white/50 leading-relaxed"
+                  style={{ fontFamily: "var(--font-body)" }}
+                >
+                  We respond to all inquiries within{" "}
+                  <span className="text-white font-medium">24 hours</span>{" "}
+                  during business days. Security vulnerability reports are
+                  acknowledged within 48 hours.
+                </p>
               </div>
 
-              <div className="flex items-start gap-4">
-                <div className="w-9 h-9 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center flex-shrink-0">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                    className="text-white/40"
-                    aria-hidden="true"
+              {/* Security Reports */}
+              <div className="panel p-6">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-9 h-9 rounded-xl bg-[#ff3355]/[0.06] border border-[#ff3355]/[0.12] flex items-center justify-center">
+                    <Mail className="w-4 h-4 text-[#ff3355]" />
+                  </div>
+                  <h3
+                    className="text-sm font-semibold text-white"
+                    style={{ fontFamily: "var(--font-heading)" }}
                   >
-                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z" />
-                  </svg>
+                    Security Reports
+                  </h3>
                 </div>
-                <div>
-                  <p className="text-xs text-white/30 mb-1">GitHub</p>
-                  <a
-                    href="/about"
-                    className="text-sm text-white/70 hover:text-white transition-colors duration-300"
-                  >
-                    About ReconPro
-                  </a>
-                </div>
+                <a
+                  href="mailto:security@reconpro.dev"
+                  className="text-sm text-[#ff3355]/80 hover:text-[#ff3355] transition-colors font-mono"
+                >
+                  security@reconpro.dev
+                </a>
+                <p
+                  className="text-xs text-white/30 mt-1"
+                  style={{ fontFamily: "var(--font-body)" }}
+                >
+                  Vulnerability disclosure and security concerns
+                </p>
               </div>
-
-              <div className="flex items-start gap-4">
-                <div className="w-9 h-9 rounded-lg bg-white/[0.04] border border-white/[0.06] flex items-center justify-center flex-shrink-0">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    className="text-white/40"
-                    aria-hidden="true"
-                  >
-                    <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-xs text-white/30 mb-1">
-                    Security Vulnerabilities
-                  </p>
-                  <p className="text-sm text-white/70">
-                    Report security issues via email. We acknowledge within 48
-                    hours.
-                  </p>
-                </div>
-              </div>
-            </div>
+            </motion.div>
           </div>
         </div>
       </section>

@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Zap, Shield, Loader2, ChevronDown } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Search, Zap, Shield, Loader2, Clock, Bug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
@@ -11,17 +11,17 @@ interface ScanInputProps {
   isScanning: boolean;
 }
 
+const SCAN_TYPES = [
+  { id: 'quick', label: 'Quick Scan', desc: 'Subdomains + open ports', icon: Zap, estimatedTime: '2–5 min', color: '#00ff88' },
+  { id: 'full', label: 'Full Recon', desc: 'Complete attack surface analysis', icon: Shield, estimatedTime: '10–20 min', color: '#ffffff' },
+  { id: 'vuln', label: 'Vuln Assessment', desc: 'Deep vulnerability analysis', icon: Bug, estimatedTime: '15–30 min', color: '#ff3355' },
+];
+
 export function ScanInput({ onScan, isScanning }: ScanInputProps) {
   const [domain, setDomain] = useState('');
   const [scanType, setScanType] = useState('full');
-  const [showTypeDropdown, setShowTypeDropdown] = useState(false);
 
-  const scanTypes = [
-    { id: 'quick', label: 'Quick Scan', desc: 'Subdomains + open ports', icon: <Zap className="w-4 h-4" /> },
-    { id: 'full', label: 'Full Scan', desc: 'Complete attack surface analysis', icon: <Shield className="w-4 h-4" /> },
-  ];
-
-  const selectedType = scanTypes.find(t => t.id === scanType) || scanTypes[1];
+  const selectedType = SCAN_TYPES.find(t => t.id === scanType) || SCAN_TYPES[1];
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,54 +31,39 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
 
   return (
     <div className="w-full max-w-3xl mx-auto">
+      {/* Scan Type Selector - Toggle Buttons */}
+      <div className="flex gap-2 mb-4">
+        {SCAN_TYPES.map((type) => {
+          const TypeIcon = type.icon;
+          const isActive = scanType === type.id;
+          return (
+            <button
+              key={type.id}
+              type="button"
+              onClick={() => setScanType(type.id)}
+              disabled={isScanning}
+              className={`flex-1 flex flex-col items-center gap-1.5 px-3 py-3 rounded-xl border transition-all group ${
+                isActive
+                  ? 'bg-white/[0.06] border-white/[0.12]'
+                  : 'bg-transparent border-white/[0.04] hover:border-white/[0.08] hover:bg-white/[0.02]'
+              } disabled:opacity-50`}
+            >
+              <TypeIcon className="w-4 h-4" style={{ color: isActive ? type.color : undefined }} />
+              <span className={`text-[12px] font-medium ${isActive ? 'text-white' : 'text-neutral-500 group-hover:text-neutral-300'}`}>{
+                type.label
+              }</span>
+              <div className="flex items-center gap-1">
+                <Clock className="w-3 h-3 text-neutral-700" />
+                <span className="text-[10px] text-neutral-700">{type.estimatedTime}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Input Row */}
       <form onSubmit={handleSubmit} className="relative">
         <div className="flex gap-2 items-center">
-          {/* Scan type selector */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowTypeDropdown(!showTypeDropdown)}
-              className="flex items-center gap-2 px-4 py-3 rounded-xl bg-white/[0.04] border border-white/[0.07] text-sm text-neutral-300 hover:border-white/[0.12] transition-all h-12 whitespace-nowrap"
-            >
-              {selectedType.icon}
-              <span className="hidden sm:inline">{selectedType.label}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-neutral-600" />
-            </button>
-            <AnimatePresence>
-              {showTypeDropdown && (
-                <motion.div
-                  initial={{ opacity: 0, y: -8, scale: 0.97 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -8, scale: 0.97 }}
-                  transition={{ duration: 0.12 }}
-                  className="absolute top-full mt-2 left-0 z-50 w-64 p-1.5 rounded-xl bg-white/[0.03] border border-white/[0.07] shadow-2xl"
-                >
-                  {scanTypes.map((type) => (
-                    <button
-                      key={type.id}
-                      type="button"
-                      onClick={() => { setScanType(type.id); setShowTypeDropdown(false); }}
-                      className={`w-full flex items-center gap-3 p-2.5 rounded-lg text-left transition-all ${
-                        scanType === type.id
-                          ? 'bg-white/[0.08] border border-white/[0.12]'
-                          : 'hover:bg-white/[0.04] border border-transparent'
-                      }`}
-                    >
-                      <div className={`p-2 rounded-lg ${scanType === type.id ? 'bg-white/[0.12] text-white' : 'bg-white/[0.04] text-neutral-600'}`}>
-                        {type.icon}
-                      </div>
-                      <div>
-                        <div className="text-[13px] font-medium text-neutral-200">{type.label}</div>
-                        <div className="text-[11px] text-neutral-600">{type.desc}</div>
-                      </div>
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-
-          {/* Domain input */}
           <div className="relative flex-1">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-600" />
             <Input
@@ -90,7 +75,6 @@ export function ScanInput({ onScan, isScanning }: ScanInputProps) {
             />
           </div>
 
-          {/* Scan button */}
           <Button
             type="submit"
             disabled={!domain.trim() || isScanning}

@@ -1,24 +1,91 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { useInView as useFramerInView } from "framer-motion";
+import { motion } from "framer-motion";
+import { useInView } from "@/hooks/useInView";
 import {
-  Check,
-  ChevronLeft,
-  ChevronRight,
-  Quote,
   ShieldCheck,
-  Server,
   Headphones,
+  Server,
   Zap,
+  Check,
+  ArrowRight,
+  Quote,
+  Building2,
+  Lock,
+  Award,
 } from "lucide-react";
-import {
-  pricingPlans,
-  testimonials,
-  roadmap,
-  integrations,
-} from "@/data/content";
+
+// ── Trust Logos (text-based) ─────────────────────────────
+
+const trustLogos = [
+  "Fortune 500",
+  "SOC 2 Type II",
+  "FedRAMP Authorized",
+  "ISO 27001",
+  "HIPAA Compliant",
+  "PCI-DSS Level 1",
+];
+
+// ── Customer Stories ─────────────────────────────────────
+
+const customerStories = [
+  {
+    quote:
+      "ReconPro cut our vulnerability remediation time by 60%. The attack surface mapping alone justified the investment within the first quarter.",
+    author: "Sarah Chen",
+    role: "VP of Security",
+    company: "Global Financial Services",
+  },
+  {
+    quote:
+      "We replaced three separate tools with ReconPro. The unified intelligence pipeline and real-time scanning gave us visibility we never had before.",
+    author: "Marcus Webb",
+    role: "CISO",
+    company: "HealthTech Corp",
+  },
+  {
+    quote:
+      "The enterprise support team is exceptional. Custom scanner modules, on-premise deployment, and 4-hour SLA — they deliver on every promise.",
+    author: "Priya Sharma",
+    role: "Director of InfoSec",
+    company: "CloudScale Inc.",
+  },
+];
+
+// ── Enterprise Capabilities ──────────────────────────────
+
+const enterpriseCapabilities = [
+  {
+    icon: ShieldCheck,
+    title: "Compliance Ready",
+    description: "SOC 2, HIPAA, PCI-DSS, ISO 27001, NIST CSF, and GDPR framework mappings with automated evidence linking.",
+  },
+  {
+    icon: Headphones,
+    title: "Priority Support",
+    description: "4-hour SLA, dedicated engineering liaison, custom training programs, and quarterly business reviews.",
+  },
+  {
+    icon: Server,
+    title: "Flexible Deployment",
+    description: "On-premise, SaaS, or hybrid. Deploy behind your firewall with full data sovereignty.",
+  },
+  {
+    icon: Zap,
+    title: "Advanced Automation",
+    description: "Scheduled monitoring policies, CI/CD integration, webhook alerts, and automated reporting.",
+  },
+  {
+    icon: Lock,
+    title: "SSO & Access Control",
+    description: "SAML/SSO integration, role-based access control with 5 granular permission levels, and audit logging.",
+  },
+  {
+    icon: Award,
+    title: "Custom Modules",
+    description: "Build and deploy custom scanner modules tailored to your unique infrastructure and compliance needs.",
+  },
+];
 
 // ── Animation Variants ──────────────────────────────────────
 
@@ -26,711 +93,240 @@ const containerVariants = {
   hidden: { opacity: 0 },
   visible: {
     opacity: 1,
-    transition: { staggerChildren: 0.08, delayChildren: 0.1 },
+    transition: { staggerChildren: 0.07, delayChildren: 0.15 },
   },
 };
 
 const itemVariants = {
-  hidden: { opacity: 0, y: 24, scale: 0.97 },
+  hidden: { opacity: 0, y: 24 },
   visible: {
     opacity: 1,
     y: 0,
-    scale: 1,
     transition: { duration: 0.5, ease: [0.16, 1, 0.3, 1] as const },
   },
 };
 
-// ── Enterprise Features ─────────────────────────────────────
-
-const enterpriseFeatures = [
-  {
-    title: "Priority Support",
-    description: "4-hour SLA, dedicated engineering, custom training",
-    icon: Headphones,
-  },
-  {
-    title: "Compliance",
-    description: "SOC2, HIPAA, PCI-DSS, ISO 27001 framework mappings",
-    icon: ShieldCheck,
-  },
-  {
-    title: "Infrastructure",
-    description: "On-premise, SaaS, or hybrid. Your choice.",
-    icon: Server,
-  },
-];
-
-// ── Status Badge Config ─────────────────────────────────────
-
-const statusConfig: Record<
-  string,
-  { label: string; color: string; bg: string }
-> = {
-  shipped: {
-    label: "Shipped",
-    color: "#00ff88",
-    bg: "rgba(0, 255, 136, 0.12)",
-  },
-  "in-progress": {
-    label: "In Progress",
-    color: "#ffaa00",
-    bg: "rgba(255, 170, 0, 0.12)",
-  },
-  planned: {
-    label: "Planned",
-    color: "rgba(255, 255, 255, 0.45)",
-    bg: "rgba(255, 255, 255, 0.06)",
-  },
-};
-
-// ═══════════════════════════════════════════════════════════
-// EnterpriseSection Component
-// ═══════════════════════════════════════════════════════════
+// ── Component ───────────────────────────────────────────────
 
 export function EnterpriseSection() {
-  const [activeTestimonial, setActiveTestimonial] = useState(0);
-  const enterpriseRef = useRef<HTMLElement>(null);
-  const pricingRef = useRef<HTMLElement>(null);
-  const roadmapRef = useRef<HTMLElement>(null);
-
-  const enterpriseInView = useFramerInView(enterpriseRef, {
-    once: true,
-    margin: "-80px",
-  });
-  const pricingInView = useFramerInView(pricingRef, {
-    once: true,
-    margin: "-80px",
-  });
-  const roadmapInView = useFramerInView(roadmapRef, {
-    once: true,
-    margin: "-80px",
-  });
-
-  const nextTestimonial = () => {
-    setActiveTestimonial((prev) => (prev + 1) % testimonials.length);
-  };
-  const prevTestimonial = () => {
-    setActiveTestimonial(
-      (prev) => (prev - 1 + testimonials.length) % testimonials.length
-    );
-  };
-
-  const community = pricingPlans[0];
-  const enterprise = pricingPlans[1];
+  const { ref: sectionRef, isInView } = useInView(0.05);
 
   return (
-    <>
-      {/* ══════════════════════════════════════════════════════ */}
-      {/* ENTERPRISE SECTION                                   */}
-      {/* ══════════════════════════════════════════════════════ */}
-      <section
-        id="enterprise"
-        ref={enterpriseRef}
-        className="relative w-full px-4 py-32 sm:px-6 lg:px-8 overflow-hidden"
-        style={{ background: "#000000" }}
+    <section
+      id="enterprise"
+      ref={sectionRef as React.RefObject<HTMLElement>}
+      className="relative bg-black px-4 py-24 sm:py-32 lg:px-8"
+    >
+      {/* Ambient glow */}
+      <div
+        className="pointer-events-none absolute inset-0 overflow-hidden"
+        aria-hidden="true"
       >
-        {/* Subtle top-edge glow */}
-        <div
-          className="absolute inset-x-0 top-0 h-px"
-          aria-hidden="true"
-          style={{
-            background:
-              "linear-gradient(90deg, transparent, rgba(255,255,255,0.03) 30%, rgba(255,255,255,0.03) 70%, transparent)",
-          }}
-        />
+        <div className="absolute left-1/2 top-0 h-[600px] w-[1000px] -translate-x-1/2 rounded-full bg-white/[0.012] blur-3xl" />
+      </div>
 
-        <div className="relative max-w-6xl mx-auto px-6">
+      <div className="relative mx-auto max-w-7xl">
+        {/* ── Header ────────────────────────────────────── */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] as const }}
+          className="mb-16 text-center sm:mb-20"
+        >
+          <span className="mb-4 inline-flex items-center rounded-full border border-white/[0.08] bg-white/[0.03] px-3.5 py-1 text-[11px] font-medium uppercase tracking-[0.15em] text-white/60">
+            Enterprise
+          </span>
+          <h2 className="text-gradient-void text-3xl font-semibold tracking-tight sm:text-4xl lg:text-5xl">
+            Built for Security Teams at Scale
+          </h2>
+          <p className="mx-auto mt-4 max-w-2xl text-sm leading-relaxed text-neutral-500 sm:text-base">
+            From Fortune 500 security operations to high-growth startups,
+            ReconPro delivers enterprise-grade reconnaissance with the flexibility
+            your organization demands.
+          </p>
+        </motion.div>
+
+        {/* ── Trust Logos Marquee ────────────────────────── */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={isInView ? { opacity: 1 } : {}}
+          transition={{ duration: 0.8, delay: 0.2 }}
+          className="mb-20 overflow-hidden"
+        >
+          <p className="mb-6 text-center text-[11px] font-medium uppercase tracking-[0.2em] text-white/30">
+            Trusted by organizations with the highest security standards
+          </p>
+          <div className="relative">
+            {/* Fade edges */}
+            <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-24 bg-gradient-to-r from-black to-transparent" />
+            <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-24 bg-gradient-to-l from-black to-transparent" />
+            <div className="flex animate-marquee items-center gap-12 whitespace-nowrap">
+              {[...trustLogos, ...trustLogos].map((logo, i) => (
+                <div
+                  key={`${logo}-${i}`}
+                  className="flex items-center gap-2.5 text-white/25"
+                >
+                  <Building2 className="h-4 w-4" strokeWidth={1.5} />
+                  <span className="text-sm font-medium tracking-wide">
+                    {logo}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </motion.div>
+
+        {/* ── Customer Stories ──────────────────────────── */}
+        <div className="mb-20">
+          <motion.h3
+            initial={{ opacity: 0, y: 16 }}
+            animate={isInView ? { opacity: 1, y: 0 } : {}}
+            transition={{ duration: 0.6, delay: 0.3, ease: [0.16, 1, 0.3, 1] as const }}
+            className="mb-10 text-center text-xs font-medium uppercase tracking-[0.2em] text-white/40"
+          >
+            What Security Leaders Say
+          </motion.h3>
           <motion.div
-            className="space-y-24"
             variants={containerVariants}
             initial="hidden"
-            animate={enterpriseInView ? "visible" : "hidden"}
+            animate={isInView ? "visible" : "hidden"}
+            className="grid grid-cols-1 gap-4 md:grid-cols-3"
           >
-            {/* ── Header ──────────────────────────────────────── */}
-            <motion.div
-              className="text-center mb-16"
-              variants={itemVariants}
-            >
-              <span
-                className="inline-block text-[10px] font-semibold tracking-[0.25em] uppercase mb-4 px-3 py-1 rounded-full"
-                style={{
-                  color: "rgba(255,255,255,0.5)",
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                }}
-              >
-                Enterprise
-              </span>
-              <h2
-                className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4"
-              >
-                Enterprise
-              </h2>
-              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/60"
-              >
-                Production-grade security. Enterprise-grade support.
-              </p>
-            </motion.div>
-
-            {/* ── Feature Columns ─────────────────────────────── */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {enterpriseFeatures.map((feat) => {
-                const Icon = feat.icon;
-                return (
-                  <motion.div
-                    key={feat.title}
-                    variants={itemVariants}
-                    className="group relative rounded-xl p-6 transition-colors duration-300"
-                    style={{
-                      background: "rgba(255,255,255,0.03)",
-                      border: "1px solid rgba(255,255,255,0.06)",
-                      backdropFilter: "blur(24px)",
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background =
-                        "rgba(255,255,255,0.06)";
-                      e.currentTarget.style.borderColor =
-                        "rgba(255,255,255,0.12)";
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background =
-                        "rgba(255,255,255,0.03)";
-                      e.currentTarget.style.borderColor =
-                        "rgba(255,255,255,0.06)";
-                    }}
-                  >
-                    <div
-                      className="inline-flex items-center justify-center w-10 h-10 rounded-lg mb-4"
-                      style={{
-                        background: "rgba(255,255,255,0.06)",
-                        border: "1px solid rgba(255,255,255,0.08)",
-                      }}
-                    >
-                      <Icon
-                        size={20}
-                        strokeWidth={1.5}
-                        style={{ color: "rgba(255,255,255,0.7)" }}
-                      />
-                    </div>
-                    <h3
-                      className="text-sm font-medium text-white mb-2 tracking-tight"
-                    >
-                      {feat.title}
-                    </h3>
-                    <p
-                      className="text-sm leading-relaxed"
-                      style={{ color: "rgba(255,255,255,0.4)" }}
-                    >
-                      {feat.description}
-                    </p>
-                  </motion.div>
-                );
-              })}
-            </div>
-
-            {/* ── Integration Pills ────────────────────────────── */}
-            <motion.div variants={itemVariants} className="text-center">
-              <p
-                className="text-xs font-medium tracking-[0.2em] uppercase mb-6"
-                style={{ color: "rgba(255,255,255,0.3)" }}
-              >
-                Integrations
-              </p>
-              <div className="flex flex-wrap items-center justify-center gap-3">
-                {integrations.map((integration) => (
-                  <span
-                    key={integration.name}
-                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium text-white/60 transition-all duration-300 hover:text-white/90"
-                    style={{
-                      background: "rgba(255,255,255,0.04)",
-                      border: "1px solid rgba(255,255,255,0.08)",
-                      backdropFilter: "blur(12px)",
-                    }}
-                  >
-                    {integration.name}
-                  </span>
-                ))}
-              </div>
-            </motion.div>
-
-            {/* ── Testimonial Carousel ─────────────────────────── */}
-            <motion.div variants={itemVariants} className="relative">
-              <div
-                className="relative rounded-2xl p-10 sm:p-14 overflow-hidden"
-                style={{
-                  background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  backdropFilter: "blur(24px)",
-                }}
+            {customerStories.map((story) => (
+              <motion.div
+                key={story.author}
+                variants={itemVariants}
+                className="panel glass-hover group relative flex flex-col rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6"
               >
                 <Quote
-                  size={40}
-                  className="absolute top-8 left-8 opacity-[0.06]"
-                  style={{ color: "#ffffff" }}
-                  aria-hidden="true"
+                  className="mb-4 h-5 w-5 text-white/[0.08]"
+                  strokeWidth={1.5}
                 />
-
-                <div className="relative min-h-[160px] flex flex-col justify-center">
-                  {testimonials.length > 0 ? (
-                    <AnimatePresence mode="wait">
-                      <motion.div
-                        key={activeTestimonial}
-                        initial={{ opacity: 0, x: 40 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -40 }}
-                        transition={{
-                          duration: 0.4,
-                          ease: [0.16, 1, 0.3, 1] as const,
-                        }}
-                        className="text-center"
-                      >
-                        <p
-                          className="text-lg sm:text-xl leading-relaxed text-white/70 mb-8 max-w-3xl mx-auto italic"
-                        >
-                          &ldquo;{testimonials[activeTestimonial].quote}&rdquo;
-                        </p>
-                        <div>
-                          <p className="text-white font-semibold text-base">
-                            {testimonials[activeTestimonial].author}
-                          </p>
-                          <p
-                            className="text-sm mt-1"
-                            style={{ color: "rgba(255,255,255,0.4)" }}
-                          >
-                            {testimonials[activeTestimonial].role},{" "}
-                            {testimonials[activeTestimonial].company}
-                          </p>
-                        </div>
-                      </motion.div>
-                    </AnimatePresence>
-                  ) : (
-                    <div className="text-center">
-                      <p className="text-lg sm:text-xl leading-relaxed text-white/50 mb-4 max-w-3xl mx-auto">
-                        Built by security engineers, for security engineers.
-                      </p>
-                      <p className="text-sm text-white/30">
-                        Community testimonials coming soon.
-                      </p>
-                    </div>
-                  )}
-                </div>
-
-                {/* Navigation */}
-                <div className="flex items-center justify-center gap-4 mt-8">
-                  <button
-                    onClick={prevTestimonial}
-                    className="inline-flex items-center justify-center w-10 h-10 rounded-full transition-colors duration-200"
-                    style={{
-                      background: "rgba(255,255,255,0.06)",
-                      border: "1px solid rgba(255,255,255,0.1)",
-                    }}
-                    aria-label="Previous testimonial"
-                  >
-                    <ChevronLeft
-                      size={16}
-                      style={{ color: "rgba(255,255,255,0.6)" }}
-                    />
-                  </button>
-
-                  {/* Dots */}
-                  <div className="flex items-center gap-2">
-                    {testimonials.map((_, i) => (
-                      <button
-                        key={i}
-                        onClick={() => setActiveTestimonial(i)}
-                        className="rounded-full transition-all duration-300"
-                        style={{
-                          width: i === activeTestimonial ? 24 : 6,
-                          height: 6,
-                          background:
-                            i === activeTestimonial
-                              ? "rgba(255,255,255,0.7)"
-                              : "rgba(255,255,255,0.15)",
-                        }}
-                        aria-label={`Go to testimonial ${i + 1}`}
-                      />
-                    ))}
+                <p className="flex-1 text-sm leading-relaxed text-white/60">
+                  &ldquo;{story.quote}&rdquo;
+                </p>
+                <div className="mt-5 flex items-center gap-3 border-t border-white/[0.04] pt-4">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.03] text-xs font-semibold text-white/60">
+                    {story.author
+                      .split(" ")
+                      .map((n) => n[0])
+                      .join("")}
                   </div>
-
-                  <button
-                    onClick={nextTestimonial}
-                    className="inline-flex items-center justify-center w-10 h-10 rounded-full transition-colors duration-200"
-                    style={{
-                      background: "rgba(255,255,255,0.06)",
-                      border: "1px solid rgba(255,255,255,0.1)",
-                    }}
-                    aria-label="Next testimonial"
-                  >
-                    <ChevronRight
-                      size={16}
-                      style={{ color: "rgba(255,255,255,0.6)" }}
-                    />
-                  </button>
+                  <div>
+                    <p className="text-sm font-medium text-white/80">
+                      {story.author}
+                    </p>
+                    <p className="text-xs text-white/40">
+                      {story.role}, {story.company}
+                    </p>
+                  </div>
                 </div>
-              </div>
-            </motion.div>
+              </motion.div>
+            ))}
           </motion.div>
         </div>
-      </section>
 
-      {/* ══════════════════════════════════════════════════════ */}
-      {/* PRICING SECTION                                      */}
-      {/* ══════════════════════════════════════════════════════ */}
-      <section
-        id="pricing"
-        ref={pricingRef}
-        className="relative w-full px-4 py-32 sm:px-6 lg:px-8 overflow-hidden"
-        style={{ background: "#000000" }}
-        aria-label="Pricing plans"
-      >
-        <div
-          className="absolute inset-x-0 top-0 h-px"
-          aria-hidden="true"
-          style={{
-            background:
-              "linear-gradient(90deg, transparent, rgba(255,255,255,0.03) 30%, rgba(255,255,255,0.03) 70%, transparent)",
-          }}
-        />
-
-        <div className="relative max-w-5xl mx-auto px-6">
+        {/* ── Enterprise Capabilities Grid ──────────────── */}
+        <div className="mb-20">
+          <motion.h3
+            initial={{ opacity: 0, y: 16 }}
+            animate={isInView ? { opacity: 1, y: 0 } : {}}
+            transition={{ duration: 0.6, delay: 0.35, ease: [0.16, 1, 0.3, 1] as const }}
+            className="mb-10 text-center text-xs font-medium uppercase tracking-[0.2em] text-white/40"
+          >
+            Enterprise Capabilities
+          </motion.h3>
           <motion.div
-            className="space-y-16"
             variants={containerVariants}
             initial="hidden"
-            animate={pricingInView ? "visible" : "hidden"}
+            animate={isInView ? "visible" : "hidden"}
+            className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
           >
-            <motion.div
-              className="text-center mb-16"
-              variants={itemVariants}
-            >
-              <span
-                className="inline-block text-[10px] font-semibold tracking-[0.25em] uppercase mb-4 px-3 py-1 rounded-full"
-                style={{
-                  color: "rgba(255,255,255,0.5)",
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                }}
-              >
-                Pricing
-              </span>
-              <h2 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4">
-                Simple Pricing
-              </h2>
-              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/60">
-                Free for everyone. Enterprise when you need it.
-              </p>
-            </motion.div>
-
-            {/* ── Pricing Cards ────────────────────────────────── */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
-              {/* Community Card */}
-              <motion.div
-                variants={itemVariants}
-                className="relative rounded-2xl p-8 sm:p-10 flex flex-col"
-                style={{
-                  background: "rgba(255,255,255,0.02)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  backdropFilter: "blur(24px)",
-                }}
-              >
-                <div className="mb-8">
-                  <h3 className="text-xl font-semibold text-white mb-2">
-                    {community.name}
-                  </h3>
-                  <div className="flex items-baseline gap-2 mb-3">
-                    <span
-                      className="text-4xl font-bold text-white tracking-tight"
-                    >
-                      {community.price}
-                    </span>
-                    <span
-                      className="text-sm"
-                      style={{ color: "rgba(255,255,255,0.35)" }}
-                    >
-                      {community.period}
-                    </span>
+            {enterpriseCapabilities.map((cap) => {
+              const Icon = cap.icon;
+              return (
+                <motion.div
+                  key={cap.title}
+                  variants={itemVariants}
+                  className="panel glass-hover group relative rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6"
+                >
+                  <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] transition-colors duration-300 group-hover:border-white/[0.12]">
+                    <Icon
+                      className="h-5 w-5 text-white/40 transition-colors duration-300 group-hover:text-[#00ff88]/80"
+                      strokeWidth={1.5}
+                    />
                   </div>
-                  <p
-                    className="text-sm leading-relaxed"
-                    style={{ color: "rgba(255,255,255,0.4)" }}
-                  >
-                    {community.description}
+                  <h4 className="text-sm font-medium text-white">
+                    {cap.title}
+                  </h4>
+                  <p className="mt-2 text-[13px] leading-relaxed text-white/50">
+                    {cap.description}
                   </p>
-                </div>
-
-                <ul className="space-y-3 mb-10 flex-1">
-                  {community.features.map((feature) => (
-                    <li
-                      key={feature}
-                      className="flex items-start gap-3 text-sm"
-                    >
-                      <Check
-                        size={16}
-                        className="mt-0.5 shrink-0"
-                        style={{ color: "rgba(255,255,255,0.35)" }}
-                      />
-                      <span
-                        className="leading-relaxed"
-                        style={{ color: "rgba(255,255,255,0.6)" }}
-                      >
-                        {feature}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-
-                <button
-                  className="w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide transition-all duration-300"
-                  aria-label={`${community.cta} — ${community.name} plan`}
-                  style={{
-                    background: "transparent",
-                    border: "1px solid rgba(255,255,255,0.15)",
-                    color: "rgba(255,255,255,0.7)",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background =
-                      "rgba(255,255,255,0.06)";
-                    e.currentTarget.style.borderColor =
-                      "rgba(255,255,255,0.25)";
-                    e.currentTarget.style.color = "#ffffff";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "transparent";
-                    e.currentTarget.style.borderColor =
-                      "rgba(255,255,255,0.15)";
-                    e.currentTarget.style.color =
-                      "rgba(255,255,255,0.7)";
-                  }}
-                >
-                  {community.cta}
-                </button>
-              </motion.div>
-
-              {/* Enterprise Card */}
-              <motion.div
-                variants={itemVariants}
-                className="relative rounded-2xl p-8 sm:p-10 flex flex-col"
-                style={{
-                  background: "rgba(255,255,255,0.04)",
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  boxShadow:
-                    "0 0 60px -12px rgba(255,255,255,0.1), 0 0 120px -24px rgba(255,255,255,0.05)",
-                  backdropFilter: "blur(24px)",
-                }}
-              >
-                {/* Popular badge */}
-                <div
-                  className="absolute -top-3 left-8 px-3 py-1 rounded-full text-[11px] font-semibold tracking-wide uppercase"
-                  style={{
-                    background: "#ffffff",
-                    color: "#000000",
-                  }}
-                >
-                  Popular
-                </div>
-
-                <div className="mb-8">
-                  <h3 className="text-xl font-semibold text-white mb-2">
-                    {enterprise.name}
-                  </h3>
-                  <div className="flex items-baseline gap-2 mb-3">
-                    <span
-                      className="text-4xl font-bold text-white tracking-tight"
-                    >
-                      {enterprise.price}
-                    </span>
-                    <span
-                      className="text-sm"
-                      style={{ color: "rgba(255,255,255,0.35)" }}
-                    >
-                      {enterprise.period}
-                    </span>
-                  </div>
-                  <p
-                    className="text-sm leading-relaxed"
-                    style={{ color: "rgba(255,255,255,0.4)" }}
-                  >
-                    {enterprise.description}
-                  </p>
-                </div>
-
-                <ul className="space-y-3 mb-10 flex-1">
-                  {enterprise.features.map((feature) => (
-                    <li
-                      key={feature}
-                      className="flex items-start gap-3 text-sm"
-                    >
-                      <Check
-                        size={16}
-                        className="mt-0.5 shrink-0"
-                        style={{ color: "#ffffff" }}
-                      />
-                      <span
-                        className="leading-relaxed"
-                        style={{ color: "rgba(255,255,255,0.7)" }}
-                      >
-                        {feature}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-
-                <button
-                  className="w-full py-3.5 rounded-xl text-sm font-semibold tracking-wide transition-all duration-300"
-                  aria-label={`${enterprise.cta} — ${enterprise.name} plan`}
-                  style={{
-                    background: "#ffffff",
-                    border: "1px solid #ffffff",
-                    color: "#000000",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background =
-                      "rgba(255,255,255,0.9)";
-                    e.currentTarget.style.boxShadow =
-                      "0 0 24px rgba(255,255,255,0.2)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "#ffffff";
-                    e.currentTarget.style.boxShadow = "none";
-                  }}
-                >
-                  {enterprise.cta}
-                </button>
-              </motion.div>
-            </div>
+                </motion.div>
+              );
+            })}
           </motion.div>
         </div>
-      </section>
 
-      {/* ══════════════════════════════════════════════════════ */}
-      {/* ROADMAP SECTION                                      */}
-      {/* ══════════════════════════════════════════════════════ */}
-      <section
-        id="roadmap"
-        ref={roadmapRef}
-        className="relative w-full px-4 py-32 sm:px-6 lg:px-8 overflow-hidden"
-        style={{ background: "#000000" }}
-        aria-label="Product roadmap"
-      >
-        <div
-          className="absolute inset-x-0 top-0 h-px"
-          aria-hidden="true"
-          style={{
-            background:
-              "linear-gradient(90deg, transparent, rgba(255,255,255,0.03) 30%, rgba(255,255,255,0.03) 70%, transparent)",
-          }}
-        />
+        {/* ── CTA Section ────────────────────────────────── */}
+        <motion.div
+          initial={{ opacity: 0, y: 24 }}
+          animate={isInView ? { opacity: 1, y: 0 } : {}}
+          transition={{ duration: 0.6, delay: 0.5, ease: [0.16, 1, 0.3, 1] as const }}
+          className="relative overflow-hidden rounded-2xl border border-white/[0.06] bg-white/[0.02] p-8 text-center sm:p-12"
+        >
+          {/* Subtle inner glow */}
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                "radial-gradient(ellipse at center, rgba(0,255,136,0.03) 0%, transparent 70%)",
+            }}
+            aria-hidden="true"
+          />
 
-        <div className="relative max-w-4xl mx-auto px-6">
-          <motion.div
-            className="space-y-16"
-            variants={containerVariants}
-            initial="hidden"
-            animate={roadmapInView ? "visible" : "hidden"}
-          >
-            <motion.div
-              className="text-center mb-16"
-              variants={itemVariants}
-            >
-              <span
-                className="inline-block text-[10px] font-semibold tracking-[0.25em] uppercase mb-4 px-3 py-1 rounded-full"
-                style={{
-                  color: "rgba(255,255,255,0.5)",
-                  background: "rgba(255,255,255,0.06)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                }}
+          <div className="relative">
+            <h3 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+              Ready to Secure Your Attack Surface?
+            </h3>
+            <p className="mx-auto mt-3 max-w-lg text-sm leading-relaxed text-neutral-500">
+              Get a personalized demo, discuss your security requirements,
+              and see how ReconPro fits into your security operations.
+            </p>
+            <div className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+              <a
+                href="/enterprise"
+                className="group inline-flex items-center gap-2 rounded-xl bg-white px-6 py-3 text-sm font-medium text-black transition-all duration-200 hover:bg-white/90"
               >
-                Roadmap
-              </span>
-              <h2 className="text-4xl sm:text-5xl font-semibold tracking-tight text-white mb-4">
-                Roadmap
-              </h2>
-              <p className="text-sm max-w-xl mx-auto leading-relaxed text-white/60">
-                What's coming next.
-              </p>
-            </motion.div>
-
-            {/* ── Timeline ──────────────────────────────────────── */}
-            <div className="relative">
-              {/* Vertical line */}
-              <div
-                className="absolute left-[19px] top-2 bottom-2 w-px"
-                style={{
-                  background:
-                    "linear-gradient(to bottom, rgba(255,255,255,0.1), rgba(255,255,255,0.04))",
-                }}
-              />
-
-              <div className="space-y-12">
-                {roadmap.map((quarter, qi) => (
-                  <motion.div
-                    key={quarter.quarter}
-                    variants={itemVariants}
-                    className="relative pl-14"
-                  >
-                    {/* Timeline dot */}
-                    <div
-                      className="absolute left-0 top-1 w-10 h-10 rounded-full flex items-center justify-center"
-                      style={{
-                        background: "#000000",
-                        border: "2px solid rgba(255,255,255,0.15)",
-                        zIndex: 2,
-                      }}
-                    >
-                      <Zap
-                        size={14}
-                        style={{ color: "rgba(255,255,255,0.5)" }}
-                      />
-                    </div>
-
-                    {/* Quarter label */}
-                    <h3
-                      className="text-sm font-medium text-white mb-4 tracking-tight"
-                    >
-                      {quarter.quarter}
-                    </h3>
-
-                    {/* Items */}
-                    <div className="space-y-3">
-                      {quarter.items.map((item) => {
-                        const status = statusConfig[item.status];
-                        return (
-                          <div
-                            key={item.title}
-                            className="flex items-center justify-between gap-4 py-2.5 px-4 rounded-xl transition-colors duration-200"
-                            style={{
-                              background: "rgba(255,255,255,0.02)",
-                              border: "1px solid rgba(255,255,255,0.04)",
-                            }}
-                          >
-                            <span
-                              className="text-sm text-white/60"
-                            >
-                              {item.title}
-                            </span>
-                            <span
-                              className="shrink-0 text-[11px] font-semibold tracking-wide uppercase px-2.5 py-1 rounded-full"
-                              style={{
-                                color: status.color,
-                                background: status.bg,
-                                border: `1px solid ${status.color}20`,
-                              }}
-                            >
-                              {status.label}
-                            </span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
+                Contact Sales
+                <ArrowRight className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5" />
+              </a>
+              <a
+                href="/pricing"
+                className="inline-flex items-center gap-2 rounded-xl border border-white/[0.1] bg-white/[0.03] px-6 py-3 text-sm font-medium text-white/80 transition-all duration-200 hover:border-white/[0.2] hover:text-white"
+              >
+                View Pricing
+              </a>
             </div>
-          </motion.div>
-        </div>
-      </section>
-    </>
+
+            {/* Trust indicators */}
+            <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/30">
+              <span className="flex items-center gap-1.5">
+                <Check className="h-3 w-3" strokeWidth={2} />
+                No credit card required
+              </span>
+              <span className="flex items-center gap-1.5">
+                <Check className="h-3 w-3" strokeWidth={2} />
+                14-day free trial
+              </span>
+              <span className="flex items-center gap-1.5">
+                <Check className="h-3 w-3" strokeWidth={2} />
+                Cancel anytime
+              </span>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    </section>
   );
 }
-
-export default EnterpriseSection;

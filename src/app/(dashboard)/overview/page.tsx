@@ -6,10 +6,12 @@ import { BentoDashboard } from "@/components/reconpro/bento-dashboard";
 import { AlertCircle, RefreshCw, LayoutDashboard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuthHeaders } from "@/hooks/use-auth-headers";
+import { useCurrentUser } from "@/hooks/use-current-user";
 
 export default function OverviewPage() {
   const router = useRouter();
   const authHeaders = useAuthHeaders();
+  const user = useCurrentUser();
   const [stats, setStats] = useState<null | {
     totalScans: number;
     totalFindings: number;
@@ -139,6 +141,7 @@ export default function OverviewPage() {
     <BentoDashboard
       stats={stats}
       recentScans={recentScans as never}
+      userName={user.name}
       onNavigate={(view: string) => {
         const pathMap: Record<string, string> = {
           surface: "/findings",
@@ -146,7 +149,8 @@ export default function OverviewPage() {
           scan: "/scans",
           history: "/scans",
           compliance: "/compliance",
-          "unified-cli": "/scans",
+          radar: "/findings",
+          monitoring: "/monitoring",
           dashboard: "/overview",
         };
         const target = pathMap[view];
