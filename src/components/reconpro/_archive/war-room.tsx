@@ -257,7 +257,7 @@ function useTopology(topoCanvasRef: React.RefObject<HTMLCanvasElement | null>) {
     nodesRef.current.push({
       id, label, x: cx + Math.cos(angle) * dist, y: cy + Math.sin(angle) * dist,
       vx: 0, vy: 0, radius: 8 + Math.random() * 6,
-      color: hasVuln ? '#ff3355' : '#22c55e', glowIntensity: 1, hasVuln,
+      color: hasVuln ? '#ff3355' : '#00ff88', glowIntensity: 1, hasVuln,
     });
   }, [topoCanvasRef]);
 

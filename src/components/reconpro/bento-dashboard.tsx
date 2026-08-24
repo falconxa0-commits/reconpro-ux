@@ -177,7 +177,7 @@ function AnimatedSeverityDonut({ data }: { data: { name: string; value: number; 
 function SeverityBadge({ severity, count }: { severity: string; count: number }) {
   const config: Record<string, { color: string; bg: string }> = {
     critical: { color: '#ff3355', bg: 'rgba(255,51,85,0.1)' },
-    high: { color: '#f97316', bg: 'rgba(249,115,22,0.1)' },
+    high: { color: '#ff8800', bg: 'rgba(249,115,22,0.1)' },
     medium: { color: '#d29922', bg: 'rgba(210,153,34,0.1)' },
     low: { color: '#00ff88', bg: 'rgba(0,255,136,0.1)' },
     info: { color: '#737373', bg: 'rgba(115,115,115,0.08)' },
@@ -192,7 +192,7 @@ function SeverityBadge({ severity, count }: { severity: string; count: number })
 }
 
 function ThreatFeedItem({ title, severity, timestamp }: { title: string; severity: string; timestamp: string }) {
-  const colorMap: Record<string, string> = { critical: '#ff3355', high: '#f97316', medium: '#d29922', low: '#00ff88', info: '#737373' };
+  const colorMap: Record<string, string> = { critical: '#ff3355', high: '#ff8800', medium: '#d29922', low: '#00ff88', info: '#737373' };
   const color = colorMap[severity] || '#737373';
   return (
     <motion.div
@@ -369,7 +369,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate, systemsHealthy 
         <StatCard icon={BarChart3} label="Total Scans" value={stats?.totalScans ?? 0} color="#a3a3a3" trend={{ value: '+12%', isPositive: true }} onClick={() => onNavigate('history')} />
         <StatCard icon={ShieldAlert} label="Critical" value={stats?.criticalFindings ?? 0} color="#ff3355" trend={{ value: (stats?.criticalFindings ?? 0) > 0 ? '+3' : '0', isPositive: (stats?.criticalFindings ?? 0) === 0 }} onClick={() => onNavigate('threats')} />
         <StatCard icon={Zap} label="Findings" value={stats?.totalFindings ?? 0} color="#d29922" trend={{ value: '+8%', isPositive: true }} onClick={() => onNavigate('radar')} />
-        <StatCard icon={TrendingUp} label="High" value={stats?.highFindings ?? 0} color="#f97316" trend={{ value: '-5%', isPositive: true }} onClick={() => onNavigate('threats')} />
+        <StatCard icon={TrendingUp} label="High" value={stats?.highFindings ?? 0} color="#ff8800" trend={{ value: '-5%', isPositive: true }} onClick={() => onNavigate('threats')} />
       </div>
 
       {/* Main Content: CLI + Severity + Threat Feed */}
@@ -398,7 +398,7 @@ export function BentoDashboard({ stats, recentScans, onNavigate, systemsHealthy 
             <div className="w-full max-w-[110px]">
               <AnimatedSeverityDonut data={[
                 { name: 'Critical', value: stats?.criticalFindings ?? 0, color: '#ff3355' },
-                { name: 'High', value: stats?.highFindings ?? 0, color: '#f97316' },
+                { name: 'High', value: stats?.highFindings ?? 0, color: '#ff8800' },
                 { name: 'Medium', value: stats?.mediumFindings ?? 0, color: '#d29922' },
                 { name: 'Low', value: stats?.lowFindings ?? 0, color: '#00ff88' },
                 { name: 'Info', value: stats?.infoFindings ?? 0, color: '#525252' },

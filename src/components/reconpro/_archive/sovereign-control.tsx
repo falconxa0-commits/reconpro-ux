@@ -68,7 +68,7 @@ const ACTION_CONFIG: Record<SovereignActionType, {
     description: 'Lock all tenant access immediately',
     severity: 'CRITICAL',
     icon: ShieldAlert,
-    color: '#EF4444',
+    color: '#ff3355',
     confirmMessage: 'This will lock ALL tenant access. This is an irreversible emergency action. Proceed?',
   },
   global_broadcast: {
@@ -76,7 +76,7 @@ const ACTION_CONFIG: Record<SovereignActionType, {
     description: 'Send verified message to all dashboards',
     severity: 'HIGH',
     icon: Megaphone,
-    color: '#F97316',
+    color: '#ff8800',
     confirmMessage: 'This will broadcast a message to every active dashboard. Proceed?',
   },
   revoke_all_keys: {
@@ -84,7 +84,7 @@ const ACTION_CONFIG: Record<SovereignActionType, {
     description: 'Invalidate every API key across all tenants',
     severity: 'CRITICAL',
     icon: KeyRound,
-    color: '#EF4444',
+    color: '#ff3355',
     confirmMessage: 'This will permanently revoke ALL API keys across ALL tenants. Proceed?',
   },
   system_maintenance: {
@@ -108,7 +108,7 @@ const ACTION_CONFIG: Record<SovereignActionType, {
     description: 'Record heartbeat to prevent automatic lockdown',
     severity: 'NORMAL',
     icon: Heart,
-    color: '#22C55E',
+    color: '#00ff88',
     confirmMessage: 'Record dead man\'s switch heartbeat now?',
   },
   certification_sign: {
@@ -124,26 +124,26 @@ const ACTION_CONFIG: Record<SovereignActionType, {
     description: 'Override tenant configuration and access controls',
     severity: 'HIGH',
     icon: User,
-    color: '#F97316',
+    color: '#ff8800',
     confirmMessage: 'Override tenant access controls? This is a high-privilege operation.',
   },
 };
 
 const SEVERITY_COLORS: Record<string, string> = {
-  CRITICAL: '#EF4444',
-  HIGH: '#F97316',
+  CRITICAL: '#ff3355',
+  HIGH: '#ff8800',
   NORMAL: '#FFD700',
 };
 
 const ACTION_TYPE_COLORS: Record<SovereignActionType, string> = {
-  emergency_lockdown: '#EF4444',
-  global_broadcast: '#F97316',
-  override_tenant: '#F97316',
-  revoke_all_keys: '#EF4444',
+  emergency_lockdown: '#ff3355',
+  global_broadcast: '#ff8800',
+  override_tenant: '#ff8800',
+  revoke_all_keys: '#ff3355',
   system_maintenance: '#FFD700',
   access_grant: '#FFD700',
   certification_sign: '#FFD700',
-  dead_man_switch: '#22C55E',
+  dead_man_switch: '#00ff88',
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -371,10 +371,10 @@ export function SovereignControlPanel() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 {/* System Status */}
                 <div className="flex items-center gap-3 rounded-lg p-3 border" style={{ background: '#080808', borderColor: 'rgba(255,255,255,0.05)' }}>
-                  <Activity className="h-5 w-5" style={{ color: systemStatus === 'LOCKDOWN' ? '#EF4444' : '#22C55E' }} />
+                  <Activity className="h-5 w-5" style={{ color: systemStatus === 'LOCKDOWN' ? '#ff3355' : '#00ff88' }} />
                   <div>
                     <p className="text-xs text-zinc-500 uppercase tracking-wider">System</p>
-                    <p className="text-sm font-bold" style={{ color: systemStatus === 'LOCKDOWN' ? '#EF4444' : '#22C55E' }}>
+                    <p className="text-sm font-bold" style={{ color: systemStatus === 'LOCKDOWN' ? '#ff3355' : '#00ff88' }}>
                       {systemStatus}
                     </p>
                   </div>
@@ -382,10 +382,10 @@ export function SovereignControlPanel() {
 
                 {/* Master Key */}
                 <div className="flex items-center gap-3 rounded-lg p-3 border" style={{ background: '#080808', borderColor: 'rgba(255,255,255,0.05)' }}>
-                  <Key className="h-5 w-5" style={{ color: status?.masterKeyRegistered ? '#FFD700' : '#EF4444' }} />
+                  <Key className="h-5 w-5" style={{ color: status?.masterKeyRegistered ? '#FFD700' : '#ff3355' }} />
                   <div>
                     <p className="text-xs text-zinc-500 uppercase tracking-wider">Master Key</p>
-                    <p className="text-sm font-bold" style={{ color: status?.masterKeyRegistered ? '#FFD700' : '#EF4444' }}>
+                    <p className="text-sm font-bold" style={{ color: status?.masterKeyRegistered ? '#FFD700' : '#ff3355' }}>
                       {status?.masterKeyRegistered ? 'REGISTERED' : 'NOT REGISTERED'}
                     </p>
                   </div>
@@ -543,9 +543,9 @@ export function SovereignControlPanel() {
                           <div className="flex items-center gap-2">
                             <p className="text-xs text-zinc-600 font-mono">{a.ipAddress}</p>
                             {a.verified ? (
-                              <CheckCircle className="h-3.5 w-3.5" style={{ color: '#22C55E' }} />
+                              <CheckCircle className="h-3.5 w-3.5" style={{ color: '#00ff88' }} />
                             ) : (
-                              <XCircle className="h-3.5 w-3.5" style={{ color: '#EF4444' }} />
+                              <XCircle className="h-3.5 w-3.5" style={{ color: '#ff3355' }} />
                             )}
                             <ChevronDown className={`h-3.5 w-3.5 text-zinc-600 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                           </div>
@@ -594,10 +594,10 @@ export function SovereignControlPanel() {
           style={{ background: '#080808', borderColor: status?.deadMansSwitchStatus?.triggered ? 'rgba(239,68,68,0.3)' : 'rgba(255,215,0,0.1)' }}
         >
           <div className="flex items-center gap-2 p-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
-            <Heart className="h-5 w-5" style={{ color: status?.deadMansSwitchStatus?.triggered ? '#EF4444' : '#22C55E' }} />
+            <Heart className="h-5 w-5" style={{ color: status?.deadMansSwitchStatus?.triggered ? '#ff3355' : '#00ff88' }} />
             <h2 className="text-lg font-bold text-zinc-200 tracking-tight">DEAD MAN&apos;S SWITCH</h2>
             {status?.deadMansSwitchStatus?.triggered && (
-              <Badge className="text-xs font-bold" style={{ background: '#EF444420', color: '#EF4444', border: '1px solid #EF444433' }}>
+              <Badge className="text-xs font-bold" style={{ background: '#ff335520', color: '#ff3355', border: '1px solid #ff335533' }}>
                 TRIGGERED
               </Badge>
             )}
@@ -618,7 +618,7 @@ export function SovereignControlPanel() {
                   <div
                     className="text-3xl font-bold font-mono tabular-nums"
                     style={{
-                      color: unit.value <= 1 && unit.label === 'DAYS' ? '#EF4444' : '#FFD700',
+                      color: unit.value <= 1 && unit.label === 'DAYS' ? '#ff3355' : '#FFD700',
                       textShadow: '0 0 20px rgba(255,215,0,0.3)',
                     }}
                   >
@@ -640,7 +640,7 @@ export function SovereignControlPanel() {
                 <motion.div
                   className="h-full rounded-full"
                   style={{
-                    background: `linear-gradient(90deg, #22C55E, ${status?.deadMansSwitchStatus?.daysRemaining && status.deadMansSwitchStatus.daysRemaining < 7 ? '#EF4444' : '#FFD700'})`,
+                    background: `linear-gradient(90deg, #00ff88, ${status?.deadMansSwitchStatus?.daysRemaining && status.deadMansSwitchStatus.daysRemaining < 7 ? '#ff3355' : '#FFD700'})`,
                   }}
                   initial={{ width: '100%' }}
                   animate={{
@@ -673,7 +673,7 @@ export function SovereignControlPanel() {
 
             {/* Warning */}
             <div className="flex items-start gap-2 rounded-lg p-3 border" style={{ background: '#0f0a0a', borderColor: 'rgba(239,68,68,0.15)' }}>
-              <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: '#EF4444' }} />
+              <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: '#ff3355' }} />
               <p className="text-xs text-zinc-500 leading-relaxed">
                 If no ping is received within <span className="text-zinc-300 font-semibold">30 days</span>, an automatic emergency lockdown will trigger across all tenants.
               </p>
@@ -685,7 +685,7 @@ export function SovereignControlPanel() {
               disabled={executing === 'dead_man_switch'}
               className="w-full h-12 text-sm font-bold tracking-wider rounded-lg transition-all"
               style={{
-                background: 'linear-gradient(135deg, #166534 0%, #22C55E 100%)',
+                background: 'linear-gradient(135deg, #166534 0%, #00ff88 100%)',
                 color: '#fff',
                 boxShadow: '0 0 30px rgba(34,197,94,0.2)',
               }}
@@ -711,7 +711,7 @@ export function SovereignControlPanel() {
           style={{ background: '#080808', borderColor: integrityOk ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.3)' }}
         >
           <div className="flex items-center gap-2 p-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
-            <Fingerprint className="h-5 w-5" style={{ color: integrityOk ? '#22C55E' : '#EF4444' }} />
+            <Fingerprint className="h-5 w-5" style={{ color: integrityOk ? '#00ff88' : '#ff3355' }} />
             <h2 className="text-lg font-bold text-zinc-200 tracking-tight">INTEGRITY VERIFICATION</h2>
           </div>
 
@@ -720,14 +720,14 @@ export function SovereignControlPanel() {
             <div className="flex items-center gap-3">
               <div className="rounded-full p-2" style={{ background: integrityOk ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)' }}>
                 {integrityOk ? (
-                  <CheckCircle className="h-6 w-6" style={{ color: '#22C55E' }} />
+                  <CheckCircle className="h-6 w-6" style={{ color: '#00ff88' }} />
                 ) : (
-                  <XCircle className="h-6 w-6" style={{ color: '#EF4444' }} />
+                  <XCircle className="h-6 w-6" style={{ color: '#ff3355' }} />
                 )}
               </div>
               <div>
                 <p className="text-xs text-zinc-500 uppercase tracking-wider">Status</p>
-                <p className="text-sm font-bold" style={{ color: integrityOk ? '#22C55E' : '#EF4444' }}>
+                <p className="text-sm font-bold" style={{ color: integrityOk ? '#00ff88' : '#ff3355' }}>
                   {status?.systemIntegrity?.status ?? 'UNKNOWN'}
                 </p>
               </div>
@@ -782,7 +782,7 @@ export function SovereignControlPanel() {
                     className="text-[10px] px-1.5 py-0 font-mono font-bold w-12 justify-center"
                     style={{
                       background: entry.method === 'GET' ? 'rgba(34,197,94,0.1)' : 'rgba(255,215,0,0.1)',
-                      color: entry.method === 'GET' ? '#22C55E' : '#FFD700',
+                      color: entry.method === 'GET' ? '#00ff88' : '#FFD700',
                       border: `1px solid ${entry.method === 'GET' ? 'rgba(34,197,94,0.2)' : 'rgba(255,215,0,0.2)'}`,
                     }}
                   >
@@ -792,9 +792,9 @@ export function SovereignControlPanel() {
                   <p className="text-xs text-zinc-600 font-mono">{entry.ip}</p>
                   <p className="text-xs text-zinc-600 font-mono w-40 text-right">{formatTimestamp(entry.timestamp)}</p>
                   {entry.success ? (
-                    <CheckCircle className="h-3.5 w-3.5 flex-shrink-0" style={{ color: '#22C55E' }} />
+                    <CheckCircle className="h-3.5 w-3.5 flex-shrink-0" style={{ color: '#00ff88' }} />
                   ) : (
-                    <XCircle className="h-3.5 w-3.5 flex-shrink-0" style={{ color: '#EF4444' }} />
+                    <XCircle className="h-3.5 w-3.5 flex-shrink-0" style={{ color: '#ff3355' }} />
                   )}
                 </div>
               ))}
@@ -855,7 +855,7 @@ export function SovereignControlPanel() {
           </DialogHeader>
           {confirmAction && ACTION_CONFIG[confirmAction].severity === 'CRITICAL' && (
             <div className="flex items-start gap-2 rounded-lg p-3 border" style={{ background: '#0f0505', borderColor: 'rgba(239,68,68,0.2)' }}>
-              <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: '#EF4444' }} />
+              <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: '#ff3355' }} />
               <p className="text-xs text-red-400 leading-relaxed">
                 This is a <span className="font-bold">CRITICAL</span> operation. It will affect all tenants and cannot be easily reversed.
               </p>

@@ -218,7 +218,7 @@ function renderProof(
   const dotY = termY + titleH / 2;
   ctx.fillStyle = '#ff3355'; ctx.beginPath(); ctx.arc(termX + pad, dotY, dotR, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#f59e0b'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 3, dotY, dotR, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 6, dotY, dotR, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#00ff88'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 6, dotY, dotR, 0, Math.PI * 2); ctx.fill();
 
   ctx.font = `${fontSize(11)}px monospace`;
   ctx.fillStyle = '#4b5563';
@@ -437,7 +437,7 @@ function drawAnimFrame(
   const dotY = termY + titleH / 2;
   ctx.fillStyle = '#ff3355'; ctx.beginPath(); ctx.arc(termX + pad, dotY, dotR, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#f59e0b'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 3, dotY, dotR, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#22c55e'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 6, dotY, dotR, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#00ff88'; ctx.beginPath(); ctx.arc(termX + pad + dotR * 6, dotY, dotR, 0, Math.PI * 2); ctx.fill();
   ctx.font = `${fs(11)}px monospace`; ctx.fillStyle = '#4b5563';
   ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
   ctx.fillText(`reconpro — ${domain}`, termX + pad + dotR * 10, dotY);

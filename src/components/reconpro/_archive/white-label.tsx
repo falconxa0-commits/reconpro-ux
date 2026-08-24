@@ -112,11 +112,11 @@ interface ColorPalette {
 
 const PRESET_PALETTES: ColorPalette[] = [
   { name: 'Midnight', primary: '#00ff88', accent: '#0a0d14' },
-  { name: 'Ocean', primary: '#06b6d4', accent: '#0c1222' },
+  { name: 'Ocean', primary: '#44aaff', accent: '#0c1222' },
   { name: 'Crimson', primary: '#ff3355', accent: '#1a0a0a' },
   { name: 'Royal', primary: '#a78bfa', accent: '#0f0a1e' },
   { name: 'Solar', primary: '#ff8844', accent: '#1a1008' },
-  { name: 'Forest', primary: '#22c55e', accent: '#0a1a0a' },
+  { name: 'Forest', primary: '#00ff88', accent: '#0a1a0a' },
 ];
 
 interface DnsRecord {
@@ -836,7 +836,7 @@ export function WhiteLabelPanel({
                     label="Primary Color"
                     value={config.primaryColor}
                     onChange={(v) => update('primaryColor', v)}
-                    presets={['#00ff88', '#06b6d4', '#ff3355', '#a78bfa', '#ff8844', '#22c55e', '#ec4899', '#14b8a6']}
+                    presets={['#00ff88', '#44aaff', '#ff3355', '#a78bfa', '#ff8844', '#00ff88', '#ec4899', '#14b8a6']}
                   />
                   <ColorPickerField
                     label="Accent Color"
@@ -1230,7 +1230,7 @@ export function WhiteLabelPanel({
                               <div className="flex gap-1.5">
                                 <div className="h-2.5 w-2.5 rounded-full bg-[#ff8844]" />
                                 <div className="h-2.5 w-2.5 rounded-full bg-[#ffaa00]" />
-                                <div className="h-2.5 w-2.5 rounded-full bg-[#22c55e]" />
+                                <div className="h-2.5 w-2.5 rounded-full bg-[#00ff88]" />
                               </div>
                               <span className="text-[10px] text-[#333333] font-mono ml-1">
                                 custom-styles.css

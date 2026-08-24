@@ -84,7 +84,7 @@ const ISOLATION_COLORS = {
 
 function HardwareRack({ status }: { status: 'online' | 'offline' }) {
   const isOnline = status === 'online';
-  const ledColor = isOnline ? '#22c55e' : '#ff3355';
+  const ledColor = isOnline ? '#00ff88' : '#ff3355';
   const ledGlow = isOnline ? 'shadow-green-500/60' : 'shadow-red-500/60';
 
   return (
@@ -119,8 +119,8 @@ function HardwareRack({ status }: { status: 'online' | 'offline' }) {
                 <div key={label} className="flex flex-col items-center gap-1">
                   <div className={`w-2 h-2 rounded-full ${i === 0 ? 'animate-pulse' : ''}`}
                     style={{
-                      backgroundColor: i === 0 ? ledColor : i === 4 ? (isOnline ? '#22c55e' : '#f59e0b') : '#22c55e',
-                      boxShadow: `0 0 6px ${i === 0 ? ledColor : '#22c55e'}80`,
+                      backgroundColor: i === 0 ? ledColor : i === 4 ? (isOnline ? '#00ff88' : '#f59e0b') : '#00ff88',
+                      boxShadow: `0 0 6px ${i === 0 ? ledColor : '#00ff88'}80`,
                     }} />
                   <span className="text-[7px] text-[#5a6540] font-mono">{label}</span>
                 </div>

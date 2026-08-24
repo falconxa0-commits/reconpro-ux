@@ -155,7 +155,7 @@ function generateUtilData(): number[] {
 // ═══════════════════════════════════════════════════════════════════════
 
 const STATUS_COLORS: Record<NodeStatus, string> = {
-  online: '#22c55e',
+  online: '#00ff88',
   training: '#3b82f6',
   idle: '#555555',
   offline: '#ff3355',
@@ -742,7 +742,7 @@ export function TrainingClusterPanel() {
                               </td>
                               <td className="px-4 py-3 text-xs">
                                 {model.accuracy > 0 ? (
-                                  <span className="font-medium" style={{ color: model.accuracy >= 95 ? '#22c55e' : model.accuracy >= 90 ? '#3b82f6' : '#f59e0b' }}>
+                                  <span className="font-medium" style={{ color: model.accuracy >= 95 ? '#00ff88' : model.accuracy >= 90 ? '#3b82f6' : '#f59e0b' }}>
                                     {model.accuracy}%
                                   </span>
                                 ) : (
@@ -809,7 +809,7 @@ export function TrainingClusterPanel() {
                   <div className="space-y-4">
                     {[
                       { type: 'On-Demand', pct: 70, spend: '$34,104', color: '#3b82f6', gpus: 180 },
-                      { type: 'Spot', pct: 22, spend: '$10,718', color: '#22c55e', gpus: 56 },
+                      { type: 'Spot', pct: 22, spend: '$10,718', color: '#00ff88', gpus: 56 },
                       { type: 'Reserved', pct: 8, spend: '$3,898', color: '#8b5cf6', gpus: 20 },
                     ].map(item => (
                       <div key={item.type}>

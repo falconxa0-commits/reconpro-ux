@@ -257,7 +257,7 @@ function DoomCountdown({ doomDate, doomScore, urgencyLevel }: { doomDate: string
           />
           <defs>
             <linearGradient id="doomGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor={doomScore >= 70 ? '#ff3355' : doomScore >= 50 ? '#ff8844' : '#22c55e'} />
+              <stop offset="0%" stopColor={doomScore >= 70 ? '#ff3355' : doomScore >= 50 ? '#ff8844' : '#00ff88'} />
               <stop offset="100%" stopColor={doomScore >= 70 ? '#dc2626' : doomScore >= 50 ? '#ea580c' : '#16a34a'} />
             </linearGradient>
           </defs>

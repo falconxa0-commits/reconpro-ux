@@ -36,7 +36,7 @@ const severityNodeColors: Record<string, string> = {
   critical: '#ff3355',
   high: '#ff8844',
   medium: '#ffaa00',
-  low: '#22c55e',
+  low: '#00ff88',
   info: '#6b7280',
 };
 
@@ -323,7 +323,7 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
           glowColor = color.replace(')', ', 0.3)').replace('rgb', 'rgba');
         }
         if (node.type === 'service') {
-          color = '#06b6d4';
+          color = '#44aaff';
           glowColor = 'rgba(6, 182, 212, 0.3)';
         }
 
@@ -464,9 +464,9 @@ export function AttackSurface({ findings, domain, riskScore }: AttackSurfaceProp
           { label: 'Critical', color: '#ff3355' },
           { label: 'High', color: '#ff8844' },
           { label: 'Medium', color: '#ffaa00' },
-          { label: 'Low', color: '#22c55e' },
+          { label: 'Low', color: '#00ff88' },
           { label: 'Info', color: '#6b7280' },
-          { label: 'Tech', color: '#06b6d4' },
+          { label: 'Tech', color: '#44aaff' },
         ].map(s => (
           <div key={s.label} className="flex items-center gap-1.5">
             <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: s.color, boxShadow: `0 0 6px ${s.color}40` }} />

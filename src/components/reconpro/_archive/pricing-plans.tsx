@@ -123,8 +123,8 @@ const plans: Plan[] = [
     id: 'enterprise',
     name: 'ENTERPRISE',
     badge: 'ENTERPRISE',
-    badgeColor: 'text-[#06b6d4]',
-    badgeBg: 'bg-[#06b6d4]/15',
+    badgeColor: 'text-[#44aaff]',
+    badgeBg: 'bg-[#44aaff]/15',
     monthlyPrice: 999,
     annualPrice: 799,
     annualMonthly: 799,
@@ -153,7 +153,7 @@ const plans: Plan[] = [
     name: 'CUSTOM',
     badge: 'WHITE LABEL',
     badgeColor: 'text-[#0a0d14]',
-    badgeBg: 'bg-gradient-to-r from-[#00ff88] to-[#06b6d4]',
+    badgeBg: 'bg-gradient-to-r from-[#00ff88] to-[#44aaff]',
     monthlyPrice: null,
     annualPrice: null,
     annualMonthly: null,
@@ -288,7 +288,7 @@ function CTAButton({ style, label, onClick }: { style: Plan['ctaStyle']; label: 
         <button
           onClick={onClick}
           className="w-full py-3 px-6 rounded-xl text-sm font-bold
-                     bg-gradient-to-r from-[#00ff88] to-[#06b6d4] text-[#0a0d14]
+                     bg-gradient-to-r from-[#00ff88] to-[#44aaff] text-[#0a0d14]
                      hover:shadow-[0_0_30px_rgba(52,211,153,0.3),0_0_30px_rgba(6,182,212,0.3)]
                      transition-all duration-300"
         >
@@ -301,8 +301,8 @@ function CTAButton({ style, label, onClick }: { style: Plan['ctaStyle']; label: 
           onClick={onClick}
           className="w-full py-3 px-6 rounded-xl text-sm font-bold
                      border border-transparent bg-clip-padding
-                     bg-gradient-to-r from-[#00ff88] to-[#06b6d4] text-transparent
-                     [background-image:linear-gradient(#0a0d14,#0a0d14),linear-gradient(135deg,#00ff88,#06b6d4)]
+                     bg-gradient-to-r from-[#00ff88] to-[#44aaff] text-transparent
+                     [background-image:linear-gradient(#0a0d14,#0a0d14),linear-gradient(135deg,#00ff88,#44aaff)]
                      [background-origin:border-box]
                      [background-clip:padding-box,border-box]
                      [border:2px_solid_transparent]
@@ -362,7 +362,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
             variants={itemVariants}
             className="text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight mb-6"
           >
-            <span className="bg-clip-text text-transparent bg-gradient-to-r from-[#f0f0f0] via-[#00ff88] to-[#06b6d4]">
+            <span className="bg-clip-text text-transparent bg-gradient-to-r from-[#f0f0f0] via-[#00ff88] to-[#44aaff]">
               Choose Your Defense Strategy
             </span>
           </motion.h1>
@@ -433,7 +433,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                 variants={itemVariants}
                 className={`relative group rounded-2xl p-[1px] transition-all duration-500 hover:scale-[1.02] ${
                   plan.highlighted
-                    ? 'bg-gradient-to-b from-[#06b6d4]/60 via-[#06b6d4]/20 to-transparent hover:shadow-[0_0_60px_rgba(6,182,212,0.15)]'
+                    ? 'bg-gradient-to-b from-[#44aaff]/60 via-[#44aaff]/20 to-transparent hover:shadow-[0_0_60px_rgba(6,182,212,0.15)]'
                     : plan.recommended
                     ? 'bg-gradient-to-b from-[#00ff88]/50 via-[#00ff88]/15 to-transparent'
                     : 'bg-white/[0.06] hover:bg-white/10'
@@ -505,7 +505,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                               )}
                             </>
                           ) : (
-                            <span className="text-3xl sm:text-4xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-[#00ff88] to-[#06b6d4]">
+                            <span className="text-3xl sm:text-4xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-[#00ff88] to-[#44aaff]">
                               Custom
                             </span>
                           )}
@@ -537,7 +537,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                         }`}>
                           {feature.text}
                           {typeof feature.included === 'string' && feature.included !== 'true' && (
-                            <span className="text-[#06b6d4] font-medium ml-1">({feature.included})</span>
+                            <span className="text-[#44aaff] font-medium ml-1">({feature.included})</span>
                           )}
                         </span>
                       </div>
@@ -594,15 +594,15 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                           ${isAnnual ? '239' : '299'}
                         </div>
                       </th>
-                      <th className="p-4 text-center bg-[#06b6d4]/[0.03]">
-                        <div className="text-xs font-semibold text-[#06b6d4] uppercase tracking-wider">Enterprise</div>
-                        <div className="text-lg font-bold text-[#06b6d4] mt-1">
+                      <th className="p-4 text-center bg-[#44aaff]/[0.03]">
+                        <div className="text-xs font-semibold text-[#44aaff] uppercase tracking-wider">Enterprise</div>
+                        <div className="text-lg font-bold text-[#44aaff] mt-1">
                           ${isAnnual ? '799' : '999'}
                         </div>
                       </th>
-                      <th className="p-4 text-center bg-gradient-to-r from-[#00ff88]/[0.02] to-[#06b6d4]/[0.02]">
+                      <th className="p-4 text-center bg-gradient-to-r from-[#00ff88]/[0.02] to-[#44aaff]/[0.02]">
                         <div className="text-xs font-semibold text-white/50 uppercase tracking-wider">Custom</div>
-                        <div className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#00ff88] to-[#06b6d4] mt-1">
+                        <div className="text-lg font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#00ff88] to-[#44aaff] mt-1">
                           Custom
                         </div>
                       </th>
@@ -627,10 +627,10 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                         <td className="p-4 text-center bg-[#00ff88]/[0.015]">
                           <ComparisonCell value={feature.pro} />
                         </td>
-                        <td className="p-4 text-center bg-[#06b6d4]/[0.015]">
+                        <td className="p-4 text-center bg-[#44aaff]/[0.015]">
                           <ComparisonCell value={feature.enterprise} />
                         </td>
-                        <td className="p-4 text-center bg-gradient-to-r from-[#00ff88]/[0.01] to-[#06b6d4]/[0.01]">
+                        <td className="p-4 text-center bg-gradient-to-r from-[#00ff88]/[0.01] to-[#44aaff]/[0.01]">
                           <ComparisonCell value={feature.custom} />
                         </td>
                       </motion.tr>
@@ -668,7 +668,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                     className="group flex items-center gap-2.5 px-5 py-2.5 rounded-xl bg-white/[0.03] border border-white/[0.06]
                                hover:bg-white/[0.06] hover:border-white/[0.1] transition-all duration-300 cursor-default"
                   >
-                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00ff88]/20 to-[#06b6d4]/20 flex items-center justify-center">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00ff88]/20 to-[#44aaff]/20 flex items-center justify-center">
                       <span className="text-[10px] font-bold text-[#00ff88] tracking-wider">{logo.initials}</span>
                     </div>
                     <span className="text-sm font-semibold text-white/60 group-hover:text-white/80 transition-colors duration-300 hidden sm:inline">
@@ -713,7 +713,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
             className="relative rounded-3xl overflow-hidden"
           >
             {/* Background */}
-            <div className="absolute inset-0 bg-gradient-to-br from-[#00ff88]/10 via-[#06b6d4]/5 to-[#0a0d14]" />
+            <div className="absolute inset-0 bg-gradient-to-br from-[#00ff88]/10 via-[#44aaff]/5 to-[#0a0d14]" />
             <div className="absolute inset-0 bg-[#0d1220]/60" />
             <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-[radial-gradient(ellipse_at_top_right,rgba(52,211,153,0.08)_0%,transparent_70%)]" />
             <div className="absolute bottom-0 left-0 w-[300px] h-[300px] bg-[radial-gradient(ellipse_at_bottom_left,rgba(6,182,212,0.08)_0%,transparent_70%)]" />
@@ -725,7 +725,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
             <div className="relative p-8 sm:p-12 lg:p-16 text-center">
               {/* Icon */}
               <motion.div
-                className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#00ff88]/20 to-[#06b6d4]/20 border border-[#00ff88]/20 mb-6"
+                className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-[#00ff88]/20 to-[#44aaff]/20 border border-[#00ff88]/20 mb-6"
                 whileHover={{ scale: 1.05, rotate: 3 }}
                 transition={{ type: 'spring' as const, stiffness: 300 }}
               >
@@ -746,7 +746,7 @@ export function PricingPlans({ onNavigate }: PricingPlansProps) {
                   whileTap={{ scale: 0.98 }}
                   onClick={() => onNavigate?.('dashboard')}
                   className="inline-flex items-center gap-2 px-8 py-4 rounded-xl text-sm font-bold
-                             bg-gradient-to-r from-[#00ff88] to-[#06b6d4] text-[#0a0d14]
+                             bg-gradient-to-r from-[#00ff88] to-[#44aaff] text-[#0a0d14]
                              hover:shadow-[0_0_40px_rgba(52,211,153,0.3),0_0_40px_rgba(6,182,212,0.2)]
                              transition-shadow duration-300"
                 >

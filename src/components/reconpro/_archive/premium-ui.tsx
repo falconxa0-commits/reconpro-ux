@@ -56,9 +56,9 @@ export function StatusBadge({
 }: StatusBadgeProps) {
   const variantStyles: Record<string, string> = {
     pass: 'bg-[rgba(61,214,140,0.06)] text-[#00ff88] border-[rgba(61,214,140,0.1)]',
-    warn: 'bg-[rgba(232,179,61,0.06)] text-[#e8b33d] border-[rgba(232,179,61,0.1)]',
+    warn: 'bg-[rgba(232,179,61,0.06)] text-[#d29922] border-[rgba(232,179,61,0.1)]',
     fail: 'bg-[rgba(232,64,87,0.06)] text-[#ff3355] border-[rgba(232,64,87,0.1)]',
-    info: 'bg-[rgba(91,168,212,0.06)] text-[#5ba8d4] border-[rgba(91,168,212,0.1)]',
+    info: 'bg-[rgba(91,168,212,0.06)] text-[#44aaff] border-[rgba(91,168,212,0.1)]',
     neutral: 'bg-[rgba(255,255,255,0.02)] text-[#6b6960] border-[rgba(255,255,255,0.05)]',
   };
 

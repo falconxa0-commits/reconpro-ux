@@ -39,10 +39,10 @@ function scoreToGrade(score: number): string {
  */
 function gradeColor(grade: string): string {
   if (grade.startsWith('A')) return '#00ff88';
-  if (grade.startsWith('B')) return '#a3e635';
-  if (grade.startsWith('C')) return '#facc15';
-  if (grade.startsWith('D')) return '#fb923c';
-  return '#ef4444';
+  if (grade.startsWith('B')) return '#44aaff';
+  if (grade.startsWith('C')) return '#d29922';
+  if (grade.startsWith('D')) return '#ff8800';
+  return '#ff3355';
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -70,7 +70,7 @@ interface StampStats {
 
 const GRADE_COLORS: Record<string, string> = {
   'A+': '#00ff88',
-  'A': '#22c55e',
+  'A': '#00ff88',
   'B+': '#3b82f6',
   'B': '#6366f1',
   'C+': '#ffaa00',

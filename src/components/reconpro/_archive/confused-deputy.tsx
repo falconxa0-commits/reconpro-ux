@@ -237,7 +237,7 @@ export function ConfusedDeputyPanel() {
   const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
   // Type colors
-  const typeColor: Record<string, string> = { s3: '#f59e0b', iam: '#8b5cf6', lambda: '#06b6d4', ssm: '#ec4899', rds: '#ff3355' };
+  const typeColor: Record<string, string> = { s3: '#f59e0b', iam: '#8b5cf6', lambda: '#44aaff', ssm: '#ec4899', rds: '#ff3355' };
 
   // ── Render ──────────────────────────────────────────────────────
 

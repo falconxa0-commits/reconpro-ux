@@ -90,7 +90,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 const GRADE_COLORS: Record<string, { bg: string; text: string; border: string; glow: string }> = {
   'A+': { bg: 'bg-[#00ff88]/15', text: 'text-[#00ff88]', border: 'border-[#00ff88]/30', glow: '0 0 20px rgba(52,211,153,0.3)' },
-  'A':  { bg: 'bg-[#22c55e]/15', text: 'text-[#22c55e]', border: 'border-[#22c55e]/30', glow: '0 0 16px rgba(34,197,94,0.2)' },
+  'A':  { bg: 'bg-[#00ff88]/15', text: 'text-[#00ff88]', border: 'border-[#00ff88]/30', glow: '0 0 16px rgba(34,197,94,0.2)' },
   'B':  { bg: 'bg-[#ffaa00]/15', text: 'text-[#ffaa00]', border: 'border-[#ffaa00]/30', glow: '0 0 12px rgba(250,204,21,0.15)' },
   'C':  { bg: 'bg-[#ff8844]/15', text: 'text-[#ff8844]', border: 'border-[#ff8844]/30', glow: '0 0 12px rgba(251,191,36,0.15)' },
   'D':  { bg: 'bg-[#ff3355]/15', text: 'text-[#ff3355]', border: 'border-[#ff3355]/30', glow: '0 0 12px rgba(239,68,68,0.15)' },
@@ -99,7 +99,7 @@ const GRADE_COLORS: Record<string, { bg: string; text: string; border: string; g
 
 function scoreColor(score: number): string {
   if (score >= 90) return '#00ff88';
-  if (score >= 80) return '#22c55e';
+  if (score >= 80) return '#00ff88';
   if (score >= 65) return '#ffaa00';
   if (score >= 50) return '#ff8844';
   return '#ff3355';

@@ -21,6 +21,10 @@ import {
   LogOut,
   ChevronDown,
   Plus,
+  Crown,
+  FileText,
+  ScrollText,
+  CreditCard,
   type LucideIcon,
 } from 'lucide-react';
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip';
@@ -78,12 +82,21 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    title: 'Insights',
+    items: [
+      { id: 'executive', label: 'Executive Center', icon: Crown },
+      { id: 'reports', label: 'Reports', icon: FileText },
+    ],
+  },
+  {
     title: 'Organization',
     items: [
       { id: 'team', label: 'Team', icon: Users },
       { id: 'compliance', label: 'Compliance', icon: ShieldCheck },
       { id: 'integrations', label: 'Integrations', icon: Puzzle },
       { id: 'monitoring', label: 'Monitoring', icon: Activity },
+      { id: 'audit-log', label: 'Audit Logs', icon: ScrollText },
+      { id: 'billing', label: 'Billing & Usage', icon: CreditCard },
       { id: 'settings', label: 'Settings', icon: Settings },
     ],
   },

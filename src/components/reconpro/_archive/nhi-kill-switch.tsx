@@ -95,7 +95,7 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; border: string }
 };
 
 const ACTION_COLORS: Record<string, string> = {
-  identity_scan: 'text-[#06b6d4]',
+  identity_scan: 'text-[#44aaff]',
   revocation_started: 'text-[#ffaa00]',
   revocation_completed: 'text-[#ff3355]',
   rollback_started: 'text-[#a78bfa]',
@@ -718,9 +718,9 @@ export function NHIKillSwitch() {
       <div className="rounded-xl border border-[rgba(255,255,255,0.06)] bg-[rgba(0,0,0,0.3)]">
         <div className="p-4 border-b border-[rgba(255,255,255,0.06)]">
           <div className="flex items-center gap-2">
-            <FileText className="h-4 w-4 text-[#06b6d4]" />
+            <FileText className="h-4 w-4 text-[#44aaff]" />
             <h3 className="text-sm font-semibold text-[#f0f0f0]">Audit Trail</h3>
-            <Badge variant="outline" className="h-5 text-[10px] border-[rgba(6,182,212,0.2)] text-[#06b6d4]">
+            <Badge variant="outline" className="h-5 text-[10px] border-[rgba(6,182,212,0.2)] text-[#44aaff]">
               {auditLogs.length} events
             </Badge>
           </div>

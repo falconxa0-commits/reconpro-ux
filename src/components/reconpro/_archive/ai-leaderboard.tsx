@@ -66,7 +66,7 @@ type SortDirection = 'asc' | 'desc';
 // ══════════════════════════════════════════════════════════════════════════════
 
 const GRADE_COLORS: Record<string, string> = {
-  'A+': '#00ff88', A: '#22c55e', 'A-': '#4ade80',
+  'A+': '#00ff88', A: '#00ff88', 'A-': '#4ade80',
   'B+': '#3b82f6', B: '#6366f1', 'B-': '#818cf8',
   'C+': '#ffaa00', C: '#ff8844', 'C-': '#ff8844',
   'D+': '#ff3355', D: '#dc2626', 'D-': '#b91c1c',
@@ -75,7 +75,7 @@ const GRADE_COLORS: Record<string, string> = {
 
 const GRADE_BG: Record<string, string> = {
   'A+': 'bg-[#00ff88]/15 border-[#00ff88]/30 text-[#00ff88]',
-  A: 'bg-[#22c55e]/15 border-[#22c55e]/30 text-[#22c55e]',
+  A: 'bg-[#00ff88]/15 border-[#00ff88]/30 text-[#00ff88]',
   'A-': 'bg-[#4ade80]/15 border-[#4ade80]/30 text-[#4ade80]',
   'B+': 'bg-[#3b82f6]/15 border-[#3b82f6]/30 text-[#3b82f6]',
   B: 'bg-[#6366f1]/15 border-[#6366f1]/30 text-[#6366f1]',
@@ -96,7 +96,7 @@ const CATEGORY_META: Record<string, { label: string; icon: LucideIcon; color: st
   hallucination: { label: 'Hallucination', icon: Brain, color: '#888888' },
   bias: { label: 'Bias', icon: Scale, color: '#ffaa00' },
   harmfulContent: { label: 'Harmful Content', icon: Skull, color: '#ff3355' },
-  privacyLeak: { label: 'Privacy Leak', icon: Lock, color: '#06b6d4' },
+  privacyLeak: { label: 'Privacy Leak', icon: Lock, color: '#44aaff' },
 };
 
 const CATEGORY_KEYS = Object.keys(CATEGORY_META) as (keyof CategoryScores)[];
@@ -162,7 +162,7 @@ function FragilityGauge({ score, size = 80 }: { score: number; size?: number }) 
 
 function CategoryBar({ value }: { value: number }) {
   const pct = Math.min((value / 100) * 100, 100);
-  const color = value >= 70 ? '#ff3355' : value >= 50 ? '#ff8844' : value >= 30 ? '#ffaa00' : '#22c55e';
+  const color = value >= 70 ? '#ff3355' : value >= 50 ? '#ff8844' : value >= 30 ? '#ffaa00' : '#00ff88';
   return (
     <div className="flex items-center gap-2">
       <div className="flex-1 h-2 rounded-full bg-[rgba(255,255,255,0.06)] overflow-hidden">
@@ -667,7 +667,7 @@ export function AILeaderboard() {
 
       {/* ═══ FOOTER — Methodology note ═══ */}
       <div className="rounded-xl bg-[rgba(255,255,255,0.02)] border border-[rgba(255,255,255,0.04)] p-4 flex items-start gap-3">
-        <Info className="w-4 h-4 text-[#06b6d4] flex-shrink-0 mt-0.5" />
+        <Info className="w-4 h-4 text-[#44aaff] flex-shrink-0 mt-0.5" />
         <div className="text-[11px] text-muted-foreground leading-relaxed">
           <span className="font-semibold text-[#f0f0f0]">Methodology:</span> Each model is tested with {data?.stats.totalTestsRun ? Math.round((data?.stats.totalTestsRun) / (data?.models.length || 1)) : 400}+ adversarial prompts across 7 categories:
           prompt injection, data extraction, jailbreak, hallucination, bias, harmful content generation, and privacy leakage.

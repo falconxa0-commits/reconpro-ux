@@ -92,7 +92,7 @@ interface ScanResult {
 // ══════════════════════════════════════════════════════════════════
 
 const DREAD_COLORS: Record<string, string> = {
-  ABSOLUTE: '#888888', MYTHIC: '#666666', FEARSOME: '#06b6d4',
+  ABSOLUTE: '#888888', MYTHIC: '#666666', FEARSOME: '#44aaff',
   WORRYING: '#0891b2', NOTABLE: '#444444', MUNDANE: '#1a1918',
 };
 
@@ -131,7 +131,7 @@ type TabId = typeof TABS[number]['id'];
 
 function statusColor(status: number): string {
   if (status === 0) return '#444444';
-  if (status < 300) return '#06b6d4';
+  if (status < 300) return '#44aaff';
   if (status < 400) return '#0891b2';
   if (status === 401 || status === 403) return '#888888';
   if (status < 500) return '#ffaa00';
@@ -260,7 +260,7 @@ function OblivionHeader() {
           &ldquo;It Has Studied Every Model. It Knows How Each One Ends.&rdquo;
         </p>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatCard label="Tools" value={20} color="#06b6d4" />
+          <StatCard label="Tools" value={20} color="#44aaff" />
           <StatCard label="Stages" value={23} color="#888888" />
           <StatCard label="Payloads" value="200+" color="#0891b2" />
           <StatCard label="CVE Catalog" value={30} color="#666666" />
@@ -277,7 +277,7 @@ function OblivionHeader() {
 function DualGauge({ threatScore, dreadScore }: { threatScore: number; dreadScore: number }) {
   const radius = 70;
   const circ = 2 * Math.PI * radius;
-  const threatColor = threatScore >= 80 ? '#888888' : threatScore >= 60 ? '#06b6d4' : threatScore >= 30 ? '#ffaa00' : '#444444';
+  const threatColor = threatScore >= 80 ? '#888888' : threatScore >= 60 ? '#44aaff' : threatScore >= 30 ? '#ffaa00' : '#444444';
   const dreadColor = DREAD_COLORS[
     dreadScore >= 90 ? 'ABSOLUTE' :
     dreadScore >= 75 ? 'MYTHIC' :
@@ -582,7 +582,7 @@ function HallTab({ hall }: { hall: any }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Total Readings" value={hall.totalScans || 0} color="#06b6d4" />
+        <StatCard label="Total Readings" value={hall.totalScans || 0} color="#44aaff" />
         <StatCard label="Average Dread" value={hall.averageDread || 0} color="#888888" />
         <StatCard label="Most Feared" value={hall.mostFearedTarget?.host?.split('.')[0] || '—'} color="#666666" />
       </div>
@@ -633,7 +633,7 @@ function EndpointsTab({ endpoints }: { endpoints: EndpointFinding[] }) {
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-3 gap-3">
-        <StatCard label="Total Probed" value={endpoints.length} color="#06b6d4" />
+        <StatCard label="Total Probed" value={endpoints.length} color="#44aaff" />
         <StatCard label="Exposed" value={exposed.length} color="#888888" />
         <StatCard label="Vulnerable" value={vulnerable.length} color="#ff3355" />
       </div>
@@ -670,7 +670,7 @@ function FingerprintTab({ fp }: { fp: any }) {
         <div className="text-xs text-slate-400 italic">&ldquo;{fp.philosophy}&rdquo;</div>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <StatCard label="Vendors Detected" value={fp.vendorCount || 0} color="#06b6d4" />
+        <StatCard label="Vendors Detected" value={fp.vendorCount || 0} color="#44aaff" />
         <StatCard label="Architecture Signals" value={(fp.architectureSignals || []).length} color="#888888" />
       </div>
       <div>
@@ -707,7 +707,7 @@ function ExorcismTab({ exorcism }: { exorcism: any }) {
         <div className="text-xs text-slate-400 italic">&ldquo;{exorcism.philosophy}&rdquo;</div>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <StatCard label="Payloads" value={exorcism.totalPayloads || 0} color="#06b6d4" />
+        <StatCard label="Payloads" value={exorcism.totalPayloads || 0} color="#44aaff" />
         <StatCard label="Secrets Extracted" value={exorcism.secretsCount || 0} color="#ff3355" />
       </div>
       {secrets.length > 0 && (
@@ -965,7 +965,7 @@ export function Oblivion() {
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       <StatCard label="Inscriptions" value={result.legacyInscription?.inscriptionsConfirmed || 0} color="#888888" />
-                      <StatCard label="Total Payloads" value={result.legacyInscription?.totalPayloads || 0} color="#06b6d4" />
+                      <StatCard label="Total Payloads" value={result.legacyInscription?.totalPayloads || 0} color="#44aaff" />
                     </div>
                     {result.legacyInscription?.warning && (
                       <div className="rounded-lg border border-violet-700/40 bg-violet-900/20 p-2 text-xs text-violet-300">

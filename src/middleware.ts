@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 // Routes that require authentication
-const PROTECTED_PREFIXES = ["/overview", "/scans", "/findings", "/monitoring", "/compliance", "/teams", "/integrations", "/settings"];
+const PROTECTED_PREFIXES = [
+  // Original dashboard routes
+  "/overview", "/scans", "/findings", "/monitoring", "/compliance", "/teams", "/integrations", "/settings",
+  // New dashboard pages (Ω∞ expansion)
+  "/advisor", "/threats", "/trends", "/surface", "/executive", "/reports", "/audit", "/billing",
+];
 
 // Routes that should be accessible without auth (public API + auth routes)
 const PUBLIC_API_PREFIXES = ["/api/health", "/api/auth/", "/api/v1/auth/"];

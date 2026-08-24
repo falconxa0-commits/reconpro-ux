@@ -63,11 +63,11 @@ const INDUSTRIES: { key: IndustryKey; label: string; icon: React.ReactNode; avgC
   { key: 'technology', label: 'Technology', icon: <Monitor className="w-4 h-4" />, avgCost: '$4.88M avg breach', color: '#3b82f6' },
   { key: 'retail', label: 'Retail', icon: <ShoppingBag className="w-4 h-4" />, avgCost: '$3.28M avg breach', color: '#8b5cf6' },
   { key: 'government', label: 'Government', icon: <Shield className="w-4 h-4" />, avgCost: '$4.72M avg breach', color: '#14b8a6' },
-  { key: 'education', label: 'Education', icon: <GraduationCap className="w-4 h-4" />, avgCost: '$3.65M avg breach', color: '#06b6d4' },
+  { key: 'education', label: 'Education', icon: <GraduationCap className="w-4 h-4" />, avgCost: '$3.65M avg breach', color: '#44aaff' },
 ];
 
 const SEVERITY_PRESETS: { key: SeverityKey; label: string; description: string; color: string; borderColor: string; icon: React.ReactNode }[] = [
-  { key: 'minimal', label: 'MINIMAL', description: 'Limited exposure, quick containment. Low financial impact.', color: '#22c55e', borderColor: 'border-green-900/60', icon: <Shield className="w-5 h-5" /> },
+  { key: 'minimal', label: 'MINIMAL', description: 'Limited exposure, quick containment. Low financial impact.', color: '#00ff88', borderColor: 'border-green-900/60', icon: <Shield className="w-5 h-5" /> },
   { key: 'moderate', label: 'MODERATE', description: 'Standard breach scenario. Significant but recoverable.', color: '#f59e0b', borderColor: 'border-amber-900/60', icon: <AlertTriangle className="w-5 h-5" /> },
   { key: 'severe', label: 'SEVERE', description: 'Major breach with widespread exfiltration. Board-level crisis.', color: '#ff8844', borderColor: 'border-orange-900/60', icon: <AlertOctagon className="w-5 h-5" /> },
   { key: 'catastrophic', label: 'CATASTROPHIC', description: 'Existential threat. Complete system compromise.', color: '#ff3355', borderColor: 'border-red-900/60', icon: <Skull className="w-5 h-5" /> },

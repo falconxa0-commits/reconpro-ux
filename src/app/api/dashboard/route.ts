@@ -32,11 +32,11 @@ export async function GET(request: NextRequest) {
     });
 
     const severityBreakdown = [
-      { name: 'Critical', value: criticalFindings, color: '#ef4444' },
-      { name: 'High', value: highFindings, color: '#f97316' },
-      { name: 'Medium', value: mediumFindings, color: '#eab308' },
-      { name: 'Low', value: lowFindings, color: '#22c55e' },
-      { name: 'Info', value: infoFindings, color: '#6b7280' },
+      { name: 'Critical', value: criticalFindings, color: '#ff3355' },
+      { name: 'High', value: highFindings, color: '#ff8800' },
+      { name: 'Medium', value: mediumFindings, color: '#d29922' },
+      { name: 'Low', value: lowFindings, color: '#00ff88' },
+      { name: 'Info', value: infoFindings, color: '#666666' },
     ];
 
     const avgRiskScore = totalScans > 0

@@ -59,7 +59,7 @@ const SECTOR_LABELS: Record<SectorKey, string> = {
 // ── Trend Arrow Component ─────────────────────────────────────────────
 
 function TrendArrow({ trend, change, size = 16 }: { trend: TrendDirection; change: number; size?: number }) {
-  const color = trend === 'rising' ? '#ff3355' : trend === 'falling' ? '#22c55e' : '#6b7280';
+  const color = trend === 'rising' ? '#ff3355' : trend === 'falling' ? '#00ff88' : '#6b7280';
   if (trend === 'rising') return <TrendingUp size={size} style={{ color }} />;
   if (trend === 'falling') return <TrendingDown size={size} style={{ color }} />;
   return <Activity size={size} style={{ color }} />;
@@ -225,7 +225,7 @@ function TrendChart({ data }: { data: HistoricalDataPoint[] }) {
 
   // Level zone backgrounds
   const zones = [
-    { from: 0, to: 20, color: '#22c55e08' },
+    { from: 0, to: 20, color: '#00ff8808' },
     { from: 20, to: 40, color: '#ffaa0008' },
     { from: 40, to: 60, color: '#ff884408' },
     { from: 60, to: 80, color: '#ff335508' },

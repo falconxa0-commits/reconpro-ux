@@ -21,8 +21,8 @@ const TYPE_META: Record<string, { icon: string; color: string; description: stri
   splunk: { icon: 'BarChart3', color: '#65A637', description: 'Forward security events and logs to Splunk SIEM' },
   pagerduty: { icon: 'Bell', color: '#06AC38', description: 'Critical alert escalation and incident management' },
   microsoft_teams: { icon: 'Users', color: '#7B83EB', description: 'Collaborate on security findings within Teams channels' },
-  webhooks: { icon: 'Webhook', color: '#06b6d4', description: 'Custom webhook endpoints for event-driven automation' },
-  email: { icon: 'Mail', color: '#f97316', description: 'Email notifications for critical security events' },
+  webhooks: { icon: 'Webhook', color: '#44aaff', description: 'Custom webhook endpoints for event-driven automation' },
+  email: { icon: 'Mail', color: '#ff8800', description: 'Email notifications for critical security events' },
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

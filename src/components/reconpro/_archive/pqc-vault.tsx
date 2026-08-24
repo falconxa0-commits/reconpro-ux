@@ -54,10 +54,10 @@ const PROTOCOL_OPTIONS = [
 ];
 
 const READINESS_COLORS: Record<ReadinessLevel, string> = {
-  CRITICAL: '#EF4444',
-  HIGH: '#F97316',
-  MODERATE: '#EAB308',
-  GOOD: '#22C55E',
+  CRITICAL: '#ff3355',
+  HIGH: '#ff8800',
+  MODERATE: '#d29922',
+  GOOD: '#00ff88',
   EXCELLENT: '#FFD700',
 };
 
@@ -502,7 +502,7 @@ export function PQCVaultPanel() {
                 <div className="mt-2 h-1.5 bg-black/30 rounded-full overflow-hidden">
                   <motion.div
                     className="h-full rounded-full"
-                    style={{ backgroundColor: data.status === 'PASS' ? '#22C55E' : data.status === 'FAIL' ? '#EF4444' : '#EAB308' }}
+                    style={{ backgroundColor: data.status === 'PASS' ? '#00ff88' : data.status === 'FAIL' ? '#ff3355' : '#d29922' }}
                     initial={{ width: 0 }}
                     animate={{ width: `${data.score}%` }}
                     transition={{ duration: 1, delay: 0.3 }}
@@ -555,7 +555,7 @@ export function PQCVaultPanel() {
   // ── Render: Migration Roadmap ──
   const renderRoadmap = () => {
     if (!result) return null;
-    const phaseColors = ['#EF4444', '#F97316', '#EAB308', '#22C55E'];
+    const phaseColors = ['#ff3355', '#ff8800', '#d29922', '#00ff88'];
 
     // Compute total for the bottom summary
     const grandTotal = result.migrationRoadmap.reduce((s, p) => {

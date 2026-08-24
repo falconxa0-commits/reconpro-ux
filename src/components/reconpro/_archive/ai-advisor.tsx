@@ -330,7 +330,7 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
       <div className="flex items-center justify-between px-4 py-3 border-b border-[rgba(255,255,255,0.04)] flex-shrink-0">
         <div className="flex items-center gap-3">
           <div className="relative">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00ff88]/20 to-[#06b6d4]/20 border border-[#00ff88]/20 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#00ff88]/20 to-[#44aaff]/20 border border-[#00ff88]/20 flex items-center justify-center">
               <Brain className="w-4 h-4 text-[#00ff88]" />
             </div>
             <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#00ff88] animate-pulse-glow" />
@@ -338,7 +338,7 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-semibold text-[#f0f0f0]">AI Security Advisor</h3>
-              <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-[#06b6d4]/30 text-[#06b6d4]">
+              <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-[#44aaff]/30 text-[#44aaff]">
                 GPT-CLASS
               </Badge>
             </div>
@@ -395,7 +395,7 @@ export function AIAdvisor({ findings, domain }: AIAdvisorProps) {
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-center">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#00ff88]/10 to-[#06b6d4]/10 border border-[rgba(52,211,153,0.1)] flex items-center justify-center mb-4">
+            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#00ff88]/10 to-[#44aaff]/10 border border-[rgba(52,211,153,0.1)] flex items-center justify-center mb-4">
               <Brain className="w-8 h-8 text-[#00ff88]/50" />
             </div>
             <h3 className="text-sm font-semibold text-[#f0f0f0] mb-1">AI Security Advisor</h3>

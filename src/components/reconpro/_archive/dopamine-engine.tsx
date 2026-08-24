@@ -29,7 +29,7 @@ interface Particle {
   maxLife: number;
 }
 
-const CONFETTI_COLORS = ['#00ff88', '#06b6d4', '#ffd93d', '#ff6b6b', '#a78bfa', '#ff8844', '#3fb950', '#79c0ff'];
+const CONFETTI_COLORS = ['#00ff88', '#44aaff', '#ffd93d', '#ff6b6b', '#a78bfa', '#ff8844', '#3fb950', '#79c0ff'];
 
 function useConfetti() {
   const [particles, setParticles] = useState<Particle[]>([]);
@@ -212,7 +212,7 @@ function FloatingXPCanvas({ popups }: { popups: FloatingXP[] }) {
       case 'critical': return '#ff3355';
       case 'high': return '#ff8844';
       case 'medium': return '#ffaa00';
-      case 'low': return '#22c55e';
+      case 'low': return '#00ff88';
       default: return '#00ff88';
     }
   };
@@ -337,7 +337,7 @@ function CelebrationScreen({ data, onClose }: { data: CelebrationData; onClose: 
   if (!data.show) return null;
 
   const stats = [
-    { label: 'Findings', value: data.findings, color: '#06b6d4', icon: <Target className="w-5 h-5" /> },
+    { label: 'Findings', value: data.findings, color: '#44aaff', icon: <Target className="w-5 h-5" /> },
     { label: 'Critical', value: data.critical, color: '#ff3355', icon: <Skull className="w-5 h-5" /> },
     { label: 'High Risk', value: data.high, color: '#ff8844', icon: <AlertTriangle className="w-5 h-5" /> },
     { label: 'Risk Score', value: data.riskScore, color: '#ffd93d', icon: <Shield className="w-5 h-5" /> },
@@ -540,7 +540,7 @@ interface Achievement {
 
 const RARITY_CONFIG = {
   common: { color: '#6b7280', bg: 'rgba(107,114,128,0.1)', border: 'rgba(107,114,128,0.2)', label: 'COMMON', glow: '' },
-  rare: { color: '#06b6d4', bg: 'rgba(6,182,212,0.1)', border: 'rgba(6,182,212,0.3)', label: 'RARE', glow: '0 0 20px rgba(6,182,212,0.2)' },
+  rare: { color: '#44aaff', bg: 'rgba(6,182,212,0.1)', border: 'rgba(6,182,212,0.3)', label: 'RARE', glow: '0 0 20px rgba(6,182,212,0.2)' },
   epic: { color: '#a78bfa', bg: 'rgba(167,139,250,0.1)', border: 'rgba(167,139,250,0.3)', label: 'EPIC', glow: '0 0 30px rgba(167,139,250,0.3)' },
   legendary: { color: '#ffd93d', bg: 'rgba(255,217,61,0.1)', border: 'rgba(255,217,61,0.4)', label: 'LEGENDARY', glow: '0 0 40px rgba(255,217,61,0.4), 0 0 80px rgba(255,217,61,0.15)' },
 };
@@ -643,7 +643,7 @@ function ComboCounter({ combo }: { combo: number }) {
   if (combo < 3) return null;
 
   const size = Math.min(48, 24 + combo * 2);
-  const color = combo >= 10 ? '#ffd93d' : combo >= 7 ? '#a78bfa' : combo >= 5 ? '#06b6d4' : '#00ff88';
+  const color = combo >= 10 ? '#ffd93d' : combo >= 7 ? '#a78bfa' : combo >= 5 ? '#44aaff' : '#00ff88';
 
   return (
     <motion.div
@@ -886,7 +886,7 @@ function AnticipationProgressBar({ progress }: { progress: number }) {
       <motion.div
         className="h-full rounded-full relative"
         style={{
-          background: 'linear-gradient(90deg, #00ff88, #06b6d4, #a78bfa)',
+          background: 'linear-gradient(90deg, #00ff88, #44aaff, #a78bfa)',
         }}
         animate={{ width: `${visualProgress}%` }}
         transition={{ duration: 0.5, ease: 'easeOut' as const }}
